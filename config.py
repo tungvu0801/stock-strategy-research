@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List
 
 from dotenv import load_dotenv
+import json
 import os
 
 # Load variables from a local .env file (if present) into the environment.
@@ -494,3 +495,35 @@ AI_CALLS_PER_RESEARCH_RUN: int = 3   # catalyst + risk + narrative (agents/begin
 EVENT_WARMUP_ON_STARTUP: bool = os.getenv("EVENT_WARMUP_ON_STARTUP", "true").strip().lower() in ("1", "true", "yes", "on")
 EVENT_WARMUP_TIMEOUT_SECONDS: float = float(os.getenv("EVENT_WARMUP_TIMEOUT_SECONDS", "90"))   # still running after this -> reported unavailable (slow)
 EVENT_WARMUP_RETRY_SECONDS: float = float(os.getenv("EVENT_WARMUP_RETRY_SECONDS", "300"))      # minimum gap between warm-up attempts
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.4 — MULTI-SOURCE EVIDENCE RESEARCH (evidence/). Research-evidence layer only: no broker, no Robinhood call,
+# no automatic Claude call. Every live read goes through evidence.net.fetch (https only, allowed hosts per adapter,
+# deny list, one attempt per URL, timeout, size cap). Tests force EVIDENCE_NETWORK_ENABLED off and tripwire the wire.
+# ------------------------------------------------------------------------------------------------------------------
+def _env_json(name: str, default):
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return default
+
+
+SEC_USER_AGENT: str = os.getenv("SEC_USER_AGENT", "").strip()            # SEC requires "Name email"; the adapter refuses to run without it
+EVIDENCE_NETWORK_ENABLED: bool = os.getenv("EVIDENCE_NETWORK_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+EVIDENCE_FETCH_TIMEOUT_S: float = float(os.getenv("EVIDENCE_FETCH_TIMEOUT_S", "15"))
+EVIDENCE_MAX_BYTES: int = int(os.getenv("EVIDENCE_MAX_BYTES", "2000000"))
+EVIDENCE_LOOKBACK_DAYS: int = int(os.getenv("EVIDENCE_LOOKBACK_DAYS", "90"))
+EVIDENCE_SEC_MAX_REQUESTS: int = int(os.getenv("EVIDENCE_SEC_MAX_REQUESTS", "12"))
+EVIDENCE_SEC_MIN_INTERVAL_S: float = float(os.getenv("EVIDENCE_SEC_MIN_INTERVAL_S", "0.25"))
+EVIDENCE_DENY_HOSTS: tuple = tuple(h.strip().lower() for h in os.getenv(
+    "EVIDENCE_DENY_HOSTS", "bloomberg.com,reuters.com,wsj.com,ft.com,barrons.com,seekingalpha.com,x.com,twitter.com,facebook.com,linkedin.com").split(",") if h.strip())
+EVIDENCE_PRESS_ALLOWLIST: tuple = ("Reuters", "Bloomberg", "The Wall Street Journal", "Financial Times", "Associated Press", "CNBC",
+                                   "MarketWatch", "Barron's", "Benzinga")
+EVIDENCE_SOCIAL_HOSTS: tuple = ("reddit.com", "x.com", "twitter.com", "stocktwits.com", "youtube.com", "facebook.com", "tiktok.com")
+EVIDENCE_IR_DOMAINS: dict = _env_json("EVIDENCE_IR_DOMAINS_JSON", {})     # {"SNDK": ["investor.sandisk.com"]}
+EVIDENCE_IR_URLS: dict = _env_json("EVIDENCE_IR_URLS_JSON", {})           # {"SNDK": ["https://investor.sandisk.com/..."]}
+EVIDENCE_RELATED: dict = _env_json("EVIDENCE_RELATED_JSON", {})           # {"SNDK": {"suppliers": [...], "customers": [...]}}
+EVIDENCE_CIK_OVERRIDES: dict = _env_json("EVIDENCE_CIK_JSON", {})         # {"SNDK": "0001234567"} when the SEC ticker map lags

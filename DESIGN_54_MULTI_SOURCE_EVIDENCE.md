@@ -49,7 +49,7 @@ evidence/
   engine.py            build_packet(): orchestrates adapters → items → rules → packet dict; hashes; never raises past FAILED
   explain.py           optional bounded Claude explanation over the stored packet (one request, grounding guard)
   store.py             append-only persistence and readers
-database/evidence_migrations.py     four new tables, no-update / no-delete triggers, user_version untouched
+database/research_packet_migrations.py     four new tables, no-update / no-delete triggers, user_version untouched
 api/routes/evidence.py              prefix /api/evidence (no order / trade / paper / execute / broker / handoff / deploy / activate words)
 frontend/evidence.js, evidence.css  Strategy Lab → Evidence (read-only view; build and explain buttons with explicit confirms)
 tests/test_evidence_54.py, tests/evidence_fakes.py, tests/fixtures/evidence/*   fixtures only, sockets blocked
@@ -174,7 +174,7 @@ Determinism: given the same stored fetch bodies, a rebuild produces the same has
 
 Limits: ≤ 12 SEC requests, ≤ 6 IR URLs, ≤ 12 manual URLs, ≤ 10 headlines, ≤ 200 items per packet, 15 s per fetch, 120 s per build.
 
-## 7. Persistence (`database/evidence_migrations.py`, additive, user_version untouched)
+## 7. Persistence (`database/research_packet_migrations.py`, additive, user_version untouched)
 
 `evidence_packets` — `packet_id` (32 hex PK), `packet_hash` (64 hex), `ticker`, `as_of_date`, `created_at`, `lookback_days`,
 `engine_version`, `rules_version`, `status` (COMPLETED / FAILED), `failure_code`, `failure_detail`, `request_json` (≤ 16 KB),

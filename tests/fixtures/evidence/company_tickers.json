@@ -1,0 +1,17 @@
+{
+ "0": {
+  "cik_str": 1234567,
+  "ticker": "SNDK",
+  "title": "Sandisk Corp (fixture)"
+ },
+ "1": {
+  "cik_str": 7654321,
+  "ticker": "LRCX",
+  "title": "Lam Research (fixture)"
+ },
+ "2": {
+  "cik_str": 320193,
+  "ticker": "AAPL",
+  "title": "Apple Inc (fixture)"
+ }
+}

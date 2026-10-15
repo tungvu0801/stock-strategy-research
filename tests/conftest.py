@@ -103,5 +103,26 @@ def no_alpaca_paper_orders(monkeypatch):
     assert not hits, f"real Alpaca paper wire requested during a test: {hits}"
 
 
+_EVIDENCE_WIRE_HITS: list = []
+
+
+@pytest.fixture(autouse=True)
+def no_evidence_network(monkeypatch):
+    """Stage 5.4: in EVERY test the evidence layer's network flag is off and its single wire (evidence.net.WIRE) is a tripwire: reaching
+    it fails the test (recorded here and asserted at teardown). Tests install tests/evidence_fakes.FakeWire explicitly when they need it."""
+    import config as _cfg
+    from evidence import net as _net
+    monkeypatch.setattr(_cfg, "EVIDENCE_NETWORK_ENABLED", False)
+    monkeypatch.setattr(_cfg, "SEC_USER_AGENT", "")
+
+    def tripwire(url, headers, timeout_s, max_bytes):
+        _EVIDENCE_WIRE_HITS.append(url)
+        raise AssertionError(f"the real evidence network wire was requested during a test: {url}")
+    monkeypatch.setattr(_net, "WIRE", tripwire)
+    yield
+    hits, _EVIDENCE_WIRE_HITS[:] = list(_EVIDENCE_WIRE_HITS), []
+    assert not hits, f"real evidence network wire requested during a test: {hits}"
+
+
 def pytest_sessionfinish(session, exitstatus):
     shutil.rmtree(TMP_DIR, ignore_errors=True)
