@@ -55,7 +55,9 @@ EARNINGS_RX = re.compile(r"\b(?:results|earnings|quarter(?:ly)?|fiscal\s+(?:firs
 # ---------------------------------------------------------------- provenance ----------------------------------------------
 
 def is_guidance(text: str) -> bool:
-    return bool(GUIDANCE_RX.search(text or ""))
+    """True only when some bounded statement has guidance CONTEXT (forward-looking term + metric / condition or numeric range)."""
+    from evidence import statements as ST
+    return any(ST.guidance_present(st) for _off, st in ST.segment(text or ""))
 
 
 def is_earnings(text: str) -> bool:
@@ -103,23 +105,12 @@ def category_for(*, role: str, source_type: str, subject_is_target: bool) -> str
     return COMPANY_SPECIFIC
 
 
-def direction_scan(text: str) -> Tuple[str, str, Optional[int]]:
-    """(direction, rule_match, offset of the first matched phrase). Evaluates the FULL rule text it is given.
-    Both UP and DOWN present → NEUTRAL with both phrases listed (the document is self-contradictory on direction)."""
-    text = text or ""
-    ups = [m for rx in UP_RX for m in [rx.search(text)] if m]
-    downs = [m for rx in DOWN_RX for m in [rx.search(text)] if m]
-    neutral = [m for rx in NEUTRAL_RX for m in [rx.search(text)] if m]
-    first = min((m.start() for m in ups + downs + neutral), default=None)
-    if ups and downs:
-        return NEUTRAL, "UP:" + " | ".join(m.group(0) for m in ups) + "; DOWN:" + " | ".join(m.group(0) for m in downs), first
-    if ups:
-        return UP, "UP:" + " | ".join(m.group(0) for m in ups), first
-    if downs:
-        return DOWN, "DOWN:" + " | ".join(m.group(0) for m in downs), first
-    if neutral:
-        return NEUTRAL, "NEUTRAL:" + " | ".join(m.group(0) for m in neutral), first
-    return NA, "", None
+def direction_scan(text: str, *, headline: bool = False, index_page: bool = False) -> Tuple[str, str, Optional[int]]:
+    """(direction, rule_match, offset): the context-aware statement analysis of evidence.statements (one bounded statement with subject
+    and predicate per match; guidance context required for guidance; price moves only for headlines; nothing from index pages)."""
+    from evidence import statements as ST
+    an = ST.analyze(text or "", headline=headline, index_page=index_page)
+    return an["direction"], an["rule_match"], an["rule_offset"]
 
 
 def direction_for(text: str) -> Tuple[str, str]:
@@ -143,12 +134,22 @@ def metric_direction(value: Optional[dict]) -> Tuple[str, str]:
     return NA, ""
 
 
+def direction_kind(item: dict) -> str:
+    """GUIDANCE / OPERATING / PRICE / METRIC / NA — which kind of statement produced the item's direction."""
+    if item.get("kind") in COMPUTED_KINDS:
+        return "METRIC"
+    v = item.get("value_json") or {}
+    return str(v.get("direction_kind") or ("NA" if item.get("direction") in (None, NA) else "OPERATING"))
+
+
 def claim_key(item: dict) -> str:
-    """Deterministic identity of what an item is a claim about. Computed items: subject + the exact measure; sourced text: subject +
-    category. Only items with comparable keys can contradict each other."""
+    """Deterministic identity of what an item is a claim about. Computed items: subject + the exact measure; headline price moves:
+    subject + PRICE (never comparable with fundamentals); sourced statements: subject + category."""
     subject = str(item.get("subject_ticker") or "").upper()
     if item.get("kind") in COMPUTED_KINDS:
         return f"{subject}|{item.get('kind')}|{item.get('source_identifier') or ''}"
+    if direction_kind(item) == "PRICE":
+        return f"{subject}|PRICE"
     return f"{subject}|{item.get('category')}"
 
 
@@ -206,10 +207,12 @@ def comparable(a: dict, b: dict) -> bool:
     events — the same claim key (the same measure of the same symbol). SNDK DOWN vs SPY UP is never a contradiction."""
     if a.get("category") != b.get("category"):
         return False
+    if direction_kind(a) == "PRICE" or direction_kind(b) == "PRICE":
+        return False                                            # price moves are not claims about fundamentals and never contradict anything
     ka, kb = a.get("claim_key") or claim_key(a), b.get("claim_key") or claim_key(b)
     if a.get("kind") in COMPUTED_KINDS or b.get("kind") in COMPUTED_KINDS:
         return ka == kb
-    return str(a.get("subject_ticker") or "").upper() == str(b.get("subject_ticker") or "").upper()
+    return ka == kb and str(a.get("subject_ticker") or "").upper() == str(b.get("subject_ticker") or "").upper()
 
 
 def mark_contradictions(items: List[dict]) -> int:
@@ -257,13 +260,35 @@ def _degrade_if_contradicted(rung: dict, used: List[dict]) -> dict:
     return rung
 
 
+RUNG4_MEASURES = ("revenue", "gross_margin")
+
+
+def comparable_operating_direction(item: dict) -> str:
+    """Direction of the item's OPERATING statements about revenue / sales / gross margin — the only text comparable with the XBRL
+    metric of rung 4. Guidance, price moves and unrelated developments ("restructuring charges increased") never count."""
+    from evidence import statements as ST
+    v = item.get("value_json") or {}
+    if "statements" in v:
+        return ST.operating_direction_for(v, RUNG4_MEASURES)
+    if item.get("kind") == "EARNINGS" and item.get("direction") in (UP, DOWN):     # minimal items without statement analysis (unit tests)
+        return item["direction"]
+    return NA
+
+
 def _rung4(facts: dict, items: List[dict]) -> dict:
     """Company fundamentals. SUPPORTED only when (A) validated, semantically compatible XBRL quarters improve on both revenue and gross
     margin and no official filing text says otherwise, or (B) official tier-1 earnings / guidance text of the target says UP and XBRL
     does not say DOWN. Ambiguous XBRL → at most PARTIAL. Text and XBRL disagreeing → PARTIAL with an explicit ambiguity note."""
     f = facts.get("fundamentals") or {}
-    text = [i for i in items if i["category"] == COMPANY_CONFIRMATION and i["kind"] in ("EARNINGS", "GUIDANCE") and i["source_tier"] == 1 and i["direction"] in (UP, DOWN)]
-    t_up, t_down = [i for i in text if i["direction"] == UP], [i for i in text if i["direction"] == DOWN]
+    text, dirs = [], {}
+    for i in items:
+        if i["category"] != COMPANY_CONFIRMATION or i["kind"] not in ("EARNINGS", "GUIDANCE") or i["source_tier"] != 1:
+            continue
+        d = comparable_operating_direction(i)
+        if d in (UP, DOWN):
+            text.append(i)
+            dirs[i["item_id"]] = d
+    t_up, t_down = [i for i in text if dirs[i["item_id"]] == UP], [i for i in text if dirs[i["item_id"]] == DOWN]
     has_xbrl = "revenue_up" in f
     if not has_xbrl and not text:
         return _rung(4, NOT_AVAILABLE, "no quarterly company facts (no CIK, no fetch, or fewer than two comparable quarters) and no official results text", f, [])
@@ -292,7 +317,7 @@ def _rung4(facts: dict, items: List[dict]) -> dict:
     if (valid and xbrl_dir == UP and not t_down) or (t_up and not t_down and xbrl_dir != DOWN):
         why = "A: validated XBRL quarters improved on revenue and gross margin" if (valid and xbrl_dir == UP) else "B: official filing text confirms improvement"
         return _rung(4, SUPPORTED, base + txt + f"; {why}", inputs, ids)
-    if xbrl_dir == DOWN and not t_up:
+    if (xbrl_dir == DOWN or (xbrl_dir is None and t_down)) and not t_up:
         return _rung(4, NOT_SUPPORTED, base + txt, inputs, ids)
     if xbrl_dir in (UP, NEUTRAL) or t_up:
         if xbrl_dir == UP and not valid:
@@ -343,19 +368,30 @@ def ladder(facts: dict, items: List[dict], related: Optional[Dict[str, List[str]
     # 4 company fundamentals
     rungs.append(_rung4(facts, items))
     # 5 company guidance
-    g = [i for i in items if i["kind"] == "GUIDANCE" and i["source_tier"] == 1 and i["category"] == COMPANY_CONFIRMATION]
-    g_up, g_down, g_neutral = [i for i in g if i["direction"] == UP], [i for i in g if i["direction"] == DOWN], [i for i in g if i["direction"] == NEUTRAL]
+    # verified tier-1 guidance STATEMENTS only (guidance context, not a stray keyword); direction may be UP / DOWN / NEUTRAL / NA
+    g = [i for i in items if i["kind"] == "GUIDANCE" and i["source_tier"] == 1 and i["category"] == COMPANY_CONFIRMATION
+         and (i.get("value_json") or {}).get("guidance_present", True)]
+
+    def _gdir(i: dict) -> str:
+        v = i.get("value_json") or {}
+        if direction_kind(i) == "PRICE":
+            return NA                                           # a price move is never a guidance direction
+        return v["guidance_direction"] if "guidance_direction" in v else i["direction"]
+
+    gd = {i["item_id"]: _gdir(i) for i in g}
+    g_up, g_down = [i for i in g if gd[i["item_id"]] == UP], [i for i in g if gd[i["item_id"]] == DOWN]
+    g_other = [i for i in g if gd[i["item_id"]] not in (UP, DOWN)]
     if not g:
-        r5, why = NOT_AVAILABLE, "no tier-1 guidance item in the window"
+        r5, why = NOT_AVAILABLE, "no verified tier-1 guidance statement in the window"
     elif g_up and not g_down:
-        r5, why = SUPPORTED, f"{len(g_up)} tier-1 guidance item(s) UP, none DOWN"
+        r5, why = SUPPORTED, f"{len(g_up)} tier-1 guidance statement(s) with clear UP direction, none DOWN"
+    elif g_down and not g_up:
+        r5, why = NOT_SUPPORTED, f"{len(g_down)} tier-1 guidance statement(s) with clear DOWN direction, none UP"
     elif g_up and g_down:
-        r5, why = PARTIAL, "guidance items both UP and DOWN"
-    elif g_down:
-        r5, why = NOT_SUPPORTED, f"only DOWN guidance items ({len(g_down)})"
+        r5, why = PARTIAL, f"guidance statements both UP ({len(g_up)}) and DOWN ({len(g_down)})"
     else:
-        r5, why = PARTIAL, f"guidance reaffirmed / neutral only ({len(g_neutral)})"
-    rungs.append(_degrade_if_contradicted(_rung(5, r5, why, {"up": len(g_up), "down": len(g_down), "neutral": len(g_neutral)}, [i["item_id"] for i in g]), g))
+        r5, why = PARTIAL, f"forward guidance exists ({len(g_other)}) but its direction versus prior expectations is not established (NA / reaffirmed)"
+    rungs.append(_degrade_if_contradicted(_rung(5, r5, why, {"up": len(g_up), "down": len(g_down), "other": len(g_other)}, [i["item_id"] for i in g]), g))
     # 6 market / price confirmation
     above20, rs = facts.get("price_above_ema20"), facts.get("rel_strength_20")
     r6 = _status([above20, None if rs is None else rs > 0])

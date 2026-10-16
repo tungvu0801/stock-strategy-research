@@ -31,7 +31,7 @@ from evidence.sources.sec_edgar import SecAdapter
 from evidence.store import EvidenceStore
 
 ROOT = Path(__file__).resolve().parents[1]
-GOLDEN_HASH = "dbe13192311426ab6e8c22f86b4aa11e7945b068b8acbf337e93673bd9f48703"   # pinned after the first green run (see test_engine_golden_packet)
+GOLDEN_HASH = "1804020122097f9a103378055f02348ef5dc65f7bc7f1fd9eeaa20a38e4e1385"   # pinned after the first green run (see test_engine_golden_packet)
 
 
 # ---------------------------------------------------------------- helpers ------------------------------------------------------
@@ -125,9 +125,10 @@ def test_sec_adapter_filings_documents_facts_and_budget(live):
     assert ("8-K", "2026-08-07", "SNDK") in forms and ("8-K", "2026-09-15", "SNDK") in forms and ("10-Q", "2026-08-12", "SNDK") in forms
     assert ("8-K", "2026-09-10", "LRCX") in forms and ("8-K", "2026-06-01", "LRCX") not in forms
     aug = next(i for i in res.items if i.evidence_date == "2026-08-07" and i.source_type == "SEC_FILING")
-    assert aug.kind == "GUIDANCE" and "lowered its fiscal 2027 outlook" in aug.text and aug.source_url.endswith("ex99-1.htm") and len(aug.source_hash) == 64
+    assert aug.kind == "EARNINGS" and "lowered its fiscal 2027 outlook" in aug.text and aug.source_url.endswith("ex99-1.htm") and len(aug.source_hash) == 64
+    assert R.is_guidance(aug.rule_text)                                                          # guidance CONTEXT found in a bounded statement
     sep = next(i for i in res.items if i.evidence_date == "2026-09-15")
-    assert sep.kind == "GUIDANCE" and "reaffirmed its outlook" in sep.text
+    assert sep.kind == "FILING" and "reaffirmed its outlook" in sep.text and R.is_guidance(sep.rule_text)
     lrcx = next(i for i in res.items if i.subject_ticker == "LRCX")
     assert lrcx.role == "supplier" and "better-than-expected" in lrcx.text
     metric = next(i for i in res.items if i.kind == "METRIC")
@@ -154,7 +155,8 @@ def test_ir_adapter_only_declared_urls(live):
     res = F.adapters()["ir"].run("SNDK", [F.IR_URL, "https://investor.sandisk.example/denied", "https://www.reuters.com/x"], F.AS_OF)
     assert [f.status for f in res.fetches] == ["OK", "ACCESS_DENIED", "HOST_DENIED"] and len(res.items) == 1
     it = res.items[0]
-    assert it.kind == "GUIDANCE" and it.evidence_date == "2026-08-07" and it.date_source == "source" and it.role == "company" and it.source_type == "IR_RELEASE"
+    assert it.kind == "EARNINGS" and it.evidence_date == "2026-08-07" and it.date_source == "source" and it.role == "company" and it.source_type == "IR_RELEASE"
+    assert it.extra["page_kind"] == "article" and R.is_guidance(it.rule_text)
     assert "Investors Home" not in it.text or True                                                                     # nav text may remain; no claim about layout
 
 
@@ -212,15 +214,16 @@ def test_rules_tiers_labels_categories():
 
 
 def test_rules_direction_patterns():
-    assert R.direction_for("The company raised its full-year guidance") == (UP, "UP:raised its full-year guidance")
+    d, m = R.direction_for("The company raised its full-year guidance")
+    assert d == UP and "guidance_raised:UP:raised its full-year guidance" in m
     assert R.direction_for("lowered its fiscal 2027 outlook")[0] == DOWN and R.direction_for("cut guidance")[0] == DOWN
     assert R.direction_for("reaffirmed its outlook")[0] == NEUTRAL and R.direction_for("results in line with expectations")[0] == NEUTRAL
     d, m = R.direction_for("orders increased but margins declined")
-    assert d == NEUTRAL and m.startswith("UP:") and "DOWN:" in m
+    assert d == NEUTRAL and ":UP:" in m and ":DOWN:" in m
     assert R.direction_for("nothing relevant") == (NA, "")
     assert R.metric_direction({"revenue_up": True, "margin_up": True})[0] == UP and R.metric_direction({"revenue_up": False, "margin_up": False})[0] == DOWN
     assert R.metric_direction({"revenue_up": True, "margin_up": False})[0] == NEUTRAL and R.metric_direction({"signed": -0.1})[0] == DOWN and R.metric_direction(None) == (NA, "")
-    assert R.is_guidance("our outlook for the year") and not R.is_guidance("results") and R.is_earnings("Fiscal Fourth Quarter Results")
+    assert R.is_guidance("our revenue outlook for the year") and not R.is_guidance("results") and not R.is_guidance("Outlook") and R.is_earnings("Fiscal Fourth Quarter Results")
 
 
 def test_rules_cause_attribution():
@@ -325,11 +328,13 @@ def test_engine_golden_packet(live, store):
     assert p["status"] == "COMPLETED" and p["ticker"] == "SNDK" and p["rules_version"] == RULES_VERSION and p["sec_requests"] == 10
     assert p["cause_json"]["verdict"] == "COMPANY_SPECIFIC_DOMINANT" and p["cause_json"]["item_ids"]
     by = {r["rung"]: r["status"] for r in p["ladder_json"]}
-    assert by == {1: SUPPORTED, 2: SUPPORTED, 3: SUPPORTED, 4: PARTIAL, 5: PARTIAL, 6: SUPPORTED}      # rung 4: validated XBRL UP but the Aug 7 filing text is DOWN
+    assert by == {1: SUPPORTED, 2: SUPPORTED, 3: SUPPORTED, 4: SUPPORTED, 5: NOT_SUPPORTED, 6: SUPPORTED}
     r4 = next(r for r in p["ladder_json"] if r["rung"] == 4)
-    assert r4["inputs"]["ambiguity"] is True and "opposite directions" in r4["reason"] and r4["inputs"]["validation"] == "OK"
-    assert p["strength"] == "MODERATE" and p["strength_points"] == 10 and STRENGTH_DISCLAIMER in p["strength_text"] and "capped at MODERATE" in p["strength_text"]
-    assert any(m["kind"] == "ambiguity" and m["rung"] == 4 for m in p["missing_json"])
+    assert r4["inputs"]["ambiguity"] is False and "A: validated" in r4["reason"] and r4["inputs"]["text_down"] == 0   # "weaker-than-expected demand" is not a revenue / margin statement
+    r5 = next(r for r in p["ladder_json"] if r["rung"] == 5)
+    assert r5["inputs"] == {"up": 0, "down": 2, "other": 1} and "clear DOWN" in r5["reason"]                      # Aug 7 8-K + IR lowered the outlook; Sep 15 reaffirmed
+    assert p["strength"] == "STRONG" and p["strength_points"] == 10 and STRENGTH_DISCLAIMER in p["strength_text"]
+    assert not any(m["kind"] == "ambiguity" for m in p["missing_json"])
     assert all(i["claim_key"] for i in items) and not any(i["contradiction"] for i in items)
     assert p["n_items"] == len(items) and p["n_fetches"] == len(fetches) == 10 + 3 + 1 + 1 + 3 and p["n_failed_fetches"] == 0
     cats = {i["category"] for i in items}
@@ -408,7 +413,7 @@ def test_engine_with_network_off_records_disabled_fetches(store, monkeypatch):
 def test_store_immutable_and_checked(live, store):
     out = build(store)
     pid = out["packet"]["packet_id"]
-    assert store.exists() and store.packet(pid)["strength"] == "MODERATE" and len(store.items(pid)) == out["packet"]["n_items"]
+    assert store.exists() and store.packet(pid)["strength"] == "STRONG" and len(store.items(pid)) == out["packet"]["n_items"]
     assert len(store.fetches(pid)) == out["packet"]["n_fetches"] and store.packets(limit=5)[0]["packet_id"] == pid and store.packets(ticker="sndk")[0]["packet_id"] == pid
     conn = sqlite3.connect(str(store.path))
     for sql in ("UPDATE evidence_packets SET strength = 'WEAK'", "DELETE FROM evidence_items", "DELETE FROM evidence_source_fetches",
@@ -435,8 +440,8 @@ def test_explain_dry_run_guard_and_single_request(live, store, monkeypatch):
     plan = EX.dry_run(pid, store)
     assert plan["requests"] == 1 and plan["prompt_chars"] > 500 and len(plan["input_hash"]) == 64 and "No request" in plan["note"]
     assert EX.explain(pid, confirm=False, store=store, provider_factory=lambda: FakeBoom())["requests"] == 1 and store.explanations(pid) == []
-    good = F.FakeProvider(text="The strength is MODERATE with 10 of 12 points. The cause verdict is COMPANY_SPECIFIC_DOMINANT. "
-                               "Rung 5 is PARTIAL because guidance items point both ways. This is an evidence-strength grade, not a probability that the stock will rise.")
+    good = F.FakeProvider(text="The strength is STRONG with 10 of 12 points. The cause verdict is COMPANY_SPECIFIC_DOMINANT. "
+                               "Rung 5 is NOT_SUPPORTED because the guidance statements point down. This is an evidence-strength grade, not a probability that the stock will rise.")
     monkeypatch.setattr(config, "ANTHROPIC_MODEL", "claude-sonnet-5")
     r = EX.explain(pid, confirm=True, store=store, provider_factory=lambda: good, now_fn=F.now_fn)
     assert good.calls == 1 and r["status"] == "COMPLETED" and r["requests"] == 1 and r["input_tokens"] == 1200 and r["estimated_cost_usd"]
@@ -488,7 +493,7 @@ def test_api_config_build_read_and_explain(client, monkeypatch):
     r = client.post("/api/evidence/packets", json=body)
     assert r.status_code == 201, r.text
     j = r.json()
-    assert j["status"] == "COMPLETED" and j["strength"] == "MODERATE" and j["model_requests"] == 0 and "www.sec.gov" in j["hosts_contacted"] and "alpaca" not in j["hosts_contacted"]
+    assert j["status"] == "COMPLETED" and j["strength"] == "STRONG" and j["model_requests"] == 0 and "www.sec.gov" in j["hosts_contacted"] and "alpaca" not in j["hosts_contacted"]
     pid = j["packet_id"]
     assert client.get("/api/evidence/packets").json()["packets"][0]["packet_id"] == pid
     d = client.get(f"/api/evidence/packets/{pid}").json()
@@ -502,7 +507,7 @@ def test_api_config_build_read_and_explain(client, monkeypatch):
     from api.routes import evidence as RT
     dry = client.post(f"/api/evidence/packets/{pid}/explain", json={"confirm": False}).json()
     assert dry["requests"] == 1 and dry["requests_made"] == 0 and client.get(f"/api/evidence/packets/{pid}/explanations").json()["explanations"] == []
-    good = F.FakeProvider(text="The strength is MODERATE with 10 of 12 points. This is an evidence-strength grade, not a probability that the stock will rise.")
+    good = F.FakeProvider(text="The strength is STRONG with 10 of 12 points. This is an evidence-strength grade, not a probability that the stock will rise.")
     monkeypatch.setitem(RT.EXPLAIN, "provider_factory", lambda: good)
     monkeypatch.setattr(config, "ANTHROPIC_MODEL", "claude-sonnet-5")
     r = client.post(f"/api/evidence/packets/{pid}/explain", json={"confirm": True}).json()
@@ -529,7 +534,7 @@ def test_isolation_no_broker_robinhood_or_model_in_evidence_layer():
     for name in ("evidence/net.py",):
         assert "urllib.request" in src[name] and "WIRE" in src[name]
     assert src["evidence/explain.py"].count("provider.analyze(") == 1 and "one_request" in src["evidence/explain.py"]
-    assert "get_provider" not in src["evidence/engine.py"] and "analyze(" not in src["evidence/engine.py"]
+    assert "get_provider" not in src["evidence/engine.py"] and "provider.analyze(" not in src["evidence/engine.py"] and "one_request" not in src["evidence/engine.py"]
     assert "WIRE" not in "".join(v for k, v in src.items() if k != "evidence/net.py")              # only net.py knows the wire
 
 
@@ -577,9 +582,9 @@ def test_hardening_contradictions_need_a_comparable_subject():
 def test_hardening_full_document_guidance_detection_and_snippet_cap(live):
     res = F.adapters()["ir"].run("SNDK", [F.LONG_URL], F.AS_OF)
     it = res.items[0]
-    assert it.kind == "GUIDANCE" and len(it.rule_text) > 2500 and len(it.text) <= LIMITS["text_chars"] + 3
+    assert it.kind == "EARNINGS" and len(it.rule_text) > 2500 and len(it.text) <= LIMITS["text_chars"] + 3 and R.is_guidance(it.rule_text)
     d, m, off = R.direction_scan(it.rule_text)
-    assert d == UP and "raised its fiscal 2027 outlook" in m and off > 2000
+    assert d == UP and "guidance_raised:UP:raised its fiscal 2027 outlook" in m and off > 2000
     assert R.direction_scan(it.text)[0] == NA                                                   # the 2,000-char snippet alone would have missed it
     out = EN.build_packet(F.request(ir_urls=[F.LONG_URL], manual_urls=[], manual_texts=[], sources={"internal": True, "sec": False, "ir": True, "news": False, "manual": False}),
                           adapters=F.adapters(), now_fn=F.now_fn, persist=False)
@@ -608,14 +613,18 @@ def test_hardening_rung4_requires_validated_xbrl_or_official_text():
     a = r4(amb)
     assert a["status"] == PARTIAL and a["inputs"]["ambiguity"] is True and "capped at PARTIAL" in a["reason"]  # 9. ambiguous -> PARTIAL only
     text_up = item(item_id="1" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=UP, source_tier=1)
-    text_dn = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, source_tier=1)
+    text_dn = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=DOWN, source_tier=1,
+                   value_json={"direction_kind": "OPERATING", "statements": [{"kind": "OPERATING", "direction": DOWN, "measure": "revenue", "rule": "op_metric_down"}]})
+    guid_dn = item(item_id="4" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, source_tier=1,
+                   value_json={"direction_kind": "GUIDANCE", "guidance_direction": DOWN, "statements": [{"kind": "GUIDANCE", "direction": DOWN, "measure": None, "rule": "guidance_lowered"}]})
+    assert r4(ok, [guid_dn])["status"] == SUPPORTED                                                              # unrelated guidance is not a comparable metric
     assert r4(amb, [text_up])["status"] == SUPPORTED and "B: official filing text" in r4(amb, [text_up])["reason"]   # B: text confirms
     d = r4(ok, [text_dn])
     assert d["status"] == PARTIAL and d["inputs"]["ambiguity"] is True and "opposite directions" in d["reason"]   # 10. disagreement blocks SUPPORTED
     assert r4({**ok, "revenue_up": False, "margin_up": False}, [text_up])["status"] == PARTIAL                     # XBRL down vs text up -> ambiguity
     assert r4({**ok, "revenue_up": False, "margin_up": False})["status"] == NOT_SUPPORTED
     assert r4({**ok, "margin_up": None, "validation": "AMBIGUOUS", "reasons": ["gross profit periods missing"]})["status"] == PARTIAL
-    assert r4({}, [text_up])["status"] == SUPPORTED and r4({}, [text_dn])["status"] == NOT_AVAILABLE and r4({})["status"] == NOT_AVAILABLE
+    assert r4({}, [text_up])["status"] == SUPPORTED and r4({}, [text_dn])["status"] == NOT_SUPPORTED and r4({})["status"] == NOT_AVAILABLE
     tier3 = item(item_id="3" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=UP, source_tier=3)
     assert r4({}, [tier3])["status"] == NOT_AVAILABLE                                                              # only tier-1 text counts
     gaps = R.gaps(R.ladder({**base, "fundamentals": amb}, [], {}), [])
@@ -695,3 +704,134 @@ def test_hardening_migration_adds_columns_to_an_existing_table(tmp_path):
     triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
     assert {"evi_no_update", "evi_no_delete", "evp_no_update", "evp_no_delete"} <= triggers                   # append-only still enforced
     conn.close()
+
+
+# ---------------------------------------------------------------- interpretation hardening (third live run) ----------------------
+
+from evidence import statements as ST
+
+
+def _an(text, **kw):
+    return ST.analyze(text, **kw)
+
+
+def test_interp_isolated_keywords_never_assign_direction():
+    for text in ("restructuring", "Restructuring charges 12 15", "restructuring expense (1,234) (987)", "impairment charge", "Layoffs", "RISK FACTORS",
+                 "Reconciliation of GAAP to non-GAAP: restructuring and other", "The company recorded restructuring charges of $5 million."):
+        an = _an(text)
+        assert an["direction"] == NA and an["direction_kind"] == "NA" and not an["guidance_present"], text
+    long = ("Paragraph about operations with no directional statement. " * 30) + "Restructuring charges increased to $12 million in the quarter."
+    an = _an(long)
+    assert an["direction"] == NA and an["statements"] == []                                        # 1 / 2: no guidance DOWN from a keyword or a table line
+
+
+def test_interp_guidance_context_presence_and_direction():
+    an = _an("The company expects revenue of $2.0 billion to $2.2 billion for the first quarter.")
+    assert an["guidance_present"] and an["guidance_direction"] == NA and an["direction"] == NA and an["direction_kind"] == "GUIDANCE"     # 3 / 4
+    assert an["statements"][0]["rule"] == "guidance_present" and "$2.0 billion to $2.2 billion" in an["statements"][0]["phrase"]
+    assert _an("The company expects gross margin between 38% and 40%.")["guidance_present"]
+    assert _an("The company raised its full-year guidance.")["direction"] == UP                                                      # 5
+    assert _an("Sandisk lowered guidance for the fiscal year.")["direction"] == DOWN and _an("We cut our outlook.")["direction"] == DOWN  # 6
+    assert _an("We expect demand to improve in the second half.")["direction"] == UP                                                 # 7
+    assert _an("We expect demand to weaken through year end.")["direction"] == DOWN                                                  # 8
+    assert _an("Management expects revenue growth in fiscal 2027.")["direction"] == UP and _an("The company anticipates weakness in demand.")["direction"] == DOWN
+    an = _an("The company reaffirmed its outlook for the fiscal first quarter.")
+    assert an["guidance_present"] and an["guidance_direction"] == NEUTRAL and an["direction"] == NEUTRAL
+    safe = ("This press release contains forward-looking statements within the meaning of the Private Securities Litigation Reform Act, including statements "
+            "about expected revenue, gross margin, demand and outlook. Actual results may differ.")
+    assert not _an(safe)["guidance_present"] and _an(safe)["direction"] == NA                                                        # safe-harbor boilerplate
+    assert not _an("Outlook")["guidance_present"] and not _an("Guidance")["guidance_present"]                                        # a heading is not guidance
+    mixed = _an("The company raised its revenue outlook. Separately it lowered its gross margin outlook.")
+    assert mixed["guidance_direction"] == NEUTRAL and {s["rule"] for s in mixed["statements"]} == {"guidance_raised", "guidance_lowered"}
+
+
+def test_interp_operating_direction_needs_subject_and_predicate():
+    assert _an("Orders increased 20% in the quarter.")["operating_direction"] == UP
+    an = _an("Memory demand weakened in the consumer segment.")
+    assert an["operating_direction"] == DOWN and an["statements"][0]["measure"] == "demand"
+    an = _an("Gross margin declined to 30%.")
+    assert an["operating_direction"] == DOWN and an["statements"][0]["measure"] == "gross_margin" and an["direction_kind"] == "OPERATING"
+    assert _an("Inventory levels normalized during the quarter.")["operating_direction"] == UP
+    assert _an("Revenue grew 12% year over year to a record $2.0 billion.")["operating_direction"] == UP
+    assert _an("Results were in line with expectations.")["operating_direction"] == NEUTRAL
+    st = _an("Orders increased 20% in the quarter.")["statements"][0]
+    assert st["kind"] == "OPERATING" and st["rule"] == "op_metric_up" and st["offset"] == 0 and "Orders increased" in st["statement"] and st["phrase"].startswith("Orders increased")
+
+
+def test_interp_headline_price_direction_is_separate():
+    for h in ("Sandisk Stock Is Falling Thursday: What's Going On? — Sandisk shares fall nearly 6% as investors brace for earnings",
+              "Why Is Sandisk Stock Falling Wednesday?", "Sandisk stock drops after downgrade", "Shares slide 4%", "Stock tumbles"):
+        an = _an(h, headline=True)
+        assert an["price_direction"] == DOWN and an["direction"] == DOWN and an["direction_kind"] == "PRICE", h                        # 9
+    for h in ("Sandisk shares rise 5%", "Stock jumps on upgrade", "Shares rally after results"):
+        an = _an(h, headline=True)
+        assert an["price_direction"] == UP and an["direction_kind"] == "PRICE", h
+    assert _an("Sandisk shares fall nearly 6%")["direction"] == NA                                  # price rules apply to headlines only
+    an = _an("Sandisk cuts outlook as consumer demand weakened; shares fall 8%", headline=True)
+    assert an["direction_kind"] == "GUIDANCE" and an["direction"] == DOWN and an["price_direction"] == DOWN   # fundamentals win over the price move
+    # 10 / 11: a PRICE item has its own claim key, never contradicts, never feeds rung 4 or rung 5
+    price = item(item_id="1" * 32, category=COMPANY_CONFIRMATION, kind="HEADLINE", direction=DOWN, source_tier=1,
+                 value_json={"direction_kind": "PRICE", "price_direction": DOWN, "statements": [{"kind": "PRICE", "direction": DOWN, "rule": "price_down"}]})
+    fund = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=UP, source_tier=1,
+                value_json={"direction_kind": "OPERATING", "statements": [{"kind": "OPERATING", "direction": UP, "measure": "revenue", "rule": "op_metric_up"}]})
+    assert R.claim_key(price) == "SNDK|PRICE" and R.direction_kind(price) == "PRICE" and not R.comparable(price, fund)
+    assert R.mark_contradictions([price, fund]) == 0
+    base = {"spy_20": None, "spy_above_ema50": None, "etf_20": None, "price_above_ema20": None, "rel_strength_20": None}
+    rungs = R.ladder({**base, "fundamentals": {}}, [price], {})
+    assert rungs[3]["status"] == NOT_AVAILABLE and rungs[4]["status"] == NOT_AVAILABLE
+    price_g = {**price, "kind": "GUIDANCE"}
+    assert R.ladder(base, [price_g], {})[4]["status"] == PARTIAL                                        # even mislabelled, a PRICE direction never counts as clear DOWN
+
+
+def test_interp_index_pages_emit_no_directional_evidence(live):
+    assert ST.is_index_page("https://investor.sandisk.example/news-events/news-releases", "", "")
+    assert ST.is_index_page("https://www.kioxia.example/en-jp/ir/news.html", "", "") and ST.is_index_page("https://www.kioxia.example/en-jp/ir.html", "", "")
+    assert ST.is_index_page("https://investor.sandisk.example/news-events/events", "", "") and ST.is_index_page("https://x.example/", "", "")
+    assert not ST.is_index_page("https://investor.sandisk.example/news-releases/news-release-details/sandisk-reports-results", "Revenue grew 10%.", "Results")
+    listing = "\n".join(f"September {d}, 2026 Headline {d}" for d in range(1, 15))
+    assert ST.is_index_page("https://x.example/some-page", listing, "") and not ST.is_index_page("https://x.example/some-page", "One long paragraph " * 40, "")
+    # 12 / 13 / 14: the fixture listing contains 'restructuring', 'lowered its outlook', 'shares fall 6%' and an old date, yet nothing comes out of it
+    ir = F.adapters()["ir"].run("SNDK", [F.INDEX_URL], F.AS_OF).items[0]
+    assert ir.kind == "PAGE" and ir.extra["page_kind"] == "index" and ir.rule_text == "" and ir.date_source == "retrieval" and ir.evidence_date == F.AS_OF.isoformat()
+    kx = F.adapters()["manual"].run("SNDK", [{"url": F.KIOXIA_INDEX_URL, "role": "industry"}], [], F.AS_OF).items[0]
+    assert kx.kind == "PAGE" and kx.extra["page_kind"] == "index" and kx.evidence_date == F.AS_OF.isoformat() and kx.date_source == "retrieval"
+    out = EN.build_packet(F.request(ir_urls=[F.INDEX_URL], manual_urls=[{"url": F.KIOXIA_INDEX_URL, "role": "industry"}], manual_texts=[],
+                                    sources={"internal": True, "sec": False, "ir": True, "news": False, "manual": True}),
+                          adapters=F.adapters(), now_fn=F.now_fn, persist=False)
+    pages = [i for i in out["items"] if i["source_type"] in ("IR_RELEASE", "MANUAL_URL")]
+    assert len(pages) == 2 and all(i["direction"] == NA and i["kind"] == "PAGE" and i["value_json"]["index_page"] and not i["value_json"]["guidance_present"] for i in pages)
+    assert all(i["evidence_date"] == F.AS_OF.isoformat() and i["ladder_rung"] is None for i in pages)
+    assert {r["rung"]: r["status"] for r in out["packet"]["ladder_json"]}[5] == NOT_AVAILABLE
+
+
+def test_interp_rung4_disagreement_requires_comparable_measure():
+    base = {"spy_20": None, "spy_above_ema50": None, "etf_20": None, "price_above_ema20": None, "rel_strength_20": None}
+    ok = {"revenue_up": True, "margin_up": True, "revenue_latest": 2, "revenue_prior": 1, "gm_latest": 0.3, "gm_prior": 0.28, "validation": "OK", "reasons": [], "revenue_concept": "Revenues"}
+    r4 = lambda items: R.ladder({**base, "fundamentals": ok}, items, {})[3]
+    rev_dn = item(item_id="1" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=DOWN, source_tier=1,
+                  value_json={"direction_kind": "OPERATING", "statements": [{"kind": "OPERATING", "direction": DOWN, "measure": "revenue", "rule": "op_metric_down"}]})
+    restr = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=NA, source_tier=1, value_json={"direction_kind": "NA", "statements": []})
+    demand_dn = item(item_id="3" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=DOWN, source_tier=1,
+                     value_json={"direction_kind": "OPERATING", "statements": [{"kind": "OPERATING", "direction": DOWN, "measure": "demand", "rule": "op_metric_down"}]})
+    guid = item(item_id="4" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, source_tier=1,
+                value_json={"direction_kind": "GUIDANCE", "guidance_direction": DOWN, "statements": [{"kind": "GUIDANCE", "direction": DOWN, "measure": None, "rule": "guidance_lowered"}]})
+    d = r4([rev_dn])
+    assert d["status"] == PARTIAL and d["inputs"]["ambiguity"] is True                                       # 15: "revenue declined" vs XBRL revenue up
+    assert r4([restr])["status"] == SUPPORTED and r4([demand_dn])["status"] == SUPPORTED and r4([guid])["status"] == SUPPORTED   # 16: unrelated statements never cap
+    assert R.comparable_operating_direction(rev_dn) == DOWN and R.comparable_operating_direction(demand_dn) == NA and R.comparable_operating_direction(guid) == NA
+
+
+def test_interp_rung5_conservative_rule():
+    base = {"spy_20": None, "spy_above_ema50": None, "etf_20": None, "price_above_ema20": None, "rel_strength_20": None}
+    r5 = lambda items: R.ladder(base, items, {})[4]
+    g = lambda i, d: item(item_id=str(i) * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=d, source_tier=1,
+                          value_json={"direction_kind": "GUIDANCE", "guidance_present": True, "guidance_direction": d, "statements": [{"kind": "GUIDANCE", "direction": d, "rule": "x"}]})
+    assert r5([])["status"] == NOT_AVAILABLE                                                                   # 18
+    na = r5([g(1, NA)])
+    assert na["status"] == PARTIAL and "not established" in na["reason"]                                       # 17
+    assert r5([g(1, NEUTRAL)])["status"] == PARTIAL
+    assert r5([g(1, DOWN)])["status"] == NOT_SUPPORTED and r5([g(1, DOWN), g(2, NEUTRAL)])["status"] == NOT_SUPPORTED     # 19
+    assert r5([g(1, UP)])["status"] == SUPPORTED and r5([g(1, UP), g(2, NA)])["status"] == SUPPORTED                 # 20
+    assert r5([g(1, UP), g(2, DOWN)])["status"] == PARTIAL
+    assert r5([{**g(1, UP), "contradiction": 1}])["status"] == PARTIAL
+    assert r5([{**g(1, UP), "source_tier": 3}])["status"] == NOT_AVAILABLE and r5([{**g(1, UP), "category": COMPANY_SPECIFIC}])["status"] == NOT_AVAILABLE

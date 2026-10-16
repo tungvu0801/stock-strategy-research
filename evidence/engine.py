@@ -97,17 +97,25 @@ def _item_dict(si: SourceItem, req: EvidenceRequest, fetch_ids: List[str], fetch
     category = si.category or R.category_for(role=si.role, source_type=si.source_type, subject_is_target=subject_is_target)
     if category == COMPANY_SPECIFIC and tier == 1 and si.kind in ("EARNINGS", "GUIDANCE") and subject_is_target:
         category = COMPANY_CONFIRMATION
-    offset = None
+    offset, kind, value = None, si.kind, dict(si.value or {})
     if si.kind == "METRIC":
         direction, match = R.metric_direction(si.value)
     elif si.kind == "EVENT" or epistemic == "UNCONFIRMED" and tier >= 5:
         direction, match = NA, ""
-    else:                                                       # rules read the FULL extracted document (capped), not the display snippet
-        direction, match, offset = R.direction_scan((si.rule_text or si.text)[:LIMITS["rule_text_chars"]])
+    else:                                                       # statement-level analysis of the FULL extracted document (capped), never the snippet
+        from evidence import statements as ST
+        an = ST.analyze((si.rule_text or si.text)[:LIMITS["rule_text_chars"]], headline=si.source_type == "ALPACA_NEWS",
+                        index_page=(si.extra or {}).get("page_kind") == "index")
+        direction, match, offset = an["direction"], an["rule_match"], an["rule_offset"]
+        value.update({k: an[k] for k in ("guidance_present", "guidance_direction", "operating_direction", "price_direction", "direction_kind", "statements", "index_page")})
+        if an["guidance_present"] and category in (COMPANY_SPECIFIC, COMPANY_CONFIRMATION) and si.kind in ("EARNINGS", "PAGE", "FILING", "HEADLINE"):
+            kind = "GUIDANCE"
+    if category == COMPANY_SPECIFIC and tier == 1 and kind in ("EARNINGS", "GUIDANCE") and subject_is_target:
+        category = COMPANY_CONFIRMATION
     row = {"item_id": None, "packet_id": None, "position": 0, "ticker": req.ticker, "subject_ticker": si.subject_ticker.upper(), "source_type": si.source_type,
            "source_name": si.source_name, "source_url": si.source_url, "source_identifier": si.source_identifier, "published_at": si.published_at,
-           "retrieved_at": si.retrieved_at, "evidence_date": si.evidence_date[:10], "category": category, "kind": si.kind, "text": si.text[:LIMITS["text_chars"] + 100],
-           "value_json": si.value or {}, "epistemic": epistemic, "direction": direction, "rule_match": match[:500], "rule_offset": offset, "ladder_rung": None,
+           "retrieved_at": si.retrieved_at, "evidence_date": si.evidence_date[:10], "category": category, "kind": kind, "text": si.text[:LIMITS["text_chars"] + 100],
+           "value_json": value, "epistemic": epistemic, "direction": direction, "rule_match": (match or "")[:500], "rule_offset": offset, "ladder_rung": None,
            "ladder_status": None, "source_tier": int(tier), "contradiction": 0, "contradicts_item_id": None, "derived_from_json": [], "source_hash": si.source_hash,
            "fetch_id": fetch_ids[si.fetch_index] if si.fetch_index is not None and si.fetch_index < len(fetch_ids) else None, "role": si.role,
            "date_source": si.date_source}

@@ -15,7 +15,8 @@ from typing import Callable, List, Optional
 from evidence import LIMITS, ROLES
 from evidence import extract as X
 from evidence import net
-from evidence.rules import is_earnings, is_guidance
+from evidence import statements as ST
+from evidence.rules import is_earnings
 from evidence.sources.base import AdapterResult, SourceItem
 
 
@@ -47,17 +48,18 @@ class ManualAdapter:
             if not text.strip():
                 fr.status, fr.error = "PARSE_FAILED", "no readable text"
                 continue
-            d = X.extract_date(meta, text)
+            index = ST.is_index_page(fr.final_url, text, title)
+            d = None if index else X.extract_date(meta, text)                   # a listing page's visible dates belong to its items, not to the page
             if d is not None and d > as_of:
                 d = None
             rule_text = ((f"{title}: " if title else "") + text)[:LIMITS["rule_text_chars"]]      # rules see the whole document
             body = X.snippet(text, LIMITS["text_chars"] - len(title) - 3)
             full = (f"{title}: " if title else "") + body                                        # display snippet only
-            kind = "GUIDANCE" if is_guidance(rule_text) else "EARNINGS" if is_earnings(title or rule_text[:400]) else "PAGE"
+            kind = "PAGE" if index else "EARNINGS" if is_earnings(title or rule_text[:400]) else "PAGE"   # GUIDANCE is decided by the statement analysis
             res.items.append(SourceItem(subject_ticker=subject, source_type="MANUAL_URL", source_name=host, source_url=fr.final_url, source_identifier=None,
                                         published_at=d.isoformat() if d else None, retrieved_at=retrieved, evidence_date=(d or now.date()).isoformat(),
                                         kind=kind, text=full, role=role, source_hash=fr.content_hash, fetch_index=idx, date_source="source" if d else "retrieval",
-                                        rule_text=rule_text, extra={"note": str(spec.get("note") or "")}))
+                                        rule_text="" if index else rule_text, extra={"note": str(spec.get("note") or ""), "page_kind": "index" if index else "article"}))
         for spec in (texts or [])[:LIMITS["manual_urls"]]:
             text = str(spec.get("text") or "").strip()
             role = str(spec.get("role") or "").strip().lower()

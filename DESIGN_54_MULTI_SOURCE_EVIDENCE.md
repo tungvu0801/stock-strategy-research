@@ -272,3 +272,25 @@ regression tests. Point thresholds, the six-rung structure, source scope, the de
 
 Schema: two additive columns on `evidence_items` (`claim_key`, `rule_offset`), added with `ALTER TABLE … ADD COLUMN` on existing
 databases; append-only triggers unchanged.
+
+## 14. Interpretation hardening: context-aware direction and guidance (after the second live SNDK packet)
+
+`evidence/statements.py` replaces document-wide keyword matching. The extracted text is segmented into bounded statements; every
+rule must match inside one statement with a subject and a predicate, and the matched statement, phrase, rule id and offset are
+stored in `value_json` (up to four statements). Three independent directions are produced and kept apart:
+
+| Kind | What counts | What never counts |
+|---|---|---|
+| GUIDANCE | a forward-looking term (expect / outlook / guidance / forecast / anticipate / project / estimate / target) with a metric or business condition, or a numeric range, in the same statement. `guidance_present` is separate from `guidance_direction`: "expects revenue of $2.0B to $2.2B" is guidance with direction NA; raised / lowered / reaffirmed and "expects demand to improve / weaken" set UP / DOWN / NEUTRAL. | safe-harbor paragraphs; a directional phrase without guidance context; any statement longer than 700 characters |
+| OPERATING | subject + predicate about a measure ("orders increased 20%", "gross margin declined", "demand weakened", "record revenue", "better-than-expected"); the measure is stored | bare nouns ("restructuring charges", "impairment"), table rows, headings, reconciliation labels |
+| PRICE | headline price moves ("shares fall 6%", "stock jumps") for headlines only | anything about fundamentals: a PRICE direction has claim key `<subject>|PRICE`, is excluded from contradictions and from rungs 4 and 5 |
+
+Index / landing pages (news listings, IR home, events pages, detected from the URL shape or from many short dated lines without a
+paragraph) are discovery context only: kind PAGE, no guidance, no direction, no page-derived date (the evidence date is the retrieval
+date, `date_source = retrieval`).
+
+Rung 4 text evidence is limited to OPERATING statements about revenue / sales / gross margin (`comparable_operating_direction`);
+guidance, price moves and unrelated developments cannot create a disagreement with the XBRL metric. Rung 5 uses verified tier-1
+guidance statements only: clear UP → SUPPORTED, clear DOWN → NOT_SUPPORTED, both → PARTIAL, present but direction NA / reaffirmed →
+PARTIAL, none → NOT_AVAILABLE; a contradiction still caps SUPPORTED. Tiers, cause thresholds, sector mapping, strength thresholds,
+network policy, adapters, persistence and the model guard are unchanged.

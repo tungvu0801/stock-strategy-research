@@ -22,7 +22,6 @@ import config
 from evidence import COMPANY_CONFIRMATION, LIMITS
 from evidence import extract as X
 from evidence import net
-from evidence.rules import is_guidance
 from evidence.sources.base import AdapterResult, SourceItem
 
 HOSTS = ("sec.gov",)
@@ -269,10 +268,8 @@ class SecAdapter:
         rule_text = ((f"{d['title']}: " if d["title"] else "") + d["text"])[:LIMITS["rule_text_chars"]]   # rules see the whole document
         body = X.snippet(d["text"], LIMITS["text_chars"] - 120)
         item.text = (f"{d['title']}: " if d["title"] else "") + body if body else item.text                # display snippet only
-        item.rule_text = rule_text
+        item.rule_text = rule_text                                                                # GUIDANCE is decided by the statement analysis
         item.source_url, item.source_hash, item.fetch_index = d["url"], d["hash"], d["fetch_index"]
-        if is_guidance(rule_text):
-            item.kind = "GUIDANCE"
         return item
 
 
