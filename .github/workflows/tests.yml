@@ -34,6 +34,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          # Full history: the freeze tests read pinned prior-stage files with `git show <commit>:<path>` (for example
+          # tests/test_evidence_54.py pins stage-52 @ 97a191a); the default depth-1 checkout has no such commit.
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
