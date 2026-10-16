@@ -29,6 +29,11 @@ RUNG_STATUSES = (SUPPORTED, PARTIAL, NOT_SUPPORTED, NOT_AVAILABLE)
 WEAK, MODERATE, STRONG = "WEAK", "MODERATE", "STRONG"
 STRENGTHS = (WEAK, MODERATE, STRONG)
 
+# Cause of the decline. NOT_SEPARABLE is the fail-closed answer when no sector benchmark exists: the engine never infers company
+# specificity from target-vs-SPY divergence alone.
+NOT_SEPARABLE = "NOT_SEPARABLE"
+CAUSE_VERDICTS = ("MARKET_WIDE_DOMINANT", "COMPANY_SPECIFIC_DOMINANT", "MIXED", NOT_SEPARABLE, "NO_MATERIAL_DECLINE", "NOT_AVAILABLE")
+
 SOURCE_TYPES = ("SEC_FILING", "IR_RELEASE", "ALPACA_NEWS", "MANUAL_URL", "MANUAL_TEXT", "MARKET_DATA", "EVENT")
 KINDS = ("FILING", "EARNINGS", "GUIDANCE", "HEADLINE", "PAGE", "METRIC", "EVENT", "TEXT")
 ROLES = ("company", "supplier", "customer", "industry", "press", "social", "market", "event")
@@ -47,7 +52,8 @@ STRENGTH_DISCLAIMER = "This is an evidence-strength grade, not a probability tha
 CONFIRMATION_MISSING = "Recovery thesis is strengthening, but company-specific confirmation is still missing."
 
 LIMITS = {"sec_requests": 12, "ir_urls": 6, "manual_urls": 12, "headlines": 10, "items": 200, "fetch_timeout_s": 15, "build_s": 120,
-          "lookback_min_days": 10, "lookback_max_days": 365, "text_chars": 2000}
+          "lookback_min_days": 10, "lookback_max_days": 365, "text_chars": 2000,          # stored display snippet
+          "rule_text_chars": 200_000}                                                     # full extracted document the rules evaluate (never stored)
 
 CONVENTIONS = {
     "epistemic": "FACT = verbatim from a fetched, hashed source of tier <= 3 or computed from official market data; INFERENCE = rule output derived from "

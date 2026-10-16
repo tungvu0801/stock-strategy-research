@@ -29,6 +29,7 @@ class SourceItem:
     source_hash: Optional[str] = None      # sha256 of the fetched body (or of the record for headlines); None for computed / manual text
     fetch_index: Optional[int] = None      # index into AdapterResult.fetches
     date_source: str = "source"            # "source" | "retrieval" (no date found in the document)
+    rule_text: str = ""                    # the FULL extracted document (capped by LIMITS["rule_text_chars"]) that the rules evaluate; never stored
     category: Optional[str] = None         # filled by rules unless the adapter is certain (market data / events)
     source_tier: Optional[int] = None      # filled by rules
     epistemic: Optional[str] = None        # filled by rules

@@ -22,7 +22,7 @@ PACKET_COLS = ("packet_id", "packet_hash", "ticker", "as_of_date", "created_at",
 ITEM_COLS = ("item_id", "packet_id", "position", "ticker", "subject_ticker", "source_type", "source_name", "source_url", "source_identifier",
              "published_at", "retrieved_at", "evidence_date", "category", "kind", "text", "value_json", "epistemic", "direction", "rule_match",
              "ladder_rung", "ladder_status", "source_tier", "contradiction", "contradicts_item_id", "derived_from_json", "source_hash", "fetch_id",
-             "role", "date_source")
+             "role", "date_source", "claim_key", "rule_offset")
 FETCH_COLS = ("fetch_id", "packet_id", "position", "adapter", "purpose", "url", "host", "status", "http_status", "bytes", "content_hash",
               "started_at", "duration_ms", "error")
 EXPL_COLS = ("explanation_id", "packet_id", "packet_hash", "model", "prompt_version", "input_hash", "status", "text", "guard_failures_json",

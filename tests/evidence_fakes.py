@@ -28,6 +28,7 @@ AS_OF = date(2026, 10, 9)
 NOW = datetime(2026, 10, 9, 21, 30, tzinfo=timezone.utc)
 SEC_UA = "Stock Agent tests test@example.com"
 IR_URL = "https://investor.sandisk.example/q4-2026"
+LONG_URL = "https://investor.sandisk.example/long"            # guidance sentence after character 2,000 (full-document rule scan)
 SUPPLIER_URL = "https://investor.lamresearch.example/results"
 INDUSTRY_URL = "https://industry.example/nand"
 SOCIAL_URL = "https://www.reddit.com/r/stocks/sndk"
@@ -45,6 +46,7 @@ URLS: Dict[str, str] = {
     f"{_A}/7654321/000765432126000020/index.json": "index_000020.json",
     f"{_A}/7654321/000765432126000020/ex99_1.htm": "8k_ex99_up.html",
     IR_URL: "ir_release.html", SUPPLIER_URL: "supplier_page.html", INDUSTRY_URL: "industry_page.html", SOCIAL_URL: "social_page.html",
+    LONG_URL: "8k_ex99_long.html",
 }
 
 

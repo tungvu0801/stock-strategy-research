@@ -19,8 +19,8 @@ from fastapi.testclient import TestClient
 
 import config
 import evidence_fakes as F
-from evidence import (COMPANY_CONFIRMATION, COMPANY_SPECIFIC, CONFIRMATION_MISSING, DOWN, FACT, INDUSTRY_SUPPLY_CHAIN, INFERENCE, MARKET_CONFIRMATION,
-                      MARKET_WIDE, NA, NEUTRAL, NOT_AVAILABLE, NOT_SUPPORTED, PARTIAL, RULES_VERSION, STRENGTH_DISCLAIMER, SUPPORTED, UNCONFIRMED, UP)
+from evidence import (COMPANY_CONFIRMATION, COMPANY_SPECIFIC, CONFIRMATION_MISSING, DOWN, FACT, INDUSTRY_SUPPLY_CHAIN, INFERENCE, LIMITS, MARKET_CONFIRMATION,
+                      MARKET_WIDE, NA, NEUTRAL, NOT_AVAILABLE, NOT_SEPARABLE, NOT_SUPPORTED, PARTIAL, RULES_VERSION, STRENGTH_DISCLAIMER, SUPPORTED, UNCONFIRMED, UP)
 from evidence import engine as EN
 from evidence import explain as EX
 from evidence import extract as X
@@ -31,7 +31,7 @@ from evidence.sources.sec_edgar import SecAdapter
 from evidence.store import EvidenceStore
 
 ROOT = Path(__file__).resolve().parents[1]
-GOLDEN_HASH = "dbed451a6ef97f0e27df19d7df37cb67a5baf00db8ec34cfe8cc36bde3ed5e3a"   # pinned after the first green run (see test_engine_golden_packet)
+GOLDEN_HASH = "dbe13192311426ab6e8c22f86b4aa11e7945b068b8acbf337e93673bd9f48703"   # pinned after the first green run (see test_engine_golden_packet)
 
 
 # ---------------------------------------------------------------- helpers ------------------------------------------------------
@@ -133,6 +133,7 @@ def test_sec_adapter_filings_documents_facts_and_budget(live):
     metric = next(i for i in res.items if i.kind == "METRIC")
     f = res.facts["fundamentals"]
     assert f["quarter_latest"] == "2026-06-30" and f["quarter_prior"] == "2026-03-31" and f["revenue_up"] and f["margin_up"]      # Q3 filed after as_of ignored
+    assert f["validation"] == "OK" and f["reasons"] == [] and f["revenue_concept"] == "Revenues" and f["fiscal_context"]["latest"]["fp"] == "Q4"
     assert metric.category == COMPANY_CONFIRMATION and "2,000,000,000" in metric.text
     assert res.requests == 10 and all(c["headers"]["User-Agent"] == F.SEC_UA for c in live.calls)
     assert res.requests <= config.EVIDENCE_SEC_MAX_REQUESTS
@@ -231,7 +232,10 @@ def test_rules_cause_attribution():
     assert R.cause_attribution({**facts, "sector_ret": -0.2}, [])["verdict"] == "MARKET_WIDE_DOMINANT"
     assert R.cause_attribution({**facts, "sector_ret": -0.2}, [down])["verdict"] == "MIXED"                           # share 0.8 but a tier-1 negative item
     assert R.cause_attribution({**facts, "sector_ret": -0.2}, [item(direction=DOWN, source_tier=3, evidence_date="2026-08-07")])["verdict"] == "MARKET_WIDE_DOMINANT"
-    assert R.cause_attribution({**facts, "sector_ret": None, "spy_ret": -0.2}, [])["inputs"]["benchmark"] == "SPY"
+    ns = R.cause_attribution({**facts, "sector_ret": None, "spy_ret": -0.2}, [down])                                # no sector benchmark: fail closed
+    assert ns["verdict"] == NOT_SEPARABLE and ns["inputs"]["benchmark"] is None and ns["inputs"]["explained_share"] is None
+    assert R.NOT_SEPARABLE_REASON in ns["reason"] and ns["item_ids"] == ["b" * 32] and ns["epistemic"] == INFERENCE
+    assert R.cause_attribution({**facts, "sector_ret": None, "spy_ret": 0.01}, [])["verdict"] == NOT_SEPARABLE          # SPY-only divergence is never company-specific
     assert R.cause_attribution({**facts, "stock_ret": -0.01}, [])["verdict"] == "NO_MATERIAL_DECLINE"
     assert R.cause_attribution({"stock_ret": None}, [])["verdict"] == "NOT_AVAILABLE"
     assert R.cause_attribution(facts, [item(direction=DOWN, evidence_date="2026-09-30")])["verdict"] == "MIXED"       # outside the decline window
@@ -250,7 +254,7 @@ def test_rules_contradictions():
 
 
 def test_rules_ladder_every_rung_and_status():
-    facts = {"spy_20": 0.02, "spy_above_ema50": True, "etf_20": 0.01, "fundamentals": {"revenue_up": True, "margin_up": True, "revenue_latest": 2, "revenue_prior": 1, "gm_latest": 0.3, "gm_prior": 0.2},
+    facts = {"spy_20": 0.02, "spy_above_ema50": True, "etf_20": 0.01, "fundamentals": {"revenue_up": True, "margin_up": True, "revenue_latest": 2, "revenue_prior": 1, "gm_latest": 0.3, "gm_prior": 0.2, "validation": "OK", "reasons": []},
              "price_above_ema20": True, "rel_strength_20": 0.05}
     sup_up = item(item_id="1" * 32, category=INDUSTRY_SUPPLY_CHAIN, role="supplier", direction=UP, source_tier=2, subject_ticker="LRCX")
     guid_up = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=UP, source_tier=1)
@@ -321,8 +325,12 @@ def test_engine_golden_packet(live, store):
     assert p["status"] == "COMPLETED" and p["ticker"] == "SNDK" and p["rules_version"] == RULES_VERSION and p["sec_requests"] == 10
     assert p["cause_json"]["verdict"] == "COMPANY_SPECIFIC_DOMINANT" and p["cause_json"]["item_ids"]
     by = {r["rung"]: r["status"] for r in p["ladder_json"]}
-    assert by == {1: SUPPORTED, 2: SUPPORTED, 3: SUPPORTED, 4: SUPPORTED, 5: PARTIAL, 6: SUPPORTED}
-    assert p["strength"] == "STRONG" and p["strength_points"] == 11 and STRENGTH_DISCLAIMER in p["strength_text"]
+    assert by == {1: SUPPORTED, 2: SUPPORTED, 3: SUPPORTED, 4: PARTIAL, 5: PARTIAL, 6: SUPPORTED}      # rung 4: validated XBRL UP but the Aug 7 filing text is DOWN
+    r4 = next(r for r in p["ladder_json"] if r["rung"] == 4)
+    assert r4["inputs"]["ambiguity"] is True and "opposite directions" in r4["reason"] and r4["inputs"]["validation"] == "OK"
+    assert p["strength"] == "MODERATE" and p["strength_points"] == 10 and STRENGTH_DISCLAIMER in p["strength_text"] and "capped at MODERATE" in p["strength_text"]
+    assert any(m["kind"] == "ambiguity" and m["rung"] == 4 for m in p["missing_json"])
+    assert all(i["claim_key"] for i in items) and not any(i["contradiction"] for i in items)
     assert p["n_items"] == len(items) and p["n_fetches"] == len(fetches) == 10 + 3 + 1 + 1 + 3 and p["n_failed_fetches"] == 0
     cats = {i["category"] for i in items}
     assert cats == {MARKET_WIDE, COMPANY_SPECIFIC, INDUSTRY_SUPPLY_CHAIN, COMPANY_CONFIRMATION, MARKET_CONFIRMATION}
@@ -400,7 +408,7 @@ def test_engine_with_network_off_records_disabled_fetches(store, monkeypatch):
 def test_store_immutable_and_checked(live, store):
     out = build(store)
     pid = out["packet"]["packet_id"]
-    assert store.exists() and store.packet(pid)["strength"] == "STRONG" and len(store.items(pid)) == out["packet"]["n_items"]
+    assert store.exists() and store.packet(pid)["strength"] == "MODERATE" and len(store.items(pid)) == out["packet"]["n_items"]
     assert len(store.fetches(pid)) == out["packet"]["n_fetches"] and store.packets(limit=5)[0]["packet_id"] == pid and store.packets(ticker="sndk")[0]["packet_id"] == pid
     conn = sqlite3.connect(str(store.path))
     for sql in ("UPDATE evidence_packets SET strength = 'WEAK'", "DELETE FROM evidence_items", "DELETE FROM evidence_source_fetches",
@@ -427,7 +435,7 @@ def test_explain_dry_run_guard_and_single_request(live, store, monkeypatch):
     plan = EX.dry_run(pid, store)
     assert plan["requests"] == 1 and plan["prompt_chars"] > 500 and len(plan["input_hash"]) == 64 and "No request" in plan["note"]
     assert EX.explain(pid, confirm=False, store=store, provider_factory=lambda: FakeBoom())["requests"] == 1 and store.explanations(pid) == []
-    good = F.FakeProvider(text="The strength is STRONG with 11 of 12 points. The cause verdict is COMPANY_SPECIFIC_DOMINANT. "
+    good = F.FakeProvider(text="The strength is MODERATE with 10 of 12 points. The cause verdict is COMPANY_SPECIFIC_DOMINANT. "
                                "Rung 5 is PARTIAL because guidance items point both ways. This is an evidence-strength grade, not a probability that the stock will rise.")
     monkeypatch.setattr(config, "ANTHROPIC_MODEL", "claude-sonnet-5")
     r = EX.explain(pid, confirm=True, store=store, provider_factory=lambda: good, now_fn=F.now_fn)
@@ -480,7 +488,7 @@ def test_api_config_build_read_and_explain(client, monkeypatch):
     r = client.post("/api/evidence/packets", json=body)
     assert r.status_code == 201, r.text
     j = r.json()
-    assert j["status"] == "COMPLETED" and j["strength"] == "STRONG" and j["model_requests"] == 0 and "www.sec.gov" in j["hosts_contacted"] and "alpaca" not in j["hosts_contacted"]
+    assert j["status"] == "COMPLETED" and j["strength"] == "MODERATE" and j["model_requests"] == 0 and "www.sec.gov" in j["hosts_contacted"] and "alpaca" not in j["hosts_contacted"]
     pid = j["packet_id"]
     assert client.get("/api/evidence/packets").json()["packets"][0]["packet_id"] == pid
     d = client.get(f"/api/evidence/packets/{pid}").json()
@@ -494,7 +502,7 @@ def test_api_config_build_read_and_explain(client, monkeypatch):
     from api.routes import evidence as RT
     dry = client.post(f"/api/evidence/packets/{pid}/explain", json={"confirm": False}).json()
     assert dry["requests"] == 1 and dry["requests_made"] == 0 and client.get(f"/api/evidence/packets/{pid}/explanations").json()["explanations"] == []
-    good = F.FakeProvider(text="The strength is STRONG with 11 of 12 points. This is an evidence-strength grade, not a probability that the stock will rise.")
+    good = F.FakeProvider(text="The strength is MODERATE with 10 of 12 points. This is an evidence-strength grade, not a probability that the stock will rise.")
     monkeypatch.setitem(RT.EXPLAIN, "provider_factory", lambda: good)
     monkeypatch.setattr(config, "ANTHROPIC_MODEL", "claude-sonnet-5")
     r = client.post(f"/api/evidence/packets/{pid}/explain", json={"confirm": True}).json()
@@ -542,3 +550,148 @@ def test_conventions_and_limits_are_declared():
     from evidence import CONVENTIONS, LIMITS
     assert "not a probability" in CONVENTIONS["strength"] and LIMITS["sec_requests"] == 12 and LIMITS["items"] == 200
     assert "Robinhood" in CONVENTIONS["boundaries"]
+
+
+# ---------------------------------------------------------------- validation hardening (second live run) ------------------------
+
+def test_hardening_contradictions_need_a_comparable_subject():
+    """SNDK DOWN vs SPY UP (different subjects / measures) must never contradict; same-subject official claims may."""
+    sndk_dn = item(item_id="1" * 32, category=MARKET_WIDE, kind="METRIC", direction=DOWN, subject_ticker="SNDK", source_identifier="decline window")
+    spy_up = item(item_id="2" * 32, category=MARKET_WIDE, kind="METRIC", direction=UP, subject_ticker="SPY", source_identifier="SPY 20-session return")
+    spy_ema = item(item_id="3" * 32, category=MARKET_WIDE, kind="METRIC", direction=UP, subject_ticker="SPY", source_identifier="SPY vs 50-day EMA")
+    sndk_rs = item(item_id="4" * 32, category=MARKET_CONFIRMATION, kind="METRIC", direction=UP, subject_ticker="SNDK", source_identifier="relative strength 20")
+    sndk_ema = item(item_id="5" * 32, category=MARKET_CONFIRMATION, kind="METRIC", direction=DOWN, subject_ticker="SNDK", source_identifier="price vs EMA20")
+    metrics = [sndk_dn, spy_up, spy_ema, sndk_rs, sndk_ema]
+    assert R.mark_contradictions(metrics) == 0 and all(i["contradiction"] == 0 for i in metrics)
+    assert R.claim_key(sndk_dn) == "SNDK|METRIC|decline window" and R.claim_key(spy_up) != R.claim_key(spy_ema)
+    g_up = item(item_id="6" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=UP, evidence_date="2026-09-01", subject_ticker="SNDK")
+    g_dn = item(item_id="7" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, evidence_date="2026-09-20", subject_ticker="SNDK")
+    other = item(item_id="8" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, evidence_date="2026-09-20", subject_ticker="LRCX")
+    assert R.mark_contradictions([g_up, g_dn, other]) == 2 and g_up["contradicts_item_id"] == "7" * 32 and other["contradiction"] == 0
+    d1 = item(item_id="9" * 32, category=INDUSTRY_SUPPLY_CHAIN, kind="PAGE", direction=UP, evidence_date="2026-09-01", subject_ticker="LRCX", source_tier=2)
+    d2 = item(item_id="a" * 32, category=INDUSTRY_SUPPLY_CHAIN, kind="PAGE", direction=DOWN, evidence_date="2026-09-10", subject_ticker="LRCX", source_tier=2)
+    assert R.mark_contradictions([d1, d2]) == 2
+    assert R.claim_key(g_up) == "SNDK|COMPANY_CONFIRMATION" and R.comparable(g_up, g_dn) and not R.comparable(g_up, other) and not R.comparable(sndk_dn, spy_up)
+
+
+def test_hardening_full_document_guidance_detection_and_snippet_cap(live):
+    res = F.adapters()["ir"].run("SNDK", [F.LONG_URL], F.AS_OF)
+    it = res.items[0]
+    assert it.kind == "GUIDANCE" and len(it.rule_text) > 2500 and len(it.text) <= LIMITS["text_chars"] + 3
+    d, m, off = R.direction_scan(it.rule_text)
+    assert d == UP and "raised its fiscal 2027 outlook" in m and off > 2000
+    assert R.direction_scan(it.text)[0] == NA                                                   # the 2,000-char snippet alone would have missed it
+    out = EN.build_packet(F.request(ir_urls=[F.LONG_URL], manual_urls=[], manual_texts=[], sources={"internal": True, "sec": False, "ir": True, "news": False, "manual": False}),
+                          adapters=F.adapters(), now_fn=F.now_fn, persist=False)
+    g = [i for i in out["items"] if i["source_type"] == "IR_RELEASE"]
+    assert len(g) == 1 and g[0]["kind"] == "GUIDANCE" and g[0]["direction"] == UP and g[0]["rule_offset"] > 2000 and len(g[0]["text"]) <= LIMITS["text_chars"] + 3
+    assert g[0]["claim_key"] == "SNDK|COMPANY_CONFIRMATION" and len(g[0]["source_hash"]) == 64
+    assert {r["rung"]: r["status"] for r in out["packet"]["ladder_json"]}[5] == SUPPORTED
+    assert "rule_text" not in g[0]                                                               # the full document is evaluated, never stored
+
+
+def test_hardening_press_allowlist_is_case_insensitive():
+    t = lambda src: R.tier_for(host="", subject_ticker="SNDK", ticker="SNDK", source_type="ALPACA_NEWS", press_source=src, ir_domains={}, related={})
+    assert t("Benzinga") == t("benzinga") == t("BENZINGA") == t("  benzinga ") == 3
+    assert t("Reuters") == t("reuters") == 3 and t("Some Blog") == t("some blog") == 4
+    assert R.tier_for(host="WWW.REDDIT.COM", subject_ticker="SNDK", ticker="SNDK", source_type="MANUAL_URL", ir_domains={}, related={}) == 5
+    assert R.tier_for(host="Investor.Sandisk.Example", subject_ticker="SNDK", ticker="SNDK", source_type="MANUAL_URL", ir_domains=F.IR_DOMAINS, related={}) == 1
+    assert R.category_for(role="SUPPLIER", source_type="MANUAL_URL", subject_is_target=True) == INDUSTRY_SUPPLY_CHAIN
+
+
+def test_hardening_rung4_requires_validated_xbrl_or_official_text():
+    base = {"spy_20": None, "spy_above_ema50": None, "etf_20": None, "price_above_ema20": None, "rel_strength_20": None}
+    ok = {"revenue_up": True, "margin_up": True, "revenue_latest": 2, "revenue_prior": 1, "gm_latest": 0.3, "gm_prior": 0.28, "validation": "OK", "reasons": [], "revenue_concept": "Revenues"}
+    amb = {**ok, "validation": "AMBIGUOUS", "reasons": ["gross margin moved 27 points q/q; needs confirmation from official filing text"]}
+    r4 = lambda f, items=(): R.ladder({**base, "fundamentals": f}, list(items), {})[3]
+    assert r4(ok)["status"] == SUPPORTED and "A: validated" in r4(ok)["reason"]                         # 8. compatible concepts can support
+    a = r4(amb)
+    assert a["status"] == PARTIAL and a["inputs"]["ambiguity"] is True and "capped at PARTIAL" in a["reason"]  # 9. ambiguous -> PARTIAL only
+    text_up = item(item_id="1" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=UP, source_tier=1)
+    text_dn = item(item_id="2" * 32, category=COMPANY_CONFIRMATION, kind="GUIDANCE", direction=DOWN, source_tier=1)
+    assert r4(amb, [text_up])["status"] == SUPPORTED and "B: official filing text" in r4(amb, [text_up])["reason"]   # B: text confirms
+    d = r4(ok, [text_dn])
+    assert d["status"] == PARTIAL and d["inputs"]["ambiguity"] is True and "opposite directions" in d["reason"]   # 10. disagreement blocks SUPPORTED
+    assert r4({**ok, "revenue_up": False, "margin_up": False}, [text_up])["status"] == PARTIAL                     # XBRL down vs text up -> ambiguity
+    assert r4({**ok, "revenue_up": False, "margin_up": False})["status"] == NOT_SUPPORTED
+    assert r4({**ok, "margin_up": None, "validation": "AMBIGUOUS", "reasons": ["gross profit periods missing"]})["status"] == PARTIAL
+    assert r4({}, [text_up])["status"] == SUPPORTED and r4({}, [text_dn])["status"] == NOT_AVAILABLE and r4({})["status"] == NOT_AVAILABLE
+    tier3 = item(item_id="3" * 32, category=COMPANY_CONFIRMATION, kind="EARNINGS", direction=UP, source_tier=3)
+    assert r4({}, [tier3])["status"] == NOT_AVAILABLE                                                              # only tier-1 text counts
+    gaps = R.gaps(R.ladder({**base, "fundamentals": amb}, [], {}), [])
+    assert any(g["kind"] == "ambiguity" and g["rung"] == 4 for g in gaps)
+
+
+def test_hardening_xbrl_validation_flags_ambiguity(live, tmp_path):
+    cf = json.loads((F.FIX / "companyfacts_SNDK.json").read_text(encoding="utf-8"))
+    import evidence.net as N
+    url = "https://data.sec.gov/api/xbrl/companyfacts/CIK0001234567.json"
+    # misaligned gross-profit periods -> AMBIGUOUS, margin not derived
+    bad = json.loads(json.dumps(cf))
+    for e in bad["facts"]["us-gaap"]["GrossProfit"]["units"]["USD"]:
+        e["start"] = "2025-12-15"
+    path = tmp_path / "cf_bad.json"; path.write_text(json.dumps(bad), encoding="utf-8")
+    N.WIRE = F.FakeWire({url: str(path)})
+    f = F.adapters()["sec"].run("SNDK", {"suppliers": [], "customers": []}, F.AS_OF, 90).facts["fundamentals"]
+    assert f["validation"] == "AMBIGUOUS" and f["margin_up"] is None and any("not aligned" in r for r in f["reasons"])
+    # conflicting revenue concepts for the same period -> AMBIGUOUS
+    conf = json.loads(json.dumps(cf))
+    conf["facts"]["us-gaap"]["RevenueFromContractWithCustomerExcludingAssessedTax"] = {"units": {"USD": [{**conf["facts"]["us-gaap"]["Revenues"]["units"]["USD"][1], "val": 1500000000}]}}
+    path2 = tmp_path / "cf_conf.json"; path2.write_text(json.dumps(conf), encoding="utf-8")
+    N.WIRE = F.FakeWire({url: str(path2)})
+    f2 = F.adapters()["sec"].run("SNDK", {"suppliers": [], "customers": []}, F.AS_OF, 90).facts["fundamentals"]
+    assert f2["validation"] == "AMBIGUOUS" and any("concepts disagree" in r for r in f2["reasons"])
+    # a non-quarterly fiscal context (fp missing) -> AMBIGUOUS
+    nofp = json.loads(json.dumps(cf))
+    for e in nofp["facts"]["us-gaap"]["Revenues"]["units"]["USD"]:
+        e.pop("fp", None)
+    path3 = tmp_path / "cf_nofp.json"; path3.write_text(json.dumps(nofp), encoding="utf-8")
+    N.WIRE = F.FakeWire({url: str(path3)})
+    f3 = F.adapters()["sec"].run("SNDK", {"suppliers": [], "customers": []}, F.AS_OF, 90).facts["fundamentals"]
+    assert f3["validation"] == "AMBIGUOUS" and any("fiscal context" in r for r in f3["reasons"])
+    # a > 20-point gross-margin swing -> AMBIGUOUS (needs filing-text confirmation)
+    swing = json.loads(json.dumps(cf))
+    swing["facts"]["us-gaap"]["GrossProfit"]["units"]["USD"][1]["val"] = 1600000000
+    path4 = tmp_path / "cf_swing.json"; path4.write_text(json.dumps(swing), encoding="utf-8")
+    N.WIRE = F.FakeWire({url: str(path4)})
+    f4 = F.adapters()["sec"].run("SNDK", {"suppliers": [], "customers": []}, F.AS_OF, 90).facts["fundamentals"]
+    assert f4["validation"] == "AMBIGUOUS" and any("gross margin moved" in r for r in f4["reasons"]) and f4["margin_up"] is True
+
+
+def test_hardening_sndk_sector_map_and_benchmark():
+    from data.sector_map import SECTOR_MAP, get_sector_for_symbol
+    from evidence.sources.internal import _default_sector
+    assert get_sector_for_symbol("SNDK") is None                                                # curated map unchanged (earlier stages rely on it)
+    assert config.EVIDENCE_SECTOR_EXTENSIONS["SNDK"] == "Semiconductors" and SECTOR_MAP["Semiconductors"]["etf"] == "SOXX"
+    assert _default_sector("SNDK") == ("Semiconductors", "SOXX") and _default_sector("sndk") == ("Semiconductors", "SOXX")
+    assert _default_sector("MU") == ("Semiconductors", "SOXX") and _default_sector("ZZZZ") == (None, None)
+    assert all(name in SECTOR_MAP for name in config.EVIDENCE_SECTOR_EXTENSIONS.values())            # no new taxonomy
+
+
+def test_hardening_cause_not_separable_end_to_end(store):
+    """A packet with bars but no mapped sector (no ETF) must report NOT_SEPARABLE, never COMPANY_SPECIFIC_DOMINANT."""
+    out = EN.build_packet(F.request(sources={"internal": True, "sec": False, "ir": False, "news": False, "manual": False}),
+                          adapters=F.adapters(sector=lambda s: (None, None)), now_fn=F.now_fn, store=store)
+    p = out["packet"]
+    assert p["cause_json"]["verdict"] == NOT_SEPARABLE and R.NOT_SEPARABLE_REASON in p["cause_json"]["reason"]
+    by = {r["rung"]: r["status"] for r in p["ladder_json"]}
+    assert by[2] == NOT_AVAILABLE and by[6] in (PARTIAL, NOT_AVAILABLE) and not any(i["contradiction"] for i in out["items"])
+
+
+def test_hardening_migration_adds_columns_to_an_existing_table(tmp_path):
+    from database import research_packet_migrations as M
+    legacy = [st.replace("        claim_key          TEXT NOT NULL DEFAULT '',\n        rule_offset        INTEGER,\n", "") for st in M._STATEMENTS]
+    conn = sqlite3.connect(str(tmp_path / "legacy.db"))
+    for st in legacy:
+        conn.execute(st)
+    conn.commit()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(evidence_items)")}
+    assert "claim_key" not in cols and "rule_offset" not in cols
+    M.run_research_packet_migrations(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(evidence_items)")}
+    assert {"claim_key", "rule_offset"} <= cols
+    M.run_research_packet_migrations(conn)                                                       # idempotent
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 0
+    triggers = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+    assert {"evi_no_update", "evi_no_delete", "evp_no_update", "evp_no_delete"} <= triggers                   # append-only still enforced
+    conn.close()

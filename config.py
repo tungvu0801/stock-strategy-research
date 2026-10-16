@@ -527,3 +527,6 @@ EVIDENCE_IR_DOMAINS: dict = _env_json("EVIDENCE_IR_DOMAINS_JSON", {})     # {"SN
 EVIDENCE_IR_URLS: dict = _env_json("EVIDENCE_IR_URLS_JSON", {})           # {"SNDK": ["https://investor.sandisk.com/..."]}
 EVIDENCE_RELATED: dict = _env_json("EVIDENCE_RELATED_JSON", {})           # {"SNDK": {"suppliers": [...], "customers": [...]}}
 EVIDENCE_CIK_OVERRIDES: dict = _env_json("EVIDENCE_CIK_JSON", {})         # {"SNDK": "0001234567"} when the SEC ticker map lags
+# Sector benchmark extensions for the EVIDENCE layer only: ticker -> an EXISTING sector name in data.sector_map.SECTOR_MAP (its ETF is
+# reused). The curated map itself is unchanged because earlier stages' tests rely on these tickers being unclassified there.
+EVIDENCE_SECTOR_EXTENSIONS: dict = {"SNDK": "Semiconductors", **_env_json("EVIDENCE_SECTOR_EXTENSIONS_JSON", {})}   # SNDK: NAND / flash memory, same bucket as MU (SOXX)

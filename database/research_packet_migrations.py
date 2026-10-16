@@ -100,6 +100,8 @@ _STATEMENTS = [
         fetch_id           TEXT {_opt(_ID, "fetch_id")},
         role               TEXT NOT NULL,
         date_source        TEXT NOT NULL CHECK (date_source IN ('source', 'retrieval')),
+        claim_key          TEXT NOT NULL DEFAULT '',
+        rule_offset        INTEGER,
         UNIQUE (packet_id, position)
     )""",
     f"""
@@ -147,8 +149,19 @@ _STATEMENTS = [
 ]
 
 
+# Columns added after the first live packet (validation hardening); ALTER is additive and idempotent, UPDATE/DELETE stay blocked.
+_ADDED_COLUMNS = (("evidence_items", "claim_key", "TEXT NOT NULL DEFAULT ''"), ("evidence_items", "rule_offset", "INTEGER"))
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    if column not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def run_research_packet_migrations(conn: sqlite3.Connection) -> None:
-    """Additive and idempotent. Creates only the four Stage 5.4 tables, their indexes and immutability triggers."""
+    """Additive and idempotent. Creates only the four Stage 5.4 tables, their indexes and immutability triggers, and adds later columns."""
     for stmt in _STATEMENTS:
         conn.execute(stmt)
+    for table, column, ddl in _ADDED_COLUMNS:
+        _add_column_if_missing(conn, table, column, ddl)
     conn.commit()

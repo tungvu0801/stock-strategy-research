@@ -130,7 +130,7 @@ Both UP and DOWN present → `NEUTRAL` with `rule_match` listing both and `contr
 `stock_ret`, `spy_ret`, `sector_ret` over that window; 20-session returns for all three; `price_vs_ema20`, `price_vs_ema50`,
 `rel_strength_20 = stock_20 − sector_20`, `relative_volume`, `trend`; next earnings date if available, next FOMC date.
 
-**Cause attribution (INFERENCE, `cause_json`).** If `stock_ret ≥ −2%` → `NO_MATERIAL_DECLINE` and the ladder is still computed.
+**Cause attribution (INFERENCE, `cause_json`).** If `stock_ret ≥ −2%` → `NO_MATERIAL_DECLINE` and the ladder is still computed. If no sector ETF benchmark exists → `NOT_SEPARABLE` (see §13).
 Else `explained_share = clamp(sector_ret / stock_ret, 0, 1)` when both negative, else 0. `MARKET_WIDE_DOMINANT` if share ≥ 0.60 and
 no tier-1 COMPANY_SPECIFIC item with direction DOWN dated inside the window · `COMPANY_SPECIFIC_DOMINANT` if share < 0.30 or such an
 item exists and share < 0.60 · `MIXED` otherwise. The numbers and the item ids are stored with the verdict.
@@ -255,3 +255,20 @@ separate, explicit approval stating "1 request".
   P01 practice files are untouched.
 - Unchanged by this stage: Stage 4.7 engine and proposals, Stage 4.8–5.2 semantics, paper / broker modules, Robinhood (no call of
   any kind), `benchmark/`. No order endpoint, no position sizing, no automatic Claude call.
+
+## 13. Validation hardening (after the first live SNDK packet)
+
+The first live packet exposed six interpretation problems; the fixes below make the engine more conservative and are covered by
+regression tests. Point thresholds, the six-rung structure, source scope, the deny list, persistence and the model guard are unchanged.
+
+| Finding | Rule now |
+|---|---|
+| Cause attribution emitted COMPANY_SPECIFIC_DOMINANT with SPY as the only benchmark | Without a sector benchmark the verdict is `NOT_SEPARABLE` ("sector benchmark unavailable; market-wide versus company-specific cause cannot be separated reliably"). MARKET_WIDE_DOMINANT / COMPANY_SPECIFIC_DOMINANT / MIXED require a sector ETF; SPY-only divergence never implies company specificity. Canonical values: `CAUSE_VERDICTS` in `evidence/__init__.py`. |
+| Computed SNDK and SPY metrics were flagged as contradictions | Items carry a deterministic `claim_key` (computed items: subject + measure; sourced text: subject + category). Contradiction candidates must share the category and, for computed metrics or events, the claim key; sourced statements must share the subject. SNDK DOWN vs SPY UP can never contradict. |
+| Guidance detection scanned only the stored 2,000-character snippet | Adapters keep the full extracted document as `rule_text` (cap `LIMITS["rule_text_chars"]` = 200,000, never stored); direction and guidance rules evaluate it; the item stores the snippet, the full-content hash, the matched phrase and `rule_offset`. |
+| Press classification was case-sensitive ("benzinga" became tier 4) | Hosts, roles and source names are normalised (trimmed, lower-cased) before tier classification. The allowlist itself is unchanged. |
+| Rung 4 was SUPPORTED from bare XBRL arithmetic | XBRL quarters are validated (single consistent revenue concept, no conflicting values per period, consecutive 80–100-day quarters, quarterly fiscal context `fp` Q1–Q4 on a 10-Q/10-K, positive USD values, gross profit aligned to the same periods and within [0, revenue], gross-margin swing ≤ 20 points). SUPPORTED only when (A) validation is OK, both measures improve and no tier-1 filing text says DOWN, or (B) tier-1 earnings / guidance text of the company says UP and XBRL does not say DOWN. Ambiguous validation → PARTIAL at most; text and XBRL disagreeing → PARTIAL with an explicit ambiguity gap. |
+| SNDK missing from the sector map | `config.EVIDENCE_SECTOR_EXTENSIONS` maps `SNDK` to the existing Semiconductors bucket (ETF `SOXX`, as MU) for the evidence layer only; the curated `data/sector_map.py` is unchanged because earlier stages' tests rely on SNDK being unclassified there. No new taxonomy. |
+
+Schema: two additive columns on `evidence_items` (`claim_key`, `rule_offset`), added with `ALTER TABLE … ADD COLUMN` on existing
+databases; append-only triggers unchanged.

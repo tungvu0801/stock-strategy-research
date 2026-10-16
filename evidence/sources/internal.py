@@ -31,8 +31,10 @@ def _default_events(symbol: str):
 
 
 def _default_sector(symbol: str) -> Tuple[Optional[str], Optional[str]]:
+    """The curated sector map first, then the evidence-layer extensions (ticker -> an existing sector name, ETF reused)."""
+    import config as _cfg
     from data.sector_map import SECTOR_MAP, get_sector_for_symbol
-    name = get_sector_for_symbol(symbol)
+    name = get_sector_for_symbol(symbol) or _cfg.EVIDENCE_SECTOR_EXTENSIONS.get(str(symbol).upper())
     return (name, SECTOR_MAP[name]["etf"]) if name and name in SECTOR_MAP else (None, None)
 
 

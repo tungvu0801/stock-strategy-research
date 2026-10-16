@@ -50,13 +50,14 @@ class ManualAdapter:
             d = X.extract_date(meta, text)
             if d is not None and d > as_of:
                 d = None
+            rule_text = ((f"{title}: " if title else "") + text)[:LIMITS["rule_text_chars"]]      # rules see the whole document
             body = X.snippet(text, LIMITS["text_chars"] - len(title) - 3)
-            full = (f"{title}: " if title else "") + body
-            kind = "GUIDANCE" if is_guidance(full) else "EARNINGS" if is_earnings(title or full[:400]) else "PAGE"
+            full = (f"{title}: " if title else "") + body                                        # display snippet only
+            kind = "GUIDANCE" if is_guidance(rule_text) else "EARNINGS" if is_earnings(title or rule_text[:400]) else "PAGE"
             res.items.append(SourceItem(subject_ticker=subject, source_type="MANUAL_URL", source_name=host, source_url=fr.final_url, source_identifier=None,
                                         published_at=d.isoformat() if d else None, retrieved_at=retrieved, evidence_date=(d or now.date()).isoformat(),
                                         kind=kind, text=full, role=role, source_hash=fr.content_hash, fetch_index=idx, date_source="source" if d else "retrieval",
-                                        extra={"note": str(spec.get("note") or "")}))
+                                        rule_text=rule_text, extra={"note": str(spec.get("note") or "")}))
         for spec in (texts or [])[:LIMITS["manual_urls"]]:
             text = str(spec.get("text") or "").strip()
             role = str(spec.get("role") or "").strip().lower()

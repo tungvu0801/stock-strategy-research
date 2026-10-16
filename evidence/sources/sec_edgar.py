@@ -143,6 +143,8 @@ class SecAdapter:
         gaap = (data.get("facts") or {}).get("us-gaap") or {}
 
         def quarters(concept: str) -> Dict[str, dict]:
+            """Quarterly (80-100 day) USD facts by period end, filed on or before as_of; the latest filing wins per period.
+            A period reported with conflicting values across filings is remembered (`conflict`) for the validation below."""
             out: Dict[str, dict] = {}
             for e in ((gaap.get(concept) or {}).get("units") or {}).get("USD", []):
                 try:
@@ -152,26 +154,59 @@ class SecAdapter:
                 filed = str(e.get("filed") or "")
                 if filed and filed > as_of.isoformat():
                     continue                                                    # point-in-time: facts filed after as_of did not exist yet
-                if 80 <= (en - s).days <= 100 and en <= as_of and (en.isoformat() not in out or filed >= str(out[en.isoformat()].get("filed") or "")):
-                    out[en.isoformat()] = e
+                if not (80 <= (en - s).days <= 100) or en > as_of:
+                    continue
+                key = en.isoformat()
+                prev = out.get(key)
+                if prev is not None and abs(float(prev["val"]) - float(e["val"])) > 0.005 * max(abs(float(prev["val"])), 1.0):
+                    e = {**e, "conflict": True}
+                if prev is None or filed >= str(prev.get("filed") or ""):
+                    out[key] = {**e, "conflict": bool(e.get("conflict") or (prev or {}).get("conflict"))}
             return out
 
-        rev: Dict[str, dict] = {}
-        for c in REVENUE_CONCEPTS:
-            rev = quarters(c)
-            if len(rev) >= 2:
-                break
-        gp = quarters("GrossProfit")
-        ends = sorted(rev)
-        if len(ends) < 2:
+        by_concept = {c: quarters(c) for c in REVENUE_CONCEPTS}
+        concept = next((c for c in REVENUE_CONCEPTS if len(by_concept[c]) >= 2), None)
+        if concept is None:
             res.notes.append(f"{ticker}: fewer than two quarterly revenue facts in company facts")
             return None
+        rev = by_concept[concept]
+        gp = quarters("GrossProfit")
+        ends = sorted(rev)
         latest, prior = ends[-1], ends[-2]
         r1, r0 = float(rev[latest]["val"]), float(rev[prior]["val"])
-        gm1 = float(gp[latest]["val"]) / r1 if latest in gp and r1 else None
-        gm0 = float(gp[prior]["val"]) / r0 if prior in gp and r0 else None
-        return {"revenue_latest": r1, "revenue_prior": r0, "quarter_latest": latest, "quarter_prior": prior, "gm_latest": gm1, "gm_prior": gm0,
-                "revenue_up": r1 > r0, "margin_up": (gm1 is not None and gm0 is not None and gm1 >= gm0),
+        reasons: List[str] = []
+        # --- deterministic validation (DESIGN_54 §5, rung 4): concept identity, period type, fiscal context, units, GP/revenue relation ---
+        others = [c for c in REVENUE_CONCEPTS if c != concept and len(by_concept[c]) >= 1]
+        for c in others:
+            for end_, e in by_concept[c].items():
+                if end_ in rev and abs(float(e["val"]) - float(rev[end_]["val"])) > 0.005 * max(abs(float(rev[end_]["val"])), 1.0):
+                    reasons.append(f"revenue concepts disagree for {end_} ({concept} vs {c})")
+                    break
+        if rev[latest].get("conflict") or rev[prior].get("conflict"):
+            reasons.append("conflicting revenue values for the same period across filings")
+        gap_days = (date.fromisoformat(latest) - date.fromisoformat(prior)).days
+        if not 80 <= gap_days <= 100:
+            reasons.append(f"quarters are not consecutive ({gap_days} days apart)")
+        for lbl, e in (("latest", rev[latest]), ("prior", rev[prior])):
+            if str(e.get("fp") or "") not in ("Q1", "Q2", "Q3", "Q4") or not str(e.get("form") or "").startswith(("10-Q", "10-K")):
+                reasons.append(f"{lbl} quarter lacks a quarterly fiscal context (fp={e.get('fp')}, form={e.get('form')})")
+        if r1 <= 0 or r0 <= 0:
+            reasons.append("non-positive revenue value")
+        gm1 = gm0 = None
+        if latest in gp and prior in gp and gp[latest].get("start") == rev[latest].get("start") and gp[prior].get("start") == rev[prior].get("start"):
+            g1, g0 = float(gp[latest]["val"]), float(gp[prior]["val"])
+            if 0 <= g1 <= r1 and 0 <= g0 <= r0 and r1 and r0:
+                gm1, gm0 = g1 / r1, g0 / r0
+                if abs(gm1 - gm0) > 0.20:
+                    reasons.append(f"gross margin moved {abs(gm1 - gm0) * 100:.0f} points q/q; needs confirmation from official filing text")
+            else:
+                reasons.append("gross profit outside [0, revenue] for a period — concepts not comparable")
+        else:
+            reasons.append("gross profit periods missing or not aligned with the revenue periods — gross margin not derived")
+        validation = "OK" if not reasons else "AMBIGUOUS"
+        return {"revenue_concept": concept, "revenue_latest": r1, "revenue_prior": r0, "quarter_latest": latest, "quarter_prior": prior, "gm_latest": gm1, "gm_prior": gm0,
+                "revenue_up": r1 > r0, "margin_up": (None if gm1 is None or gm0 is None else gm1 >= gm0), "validation": validation, "reasons": reasons,
+                "fiscal_context": {"latest": {k: rev[latest].get(k) for k in ("fy", "fp", "form", "filed", "accn")}, "prior": {k: rev[prior].get(k) for k in ("fy", "fp", "form", "filed", "accn")}},
                 "hash": fr.content_hash, "fetch_index": len(res.fetches) - 1, "url": fr.final_url, "filed": rev[latest].get("filed")}
 
     # ---------------------------------------------------------------- run --------------------------------------------------
@@ -198,7 +233,8 @@ class SecAdapter:
             res.items.append(item)
         fund = self.fundamentals(res, ticker, cik, as_of)
         if fund:
-            res.facts["fundamentals"] = {k: fund[k] for k in ("revenue_latest", "revenue_prior", "quarter_latest", "quarter_prior", "gm_latest", "gm_prior", "revenue_up", "margin_up")}
+            res.facts["fundamentals"] = {k: fund[k] for k in ("revenue_concept", "revenue_latest", "revenue_prior", "quarter_latest", "quarter_prior", "gm_latest", "gm_prior",
+                                                               "revenue_up", "margin_up", "validation", "reasons", "fiscal_context")}
             res.items.append(SourceItem(
                 subject_ticker=ticker, source_type="SEC_FILING", source_name="SEC XBRL company facts", source_url=fund["url"],
                 source_identifier=f"companyfacts CIK{cik}", published_at=fund.get("filed"), retrieved_at=retrieved, evidence_date=fund["quarter_latest"],
@@ -230,10 +266,12 @@ class SecAdapter:
 
     @staticmethod
     def _enrich(item: SourceItem, d: dict) -> SourceItem:
+        rule_text = ((f"{d['title']}: " if d["title"] else "") + d["text"])[:LIMITS["rule_text_chars"]]   # rules see the whole document
         body = X.snippet(d["text"], LIMITS["text_chars"] - 120)
-        item.text = (f"{d['title']}: " if d["title"] else "") + body if body else item.text
+        item.text = (f"{d['title']}: " if d["title"] else "") + body if body else item.text                # display snippet only
+        item.rule_text = rule_text
         item.source_url, item.source_hash, item.fetch_index = d["url"], d["hash"], d["fetch_index"]
-        if is_guidance(item.text):
+        if is_guidance(rule_text):
             item.kind = "GUIDANCE"
         return item
 

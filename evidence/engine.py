@@ -97,19 +97,22 @@ def _item_dict(si: SourceItem, req: EvidenceRequest, fetch_ids: List[str], fetch
     category = si.category or R.category_for(role=si.role, source_type=si.source_type, subject_is_target=subject_is_target)
     if category == COMPANY_SPECIFIC and tier == 1 and si.kind in ("EARNINGS", "GUIDANCE") and subject_is_target:
         category = COMPANY_CONFIRMATION
+    offset = None
     if si.kind == "METRIC":
         direction, match = R.metric_direction(si.value)
     elif si.kind == "EVENT" or epistemic == "UNCONFIRMED" and tier >= 5:
         direction, match = NA, ""
-    else:
-        direction, match = R.direction_for(si.text)
-    return {"item_id": None, "packet_id": None, "position": 0, "ticker": req.ticker, "subject_ticker": si.subject_ticker.upper(), "source_type": si.source_type,
-            "source_name": si.source_name, "source_url": si.source_url, "source_identifier": si.source_identifier, "published_at": si.published_at,
-            "retrieved_at": si.retrieved_at, "evidence_date": si.evidence_date[:10], "category": category, "kind": si.kind, "text": si.text[:LIMITS["text_chars"] + 100],
-            "value_json": si.value or {}, "epistemic": epistemic, "direction": direction, "rule_match": match, "ladder_rung": None, "ladder_status": None,
-            "source_tier": int(tier), "contradiction": 0, "contradicts_item_id": None, "derived_from_json": [], "source_hash": si.source_hash,
-            "fetch_id": fetch_ids[si.fetch_index] if si.fetch_index is not None and si.fetch_index < len(fetch_ids) else None, "role": si.role,
-            "date_source": si.date_source}
+    else:                                                       # rules read the FULL extracted document (capped), not the display snippet
+        direction, match, offset = R.direction_scan((si.rule_text or si.text)[:LIMITS["rule_text_chars"]])
+    row = {"item_id": None, "packet_id": None, "position": 0, "ticker": req.ticker, "subject_ticker": si.subject_ticker.upper(), "source_type": si.source_type,
+           "source_name": si.source_name, "source_url": si.source_url, "source_identifier": si.source_identifier, "published_at": si.published_at,
+           "retrieved_at": si.retrieved_at, "evidence_date": si.evidence_date[:10], "category": category, "kind": si.kind, "text": si.text[:LIMITS["text_chars"] + 100],
+           "value_json": si.value or {}, "epistemic": epistemic, "direction": direction, "rule_match": match[:500], "rule_offset": offset, "ladder_rung": None,
+           "ladder_status": None, "source_tier": int(tier), "contradiction": 0, "contradicts_item_id": None, "derived_from_json": [], "source_hash": si.source_hash,
+           "fetch_id": fetch_ids[si.fetch_index] if si.fetch_index is not None and si.fetch_index < len(fetch_ids) else None, "role": si.role,
+           "date_source": si.date_source}
+    row["claim_key"] = R.claim_key(row)
+    return row
 
 
 def _hash_payload(req: EvidenceRequest, items: List[dict], fetches: List[dict], cause: dict, ladder: List[dict], strength: dict) -> str:

@@ -39,11 +39,12 @@ class IrAdapter:
             d = X.extract_date(meta, text)
             if d is not None and d > as_of:
                 d = None                                                        # a page dated after as_of is not point-in-time evidence
+            rule_text = ((f"{title}: " if title else "") + text)[:LIMITS["rule_text_chars"]]      # rules see the whole document
             body = X.snippet(text, LIMITS["text_chars"] - len(title) - 3)
-            full = (f"{title}: " if title else "") + body
-            kind = "GUIDANCE" if is_guidance(full) else "EARNINGS" if is_earnings(title or full[:400]) else "PAGE"
+            full = (f"{title}: " if title else "") + body                                        # display snippet only
+            kind = "GUIDANCE" if is_guidance(rule_text) else "EARNINGS" if is_earnings(title or rule_text[:400]) else "PAGE"
             res.items.append(SourceItem(subject_ticker=ticker, source_type="IR_RELEASE", source_name=host, source_url=fr.final_url, source_identifier=None,
                                         published_at=d.isoformat() if d else None, retrieved_at=retrieved, evidence_date=(d or retrieved_dt.date()).isoformat(),
                                         kind=kind, text=full, role="company", source_hash=fr.content_hash, fetch_index=idx,
-                                        date_source="source" if d else "retrieval"))
+                                        date_source="source" if d else "retrieval", rule_text=rule_text))
         return res
