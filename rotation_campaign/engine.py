@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -94,9 +94,36 @@ def candidate_evidence(ev: WF.Evaluator, cand: dict, windows: List[dict], defn: 
             "regimes": regimes}
 
 
+# Result-hash canonicalisation (hash input ONLY): metrics enter the hash as fixed 12-place decimal strings, so last-bit float drift
+# across machines (e.g. pow() in the Stage 4.8 / 4.9 metrics) cannot move it. Stored rows keep full precision; ranking and gates
+# never see these strings.
+HASH_METRIC_PLACES = 12
+_HASH_QUANTUM = Decimal(1).scaleb(-HASH_METRIC_PLACES)
+_HASH_CONTEXT = Context(prec=400, rounding=ROUND_HALF_EVEN)       # wide enough for any finite float; independent of the thread context
+
+
+def canonical_metric(value):
+    """A metric as a fixed-precision string for the result hash: None stays None, int / bool unchanged, float via Decimal(str(value)),
+    Decimal as is, then quantised to 12 places with ROUND_HALF_EVEN and written plain, e.g. '0.091369809949'; −0 → '0.000000000000'.
+    NaN, ±Infinity and any other type fail closed."""
+    if value is None or isinstance(value, int):                    # bool is an int
+        return value
+    if isinstance(value, float):
+        d = Decimal(str(value))
+    elif isinstance(value, Decimal):
+        d = value
+    else:
+        raise TypeError(f"result-hash metric must be float, Decimal, int or None, not {type(value).__name__}")
+    if not d.is_finite():
+        raise ValueError(f"result-hash metric is not finite: {value!r}")
+    q = d.quantize(_HASH_QUANTUM, rounding=ROUND_HALF_EVEN, context=_HASH_CONTEXT)
+    return format(q.copy_abs() if q.is_zero() else q, "f")
+
+
 def _result_hash(rows: List[dict], fins: List[dict]) -> str:
-    body = {"rows": [[r["rank"], r["config_hash"], r["eligible"], r["robustness_score"], r["median_oos_sharpe"], r["worst_oos_max_drawdown"], r["cost_sensitivity"], r["fragility_ratio"]]
-                     for r in rows], "finalists": [[f["finalist_rank"], f["config_hash"]] for f in fins]}
+    m = canonical_metric
+    body = {"rows": [[r["rank"], r["config_hash"], r["eligible"], m(r["robustness_score"]), m(r["median_oos_sharpe"]), m(r["worst_oos_max_drawdown"]),
+                      m(r["cost_sensitivity"]), m(r["fragility_ratio"])] for r in rows], "finalists": [[f["finalist_rank"], f["config_hash"]] for f in fins]}
     return sha256_hex(canonical_json(body))
 
 

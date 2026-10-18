@@ -4,9 +4,11 @@ eligibility and ranking follow from designed price properties (the CAGR leader c
 a whipsaw configuration is parameter-fragile, a decliner fails, two steady names qualify); the Stage 4.8 / 4.9 machinery is
 reused unchanged; conftest blocks sockets and tripwires the Alpaca wires; every provider / model path is tripwired."""
 import ast
+import copy
+import math
 import sqlite3
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 from pathlib import Path
 
 import pytest
@@ -48,10 +50,13 @@ CANDS = [{"label": "steady-2", **CORE, "excluded_symbols": only("TTT")}, {"label
          {"label": "decliner", **CORE, "excluded_symbols": only("XXX")}]
 BODY = {"start_date": "2024-07-01", "end_date": "2026-03-31", "train_months": 6, "test_months": 3, "step_months": 3, "rebalance_frequency": "MONTHLY",
         "selection_metric": "SHARPE", "candidates": CANDS, "max_candidates": 20, "finalist_count": 3, "initial_cash": "100000.00", "transaction_cost_bps": "5", "slippage_bps": "5"}
+# result_hash repinned once when metrics entered the hash as canonical 12-place strings (CE.canonical_metric); the leaderboard,
+# finalists, eligibility and every metric are bit-identical to before. Was 62356305e5b530717865caa1303c4fdf82b00e23bdd8a917ffa62b3af2eb1b34
+# (raw floats: last-bit pow() drift moved it between Windows machines).
 GOLDEN = {"order": ["base", "steady-2", "sharpe", "high-cagr", "decliner", "whipsaw"], "eligible": {"base": True, "steady-2": True, "sharpe": False, "high-cagr": False, "decliner": False, "whipsaw": False},
           "exclusions": {"sharpe": ["min_benchmark_beating_pct", "max_cost_sensitivity"], "high-cagr": ["max_drawdown_floor"], "decliner": ["min_positive_window_pct", "min_benchmark_beating_pct"],
                          "whipsaw": ["min_positive_window_pct", "min_benchmark_beating_pct", "max_fragility"]},
-          "finalists": ["base", "steady-2"], "result_hash": "62356305e5b530717865caa1303c4fdf82b00e23bdd8a917ffa62b3af2eb1b34", "score_base": 0.994504, "score_steady": 0.994023}
+          "finalists": ["base", "steady-2"], "result_hash": "cd3a744bf02f5d34c1bf3ef8a8840cfc8d9b581561ce2c7697ee1e903286a13e", "score_base": 0.994504, "score_steady": 0.994023}
 
 
 def quarter(d: date) -> int:
@@ -212,6 +217,57 @@ def test_20_21_stable_campaign_hash_and_identical_result_hash(golden):
     assert a["run"]["campaign_hash"] != golden["out"]["run"]["campaign_hash"]                                      # finalist_count is part of the definition
     assert a["run"]["result_hash"] != golden["out"]["run"]["result_hash"] and a["run"]["walkforward_result_hash"] == golden["out"]["run"]["walkforward_result_hash"]
     assert a["run"]["n_cache_hits"] >= 0 and a["run"]["n_evaluations"] == golden["out"]["run"]["n_evaluations"]
+
+
+HASHED_METRICS = ("robustness_score", "median_oos_sharpe", "worst_oos_max_drawdown", "cost_sensitivity", "fragility_ratio")
+
+
+def test_20b_result_hash_canonical_metric_rule():
+    """Metrics enter the result hash as fixed 12-place ROUND_HALF_EVEN strings; NaN / ±Infinity fail closed."""
+    m = CE.canonical_metric
+    x = 0.09136980994912345
+    assert CE.HASH_METRIC_PLACES == 12 and m(x) == "0.091369809949"
+    assert m(math.nextafter(x, math.inf)) == m(math.nextafter(x, -math.inf)) == m(0.0913698099494999) == m(x)       # drift below 12 places
+    assert m(x + 1e-12) == "0.091369809950" != m(x)                                                                  # a 12th-place change is seen
+    assert m(-0.0123) == "-0.012300000000" and m(-x) == "-0.091369809949" and m(-2.5) == "-2.500000000000"
+    assert m(0.0) == m(-0.0) == m(D("0")) == m(D("-0")) == m(-1e-15) == "0.000000000000"                            # no signed zero
+    assert m(D("0.1")) == m(0.1) == "0.100000000000" and m(D("-0.25")) == m(-0.25) and m(D("0.091369809949")) == m(0.091369809949)
+    assert m(D("0.0000000000015")) == m(D("0.0000000000025")) == "0.000000000002" and m(D("0.0000000000005")) == "0.000000000000"   # half-even
+    assert m(None) is None and m(True) is True and m(3) == 3
+    with localcontext() as ctx:
+        ctx.prec, ctx.rounding = 3, ROUND_DOWN
+        assert m(x) == "0.091369809949"                                                                              # thread decimal context ignored
+    for bad in (math.nan, math.inf, -math.inf, D("NaN"), D("Infinity"), D("-Infinity")):
+        with pytest.raises(ValueError):
+            m(bad)
+    with pytest.raises(TypeError):
+        m("0.1")
+
+
+def test_20c_result_hash_ignores_float_drift_and_metrics_keep_full_precision(golden):
+    out, lab = golden["out"], golden["lab"]
+    rows, fins, h = out["leaderboard"], out["finalists"], out["run"]["result_hash"]
+    assert CE._result_hash(copy.deepcopy(rows), copy.deepcopy(fins)) == h                                             # identical inputs, identical hash
+    drift = copy.deepcopy(rows)
+    for r in drift:
+        for k in HASHED_METRICS:
+            if r[k] is not None:
+                r[k] = math.nextafter(r[k], math.inf)                                                                # last-bit (cross-machine pow()) drift
+    assert CE._result_hash(drift, fins) == h
+    moved = copy.deepcopy(rows)
+    moved[0]["robustness_score"] += 1e-9
+    assert CE._result_hash(moved, fins) != h                                                                          # a material change still moves it
+    for bad in (math.nan, math.inf):
+        broken = copy.deepcopy(rows)
+        broken[-1]["fragility_ratio"] = bad
+        with pytest.raises(ValueError):
+            CE._result_hash(broken, fins)
+    # ranking and gates run on the unrounded floats; the canonical strings never reach a row
+    assert rows == sorted(rows, key=LB._key) and [r["label"] for r in rows] == GOLDEN["order"] and {r["label"]: r["eligible"] for r in rows} == GOLDEN["eligible"]
+    assert all(isinstance(r[k], float) or r[k] is None for r in rows for k in HASHED_METRICS)
+    stored = {r["config_hash"]: r for r in ModelCampaignStore(Path(lab.path)).leaderboard(out["run"]["campaign_id"])}
+    assert all(stored[r["config_hash"]][k] == r[k] for r in rows for k in HASHED_METRICS)                            # stored exactly as computed …
+    assert any(float(CE.canonical_metric(r[k])) != r[k] for r in rows for k in HASHED_METRICS if r[k] is not None)   # … not quantised to 12 places
 
 
 def test_22_malformed_metrics_fail_closed_in_gates_and_ranking():
