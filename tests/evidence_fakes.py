@@ -86,7 +86,7 @@ class FakeWire:
         name = self.urls.get(url)
         if name is None:
             return 404, {}, b"not found"
-        body = (FIX / name).read_bytes()
+        body = (FIX / name).read_bytes().replace(b"\r\n", b"\n")      # byte-identical on every checkout (CRLF working copies vs LF clones)
         ctype = "application/json" if name.endswith(".json") else "text/html; charset=utf-8"
         return 200, {"content-type": ctype}, body
 

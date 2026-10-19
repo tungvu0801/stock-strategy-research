@@ -69,6 +69,11 @@ candidate with its full evidence JSON) · `model_campaign_leaderboard` (ordered 
 `model_campaign_metrics` (comparisons, Pareto flags, walk-forward stability, conventions). `CREATE … IF NOT EXISTS`,
 no-update / no-delete triggers, `user_version` untouched.
 
+Result hash: SHA-256 of the canonical JSON of [rank, config hash, eligible, robustness score, median OOS Sharpe, worst OOS max
+drawdown, cost sensitivity, fragility ratio] per row plus [finalist rank, config hash] per finalist. The five metrics enter the hash
+as fixed 12-place decimal strings (`Decimal(str(x))`, ROUND_HALF_EVEN, −0 → 0, NaN / ±Infinity fail closed) so last-bit float drift
+between machines cannot move it. This is hash input only: stored rows, ranking, gates and the UI / API keep full precision.
+
 ## 6. API / UI
 
 `/api/model-campaign` (no `order`, `trade`, `backtest`, `paper`, `execute`, `broker`, `deploy` in any path): `GET /config`,

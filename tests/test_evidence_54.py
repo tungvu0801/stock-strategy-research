@@ -31,7 +31,7 @@ from evidence.sources.sec_edgar import SecAdapter
 from evidence.store import EvidenceStore
 
 ROOT = Path(__file__).resolve().parents[1]
-GOLDEN_HASH = "1804020122097f9a103378055f02348ef5dc65f7bc7f1fd9eeaa20a38e4e1385"   # pinned after the first green run (see test_engine_golden_packet)
+GOLDEN_HASH = "186d773b2d520ebff0ff7f0b90612dd8088dd417f2403ec41bec57d95a16b187"   # pinned after the first green run (see test_engine_golden_packet)
 
 
 # ---------------------------------------------------------------- helpers ------------------------------------------------------
