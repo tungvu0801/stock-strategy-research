@@ -1,0 +1,144 @@
+"""Explicit Trader View response models. The browser only ever sees these shapes — never a broker- or vendor-specific payload."""
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from trader_view import NOT_CONNECTED
+
+
+class _M(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class Quote(_M):
+    symbol: str
+    status: str = "OK"                      # OK | UNAVAILABLE
+    code: Optional[str] = None              # None | NO_DATA (symbol unknown to the feed) | FEED_ERROR (feed unreachable)
+    price: Optional[float] = None
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    prev_close: Optional[float] = None
+    change_pct: Optional[float] = None
+    volume: Optional[float] = None
+    ts: Optional[int] = None                # epoch seconds of the price
+    source: str = ""
+    message: Optional[str] = None
+
+
+class Candle(_M):
+    time: int                               # epoch seconds, minute aligned
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+    final: bool = False
+
+
+class PositionSource(_M):
+    source: str                             # ALPACA_PAPER_VIEW | LOCAL_PAPER | ROBINHOOD_READ_ONLY
+    label: str                              # "Alpaca Paper View" | "Local Paper Portfolio" | "Robinhood Read Only"
+    status: str                             # POSITION | NO_POSITION | NOT_CONFIGURED | NOT_REFRESHED | NOT_SET_UP | DISABLED | UNAVAILABLE | ERROR
+    message: Optional[str] = None
+    quantity: Optional[str] = None          # exact strings as the source reports them (never recomputed across sources)
+    average_cost: Optional[str] = None
+    market_value: Optional[str] = None
+    unrealized_pnl: Optional[str] = None
+    unrealized_pnl_pct: Optional[str] = None
+    as_of: Optional[str] = None
+
+
+class PositionState(_M):
+    symbol: str
+    has_position: bool
+    sources: List[PositionSource]
+    note: str
+
+
+class EvidenceSummary(_M):
+    symbol: str
+    status: str                             # LOADED | NOT_LOADED | FAILED
+    packet_id: Optional[str] = None
+    packet_status: Optional[str] = None     # COMPLETED | FAILED (the stored packet's own status)
+    created_at: Optional[str] = None
+    as_of_date: Optional[str] = None
+    strength: Optional[str] = None          # WEAK | MODERATE | STRONG
+    strength_text: Optional[str] = None
+    cause: Optional[str] = None             # cause verdict
+    cause_reason: Optional[str] = None
+    company_confirm: Optional[str] = None   # ladder rung 5 status
+    market_confirm: Optional[str] = None    # ladder rung 6 status
+    rungs: List[Dict[str, Any]] = Field(default_factory=list)
+    n_items: Optional[int] = None
+    n_failed_fetches: Optional[int] = None
+    data_status: str = "NOT_LOADED"         # STORED | NOT_LOADED | FAILED
+    message: Optional[str] = None
+    disclaimer: str
+
+
+PPE_CONTRACT: Dict[str, Any] = {
+    "version": "5.6-draft",
+    "filled_by": "Stage 5.6",
+    "fields": {"stretch": "number | null — not computed in Stage 5.5", "confidence": "number | null — not computed in Stage 5.5",
+               "basis": "string | null — inputs the score was built from", "as_of": "ISO-8601 | null"},
+}
+PPE_NOTE = "PPE is not computed in Stage 5.5. No score is fabricated; this slot only defines the contract Stage 5.6 fills."
+
+
+class PPEPlaceholder(_M):
+    status: str = "NOT_AVAILABLE"
+    stretch: Optional[float] = None
+    confidence: Optional[float] = None
+    basis: Optional[str] = None
+    as_of: Optional[str] = None
+    contract: Dict[str, Any] = Field(default_factory=lambda: dict(PPE_CONTRACT))
+    note: str = PPE_NOTE
+
+
+class Tradability(_M):
+    status: str                             # UNKNOWN | SIMULATED
+    message: str
+
+
+class DataStatus(_M):
+    mode: str                               # simulated | real
+    market: str                             # OK | UNAVAILABLE | SIMULATED
+    market_source: str
+    position: str                           # OK | PARTIAL | UNAVAILABLE
+    evidence: str                           # LOADED | NOT_LOADED | FAILED
+    server_time: str
+
+
+class Action(_M):
+    id: str
+    label: str
+    enabled: bool = False
+    status: str
+    message: str
+
+
+def default_actions() -> List[Action]:
+    return [
+        Action(id="prepare_buy", label="Prepare Buy", enabled=False, status="PREVIEW_NOT_CONNECTED", message=NOT_CONNECTED),
+        Action(id="prepare_sell", label="Prepare Sell", enabled=False, status="PREVIEW_NOT_CONNECTED", message=NOT_CONNECTED),
+        Action(id="research", label="Research", enabled=True, status="NAVIGATE_ONLY",
+               message="Opens the stored evidence workspace (Strategy Lab › Evidence). No research is run and no model is called."),
+        Action(id="add_alert", label="Add Alert", enabled=False, status="PLACEHOLDER",
+               message="Alert creation is not connected in Trader View. The Alerts tab shows the rule-based alerts."),
+    ]
+
+
+class TerminalState(_M):
+    label: str
+    symbol: str
+    quote: Quote
+    position: PositionState
+    evidence: EvidenceSummary
+    ppe: PPEPlaceholder
+    tradability: Tradability
+    data_status: DataStatus
+    actions: List[Action]
+    market_state: Dict[str, Any]
+    candles: List[Candle] = Field(default_factory=list)

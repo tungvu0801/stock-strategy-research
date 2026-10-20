@@ -564,3 +564,13 @@ exposure and quote/data quality, plus arithmetic-only "what if" scenarios and a 
 - Display cutoffs (not trading rules): `BEGINNER_RESEARCH_STALE_HOURS`, `BEGINNER_MOMENTUM_*_SCORE`,
   `BEGINNER_BEARISH_MATERIAL_PCT`, `MARKET_*` (see config.py). Market breadth uses the app's fixed 80-stock list and
   is labelled as such — it is not whole-market breadth.
+
+## Trader View (Stage 5.5, read-only)
+
+A TradingView-style terminal tab (**Trader View**): one active ticker with 1-minute candles and a quote, the existing watchlist with
+lighter updates, Back / Forward, a read-only position panel per source (Alpaca Paper View, Local Paper Portfolio, Robinhood Read Only —
+never combined), the latest stored Stage 5.4 evidence packet, a PPE placeholder (NOT AVAILABLE until Stage 5.6) and action controls that
+are **preview-only**: Prepare Buy / Prepare Sell have no order path, Research opens the stored evidence workspace, Add Alert is a
+placeholder. Market data is the deterministic simulator unless `TRADER_DATA_MODE=auto` finds read-only Alpaca market-data credentials
+(then it polls at a bounded cadence only while the tab is open); `TRADER_DATA_MODE=simulated` forces the simulator. The chart library
+(Lightweight Charts 4.2.3) is served locally from `frontend/vendor` — no CDN. See `DESIGN_55_TRADER_VIEW.md`.
