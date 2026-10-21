@@ -530,3 +530,17 @@ EVIDENCE_CIK_OVERRIDES: dict = _env_json("EVIDENCE_CIK_JSON", {})         # {"SN
 # Sector benchmark extensions for the EVIDENCE layer only: ticker -> an EXISTING sector name in data.sector_map.SECTOR_MAP (its ETF is
 # reused). The curated map itself is unchanged because earlier stages' tests rely on these tickers being unclassified there.
 EVIDENCE_SECTOR_EXTENSIONS: dict = {"SNDK": "Semiconductors", **_env_json("EVIDENCE_SECTOR_EXTENSIONS_JSON", {})}   # SNDK: NAND / flash memory, same bucket as MU (SOXX)
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.5 — TRADER VIEW (trader_view/). A read-only terminal tab: simulated data unless real read-only market data is
+# configured (TRADER_DATA_MODE=auto). No order path, no broker write, no Robinhood write, no model call, no evidence building.
+# The cadences bound the market-data requests while the tab is open; nothing is polled when no browser is subscribed.
+# ------------------------------------------------------------------------------------------------------------------
+TRADER_DATA_MODE: str = os.getenv("TRADER_DATA_MODE", "auto").strip().lower()                  # auto | real | simulated
+TRADER_TICK_SECONDS: float = 1.0                                                                 # stream loop period (simulated price step)
+TRADER_QUOTE_POLL_SECONDS: float = float(os.getenv("TRADER_QUOTE_POLL_SECONDS", "3"))            # active ticker quote + current candle (real mode)
+TRADER_WATCHLIST_POLL_SECONDS: float = float(os.getenv("TRADER_WATCHLIST_POLL_SECONDS", "10"))   # lightweight watchlist quotes
+TRADER_POSITION_POLL_SECONDS: float = float(os.getenv("TRADER_POSITION_POLL_SECONDS", "30"))     # read-only position sources (cached)
+TRADER_HISTORY_MINUTES: int = int(os.getenv("TRADER_HISTORY_MINUTES", "240"))                    # minute candles kept / backfilled
+TRADER_SIM_SEED: int = int(os.getenv("TRADER_SIM_SEED", "7"))
+TRADER_DEMO_SYMBOLS: tuple = ("AAPL", "NVDA", "SNDK")
