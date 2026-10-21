@@ -103,6 +103,7 @@ def prepare(tmp: Path, guard: Guard):
     os.environ["STOCK_AGENT_ENV"] = "browser_test"
     os.environ["PORTFOLIO_AWARENESS_ENABLED"] = "false"
     os.environ["EVENT_WARMUP_ON_STARTUP"] = "false"
+    os.environ["TRADER_DATA_MODE"] = "simulated"            # Stage 5.6.1: the Trader View flow runs on the simulator, never a market feed
     for p in (str(TESTS), str(ROOT)):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -117,6 +118,7 @@ def prepare(tmp: Path, guard: Guard):
     import config
     config.EVENT_WARMUP_ON_STARTUP = False
     config.PORTFOLIO_AWARENESS_ENABLED = False
+    config.TRADER_DATA_MODE = "simulated"
     config.ANTHROPIC_API_KEY = "browser-harness-fake-key"            # makes explanations "configured"; never sent anywhere
     config.AI_EXPLANATION_HOURLY_LIMIT, config.AI_EXPLANATION_DAILY_LIMIT = 100, 300   # the harness makes ~15 fake calls
 

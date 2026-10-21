@@ -567,13 +567,19 @@ exposure and quote/data quality, plus arithmetic-only "what if" scenarios and a 
 
 ## Trader View (Stage 5.5, read-only)
 
-A TradingView-style terminal tab (**Trader View**): one active ticker with 1-minute candles and a quote, the existing watchlist with
-lighter updates, Back / Forward, a read-only position panel per source (Alpaca Paper View, Local Paper Portfolio, Robinhood Read Only —
-never combined), the latest stored Stage 5.4 evidence packet, a PPE placeholder (NOT AVAILABLE until Stage 5.6) and action controls that
-are **preview-only**: Prepare Buy / Prepare Sell have no order path, Research opens the stored evidence workspace, Add Alert is a
-placeholder. Market data is the deterministic simulator unless `TRADER_DATA_MODE=auto` finds read-only Alpaca market-data credentials
-(then it polls at a bounded cadence only while the tab is open); `TRADER_DATA_MODE=simulated` forces the simulator. The chart library
-(Lightweight Charts 4.2.3) is served locally from `frontend/vendor` — no CDN. See `DESIGN_55_TRADER_VIEW.md`.
+A TradingView-style terminal tab (**Trader View**): one active ticker with 1-minute candles, the symbol and price in the top bar, the
+existing watchlist with lighter updates, Back / Forward, a read-only position panel per source (Alpaca Paper View, Local Paper
+Portfolio, Robinhood Read Only — never combined, with an explicit NO POSITION state), the latest stored Stage 5.4 evidence packet
+(EVIDENCE NOT LOADED when none exists), the Stage 5.6 PPE card (Stretch and Confidence as two separate blocks, coverage, key factors,
+explicit PPE INSUFFICIENT DATA / PPE EVIDENCE NOT AVAILABLE states, the exact disclaimer — see the next section) and action controls that
+are **preview-only**: Prepare Buy / Prepare Sell are disabled buttons with no order path, Research opens the stored evidence
+workspace, Add Alert is a placeholder. The data source is always shown in the top bar — `SIMULATED DATA` or `ALPACA MARKET DATA`
+(read only) — next to the connection state (CONNECTED / RECONNECTING / DISCONNECTED; shown values are marked STALE while the stream
+is down, and a ticker switch shows a loading state for the new ticker instead of the previous ticker's panels). Market data is the
+deterministic simulator unless `TRADER_DATA_MODE=auto` finds read-only Alpaca market-data credentials (then it polls at a bounded
+cadence only while the tab is open); `TRADER_DATA_MODE=simulated` forces the simulator. The chart library (Lightweight Charts 4.2.3) is
+served locally from `frontend/vendor` — no CDN. See `DESIGN_55_TRADER_VIEW.md`; the Stage 5.6.1 UI audit that drove the layout is in
+`scratchpad/s561/AUDIT_561.md`, and the pure rendering helpers (`frontend/trader_render.js`) are unit-tested with node.
 
 ## PPE engine (Stage 5.6, deterministic, read-only)
 
@@ -587,3 +593,14 @@ PPE is not a buy/sell signal and not a probability of recovery: *PPE Confidence 
 classification, not the probability that the stock will rise.* Served at `GET /api/terminal/ppe/{symbol}` and inside the terminal
 state; refreshed on subscribe, on refresh and every `TRADER_PPE_REFRESH_SECONDS` (60 s), never per quote tick. In simulated mode the
 result is labelled `SIMULATED_DATA`.
+
+Caveats (Stage 5.6; the Stage 5.6.1 UI polish changed none of the formulas, weights, bands or confidence rules):
+
+- The historical validation replayed **PPE Stretch** point-in-time. **PPE Confidence could not be replayed** against real historical
+  evidence, because no stored Stage 5.4 packet predates the bar window, so the replay shows `EVIDENCE_NOT_AVAILABLE` throughout. The
+  outcome diagnostics in the validation report are descriptive only and were not used to tune PPE.
+- The real Alpaca market-data path of Trader View / PPE (`trader_view/market_real.py`, daily bars via `data.market_data.fetch_daily_bars`)
+  is covered by fake-client tests but was **not live-tested** on the Stage 5.6 development machine, because market-data credentials were
+  not available there.
+- **Market Demand / buyer confirmation is not part of PPE.** It is intentionally separate future work: PPE has no order-flow,
+  buyer-pressure, VWAP-reclaim, demand-confirmation or setup-readiness score, and Trader View shows none.

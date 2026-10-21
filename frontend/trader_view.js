@@ -1,17 +1,20 @@
-// trader_view.js — Stage 5.5 TRADER VIEW: a read-only terminal tab. READ ONLY · NO ORDER PATH · PREVIEW NOT CONNECTED.
+// trader_view.js — Stage 5.5 TRADER VIEW (Stage 5.6 PPE, Stage 5.6.1 UI polish): a read-only terminal tab. READ ONLY · NO ORDER PATH · PREVIEW NOT CONNECTED.
 //
 // One WebSocket (/api/terminal/stream) opened the first time the tab is shown; exactly one detailed subscription at a time
 // (unsubscribe old → subscribe new on every switch, one re-subscribe after a reconnect, unsubscribe when the tab is left so the
 // server polls nothing). Every symbol-bound message is dropped unless it carries the ACTIVE ticker (TraderCore.acceptsMessage), so a
-// late message for a previous ticker can never paint the screen. Candles: TradingView Lightweight Charts served locally from
-// frontend/vendor (no CDN), with a plain canvas fallback. Prepare Buy / Prepare Sell / Add Alert only show a local notice; Research
-// navigates to the stored evidence workspace. This file never sends a POST and never names an order endpoint.
+// late message for a previous ticker can never paint the screen; on a switch the position / PPE / evidence panels show a loading
+// state for the NEW ticker until its own data arrives. Candles: TradingView Lightweight Charts served locally from frontend/vendor
+// (no CDN), with a plain canvas fallback. Prepare Buy / Prepare Sell are disabled buttons (no order path); Add Alert is a placeholder;
+// Research navigates to the stored evidence workspace. This file never sends a POST and never names an order endpoint.
+// Pure rendering helpers live in trader_render.js (window.TraderRender) so node tests cover the exact markup.
 (function () {
   "use strict";
   const tabEl = document.getElementById("tab-trader");
   const body = document.getElementById("tv-body");
   const core = window.TraderCore;
-  if (!tabEl || !body || !core) return;
+  const R = window.TraderRender;
+  if (!tabEl || !body || !core || !R) return;
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const v = (x, fallback) => (x == null || x === "" ? (fallback == null ? "—" : fallback) : x);
@@ -31,49 +34,59 @@
     { id: "research", label: "Research", enabled: true, status: "NAVIGATE_ONLY", message: "Opens the stored evidence workspace." },
     { id: "add_alert", label: "Add Alert", enabled: false, status: "PLACEHOLDER", message: ACTION_TEXT.add_alert },
   ];
+  const PANELS = [["tv-position", "POSITION"], ["tv-ppe", "PPE"], ["tv-evidence", "EVIDENCE"]];
 
   const st = { booted: false, visible: false, active: null, mode: "", source: "", symbols: { watchlist: [], demo: ["AAPL", "NVDA", "SNDK"], default: "AAPL" },
                candles: new Map(), quotes: new Map(), ws: null, attempt: 0, timer: null, toastTimer: null, chart: null, series: null, volume: null,
-               fallback: null, haveHistory: false, nav: new core.NavigationHistory(), lastState: null, conn: "Disconnected", lastCandle: null };
+               fallback: null, haveHistory: false, nav: new core.NavigationHistory(), lastState: null, conn: "disconnected", lastCandle: null,
+               pending: { candles: false, position: false, ppe: false, evidence: false }, watchlist: null, hbTime: "" };
   const subs = new core.SubscriptionManager((m) => { if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(JSON.stringify(m)); });
 
   // ---------------------------------------------------------------- layout -------------------------------------------------
   function shell() {
     body.className = "tv";
     body.innerHTML = `
-      <div class="tv-top">
-        <button type="button" id="tv-back" title="Back (previous ticker)" disabled>◀ Back</button>
-        <button type="button" id="tv-forward" title="Forward" disabled>Forward ▶</button>
-        <form id="tv-search" autocomplete="off"><input id="tv-input" placeholder="Ticker (e.g. NVDA)" maxlength="10" aria-label="Ticker search" /><button type="submit">Open</button></form>
-        <span id="tv-symbol" class="tv-symbol">—</span>
-        <span id="tv-mode" class="tv-pill dim" title="Market data mode">—</span>
+      <div class="tv-top" role="toolbar" aria-label="Trader View controls">
+        <div class="tv-nav">
+          <button type="button" id="tv-back" title="Back (previous ticker)" disabled>◀ Back</button>
+          <button type="button" id="tv-forward" title="Forward" disabled>Forward ▶</button>
+        </div>
+        <form id="tv-search" autocomplete="off" role="search"><input id="tv-input" placeholder="Ticker · press /" maxlength="10" aria-label="Ticker search" spellcheck="false" /><button type="submit">Open</button></form>
+        <div class="tv-head">
+          <span id="tv-symbol" class="tv-symbol">—</span>
+          <span id="tv-price" class="tv-price">—</span>
+          <span id="tv-change" class="tv-change">—</span>
+          <span id="tv-qstate" class="tv-qstate tv-hidden" role="status"></span>
+        </div>
         <span class="tv-spacer"></span>
-        <span id="tv-hb" class="tv-pill dim" title="Last heartbeat"></span>
-        <span id="tv-conn" class="tv-pill bad">Disconnected</span>
+        <span id="tv-mode" class="tv-source sim" title="Market data source">SIMULATED DATA</span>
+        <span id="tv-conn" class="tv-conn bad" role="status" aria-live="polite"><i class="tv-dot" aria-hidden="true"></i><span id="tv-conn-text">DISCONNECTED</span></span>
       </div>
       <div class="tv-grid">
-        <aside class="tv-left">
-          <h3>Watchlist <span class="hint" id="tv-wl-note">(watchlist.txt)</span></h3>
+        <aside class="tv-left" aria-label="Watchlist">
+          <h3>Watchlist <span class="hint" id="tv-wl-note"></span></h3>
           <ul id="tv-watchlist" class="tv-list"></ul>
           <h3>Recent</h3>
           <ul id="tv-recent" class="tv-list"></ul>
         </aside>
-        <section class="tv-center">
+        <section class="tv-center" aria-label="Chart">
           <div class="tv-quote">
-            <span id="tv-price" class="tv-price">—</span><span id="tv-change" class="tv-change">—</span>
             <span class="tv-ba">Bid <b id="tv-bid">—</b></span><span class="tv-ba">Ask <b id="tv-ask">—</b></span>
-            <span class="tv-ba">1m candle <b id="tv-candle">—</b></span><span class="tv-ba" id="tv-clock"></span>
+            <span class="tv-ba">1m <b id="tv-candle">—</b></span><span class="tv-ba" id="tv-clock"></span><span class="tv-ba tv-hb" id="tv-hb" title="Last stream heartbeat (UTC)"></span>
           </div>
-          <div id="tv-chart" class="tv-chart"></div>
-          <canvas id="tv-fallback" class="tv-fallback tv-hidden" width="900" height="380"></canvas>
+          <div class="tv-chart-wrap">
+            <div id="tv-chart" class="tv-chart"></div>
+            <canvas id="tv-fallback" class="tv-fallback tv-hidden" width="900" height="380"></canvas>
+            <div id="tv-chart-note" class="tv-chart-note tv-hidden"></div>
+          </div>
           <div class="tv-status-line" id="tv-status-line"></div>
           <div class="tv-footnote" id="tv-footnote"></div>
         </section>
-        <aside class="tv-right">
-          <div class="tv-panel"><h3>Position</h3><div id="tv-position" class="tv-panel-body tv-dim">Not loaded</div></div>
-          <div class="tv-panel"><h3>PPE</h3><div id="tv-ppe" class="tv-panel-body"></div></div>
-          <div class="tv-panel"><h3>Evidence</h3><div id="tv-evidence" class="tv-panel-body"><div class="tv-ev-state">NOT LOADED</div></div></div>
-          <div class="tv-actions" id="tv-actions"></div>
+        <aside class="tv-right" aria-label="Position, PPE, evidence and actions">
+          <section class="tv-panel"><h3>Position</h3><div id="tv-position" class="tv-panel-body"></div></section>
+          <section class="tv-panel"><h3>PPE</h3><div id="tv-ppe" class="tv-panel-body"></div></section>
+          <section class="tv-panel"><h3>Evidence</h3><div id="tv-evidence" class="tv-panel-body"></div></section>
+          <section class="tv-panel tv-panel-last"><h3>Actions</h3><div class="tv-actions" id="tv-actions"></div></section>
         </aside>
       </div>
       <div id="tv-toast" class="tv-toast tv-hidden" role="status" aria-live="polite"></div>`;
@@ -82,7 +95,14 @@
     $("tv-forward").addEventListener("click", () => { const s = st.nav.forward(); if (s) switchTo(s, false); });
     $("tv-watchlist").addEventListener("click", (e) => { const li = e.target.closest("li[data-sym]"); if (li) switchTo(li.dataset.sym, true); });
     $("tv-recent").addEventListener("click", (e) => { const li = e.target.closest("li[data-sym]"); if (li) switchTo(li.dataset.sym, true); });
-    $("tv-actions").addEventListener("click", (e) => { const b = e.target.closest("[data-action]"); if (b) onAction(b.dataset.action); });
+    $("tv-actions").addEventListener("click", (e) => { const b = e.target.closest("[data-action]"); if (b && !b.disabled) onAction(b.dataset.action); });
+    document.addEventListener("keydown", (e) => {                               // "/" focuses the ticker search while the tab is shown
+      if (!st.visible || e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      $("tv-input").focus();
+    });
   }
 
   // ---------------------------------------------------------------- chart --------------------------------------------------
@@ -107,11 +127,17 @@
   }
   const bar = (c) => ({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
   const vol = (c) => ({ time: c.time, value: c.volume || 0, color: c.close >= c.open ? "rgba(63,185,80,0.45)" : "rgba(248,81,73,0.45)" });
+  function chartNote() {
+    const n = $("tv-chart-note");
+    const text = st.haveHistory ? "" : (st.pending.candles ? `Loading candles · ${st.active || ""}` : "No candles");
+    n.textContent = text; n.classList.toggle("tv-hidden", !text);
+  }
   function setCandles(list) {
     st.haveHistory = list.length > 0;
     if (st.series) { st.series.setData(list.map(bar)); st.volume.setData(list.map(vol)); if (list.length) st.chart.timeScale().scrollToRealTime(); }
     else drawFallback(list);
     if (list.length) renderCandleLabel(list[list.length - 1]); else $("tv-candle").textContent = "—";
+    chartNote();
   }
   function updateCandle(c) {
     const list = st.candles.get(st.active) || [];
@@ -141,114 +167,111 @@
   }
 
   // ---------------------------------------------------------------- rendering ----------------------------------------------
-  function setConn(text, cls) { st.conn = text; const el = $("tv-conn"); el.textContent = text; el.className = `tv-pill ${cls}`; }
+  function setConn(state) {
+    st.conn = state;
+    const c = R.connectionView(state, st.attempt);
+    const el = $("tv-conn"); el.className = `tv-conn ${c.cls}`; $("tv-conn-text").textContent = c.text;
+    el.title = c.live ? `Stream connected${st.hbTime ? ` · last heartbeat ${st.hbTime} UTC` : ""}` : "The stream is down: shown values are the last received and may be stale.";
+    body.classList.toggle("tv-stale", !c.live);
+    if (st.active) renderQuote(st.quotes.get(st.active) || { symbol: st.active, status: "PENDING", message: "Loading…" });
+  }
   function setMode() {
-    const el = $("tv-mode");
-    el.textContent = st.mode === "real" ? "LIVE · POLLED (read only)" : "SIMULATED DATA";
-    el.className = `tv-pill ${st.mode === "real" ? "ok" : "warn"}`;
-    el.title = st.source || "";
-    $("tv-wl-note").textContent = st.mode === "real" ? "(watchlist.txt · live quotes)" : "(watchlist.txt · simulated quotes)";
+    const s = R.sourceView(st.mode, st.source);
+    const el = $("tv-mode"); el.textContent = s.label; el.className = `tv-source ${s.cls}`; el.title = `${s.title} · ${s.detail}`;
+    $("tv-wl-note").textContent = s.simulated ? "simulated quotes" : "live quotes · read only";
+    body.classList.toggle("tv-sim", s.simulated);
   }
   function updateNav() { $("tv-back").disabled = !st.nav.canBack(); $("tv-forward").disabled = !st.nav.canForward(); }
   function renderCandleLabel(c) { st.lastCandle = c; $("tv-candle").textContent = `O ${core.formatPrice(c.open)} H ${core.formatPrice(c.high)} L ${core.formatPrice(c.low)} C ${core.formatPrice(c.close)}`; }
   function renderQuote(q) {
-    const ok = q && q.status === "OK";
-    $("tv-price").textContent = ok || (q && q.price != null) ? core.formatPrice(q.price) : (q && q.status === "PENDING" ? "…" : "UNAVAILABLE");
-    const ch = $("tv-change"); ch.textContent = core.formatPct(q && q.change_pct);
-    ch.className = `tv-change ${q && q.change_pct > 0 ? "up" : q && q.change_pct < 0 ? "down" : ""}`;
-    $("tv-bid").textContent = core.formatPrice(q && q.bid); $("tv-ask").textContent = core.formatPrice(q && q.ask);
-    $("tv-clock").textContent = ok && q.ts ? `as of ${new Date(q.ts * 1000).toLocaleTimeString()}` : ((q && q.message) || "");
+    const w = R.quoteView(q, st.conn === "connected");
+    $("tv-price").textContent = w.price;
+    const ch = $("tv-change"); ch.textContent = w.change; ch.className = `tv-change ${w.dir}`;
+    $("tv-bid").textContent = w.bid; $("tv-ask").textContent = w.ask;
+    $("tv-clock").textContent = w.asOf || w.message || "";
+    const qs = $("tv-qstate"); qs.textContent = w.label;
+    qs.className = `tv-qstate ${w.state === "LOADING" ? "dim" : w.state !== "OK" ? "bad" : w.stale ? "warn" : ""}`;
+    qs.classList.toggle("tv-hidden", !w.label);
   }
   function renderWatchlist(items) {
+    if (items) st.watchlist = items;
     const ul = $("tv-watchlist");
-    const rows = items && items.length ? items : (st.symbols.watchlist || []).map((s) => ({ symbol: s }));
-    ul.innerHTML = rows.map((it) => {
-      const q = it.price != null ? it : (st.quotes.get(it.symbol) || it);
-      const cls = q.change_pct > 0 ? "up" : q.change_pct < 0 ? "down" : "";
-      return `<li data-sym="${esc(it.symbol)}" class="${it.symbol === st.active ? "active" : ""}"><span class="tv-sym">${esc(it.symbol)}</span>` +
-             `<span class="tv-px">${esc(core.formatPrice(q.price))}</span><span class="tv-chg ${cls}">${esc(core.formatPct(q.change_pct))}</span></li>`;
-    }).join("") || `<li class="tv-empty">Watchlist is empty (watchlist.txt). Demo: ${esc((st.symbols.demo || []).join(", "))}</li>`;
+    const rows = st.watchlist && st.watchlist.length ? st.watchlist : (st.symbols.watchlist || []).map((s) => ({ symbol: s }));
+    ul.innerHTML = R.watchlistRowsHtml(rows, st.active, (s) => st.quotes.get(s)) ||
+      `<li class="tv-empty">Watchlist is empty (watchlist.txt). Demo: ${esc((st.symbols.demo || []).join(", "))}</li>`;
   }
   function renderRecent() {
     const seen = new Set(); const out = [];
     for (let i = st.nav.items.length - 1; i >= 0 && out.length < MAX_RECENT; i -= 1) { const s = st.nav.items[i]; if (!seen.has(s)) { seen.add(s); out.push(s); } }
-    $("tv-recent").innerHTML = out.map((s) => `<li data-sym="${esc(s)}" class="${s === st.active ? "active" : ""}"><span class="tv-sym">${esc(s)}</span><span></span><span class="tv-chg">${esc(core.formatPct((st.quotes.get(s) || {}).change_pct))}</span></li>`).join("") ||
-      `<li class="tv-empty">No history yet.</li>`;
+    $("tv-recent").innerHTML = R.recentRowsHtml(out, st.active, (s) => st.quotes.get(s)) || `<li class="tv-empty">No history yet.</li>`;
   }
   function renderPosition(p) {
-    const el = $("tv-position"); el.className = "tv-panel-body";
-    if (!p || !p.sources || !p.sources.length) { el.innerHTML = `<div class="tv-dim">${esc((p && p.note) || "Position sources unavailable.")}</div>`; return; }
-    el.innerHTML = p.sources.map((s) => {
+    const el = $("tv-position"); el.className = "tv-panel-body"; st.pending.position = false;
+    el.dataset.symbol = (p && p.symbol) || st.active || "";
+    if (!p || !p.sources || !p.sources.length) {
+      el.dataset.state = "UNAVAILABLE";
+      el.innerHTML = R.stateHtml("POSITION_UNAVAILABLE", "POSITION UNAVAILABLE", (p && p.note) || "Position sources unavailable.");
+      return;
+    }
+    const held = p.sources.filter((s) => s.status === "POSITION");
+    el.dataset.state = held.length ? "POSITION" : "NO_POSITION";
+    const row = (s) => {
       const tag = s.status === "POSITION" ? "ok" : s.status === "NO_POSITION" ? "dim" : "warn";
-      const head = `<div class="tv-src"><span class="tv-src-label">${esc(s.label)}</span><span class="tv-tag ${tag}">${esc(String(s.status).replace(/_/g, " "))}</span></div>`;
-      if (s.status === "POSITION") {
-        return head + `<table class="tv-kv"><tr><td>Quantity</td><td>${esc(v(s.quantity))}</td></tr><tr><td>Average cost</td><td>${esc(v(s.average_cost))}</td></tr>` +
-          `<tr><td>Market value</td><td>${esc(v(s.market_value))}</td></tr><tr><td>Unrealized P/L</td><td>${esc(v(s.unrealized_pnl))}</td></tr>` +
-          `<tr><td>Unrealized P/L %</td><td>${esc(s.unrealized_pnl_pct == null ? "—" : s.unrealized_pnl_pct + "%")}</td></tr>` +
-          (s.as_of ? `<tr><td>As of</td><td>${esc(s.as_of)}</td></tr>` : "") + `</table>` + (s.message ? `<div class="tv-dim">${esc(s.message)}</div>` : "");
-      }
-      if (s.status === "NO_POSITION") return head + `<div class="tv-dim">No position${s.as_of ? ` · as of ${esc(s.as_of)}` : ""}</div>`;
-      return head + `<div class="tv-dim">${esc(s.message || s.status)}</div>`;
-    }).join("") + `<div class="tv-note">${esc(p.note)}</div>`;
+      return `<div class="tv-src" title="${esc(s.message || "")}"><span class="tv-src-label">${esc(s.label)}</span><span class="tv-tag ${tag}">${esc(String(s.status).replace(/_/g, " "))}</span></div>`;
+    };
+    const kv = (s) => `<table class="tv-kv"><tr><td>Qty</td><td>${esc(v(s.quantity))}</td></tr><tr><td>Avg cost</td><td>${esc(v(s.average_cost))}</td></tr>` +
+      `<tr><td>Mkt value</td><td>${esc(v(s.market_value))}</td></tr><tr><td>P/L</td><td>${esc(v(s.unrealized_pnl))}${s.unrealized_pnl_pct == null ? "" : ` (${esc(s.unrealized_pnl_pct)}%)`}</td></tr>` +
+      (s.as_of ? `<tr><td>As of</td><td>${esc(s.as_of)}</td></tr>` : "") + `</table>`;
+    el.innerHTML = (held.length ? "" : R.stateHtml("NO_POSITION", "NO POSITION")) +
+      p.sources.map((s) => row(s) + (s.status === "POSITION" ? kv(s) + (s.message ? `<p class="tv-dim">${esc(s.message)}</p>` : "") : "")).join("") +
+      `<details class="tv-details"><summary>Why each source shows this</summary>` +
+      p.sources.map((s) => `<div class="tv-dim"><b>${esc(s.label)}</b> — ${esc(s.message || (s.status === "NO_POSITION" ? "No position" : s.status))}</div>`).join("") +
+      `<div class="tv-dim">${esc(p.note)}</div></details>`;
   }
   function renderPPE(p) {
     // Stage 5.6: the deterministic engine result. Never a recommendation: no buy/sell text, no probability of a rise.
-    const el = $("tv-ppe");
+    const el = $("tv-ppe"); st.pending.ppe = false;
+    el.dataset.symbol = (p && p.symbol) || st.active || "";
     if (!p || !p.stretch) {
-      el.innerHTML = `<div class="tv-ppe-grid"><span>PPE Stretch</span><b class="tv-ppe-score">NOT AVAILABLE</b><span></span><span>PPE Confidence</span><b class="tv-ppe-score">NOT AVAILABLE</b><span></span></div><div class="tv-note">PPE not loaded.</div>`;
+      el.dataset.state = "NOT AVAILABLE";
+      el.setAttribute("aria-label", "PPE Stretch and PPE Confidence: NOT AVAILABLE");
+      el.innerHTML = R.ppeHtml(null, { symbol: st.active });
       return;
     }
-    const st = p.stretch || {}, cf = p.confidence || {}, src = p.sources || {};
-    const band = (x) => (x ? String(x).replace(/_/g, " ") : "");
     const sim = p.status === "SIMULATED_DATA";
-    const badge = sim ? `<span class="tv-tag warn">SIMULATED DATA</span>` : (p.status !== "AVAILABLE" ? `<span class="tv-tag warn">${esc(band(p.status))}</span>` : `<span class="tv-tag ok">${esc(src.benchmark_kind || "")}</span>`);
-    const stretchVal = st.score == null ? "NOT AVAILABLE" : `${st.score > 0 ? "+" : ""}${Number(st.score).toFixed(1)}`;
-    const confVal = cf.score == null ? "NOT AVAILABLE" : String(cf.score);
-    const stretchCls = st.score == null ? "" : st.score < -40 ? "down" : st.score > 40 ? "up" : "";
-    const confStatus = cf.status && cf.status !== "AVAILABLE" ? band(cf.status) : "";
-    const factors = (st.key_factors || []).slice(0, 3);
-    const reasons = (cf.reasons || []).slice(0, 3);
-    const ev = cf.evidence;
-    el.innerHTML = `
-      <div class="tv-ppe-head">${badge}</div>
-      <div class="tv-ppe-grid">
-        <span>PPE Stretch</span><b class="tv-ppe-score ${stretchCls}">${esc(stretchVal)}</b><span class="tv-ppe-band">${esc(band(st.label) || band(st.status))}</span>
-        <span>PPE Confidence</span><b class="tv-ppe-score">${esc(confVal)}</b><span class="tv-ppe-band">${esc(band(cf.label) || confStatus)}</span>
-        <span>Coverage</span><b>${st.coverage_weight != null ? Math.round(st.coverage_weight * 100) + "%" : "—"}</b><span></span>
-      </div>
-      ${factors.length ? `<div class="tv-ppe-sub">Key factors</div><ul class="tv-ppe-list">${factors.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
-      ${reasons.length && cf.status === "AVAILABLE" ? `<div class="tv-ppe-sub">Confidence drivers</div><ul class="tv-ppe-list">${reasons.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : (confStatus ? `<div class="tv-dim">${esc((cf.reasons || [])[0] || confStatus)}</div>` : "")}
-      <div class="tv-ppe-sub">Evidence</div><div class="tv-dim">${ev ? esc(`${ev.strength || "—"} / ${ev.cause || "—"} · packet ${String(ev.created_at || "").slice(0, 10)} (${ev.age_days}d old)`) : "NOT LOADED"}</div>
-      <div class="tv-ppe-src">${esc(src.market_data || "")}${src.benchmark_label ? ` · benchmark ${esc(src.benchmark_label)}` : " · no benchmark"}${src.bars_through ? ` · bars through ${esc(src.bars_through)}` : ""}${src.evidence_packet_at ? ` · evidence ${esc(String(src.evidence_packet_at).slice(0, 16))}` : ""}${src.computed_at ? ` · computed ${esc(String(src.computed_at).slice(11, 19))} UTC` : ""}</div>
-      <div class="tv-note">${esc(p.disclaimer || "")}</div>${sim && p.note ? `<div class="tv-dim">${esc(p.note)}</div>` : ""}`;
+    const badge = sim ? `<span class="tv-tag warn">SIMULATED DATA</span>` : R.ppeBadgeHtml(p);
+    const m = R.ppeModel(p);
+    el.dataset.state = p.status;
+    el.setAttribute("aria-label", `PPE Stretch ${m.stretch.value} ${m.stretch.band} · PPE Confidence ${m.confidence.value} ${m.confidence.band}${sim ? " · SIMULATED DATA" : ""}`);
+    el.innerHTML = R.ppeHtml(p, { badge, includeDisclaimer: false }) +
+      `<p class="tv-disclaimer">${esc(p.disclaimer || "")}</p>` + R.ppeSourceHtml(p, sim ? p.note : null);   // the SIMULATED DATA tag stays on the card; the long note sits under "Data used"
   }
   function renderEvidence(e) {
-    const el = $("tv-evidence");
-    if (!e || e.status !== "LOADED") {
-      el.innerHTML = `<div class="tv-ev-state">${e && e.status === "FAILED" ? "FAILED" : "NOT LOADED"}</div><div class="tv-dim">${esc((e && e.message) || "")}</div>` +
-        `<div class="tv-dim">[Research] opens the stored evidence workspace. Nothing runs automatically on a ticker switch.</div>`;
-      return;
-    }
-    const row = (k, x) => `<tr><td>${esc(k)}</td><td>${esc(x == null ? "—" : x)}</td></tr>`;
-    el.innerHTML = `<table class="tv-kv">${row("Evidence", e.strength)}${row("Cause", e.cause)}${row("Company confirm", e.company_confirm)}${row("Market confirm", e.market_confirm)}` +
-      `${row("Last research", e.created_at)}${row("Data status", e.data_status + (e.packet_status && e.packet_status !== "COMPLETED" ? ` · ${e.packet_status}` : ""))}</table>` +
-      (e.strength_text ? `<div class="tv-dim">${esc(e.strength_text)}</div>` : "") + (e.message ? `<div class="tv-dim">${esc(e.message)}</div>` : "") +
-      `<div class="tv-note">${esc(e.disclaimer || "")}</div>`;
+    const el = $("tv-evidence"); st.pending.evidence = false;
+    el.dataset.symbol = (e && e.symbol) || st.active || "";
+    el.dataset.state = e && e.status === "LOADED" ? "LOADED" : "NOT LOADED";
+    el.innerHTML = R.evidenceHtml(e);
   }
   function renderActions(actions) {
     $("tv-actions").innerHTML = (actions && actions.length ? actions : DEFAULT_ACTIONS).map((a) =>
-      `<button type="button" class="tv-act ${a.enabled ? "" : "tv-disabled"}" data-action="${esc(a.id)}" aria-disabled="${a.enabled ? "false" : "true"}" title="${esc(a.message)}">` +
-      `${esc(a.label)}<small>${esc(a.enabled ? (a.status === "NAVIGATE_ONLY" ? "stored evidence only" : a.status) : String(a.status).replace(/_/g, " "))}</small></button>`).join("");
+      `<button type="button" class="tv-act ${a.enabled ? "" : "tv-disabled"}" data-action="${esc(a.id)}" aria-disabled="${a.enabled ? "false" : "true"}"${a.enabled ? "" : " disabled"} title="${esc(a.message)}">` +
+      `${esc(a.label)}<small>${esc(a.enabled ? (a.status === "NAVIGATE_ONLY" ? "stored evidence only" : String(a.status).replace(/_/g, " ")) : "disabled")}</small></button>`).join("");
   }
   function renderStatusLine(d) {
-    const ds = d.data_status || {};
-    $("tv-status-line").textContent = `Mode ${String(ds.mode || st.mode).toUpperCase()} · Market ${v(ds.market)} · Position ${v(ds.position)} · Evidence ${v(ds.evidence)} · ` +
-      `Tradability ${d.tradability ? d.tradability.status : "—"} · PPE ${d.ppe ? d.ppe.status : "—"} · ${d.market_state && d.market_state.session_hint ? `Session ${d.market_state.session_hint} · ` : ""}${v(ds.market_source, "")}`;
+    $("tv-status-line").innerHTML = R.statusChips(d, st.mode).map((c) => `<span class="tv-chip ${c.cls}">${esc(c.text)}</span>`).join("") +
+      (d.data_status && d.data_status.market_source ? `<span class="tv-chip-src">${esc(d.data_status.market_source)}</span>` : "");
+  }
+  function showLoading(symbol) {
+    for (const [id, what] of PANELS) { const el = $(id); el.innerHTML = R.skeletonHtml(what, symbol); el.dataset.state = "LOADING"; el.dataset.symbol = symbol; }
+  }
+  function showNoData(symbol, message) {
+    for (const [id, what] of PANELS) { const el = $(id); el.innerHTML = R.stateHtml(`${what}_NO_DATA`, `${what} · NO DATA`, message); el.dataset.state = "NO_DATA"; el.dataset.symbol = symbol; }
   }
   function applyState(d) {
     st.lastState = d;
     if (d.data_status && d.data_status.mode) { st.mode = d.data_status.mode; st.source = d.data_status.market_source || st.source; setMode(); }
     st.quotes.set(d.symbol, d.quote); renderQuote(d.quote); renderPosition(d.position); renderEvidence(d.evidence); renderPPE(d.ppe); renderActions(d.actions); renderStatusLine(d);
+    renderWatchlist(null); renderRecent();
   }
   function toast(text) {
     const el = $("tv-toast"); el.textContent = text; el.classList.remove("tv-hidden");
@@ -268,16 +291,17 @@
   // ---------------------------------------------------------------- ticker switching ---------------------------------------
   function switchTo(raw, record) {
     const s = core.normalizeSymbol(raw);
-    if (!s) { toast(`"${String(raw == null ? "" : raw).trim()}" is not a valid ticker.`); return false; }
+    if (!s) { toast(`"${String(raw == null ? "" : raw).trim()}" is not a valid ticker (1–10 letters, "." or "-").`); return false; }
+    if (s === st.active) { $("tv-input").value = ""; return true; }           // already shown: nothing to reload (the subscription is unchanged)
     if (record) st.nav.push(s);
     st.active = s; st.haveHistory = false; st.lastCandle = null;
+    st.pending = { candles: true, position: true, ppe: true, evidence: true };
     $("tv-symbol").textContent = s; $("tv-input").value = "";
     updateNav(); renderWatchlist(null); renderRecent();
     const cached = st.candles.get(s);
     setCandles(cached ? cached.slice() : []);                                 // cached history paints immediately, the stream refreshes it
     renderQuote(st.quotes.get(s) || { symbol: s, status: "PENDING", message: "Loading…" });
-    $("tv-position").innerHTML = `<div class="tv-dim">Loading…</div>`;
-    $("tv-evidence").innerHTML = `<div class="tv-ev-state">NOT LOADED</div><div class="tv-dim">Loading…</div>`;
+    showLoading(s);                                                            // never the previous ticker's panels under the new symbol
     if (st.visible) subs.setActive(s);                                         // unsubscribe(old) + subscribe(new) when the socket is open
     if (!(st.ws && st.ws.readyState === WebSocket.OPEN)) loadStateHttp(s);     // no socket yet: plain GET of the same state
     return true;
@@ -287,10 +311,15 @@
       const res = await fetch(`/api/terminal/state/${encodeURIComponent(s)}?candles=${HISTORY}`);
       const d = await res.json();
       if (st.active !== s) return;                                            // switched while loading: discard
-      if (!res.ok) { toast(`${d.status || res.status}: ${d.message || "request failed"}`); renderQuote({ symbol: s, status: "UNAVAILABLE", message: d.message || d.status }); return; }
+      if (!res.ok) {
+        toast(`${d.status || res.status}: ${d.message || "request failed"}`);
+        renderQuote({ symbol: s, status: "UNAVAILABLE", code: d.status === "UNKNOWN_SYMBOL" ? "NO_DATA" : "FEED_ERROR", message: d.message || d.status });
+        showNoData(s, d.message || d.status);
+        return;
+      }
       applyState(d);
-      if (d.candles) { st.candles.set(s, d.candles.slice()); setCandles(d.candles); }
-    } catch (e) { if (st.active === s) toast("Could not load the terminal state."); }
+      if (d.candles) { st.pending.candles = false; st.candles.set(s, d.candles.slice()); setCandles(d.candles); }
+    } catch (e) { if (st.active === s) { toast("Could not load the terminal state."); renderQuote({ symbol: s, status: "UNAVAILABLE", code: "FEED_ERROR", message: "Could not load the terminal state." }); } }
   }
 
   // ---------------------------------------------------------------- socket -------------------------------------------------
@@ -298,11 +327,11 @@
     if (st.ws && (st.ws.readyState === WebSocket.OPEN || st.ws.readyState === WebSocket.CONNECTING)) return;   // never two sockets
     clearTimeout(st.timer); st.timer = null;
     const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${WS_PATH}`;
-    setConn(st.attempt ? `Reconnecting… (try ${st.attempt + 1})` : "Connecting…", "warn");
+    setConn(st.attempt ? "reconnecting" : "connecting");
     let ws;
     try { ws = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
     st.ws = ws;
-    ws.onopen = () => { if (st.ws !== ws) return; st.attempt = 0; setConn("Connected", "ok"); subs.onOpen(); };
+    ws.onopen = () => { if (st.ws !== ws) return; st.attempt = 0; setConn("connected"); subs.onOpen(); };
     ws.onmessage = (ev) => {
       if (st.ws !== ws) return;
       let msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
@@ -312,7 +341,7 @@
     ws.onclose = () => {
       if (st.ws !== ws) return;
       st.ws = null; subs.onClose();
-      if (st.visible) { setConn("Disconnected — reconnecting", "bad"); scheduleReconnect(); } else setConn("Disconnected", "bad");
+      if (st.visible) { setConn("reconnecting"); scheduleReconnect(); } else setConn("disconnected");
     };
     ws.onerror = () => {};
   }
@@ -326,16 +355,22 @@
     switch (m.type) {
       case "hello": st.mode = m.mode; st.source = m.source; setMode(); if (m.symbols) { st.symbols = m.symbols; renderWatchlist(null); } break;
       case "state": applyState(m); break;
-      case "candles": st.candles.set(m.symbol, m.candles.slice()); setCandles(m.candles); break;
-      case "quote": st.quotes.set(m.symbol, m); renderQuote(m); renderRecent(); break;
+      case "candles": st.pending.candles = false; st.candles.set(m.symbol, m.candles.slice()); setCandles(m.candles); break;
+      case "quote": st.quotes.set(m.symbol, m); renderQuote(m); renderWatchlist(null); renderRecent(); break;
       case "candle": updateCandle(m); break;
       case "watchlist": m.items.forEach((it) => { if (it.price != null) st.quotes.set(it.symbol, Object.assign({}, st.quotes.get(it.symbol) || {}, it)); }); renderWatchlist(m.items); break;
       case "position": renderPosition(m); break;
       case "evidence": renderEvidence(m); break;
       case "ppe": renderPPE(m); break;
-      case "heartbeat": $("tv-hb").textContent = `♥ ${m.server_time ? m.server_time.slice(11, 19) : ""}`; break;
+      case "heartbeat": st.hbTime = m.server_time ? m.server_time.slice(11, 19) : ""; $("tv-hb").textContent = st.hbTime ? `heartbeat ${st.hbTime} UTC` : ""; break;
       case "subscribed": case "unsubscribed": break;
-      case "error": toast(`${m.code}: ${m.message}`); if (m.code === "UNKNOWN_SYMBOL" || m.code === "INVALID_SYMBOL") renderQuote({ symbol: m.symbol, status: "UNAVAILABLE", message: m.message }); break;
+      case "error":
+        toast(`${m.code}: ${m.message}`);
+        if ((m.code === "UNKNOWN_SYMBOL" || m.code === "INVALID_SYMBOL" || m.code === "MARKET_UNAVAILABLE") && (!m.symbol || m.symbol === st.active)) {
+          renderQuote({ symbol: m.symbol || st.active, status: "UNAVAILABLE", code: m.code === "UNKNOWN_SYMBOL" ? "NO_DATA" : "FEED_ERROR", message: m.message });
+          if (m.code !== "MARKET_UNAVAILABLE") showNoData(st.active, m.message);
+        }
+        break;
       default: break;
     }
   }
@@ -343,7 +378,7 @@
   // ---------------------------------------------------------------- tab lifecycle ------------------------------------------
   async function boot() {
     st.booted = true;
-    shell(); setupChart(); renderPPE(null); renderActions(DEFAULT_ACTIONS);
+    shell(); setupChart(); setMode(); renderPPE(null); renderActions(DEFAULT_ACTIONS);
     try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
     try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
     renderWatchlist(null);
@@ -363,9 +398,11 @@
   if (tabEl.classList.contains("active")) activate();
 
   window.TraderView = {
-    get state() { return { active: st.active, visible: st.visible, mode: st.mode, conn: st.conn, history: st.nav.items.slice(), index: st.nav.index, subscribed: subs.sent,
-                           candles: (st.candles.get(st.active) || []).length, lastCandle: st.lastCandle, attempt: st.attempt }; },
+    get state() { return { active: st.active, visible: st.visible, mode: st.mode, conn: R.connectionView(st.conn, st.attempt).label, connState: st.conn, history: st.nav.items.slice(),
+                           index: st.nav.index, subscribed: subs.sent, candles: (st.candles.get(st.active) || []).length, lastCandle: st.lastCandle, attempt: st.attempt,
+                           pending: Object.assign({}, st.pending) }; },
     switchTo: (s) => switchTo(s, true), back: () => { const s = st.nav.back(); if (s) switchTo(s, false); return s; },
     forward: () => { const s = st.nav.forward(); if (s) switchTo(s, false); return s; }, activate,
+    dropSocket: () => { if (st.ws) st.ws.close(); return !!st.ws; },           // tests / harness only: forces the reconnect path (no server call)
   };
 })();
