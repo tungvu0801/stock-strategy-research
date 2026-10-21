@@ -525,6 +525,59 @@ def trader_view(c: Ctx):
     time.sleep(0.3)
 
 
+DEMAND_DISCLAIMER = "Market Demand measures observed buyer participation and confirmation, not the probability that the stock will rise."
+DEMAND_BANDS = ("VERY WEAK", "WEAK", "MIXED", "STRENGTHENING", "STRONG", "VERY STRONG", "INSUFFICIENT DATA", "NOT AVAILABLE")
+
+
+def _dem_settled(s):
+    return f"{TV}.active === {json.dumps(s)} && !{TV}.pending.demand && __tvState('#tv-demand')[1] === {json.dumps(s)} && __tvState('#tv-demand')[0] !== 'LOADING'"
+
+
+def market_demand(c: Ctx):
+    """Stage 5.7: the Market Demand section — separate from PPE, labelled by mode and source, explicit states, follows the ticker, no order path."""
+    if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+        c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+    c.js(TV_JS)
+    active = c.js(f"{TV}.active")
+    c.wait(_tv_settled(active) + " && " + _dem_settled(active), 30, "demand settled")
+    sep = c.js("(() => { const d = document.getElementById('tv-demand'), p = document.getElementById('tv-ppe'); const dp = d.closest('.tv-panel'), pp = p.closest('.tv-panel'); "
+               "return [dp !== pp, dp.querySelector('h3').innerText, !!d.querySelector('[data-demand=\"score\"]'), !d.querySelector('[data-ppe]'), !p.querySelector('[data-demand]')]; })()")
+    c.r.eq("Market Demand is its own section (own heading, no PPE block inside, nothing of it inside PPE)", sep, [True, "MARKET DEMAND", True, True, True])
+    val = c.js("(document.querySelector('#tv-demand .tv-dem-val') || {}).innerText")
+    band = c.js("(document.querySelector('#tv-demand .tv-dem-band') || {}).innerText")
+    c.r.check("Demand score (0–100 or —) and band label render", re.fullmatch(r"\d{1,3}|—", val or "") and band in DEMAND_BANDS, [val, band])
+    c.r.check("Demand coverage renders as a percentage", re.fullmatch(r"\d{1,3}%|—", c.js("(document.querySelector('#tv-demand .tv-ppe-meta b') || {}).innerText") or ""))
+    c.r.eq("Demand mode chip reads INTRADAY on the simulator's 240-bar session", c.js("(document.querySelector('#tv-demand .tv-dem-mode') || {}).dataset?.demandMode || (document.querySelector('#tv-demand .tv-dem-mode') || {}).getAttribute?.('data-demand-mode')"), "INTRADAY")
+    c.r.eq("Demand card carries the SIMULATED DATA tag and the state attribute", [c.js("(document.querySelector('#tv-demand .tv-dem-head .tv-tag') || {}).innerText"), c.js("__tvState('#tv-demand')[0]")], ["SIMULATED DATA", "SIMULATED_DATA"])
+    c.r.eq("Demand disclaimer visible and exact", [c.js("__tvVisible('#tv-demand .tv-disclaimer')"), c.js("__tvText('#tv-demand .tv-disclaimer')")], [True, DEMAND_DISCLAIMER])
+    c.r.check("Demand explainer (tooltip button + visible sentence)", (c.js("(document.querySelector('#tv-demand [data-demand-info=\"score\"]') || {}).title || ''")).startswith("Market Demand:") and c.js("__tvVisible('#tv-demand .tv-explain')"))
+    c.r.check("Demand colour is not the price green / red", c.js("(() => { const col = getComputedStyle(document.querySelector('#tv-demand .tv-dem-val')).color; return col !== 'rgb(63, 185, 80)' && col !== 'rgb(248, 81, 73)'; })()"))
+    c.r.check("PPE still shows its own Stretch block next to Demand", c.js("!!document.querySelector('#tv-ppe [data-ppe=\"stretch\"] .tv-ppe-val')"))
+    scores = {}
+    for s in TV_SYMBOLS:
+        if s == active:
+            continue
+        ok, ppe_state, pos_state, ev_state, sym = c.js(f"__tvSwitch({json.dumps(s)})")
+        dem = c.js("__tvState('#tv-demand')")
+        c.r.eq(f"switch to {s}: Demand shows LOADING · {s} at once (never the previous ticker's score)", [ok, dem], [True, ["LOADING", s]])
+        c.wait(_tv_settled(s) + " && " + _dem_settled(s), 30, f"{s} demand settled")
+        scores[s] = c.js("(document.querySelector('#tv-demand .tv-dem-val') || {}).innerText")
+        c.r.check(f"{s}: Demand belongs to {s} and renders a score", c.js("__tvState('#tv-demand')[1]") == s and re.fullmatch(r"\d{1,3}|—", scores[s] or ""), [s, scores[s]])
+    c.r.check("Demand differs across symbols", len(set(scores.values())) >= 2, scores)
+    dem_text = c.js("__tvText('#tv-demand')") or ""
+    c.r.check("no action language in the Demand section", not TRADE_WORDS.search(dem_text), dem_text[:200])
+    c.r.eq("actions still disabled next to Demand", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    c.r.check("missing evidence does not block Demand", "EVIDENCE NOT LOADED" in (c.js("__tvText('#tv-evidence')") or "") and re.fullmatch(r"\d{1,3}", c.js("(document.querySelector('#tv-demand .tv-dem-val') || {}).innerText") or ""))
+    c.shot("market_demand", "#tv-demand")
+    c.shot("market_demand_panel", ".tv-right")
+    c.b.viewport(1280, 720)
+    time.sleep(0.5)
+    c.r.check("1280x720: Demand section reachable inside the right panel without page overflow", not c.js("__overflow()") and c.js("__tvVisible('#tv-demand')"))
+    c.b.viewport(1920, 1080)
+    time.sleep(0.3)
+
+
 def automation(c: Ctx):
     sid = c.world.strategies["Trend Swing"]
     c.open_lab("builder")                                  # the journal + automation panel live in the Builder view
@@ -1922,6 +1975,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, automation, saved_scans, daily_brief, brief_delivery, notification_click,
-         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1: trader_view sits before the clock-moving flows
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7: trader_view + market_demand sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

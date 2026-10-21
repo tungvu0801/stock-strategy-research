@@ -190,6 +190,36 @@ class SimulatedMarket:
             out[s] = bars
         return out
 
+    # ---------------------------------------------------------------- synthetic sessions (Stage 5.7 Market Demand; SIMULATED) ------------
+    def session_candles(self, symbol: str, sessions: int = 5) -> Dict[str, List[Candle]]:
+        """The current synthetic session (this stream's bars) plus `sessions - 1` deterministic prior sessions of 390 one-minute bars with a
+        U-shaped volume profile, keyed by ISO date (prior business days before the simulator's clock date). SIMULATED, never a market feed."""
+        st = self._ensure(validate_symbol(symbol))
+        today = datetime.fromtimestamp(self.clock, tz=timezone.utc).date()
+        days, d = [], today - timedelta(days=1)
+        while len(days) < max(0, int(sessions) - 1):
+            if d.weekday() < 5:
+                days.append(d)
+            d -= timedelta(days=1)
+        out: Dict[str, List[Candle]] = {}
+        for day in reversed(days):
+            rng = random.Random(f"{self.seed}:{st.symbol}:{day.isoformat()}:session")
+            start = int(datetime(day.year, day.month, day.day, 14, 30, tzinfo=timezone.utc).timestamp())
+            px = round(start_price(st.symbol) * math.exp(rng.gauss(0.0, 0.01)), 2)
+            bars = []
+            for i in range(390):
+                o = px
+                hi = lo = o
+                for _ in range(6):
+                    px = round(max(0.01, px * math.exp(rng.gauss(0.0, SIGMA_PER_SECOND * math.sqrt(10.0)))), 2)
+                    hi, lo = max(hi, px), min(lo, px)
+                u = 1.0 + 6.0 * (i / 389.0 - 0.5) ** 2                            # U-shape: 2.5x at the open and close, 1x midday
+                vol = float(int(st.volume_base * u * (0.7 + 0.6 * rng.random())))
+                bars.append(Candle(time=start + 60 * i, open=o, high=hi, low=lo, close=px, volume=vol, final=True))
+            out[day.isoformat()] = bars
+        out[today.isoformat()] = st.candles(0)
+        return out
+
     def market_state(self) -> dict:
         return {"state": "SIMULATED", "label": "SIMULATED DATA", "source": SOURCE, "seed": self.seed,
                 "message": "Deterministic simulated prices for development. Not a market feed.",

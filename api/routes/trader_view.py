@@ -6,6 +6,7 @@ GET /api/terminal/symbols           the existing watchlist (watchlist.txt) + dem
 GET /api/terminal/state/{symbol}    terminal state: quote, candles, position per source, latest stored evidence, PPE slot, tradability
 GET /api/terminal/candles/{symbol}  minute candles (history)
 GET /api/terminal/ppe/{symbol}      Stage 5.6 PPE Stretch / Confidence (deterministic; stored evidence only; no recommendation)
+GET /api/terminal/demand/{symbol}   Stage 5.7 Market Demand (deterministic buyer confirmation from bars; separate from PPE; no recommendation)
 WS  /api/terminal/stream            hello · subscribe / unsubscribe / ping / refresh · quote · candle · watchlist · position · evidence
 
 Symbols are validated and normalised (api.validation.validate_symbol); malformed input is 400 INVALID_SYMBOL, a symbol the feed has no
@@ -80,6 +81,15 @@ def get_ppe(symbol: str) -> JSONResponse:
     if err is not None:
         return err
     return JSONResponse(stream().ppe_result(s).model_dump())
+
+
+@router.get("/demand/{symbol}")
+def get_demand(symbol: str) -> JSONResponse:
+    """Stage 5.7 Market Demand (deterministic buyer-confirmation score; bars only; separate from PPE; no recommendation). GET only."""
+    s, err = _resolved(symbol)
+    if err is not None:
+        return err
+    return JSONResponse(stream().demand_result(s).model_dump())
 
 
 @router.websocket("/stream")

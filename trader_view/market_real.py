@@ -150,6 +150,25 @@ class RealMarketData:
         self._bars[s] = (now, out)
         return out[-limit:]
 
+    # ---------------------------------------------------------------- sessions (Stage 5.7 Market Demand) --------------------------------
+    def session_candles(self, symbol: str, sessions: int = 5) -> Dict[str, List[Candle]]:
+        """The cached minute bars grouped by America/New_York session date, regular hours only (09:30 <= t < 16:00), newest `sessions` keys.
+        Served from the same cached fetch as candles(): no extra request. The newest key is the current session once it has a bar."""
+        s = validate_symbol(symbol)
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("America/New_York")
+        except Exception:  # noqa: BLE001 - no tz database: UTC grouping (documented fallback)
+            tz = timezone.utc
+        groups: Dict[str, List[Candle]] = {}
+        for c in self.candles(s, 100000):
+            et = datetime.fromtimestamp(c.time, tz=tz)
+            m = et.hour * 60 + et.minute
+            if 570 <= m < 960:
+                groups.setdefault(et.date().isoformat(), []).append(c)
+        keys = sorted(groups)[-max(1, int(sessions)):]
+        return {k: groups[k] for k in keys}
+
     # ---------------------------------------------------------------- daily bars (Stage 5.6 PPE) ------------------------------------
     def daily_bars(self, symbols: Iterable[str], lookback_days: int = 420) -> Dict[str, list]:
         """Daily bars through the EXISTING batched read (data.market_data.fetch_daily_bars, adjusted). One request for all symbols.

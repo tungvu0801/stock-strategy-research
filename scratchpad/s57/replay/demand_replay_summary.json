@@ -1,0 +1,861 @@
+{
+ "weights": {
+  "relative_volume": 0.2,
+  "vwap_acceptance": 0.2,
+  "intraday_structure": 0.2,
+  "range_strength": 0.15,
+  "relative_strength": 0.15,
+  "follow_through": 0.1
+ },
+ "daily_fallback_validation": {
+  "mode": "DAILY_MODE (completed daily bars only; components B and C NOT_AVAILABLE by design; coverage at the 0.60 floor)",
+  "observations": 44861,
+  "scored": 44859,
+  "insufficient_data": 2,
+  "insufficient_reasons": {
+   "missing volume / history": 2
+  },
+  "symbols": 81,
+  "date_range": [
+   "2024-07-11",
+   "2026-09-28"
+  ],
+  "score": {
+   "mean": 50.5964,
+   "median": 51.0,
+   "std": 16.314,
+   "p05": 24.0,
+   "p25": 38.0,
+   "p75": 63.0,
+   "p95": 77.0,
+   "min": 7.0,
+   "max": 93.0
+  },
+  "bands": {
+   "VERY_WEAK": 2514,
+   "WEAK": 9648,
+   "MIXED": 18359,
+   "STRENGTHENING": 11191,
+   "STRONG": 3077,
+   "VERY_STRONG": 70
+  },
+  "band_share": {
+   "VERY_WEAK": 0.056,
+   "WEAK": 0.2151,
+   "MIXED": 0.4093,
+   "STRENGTHENING": 0.2495,
+   "STRONG": 0.0686,
+   "VERY_STRONG": 0.0016
+  },
+  "extreme_share": 0.0576,
+  "by_band": {
+   "VERY_WEAK": {
+    "n": 2514,
+    "mean_close_location": 0.1292,
+    "mean_relative_volume": 1.9036,
+    "mean_rel_1d_pct": -2.9924,
+    "mean_component_scores": {
+     "a": 30.8177,
+     "d": 12.8602,
+     "e": 9.07,
+     "f": 20.3604
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.00176,
+     "median_fwd_5d": 0.006682,
+     "median_fwd_20d": 0.017925,
+     "median_excess_1d": 0.00133,
+     "median_excess_5d": 0.001626,
+     "median_excess_20d": -0.000227
+    }
+   },
+   "WEAK": {
+    "n": 9648,
+    "mean_close_location": 0.2203,
+    "mean_relative_volume": 1.147,
+    "mean_rel_1d_pct": -1.169,
+    "mean_component_scores": {
+     "a": 41.1615,
+     "d": 21.6231,
+     "e": 29.8899,
+     "f": 38.6786
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.001098,
+     "median_fwd_5d": 0.00358,
+     "median_fwd_20d": 0.010945,
+     "median_excess_1d": -0.00013,
+     "median_excess_5d": -0.000783,
+     "median_excess_20d": -0.003109
+    }
+   },
+   "MIXED": {
+    "n": 18359,
+    "mean_close_location": 0.4914,
+    "mean_relative_volume": 0.9836,
+    "mean_rel_1d_pct": -0.0928,
+    "mean_component_scores": {
+     "a": 46.3524,
+     "d": 48.1828,
+     "e": 48.889,
+     "f": 59.4148
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.00063,
+     "median_fwd_5d": 0.00346,
+     "median_fwd_20d": 0.011109,
+     "median_excess_1d": -0.000298,
+     "median_excess_5d": -0.000745,
+     "median_excess_20d": -0.004329
+    }
+   },
+   "STRENGTHENING": {
+    "n": 11191,
+    "mean_close_location": 0.7843,
+    "mean_relative_volume": 1.0956,
+    "mean_rel_1d_pct": 1.0339,
+    "mean_component_scores": {
+     "a": 52.8922,
+     "d": 78.2103,
+     "e": 66.7404,
+     "f": 73.8376
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.000591,
+     "median_fwd_5d": 0.003509,
+     "median_fwd_20d": 0.00798,
+     "median_excess_1d": -4e-06,
+     "median_excess_5d": -0.000568,
+     "median_excess_20d": -0.004644
+    }
+   },
+   "STRONG": {
+    "n": 3077,
+    "mean_close_location": 0.8693,
+    "mean_relative_volume": 1.656,
+    "mean_rel_1d_pct": 2.9478,
+    "mean_component_scores": {
+     "a": 65.2158,
+     "d": 86.9315,
+     "e": 89.7828,
+     "f": 81.5652
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.000373,
+     "median_fwd_5d": 0.001918,
+     "median_fwd_20d": 0.010971,
+     "median_excess_1d": -0.000204,
+     "median_excess_5d": -0.002539,
+     "median_excess_20d": -0.003538
+    }
+   },
+   "VERY_STRONG": {
+    "n": 70,
+    "mean_close_location": 0.9586,
+    "mean_relative_volume": 2.6993,
+    "mean_rel_1d_pct": 5.6522,
+    "mean_component_scores": {
+     "a": 79.19,
+     "d": 95.8586,
+     "e": 99.1757,
+     "f": 94.9143
+    },
+    "outcome_diagnostics_descriptive_only": {
+     "median_fwd_1d": 0.002329,
+     "median_fwd_5d": -0.007106,
+     "median_fwd_20d": 0.01085,
+     "median_excess_1d": -0.000453,
+     "median_excess_5d": -0.004475,
+     "median_excess_20d": 0.019892
+    }
+   }
+  },
+  "benchmark_kinds": {
+   "SECTOR_ETF": 0,
+   "PEER_BASKET": 30961,
+   "MARKET": 13900,
+   "NONE": 0
+  },
+  "coverage_values": [
+   0.45,
+   0.6
+  ],
+  "per_symbol": {
+   "AAPL": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.5252
+   },
+   "ABBV": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.5
+   },
+   "ABT": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.0576
+   },
+   "ACN": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 49.6745
+   },
+   "ADBE": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 48.7842
+   },
+   "ADI": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.8345
+   },
+   "AMAT": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.8579
+   },
+   "AMD": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.6781
+   },
+   "AMGN": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.5126
+   },
+   "AMZN": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.4029
+   },
+   "AVGO": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.0827
+   },
+   "AXP": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.3022
+   },
+   "BAC": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.3076
+   },
+   "BKNG": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 554,
+    "mean_score": 50.2978
+   },
+   "BLK": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.4263
+   },
+   "BRK.B": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.1601
+   },
+   "C": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.0162
+   },
+   "CAT": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.7356
+   },
+   "CLS": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 53.554
+   },
+   "COST": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.0378
+   },
+   "CRM": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.545
+   },
+   "CSCO": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 52.4694
+   },
+   "CVX": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.0629
+   },
+   "DHR": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 49.2842
+   },
+   "DIS": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.5036
+   },
+   "GE": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.1421
+   },
+   "GOOG": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.8831
+   },
+   "GOOGL": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.1385
+   },
+   "GS": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.5522
+   },
+   "HD": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.4784
+   },
+   "HON": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 48.9694
+   },
+   "IBM": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 52.1151
+   },
+   "INTU": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 48.8381
+   },
+   "ISRG": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.3273
+   },
+   "JNJ": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.6691
+   },
+   "JPM": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.3705
+   },
+   "KLAC": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 52.6313
+   },
+   "KO": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.25
+   },
+   "LIN": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.1853
+   },
+   "LLY": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.2536
+   },
+   "LOW": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.4766
+   },
+   "LRCX": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.9227
+   },
+   "MA": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.9083
+   },
+   "MCD": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.6547
+   },
+   "META": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.0683
+   },
+   "MRK": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.2248
+   },
+   "MRVL": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.768
+   },
+   "MS": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.7788
+   },
+   "MSFT": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.6097
+   },
+   "MU": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.1691
+   },
+   "NEE": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.3939
+   },
+   "NFLX": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.7158
+   },
+   "NOW": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.6025
+   },
+   "NVDA": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.6403
+   },
+   "ORCL": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.6673
+   },
+   "PANW": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.7788
+   },
+   "PEP": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 48.6906
+   },
+   "PFE": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.8147
+   },
+   "PG": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.6061
+   },
+   "PLD": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.054
+   },
+   "PM": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.9694
+   },
+   "QCOM": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 48.9676
+   },
+   "REGN": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 48.5701
+   },
+   "RTX": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.1655
+   },
+   "SBUX": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.5719
+   },
+   "SCHW": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.6781
+   },
+   "SNDK": {
+    "rows": 381,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 381,
+    "mean_score": 53.2257
+   },
+   "SPGI": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 49.5791
+   },
+   "SYK": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 48.9586
+   },
+   "T": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 51.5863
+   },
+   "TMO": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.0701
+   },
+   "TSLA": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.5647
+   },
+   "TXN": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.5216
+   },
+   "UBER": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 48.7806
+   },
+   "UNH": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.0432
+   },
+   "UNP": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 49.9191
+   },
+   "V": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.0827
+   },
+   "VRTX": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 50.3471
+   },
+   "VZ": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 50.3201
+   },
+   "WMT": {
+    "rows": 556,
+    "benchmark_kind": "PEER_BASKET",
+    "scored": 556,
+    "mean_score": 52.0845
+   },
+   "XOM": {
+    "rows": 556,
+    "benchmark_kind": "MARKET",
+    "scored": 556,
+    "mean_score": 51.1673
+   }
+  },
+  "regimes": {
+   "spy_start": "2024-06-03",
+   "spy_end": "2026-09-28",
+   "spy_total_return": 0.4933,
+   "spy_max_drawdown": -0.1874,
+   "spy_max_drawdown_date": "2025-04-08",
+   "spy_realised_vol_20d_min": 0.053,
+   "spy_realised_vol_20d_max": 0.4914,
+   "spy_realised_vol_20d_median": 0.126
+  }
+ },
+ "intraday_validation_synthetic": {
+  "label": "SYNTHETIC \u2014 constructed scenarios and deterministic simulator sessions; not market data",
+  "scenarios": {
+   "neutral": {
+    "score": 51,
+    "label": "MIXED",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 50.0,
+     "vwap_acceptance": 52.4,
+     "intraday_structure": 50.0,
+     "range_strength": 52.4,
+     "relative_strength": null,
+     "follow_through": 52.0
+    },
+    "key_factors": []
+   },
+   "weak_below_vwap_thin": {
+    "score": 14,
+    "label": "VERY_WEAK",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 40.0,
+     "vwap_acceptance": 4.0,
+     "intraday_structure": 10.0,
+     "range_strength": 9.2,
+     "relative_strength": null,
+     "follow_through": 0.0
+    },
+    "key_factors": [
+     "below VWAP for 10+ bars",
+     "lower lows and lower highs, 0 of last 10 closes up",
+     "price in the bottom of the session so far range (9%) on a down move",
+     "10+ consecutive bars below VWAP, lower low"
+    ]
+   },
+   "strong_hold_high_volume": {
+    "score": 89,
+    "label": "STRONG",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 74.0,
+     "vwap_acceptance": 96.5,
+     "intraday_structure": 90.0,
+     "range_strength": 90.8,
+     "relative_strength": null,
+     "follow_through": 100.0
+    },
+    "key_factors": [
+     "holding above VWAP (10+ bars)",
+     "higher lows and higher highs, 10 of last 10 closes up",
+     "price in the top of the session so far range (91%)",
+     "10+ consecutive bars above VWAP, higher low maintained"
+    ]
+   },
+   "volume_spike_no_acceptance": {
+    "score": 10,
+    "label": "VERY_WEAK",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 20.0,
+     "vwap_acceptance": 4.0,
+     "intraday_structure": 10.0,
+     "range_strength": 9.2,
+     "relative_strength": null,
+     "follow_through": 0.0
+    },
+    "key_factors": [
+     "below VWAP for 10+ bars",
+     "lower lows and lower highs, 0 of last 10 closes up",
+     "price in the bottom of the session so far range (9%) on a down move",
+     "relative volume 3.0x with price below VWAP"
+    ]
+   },
+   "brief_vwap_cross": {
+    "score": 52,
+    "label": "MIXED",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 50.0,
+     "vwap_acceptance": 47.6,
+     "intraday_structure": 47.0,
+     "range_strength": 75.7,
+     "relative_strength": null,
+     "follow_through": 42.0
+    },
+    "key_factors": [
+     "price in the top of the session so far range (76%)",
+     "2 bars above VWAP, lower low"
+    ]
+   },
+   "reclaim_held": {
+    "score": 78,
+    "label": "STRONG",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 56.0,
+     "vwap_acceptance": 70.8,
+     "intraday_structure": 90.0,
+     "range_strength": 84.3,
+     "relative_strength": null,
+     "follow_through": 100.0
+    },
+    "key_factors": [
+     "higher lows and higher highs, 10 of last 10 closes up",
+     "price in the top of the session so far range (84%)",
+     "10+ consecutive bars above VWAP, higher low maintained",
+     "holding above VWAP (10+ bars), reclaim held"
+    ]
+   },
+   "one_bar_bounce": {
+    "score": 24,
+    "label": "VERY_WEAK",
+    "mode": "INTRADAY_MODE",
+    "coverage": 0.85,
+    "components": {
+     "relative_volume": 50.0,
+     "vwap_acceptance": 9.7,
+     "intraday_structure": 22.0,
+     "range_strength": 23.1,
+     "relative_strength": null,
+     "follow_through": 3.0
+    },
+    "key_factors": [
+     "below VWAP for 10+ bars",
+     "lower lows and lower highs, failed breakdown reclaimed, 1 of last 10 closes up",
+     "10+ consecutive bars below VWAP, lower low",
+     "price in the bottom of the session so far range (23%) on a down move"
+    ]
+   }
+  },
+  "scenario_checks": {
+   "neutral session scores near 50": true,
+   "weak participation below VWAP scores low": true,
+   "high participation with a sustained VWAP hold scores high": true,
+   "volume spike without acceptance stays below neutral and is not extreme": true,
+   "brief VWAP cross without persistence stays below STRENGTHENING": true,
+   "held reclaim scores well above the brief cross": true,
+   "one-bar bounce does not over-score": true
+  },
+  "simulator": {
+   "rows": 160,
+   "symbols": 40,
+   "checkpoints": [
+    60,
+    120,
+    180,
+    240
+   ],
+   "modes": {
+    "INTRADAY_MODE": 160,
+    "DAILY_MODE": 0
+   },
+   "scored": 160,
+   "score": {
+    "mean": 51.8813,
+    "median": 57.5,
+    "p05": 19.95,
+    "p95": 81.0,
+    "min": 15.0,
+    "max": 85.0
+   },
+   "bands": {
+    "VERY_WEAK": 24,
+    "WEAK": 30,
+    "MIXED": 31,
+    "STRENGTHENING": 48,
+    "STRONG": 27,
+    "VERY_STRONG": 0
+   }
+  }
+ },
+ "note": "weights, scales and bands were fixed in DESIGN_57 before this replay and were not changed by it; outcome diagnostics are descriptive only"
+}
