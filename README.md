@@ -574,3 +574,16 @@ are **preview-only**: Prepare Buy / Prepare Sell have no order path, Research op
 placeholder. Market data is the deterministic simulator unless `TRADER_DATA_MODE=auto` finds read-only Alpaca market-data credentials
 (then it polls at a bounded cadence only while the tab is open); `TRADER_DATA_MODE=simulated` forces the simulator. The chart library
 (Lightweight Charts 4.2.3) is served locally from `frontend/vendor` — no CDN. See `DESIGN_55_TRADER_VIEW.md`.
+
+## PPE engine (Stage 5.6, deterministic, read-only)
+
+Trader View's PPE panel now shows **PPE Stretch** (−100 … +100: how unusually stretched the current move is relative to the stock's
+own behaviour and its sector / market context) and **PPE Confidence** (0 … 100: confidence that a stretched move is an overreaction
+rather than a fundamental repricing, from the STORED Stage 5.4 evidence only). Six documented components (price dislocation,
+abnormal return, relative sector move, volume shock, gap / extension, short-term exhaustion), explicit weights, a 60 % coverage
+floor, deterministic confidence rules and caps — see `DESIGN_56_PPE_ENGINE.md`; the point-in-time validation over 81 stored symbols
+is in `scratchpad/s56/PPE_VALIDATION_56.md` (`python -m ppe.replay --db data/stock_agent.db --out <dir>` regenerates it).
+PPE is not a buy/sell signal and not a probability of recovery: *PPE Confidence measures confidence in the overreaction
+classification, not the probability that the stock will rise.* Served at `GET /api/terminal/ppe/{symbol}` and inside the terminal
+state; refreshed on subscribe, on refresh and every `TRADER_PPE_REFRESH_SECONDS` (60 s), never per quote tick. In simulated mode the
+result is labelled `SIMULATED_DATA`.

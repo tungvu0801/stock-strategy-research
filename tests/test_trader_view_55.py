@@ -151,7 +151,7 @@ def test_01_trader_view_route_and_assets_load(api):
     assert c.status_code == 200
     j = c.json()
     assert j["mode"] == "simulated" and j["label"] == LABEL and j["execution_preview"] == "NOT_CONNECTED" and j["chart"]["version"] == "4.2.3"
-    assert set(j["client_commands"]) == set(CLIENT_COMMANDS) and j["cadence"]["evidence"] == "on subscribe / refresh only" and j["ppe"]["status"] == "NOT_AVAILABLE"
+    assert set(j["client_commands"]) == set(CLIENT_COMMANDS) and j["cadence"]["evidence"] == "on subscribe / refresh only" and j["ppe"]["version"] == "ppe_v1"
     for t in ("overview", "daily", "watchlist", "agent", "alerts", "setups", "history", "portfolio", "review", "strategy", "paper", "settings"):
         assert f'data-tab="{t}"' in html                                           # Trader View is additive: every existing tab is still there
 
@@ -166,7 +166,7 @@ def test_02_ticker_switch_changes_active_symbol(api, ts):
         b = burst(ws, "aapl")
         assert [m["type"] for m in b] == ["subscribed", "state", "candles", "quote", "candle", "position", "evidence"]
         assert b[0] == {"type": "subscribed", "symbol": "AAPL", "replaced": None} and all(m["symbol"] == "AAPL" for m in b[1:])
-        assert len(b[2]["candles"]) == 240 and b[1]["ppe"]["status"] == "NOT_AVAILABLE" and b[1]["data_status"]["mode"] == "simulated"
+        assert len(b[2]["candles"]) == 240 and b[1]["ppe"]["status"] == "SIMULATED_DATA" and b[1]["data_status"]["mode"] == "simulated"
         assert b[3]["status"] == "OK" and b[3]["price"] == b[1]["quote"]["price"] and b[4]["time"] % 60 == 0
         assert ts.hub.symbol_of(cid) == "AAPL"
         b2 = burst(ws, "NVDA")
@@ -437,7 +437,7 @@ def test_11_existing_evidence_packet_loads(api, tmp_path, monkeypatch):
         assert Rec.calls == ["SNDK"]
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence"] and Rec.calls == ["SNDK", "SNDK"]
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe"] and Rec.calls == ["SNDK", "SNDK"]
     assert len(store.packets(limit=200)) == rows_before
     j = api.get("/api/terminal/state/SNDK?candles=0").json()["evidence"]
     assert j["status"] == "LOADED" and j["company_confirm"] in RUNG_STATUSES
@@ -468,12 +468,16 @@ def test_12_missing_evidence_renders_not_loaded(tmp_path):
 
 # ---------------------------------------------------------------- 13 PPE --------------------------------------------------------
 
-def test_13_ppe_renders_not_available(api, ts):
+def test_13_ppe_is_the_engine_result_never_a_fabricated_placeholder(api, ts):
+    """Stage 5.6 filled the Stage 5.5 placeholder: the slot now carries the deterministic PPE result (simulated data in these tests)."""
     ppe = ts.state("NVDA", with_candles=False).ppe
-    assert ppe.status == "NOT_AVAILABLE" and ppe.stretch is None and ppe.confidence is None and ppe.basis is None and ppe.as_of is None
-    assert set(ppe.contract["fields"]) == {"stretch", "confidence", "basis", "as_of"} and ppe.contract["filled_by"] == "Stage 5.6"
-    assert api.get("/api/terminal/config").json()["ppe"]["status"] == "NOT_AVAILABLE"
-    assert "PPE Stretch" in JS and "PPE Confidence" in JS and "NOT AVAILABLE" in JS
+    assert ppe.status == "SIMULATED_DATA" and ppe.symbol == "NVDA" and ppe.disclaimer.startswith("PPE Confidence measures confidence in the overreaction")
+    assert ppe.stretch.status in ("AVAILABLE", "INSUFFICIENT_DATA") and set(ppe.weights) == {"price_dislocation", "abnormal_return", "relative_sector_move",
+                                                                                            "volume_shock", "gap_extension", "short_term_exhaustion"}
+    assert ppe.confidence.status in ("EVIDENCE_NOT_AVAILABLE", "NOT_APPLICABLE", "AVAILABLE", "STRETCH_NOT_AVAILABLE")
+    cfg = api.get("/api/terminal/config").json()["ppe"]
+    assert cfg["version"] == "ppe_v1" and cfg["refresh_s"] >= 1 and "never per quote tick" in cfg["cadence"]
+    assert "PPE Stretch" in JS and "PPE Confidence" in JS and "NOT AVAILABLE" in JS and "SIMULATED DATA" in JS
     assert not re.search(r"(?i)(stretch|confidence)\s*[:=]\s*[0-9.]+", tv_source() + JS)   # no fabricated number anywhere
 
 
@@ -488,7 +492,7 @@ def test_14_action_buttons_cannot_execute_orders(api, ts, monkeypatch):
     from api.server import app
     mine = {p: set(o) for p, o in app.openapi()["paths"].items() if p.startswith("/api/terminal")}
     assert mine == {"/api/terminal/config": {"get"}, "/api/terminal/symbols": {"get"}, "/api/terminal/state/{symbol}": {"get"},
-                    "/api/terminal/candles/{symbol}": {"get"}}
+                    "/api/terminal/candles/{symbol}": {"get"}, "/api/terminal/ppe/{symbol}": {"get"}}
     for p in mine:
         assert not re.search(r"(?i)order|execute|broker|place|cancel|submit|buy|sell|preview|alert|alpaca|robinhood|trade", p), p
     for path in ("/api/terminal/config", "/api/terminal/symbols", "/api/terminal/state/NVDA", "/api/terminal/candles/NVDA"):

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ppe.models import PPEResult
 from trader_view import NOT_CONNECTED
 
 
@@ -17,6 +18,7 @@ class Quote(_M):
     status: str = "OK"                      # OK | UNAVAILABLE
     code: Optional[str] = None              # None | NO_DATA (symbol unknown to the feed) | FEED_ERROR (feed unreachable)
     price: Optional[float] = None
+    open: Optional[float] = None            # the current session's open when the source provides it (Stage 5.6 PPE)
     bid: Optional[float] = None
     ask: Optional[float] = None
     prev_close: Optional[float] = None
@@ -78,25 +80,6 @@ class EvidenceSummary(_M):
     disclaimer: str
 
 
-PPE_CONTRACT: Dict[str, Any] = {
-    "version": "5.6-draft",
-    "filled_by": "Stage 5.6",
-    "fields": {"stretch": "number | null — not computed in Stage 5.5", "confidence": "number | null — not computed in Stage 5.5",
-               "basis": "string | null — inputs the score was built from", "as_of": "ISO-8601 | null"},
-}
-PPE_NOTE = "PPE is not computed in Stage 5.5. No score is fabricated; this slot only defines the contract Stage 5.6 fills."
-
-
-class PPEPlaceholder(_M):
-    status: str = "NOT_AVAILABLE"
-    stretch: Optional[float] = None
-    confidence: Optional[float] = None
-    basis: Optional[str] = None
-    as_of: Optional[str] = None
-    contract: Dict[str, Any] = Field(default_factory=lambda: dict(PPE_CONTRACT))
-    note: str = PPE_NOTE
-
-
 class Tradability(_M):
     status: str                             # UNKNOWN | SIMULATED
     message: str
@@ -136,7 +119,7 @@ class TerminalState(_M):
     quote: Quote
     position: PositionState
     evidence: EvidenceSummary
-    ppe: PPEPlaceholder
+    ppe: PPEResult
     tradability: Tradability
     data_status: DataStatus
     actions: List[Action]

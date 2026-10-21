@@ -57,8 +57,16 @@
 .tv-dim { color: var(--text-dim); font-size: 12px; margin: 4px 0; }
 .tv-note { color: var(--text-dim); font-size: 11px; margin-top: 8px; font-style: italic; }
 .tv-ev-state { font-weight: 700; letter-spacing: .5px; }
-.tv-ppe { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 12px; }
-.tv-ppe b { color: var(--amber); }
+.tv-ppe-head { min-height: 4px; margin-bottom: 4px; }
+.tv-ppe-grid { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 10px; font-size: 12px; align-items: baseline; }
+.tv-ppe-score { font-size: 18px; font-weight: 700; color: var(--amber); }
+.tv-ppe-score.down { color: var(--red); }
+.tv-ppe-score.up { color: var(--green); }
+.tv-ppe-band { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .4px; }
+.tv-ppe-sub { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-top: 8px; }
+.tv-ppe-list { margin: 2px 0 0; padding-left: 16px; font-size: 12px; }
+.tv-ppe-list li { margin: 1px 0; }
+.tv-ppe-src { font-size: 10px; color: var(--text-dim); margin-top: 8px; word-break: break-word; }
 
 .tv-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .tv-act { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 6px; font: inherit; font-size: 13px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
