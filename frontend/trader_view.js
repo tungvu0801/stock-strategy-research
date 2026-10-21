@@ -34,12 +34,12 @@
     { id: "research", label: "Research", enabled: true, status: "NAVIGATE_ONLY", message: "Opens the stored evidence workspace." },
     { id: "add_alert", label: "Add Alert", enabled: false, status: "PLACEHOLDER", message: ACTION_TEXT.add_alert },
   ];
-  const PANELS = [["tv-position", "POSITION"], ["tv-ppe", "PPE"], ["tv-evidence", "EVIDENCE"]];
+  const PANELS = [["tv-position", "POSITION"], ["tv-ppe", "PPE"], ["tv-demand", "DEMAND"], ["tv-evidence", "EVIDENCE"]];
 
   const st = { booted: false, visible: false, active: null, mode: "", source: "", symbols: { watchlist: [], demo: ["AAPL", "NVDA", "SNDK"], default: "AAPL" },
                candles: new Map(), quotes: new Map(), ws: null, attempt: 0, timer: null, toastTimer: null, chart: null, series: null, volume: null,
                fallback: null, haveHistory: false, nav: new core.NavigationHistory(), lastState: null, conn: "disconnected", lastCandle: null,
-               pending: { candles: false, position: false, ppe: false, evidence: false }, watchlist: null, hbTime: "" };
+               pending: { candles: false, position: false, ppe: false, demand: false, evidence: false }, watchlist: null, hbTime: "" };
   const subs = new core.SubscriptionManager((m) => { if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(JSON.stringify(m)); });
 
   // ---------------------------------------------------------------- layout -------------------------------------------------
@@ -85,6 +85,7 @@
         <aside class="tv-right" aria-label="Position, PPE, evidence and actions">
           <section class="tv-panel"><h3>Position</h3><div id="tv-position" class="tv-panel-body"></div></section>
           <section class="tv-panel"><h3>PPE</h3><div id="tv-ppe" class="tv-panel-body"></div></section>
+          <section class="tv-panel tv-panel-demand"><h3>Market Demand</h3><div id="tv-demand" class="tv-panel-body"></div></section>
           <section class="tv-panel"><h3>Evidence</h3><div id="tv-evidence" class="tv-panel-body"></div></section>
           <section class="tv-panel tv-panel-last"><h3>Actions</h3><div class="tv-actions" id="tv-actions"></div></section>
         </aside>
@@ -246,6 +247,20 @@
     el.innerHTML = R.ppeHtml(p, { badge, includeDisclaimer: false }) +
       `<p class="tv-disclaimer">${esc(p.disclaimer || "")}</p>` + R.ppeSourceHtml(p, sim ? p.note : null);   // the SIMULATED DATA tag stays on the card; the long note sits under "Data used"
   }
+  function renderDemand(d) {
+    // Stage 5.7: the deterministic Market Demand result — a separate section, never merged with PPE. No buy/sell text, no forecast.
+    const el = $("tv-demand"); st.pending.demand = false;
+    el.dataset.symbol = (d && d.symbol) || st.active || "";
+    if (!d || !d.status) {
+      el.dataset.state = "NOT AVAILABLE";
+      el.innerHTML = R.demandHtml(null, { symbol: st.active });
+      return;
+    }
+    const m = R.demandModel(d);
+    el.dataset.state = d.status; el.dataset.mode = d.mode || "";
+    el.setAttribute("aria-label", `Market Demand ${m.value} ${m.band}${m.mode ? " · " + m.mode : ""}${m.simulated ? " · SIMULATED DATA" : ""}`);
+    el.innerHTML = R.demandHtml(d, { includeDisclaimer: false }) + `<p class="tv-disclaimer">${esc(d.disclaimer || "")}</p>` + R.demandSourceHtml(d, m.simulated ? d.note : null);
+  }
   function renderEvidence(e) {
     const el = $("tv-evidence"); st.pending.evidence = false;
     el.dataset.symbol = (e && e.symbol) || st.active || "";
@@ -270,7 +285,7 @@
   function applyState(d) {
     st.lastState = d;
     if (d.data_status && d.data_status.mode) { st.mode = d.data_status.mode; st.source = d.data_status.market_source || st.source; setMode(); }
-    st.quotes.set(d.symbol, d.quote); renderQuote(d.quote); renderPosition(d.position); renderEvidence(d.evidence); renderPPE(d.ppe); renderActions(d.actions); renderStatusLine(d);
+    st.quotes.set(d.symbol, d.quote); renderQuote(d.quote); renderPosition(d.position); renderEvidence(d.evidence); renderPPE(d.ppe); renderDemand(d.demand); renderActions(d.actions); renderStatusLine(d);
     renderWatchlist(null); renderRecent();
   }
   function toast(text) {
@@ -295,7 +310,7 @@
     if (s === st.active) { $("tv-input").value = ""; return true; }           // already shown: nothing to reload (the subscription is unchanged)
     if (record) st.nav.push(s);
     st.active = s; st.haveHistory = false; st.lastCandle = null;
-    st.pending = { candles: true, position: true, ppe: true, evidence: true };
+    st.pending = { candles: true, position: true, ppe: true, demand: true, evidence: true };
     $("tv-symbol").textContent = s; $("tv-input").value = "";
     updateNav(); renderWatchlist(null); renderRecent();
     const cached = st.candles.get(s);
@@ -362,6 +377,7 @@
       case "position": renderPosition(m); break;
       case "evidence": renderEvidence(m); break;
       case "ppe": renderPPE(m); break;
+      case "demand": renderDemand(m); break;
       case "heartbeat": st.hbTime = m.server_time ? m.server_time.slice(11, 19) : ""; $("tv-hb").textContent = st.hbTime ? `heartbeat ${st.hbTime} UTC` : ""; break;
       case "subscribed": case "unsubscribed": break;
       case "error":
@@ -378,7 +394,7 @@
   // ---------------------------------------------------------------- tab lifecycle ------------------------------------------
   async function boot() {
     st.booted = true;
-    shell(); setupChart(); setMode(); renderPPE(null); renderActions(DEFAULT_ACTIONS);
+    shell(); setupChart(); setMode(); renderPPE(null); renderDemand(null); renderActions(DEFAULT_ACTIONS);
     try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
     try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
     renderWatchlist(null);

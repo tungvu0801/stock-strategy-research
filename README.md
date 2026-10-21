@@ -602,5 +602,36 @@ Caveats (Stage 5.6; the Stage 5.6.1 UI polish changed none of the formulas, weig
 - The real Alpaca market-data path of Trader View / PPE (`trader_view/market_real.py`, daily bars via `data.market_data.fetch_daily_bars`)
   is covered by fake-client tests but was **not live-tested** on the Stage 5.6 development machine, because market-data credentials were
   not available there.
-- **Market Demand / buyer confirmation is not part of PPE.** It is intentionally separate future work: PPE has no order-flow,
-  buyer-pressure, VWAP-reclaim, demand-confirmation or setup-readiness score, and Trader View shows none.
+- **Market Demand / buyer confirmation is not part of PPE.** Stage 5.7 implements it as a separate score with its own section (next
+  section); PPE itself is unchanged and the two are never combined.
+
+## Market Demand (Stage 5.7, deterministic, read-only)
+
+A separate **MARKET DEMAND** section under PPE answers *"are buyers actually stepping in now?"* with one deterministic score 0 … 100
+(0 = very weak buyer confirmation, 50 = mixed, 100 = very strong) built from bars only — six documented components with fixed
+weights: relative volume / participation (0.20; cumulative session volume vs the same minute of prior sessions), VWAP / price
+acceptance (0.20; cumulative session VWAP, time above it, hold streak, reclaim held or rejected), intraday structure (0.20; higher /
+lower lows and highs over three 10-bar windows, up-close share, failed-breakdown reclaim), range strength (0.15; close location in the
+session range, capped on a down move), relative strength vs sector (0.15; session and 5-session returns vs the same SECTOR_ETF →
+PEER_BASKET → `SPY (market fallback)` hierarchy PPE uses, fallback always shown) and follow-through (0.10; bars on the current side of
+VWAP, higher low kept, close-to-close follow-through). The score is the weighted average over the available components with a 60 %
+coverage floor (`INSUFFICIENT_DATA` below it, never a filled-in 50); bands VERY_WEAK 0–24 · WEAK 25–39 · MIXED 40–59 · STRENGTHENING
+60–74 · STRONG 75–89 · VERY_STRONG 90–100. `INTRADAY_MODE` needs 30 completed bars of the current session; otherwise `DAILY_MODE` uses
+completed daily bars only (VWAP and structure NOT_AVAILABLE, coverage exactly 0.60) and says so — daily mode never implies real-time
+confirmation. Served inside the terminal state, at `GET /api/terminal/demand/{symbol}` and as the socket message `demand` every
+`TRADER_DEMAND_REFRESH_SECONDS` (30 s), never per quote tick; every result names its market-data source, benchmark, bars-through
+time, session (date, completed bars, complete or in progress), calculation time and mode, and simulator results are `SIMULATED_DATA`.
+See `DESIGN_57_MARKET_DEMAND.md`; the validation is in `scratchpad/s57/DEMAND_VALIDATION_57.md`
+(`python -m demand.replay --db data/stock_agent.db --out <dir>` regenerates it).
+
+What Market Demand is and is not: it is buyer-confirmation research; it is **not a probability** that the stock rises, not an expected
+return, not a reversal probability, **not a trade signal**, **not part of PPE** (PPE Stretch, PPE Confidence and Market Demand stay three
+separate numbers — e.g. Stretch −82 / Confidence 42 / Demand 18 reads "stretched, buyers not confirming"; Demand 76 later reads
+"buyers confirming" — with no recommendation either way, and a high score on an upside-stretched stock is not a short cue), and
+**not execution logic** (no order path, Prepare Buy / Prepare Sell stay disabled, no broker, model or research call). Exact disclaimer,
+shown with every result: *Market Demand measures observed buyer participation and confirmation, not the probability that the stock will
+rise.* Caveats: **bid/ask microstructure is omitted** from V1 (IEX quotes and synthetic simulator spreads are not reliable enough; no
+order-book inference); intraday relative strength uses the session horizon only; the project has no intraday bar store, so the
+**intraday validation** runs on deterministic synthetic sessions and the daily-fallback validation on the stored daily history; the
+real Alpaca minute-bar path is fake-client-tested and was **not live-tested** on the development machine. Weights, scales and bands are
+research hypotheses fixed in the design before the replay and were not tuned on future returns.

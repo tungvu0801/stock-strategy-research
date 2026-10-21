@@ -41,7 +41,7 @@
 .tv.tv-stale .tv-chart-wrap { filter: saturate(.55); }
 
 /* ---- the three columns ------------------------------------------------------------------------------------------------ */
-.tv-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr) 320px; gap: 10px; height: clamp(440px, calc(100vh - 240px), 920px); }
+.tv-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr) 340px; gap: 10px; height: clamp(440px, calc(100vh - 240px), 920px); }
 .tv-left, .tv-right, .tv-center { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 0; min-height: 0; }
 .tv-left, .tv-right { overflow-y: auto; overflow-x: hidden; }
 .tv-right { display: flex; flex-direction: column; padding-bottom: 0; }
@@ -78,7 +78,7 @@
 .tv-footnote { font-size: 11px; color: var(--text-dim); margin-top: 6px; opacity: .8; }
 
 /* ---- right panel: compact sections ---------------------------------------------------------------------------------------- */
-.tv-panel { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; flex: 0 0 auto; }
+.tv-panel { border-bottom: 1px solid var(--border); padding-bottom: 7px; margin-bottom: 7px; flex: 0 0 auto; }
 .tv-panel.tv-panel-last { border-bottom: 0; margin: auto -12px 0; padding: 6px 12px 8px; position: sticky; bottom: 0; background: var(--bg-panel); border-top: 1px solid var(--border); z-index: 1; }   /* actions always reachable */
 .tv-panel.tv-panel-last h3 { margin: 0 0 6px; }
 .tv-panel-body { font-size: 13px; }
@@ -97,7 +97,7 @@
 .tv-details { margin-top: 6px; font-size: 11px; }
 .tv-details summary { cursor: pointer; color: var(--text-dim); font-size: 11px; }
 .tv-details summary:hover { color: var(--text); }
-.tv-disclaimer { color: var(--text-dim); font-size: 11px; margin: 8px 0 0; font-style: italic; line-height: 1.35; border-left: 2px solid var(--border); padding-left: 8px; }
+.tv-disclaimer { color: var(--text-dim); font-size: 11px; margin: 6px 0 0; font-style: italic; line-height: 1.3; border-left: 2px solid var(--border); padding-left: 8px; }
 
 /* ---- loading skeleton (the NEW ticker's panels while its data is on the way) ----------------------------------------------- */
 .tv-skel-bar { height: 10px; border-radius: 5px; margin: 6px 0; background: linear-gradient(90deg, var(--bg-card) 25%, var(--border) 50%, var(--bg-card) 75%); background-size: 200% 100%; animation: tv-shimmer 1.2s linear infinite; }
@@ -109,7 +109,7 @@
 .tv-ppe-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; min-height: 18px; }
 .tv-ppe-bench { font-size: 11px; color: var(--text-dim); }
 .tv-ppe-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.tv-ppe-block { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tv-ppe-block { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tv-ppe-block.na { border-style: dashed; }
 .tv-ppe-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--text-dim); display: flex; align-items: center; gap: 6px; }
 .tv-ppe-val { font-size: 24px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--text); }
@@ -123,13 +123,29 @@
 .tv-ppe-block:has(.tv-ppe-val.down.extreme) { background: var(--tv-down-bg); }
 .tv-info { width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text-dim); font-size: 11px; font-weight: 700; line-height: 1; padding: 0; cursor: help; }
 .tv-info:hover { color: var(--text); border-color: var(--accent); }
-.tv-ppe-meta { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--text-dim); margin: 8px 0 2px; }
+.tv-ppe-meta { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: var(--text-dim); margin: 6px 0 0; }
 .tv-ppe-meta b { color: var(--text); font-variant-numeric: tabular-nums; }
-.tv-ppe-sub { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-top: 8px; }
-.tv-ppe-list { margin: 2px 0 0; padding-left: 16px; font-size: 12px; line-height: 1.4; }
+.tv-ppe-sub { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); margin-top: 6px; }
+.tv-ppe-list { margin: 2px 0 0; padding-left: 16px; font-size: 12px; line-height: 1.3; }
 .tv-ppe-list li { margin: 1px 0; }
 .tv-ppe-ev { font-size: 12px; }
-.tv-explain { font-size: 11px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.35; }
+.tv-explain { font-size: 11px; color: var(--text-dim); margin: 6px 0 0; line-height: 1.3; }
+
+/* ---- Market Demand card (Stage 5.7): its own section, never merged with PPE; weak = muted orange, strong = muted blue ------------ */
+.tv-panel-demand { border-top: 2px solid var(--border); padding-top: 8px; }
+.tv-dem-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-height: 18px; flex-wrap: wrap; }
+.tv-dem-mode { font-size: 11px; font-weight: 700; letter-spacing: .4px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 8px; padding: 1px 7px; text-transform: uppercase; }
+.tv-dem-mode[data-demand-mode="DAILY"] { color: var(--tv-sim); border-color: rgba(210, 153, 34, .5); }
+.tv-dem-score { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; display: flex; align-items: baseline; gap: 10px; }
+.tv-dem-score.na { border-style: dashed; }
+.tv-dem-val { font-size: 24px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--text); }
+.tv-dem-val.weak { color: var(--tv-down); }
+.tv-dem-val.strong { color: var(--tv-up); }
+.tv-dem-score.na .tv-dem-val { color: var(--text-dim); font-size: 20px; }
+.tv-dem-band { font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase; color: var(--text-dim); flex: 1; }
+.tv-dem-band.weak { color: var(--tv-down); }
+.tv-dem-band.strong { color: var(--tv-up); }
+.tv-dem-stamp { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
 /* ---- actions: Prepare Buy / Prepare Sell are real disabled buttons ------------------------------------------------------------- */
 .tv-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -143,7 +159,7 @@
 
 /* ---- smaller desktops ---------------------------------------------------------------------------------------------------------- */
 @media (max-width: 1500px) {
-  .tv-grid { grid-template-columns: 180px minmax(0, 1fr) 300px; }
+  .tv-grid { grid-template-columns: 180px minmax(0, 1fr) 310px; }
   .tv-top input { width: 120px; }
 }
 @media (max-width: 1300px) {

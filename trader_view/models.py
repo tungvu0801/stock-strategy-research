@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from demand.models import DemandResult
 from ppe.models import PPEResult
 from trader_view import NOT_CONNECTED
 
@@ -120,6 +121,7 @@ class TerminalState(_M):
     position: PositionState
     evidence: EvidenceSummary
     ppe: PPEResult
+    demand: DemandResult                    # Stage 5.7 Market Demand — separate from PPE, never combined with it
     tradability: Tradability
     data_status: DataStatus
     actions: List[Action]

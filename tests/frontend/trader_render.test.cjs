@@ -9,7 +9,7 @@ const core = require("../../frontend/trader_core.js");
 
 const DISCLAIMER = "PPE Confidence measures confidence in the overreaction classification, not the probability that the stock will rise.";
 const TRADE_WORDS = /\b(buy|sell|recommend\w*|should|target price|price target|expected return|win rate|enter now|trade now)\b/i;
-const DEMAND_WORDS = /market demand|order.?flow|buyer.?pressure|vwap|demand confirmation|setup readiness/i;
+const DEMAND_WORDS = /order.?flow|buyer.?pressure|setup readiness/i;   // Stage 5.7 added the Market Demand card itself (tests/frontend/trader_demand.test.cjs); these stay out
 const text = (html) => String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 const VIEW_JS = fs.readFileSync(path.join(__dirname, "..", "..", "frontend", "trader_view.js"), "utf8");
 
@@ -211,9 +211,9 @@ test("17 no probability-of-rise / expected-return field or wording beyond the ex
   }
 });
 
-test("18 no Market Demand UI: no demand / order-flow / buyer-pressure / VWAP / readiness element or export", () => {
+test("18 no order-flow / buyer-pressure / setup-readiness score element or export (Market Demand itself is Stage 5.7)", () => {
   for (const html of ALL_HTML()) assert.doesNotMatch(text(html), DEMAND_WORDS);
-  assert.ok(!Object.keys(R).some((k) => /demand|flow|vwap|readiness|pressure/i.test(k)), Object.keys(R).join(","));
+  assert.ok(!Object.keys(R).some((k) => /flow|readiness|pressure/i.test(k)), Object.keys(R).join(","));
   assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "..", "..", "frontend", "trader_render.js"), "utf8"), DEMAND_WORDS);
   assert.doesNotMatch(VIEW_JS, DEMAND_WORDS);
 });

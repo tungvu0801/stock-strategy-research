@@ -22,8 +22,8 @@
   const pct = (v) => (num(v) == null ? "—" : `${num(v) >= 0 ? "+" : ""}${num(v).toFixed(2)}%`);
   const dir = (v) => (num(v) == null ? "" : num(v) > 0 ? "up" : num(v) < 0 ? "down" : "");
 
-  const EXPLAIN_STRETCH = "Stretch: how far price is displaced from its normal conditions (its own history and its sector / market context).";
-  const EXPLAIN_CONFIDENCE = "Confidence: how well the stored evidence supports reading this move as an overreaction or dislocation. It is not a forecast.";
+  const EXPLAIN_STRETCH = "Stretch: how far price is displaced from its normal conditions.";
+  const EXPLAIN_CONFIDENCE = "Confidence: how well the stored evidence supports an overreaction or dislocation reading. It is not a forecast.";
 
   // ---------------------------------------------------------------- connection + source ------------------------------------
   const CONN = { connected: ["CONNECTED", "ok"], connecting: ["CONNECTING", "warn"], reconnecting: ["RECONNECTING", "warn"], disconnected: ["DISCONNECTED", "bad"] };
@@ -71,8 +71,13 @@
   }
 
   // ---------------------------------------------------------------- states -----------------------------------------------
+  function firstSentence(s) {                                                   // state details stay one sentence; the full text lives in the result
+    const t = String(s == null ? "" : s).trim();
+    const i = t.indexOf(". ");
+    return i > 0 ? t.slice(0, i + 1) : t;
+  }
   function stateHtml(code, text, detail) {
-    return `<div class="tv-state" data-state="${esc(code)}">${esc(text)}</div>${detail ? `<p class="tv-dim">${esc(detail)}</p>` : ""}`;
+    return `<div class="tv-state" data-state="${esc(code)}">${esc(text)}</div>${detail ? `<p class="tv-dim">${esc(firstSentence(detail))}</p>` : ""}`;
   }
   function skeletonHtml(what, symbol) {
     return `<div class="tv-skel" data-state="LOADING" aria-busy="true"><div class="tv-state tv-state-dim">LOADING ${esc(what)}${symbol ? ` · ${esc(symbol)}` : ""}</div>` +
@@ -158,6 +163,57 @@
     return `<details class="tv-details"><summary>Data used</summary>${m.source ? `<div class="tv-dim">${esc(m.source)}</div>` : ""}${note ? `<div class="tv-dim">${esc(note)}</div>` : ""}</details>`;
   }
 
+  // ---------------------------------------------------------------- Market Demand (Stage 5.7; separate from PPE) ----------
+  const DEMAND_CLS = { VERY_WEAK: "weak", WEAK: "weak", MIXED: "", STRENGTHENING: "strong", STRONG: "strong", VERY_STRONG: "strong extreme" };
+  const EXPLAIN_DEMAND = "Market Demand: observed buyer participation and price acceptance in the bars (volume vs normal, VWAP acceptance, intraday structure, range, strength vs sector, follow-through). It is separate from PPE and is not a forecast.";
+  function demandModel(d) {
+    const src = (d && d.sources) || {};
+    const s = num(d && d.score);
+    const simulated = !!d && (d.status === "SIMULATED_DATA" || src.mode === "simulated");
+    let state = "AVAILABLE";
+    if (!d || !d.status) state = "NOT_LOADED";
+    else if (d.status === "NOT_AVAILABLE") state = "NOT_AVAILABLE";
+    else if (s == null) state = "INSUFFICIENT_DATA";
+    const mode = d && d.mode === "INTRADAY_MODE" ? "INTRADAY" : d && d.mode === "DAILY_MODE" ? "DAILY" : "";
+    const cov = num(d && d.coverage_weight);
+    const sess = src.session || {};
+    const lines = [];
+    if (state === "INSUFFICIENT_DATA") lines.push({ code: "DEMAND_INSUFFICIENT_DATA", text: "DEMAND INSUFFICIENT DATA", detail: (d && d.note) || "" });
+    else if (state === "NOT_AVAILABLE") lines.push({ code: "DEMAND_NOT_AVAILABLE", text: "DEMAND NOT AVAILABLE", detail: (d && d.note) || "" });
+    const bits = [src.market_data, src.benchmark_label ? `benchmark ${src.benchmark_label}` : "no benchmark", src.bars_through ? `bars through ${src.bars_through}` : "",
+                  sess.date ? `session ${sess.date} · ${sess.bars_completed || 0} completed bars · ${sess.complete ? "complete" : "in progress"}` : "",
+                  src.computed_at ? `computed ${String(src.computed_at).slice(11, 19)} UTC` : ""].filter(Boolean);
+    const bt = src.bars_through ? (String(src.bars_through).length > 10 ? `bars through ${String(src.bars_through).slice(11, 16)} UTC` : `bars through ${src.bars_through}`) : "";
+    const stamp = [src.benchmark_label ? `vs ${src.benchmark_label}` : "", bt,
+                   sess.date && mode ? (sess.complete ? "session complete" : (mode === "INTRADAY" ? `session in progress · ${sess.bars_completed || 0} bars` : "completed sessions only")) : "",
+                   src.computed_at ? `computed ${String(src.computed_at).slice(11, 19)} UTC` : ""].filter(Boolean).join(" · ");
+    return { state, simulated, symbol: d ? d.symbol || null : null, value: s == null ? "—" : String(Math.round(s)), band: state === "AVAILABLE" ? words(d.label) : (state === "INSUFFICIENT_DATA" ? "INSUFFICIENT DATA" : "NOT AVAILABLE"),
+             cls: state === "AVAILABLE" ? (DEMAND_CLS[d.label] || "") : "", mode, modeText: mode === "DAILY" ? "DAILY · completed bars" : mode === "INTRADAY" ? "INTRADAY · session bars" : "",
+             coverage: cov == null ? "—" : `${Math.round(cov * 100)}%`, factors: (d && d.key_factors || []).slice(0, 4), lines, benchmark: src.benchmark_label || null,
+             source: bits.join(" · "), stamp, note: d ? d.note || null : null, disclaimer: d ? d.disclaimer || "" : "", explain: EXPLAIN_DEMAND };
+  }
+  function demandHtml(d, opts) {
+    const o = opts || {};
+    const m = demandModel(d);
+    if (m.state === "NOT_LOADED") return o.loading ? skeletonHtml("DEMAND", o.symbol) : stateHtml("DEMAND_NOT_AVAILABLE", "DEMAND NOT AVAILABLE", o.symbol ? `No Market Demand result for ${o.symbol} yet.` : "No Market Demand result yet.");
+    const badge = m.simulated ? `<span class="tv-tag warn">SIMULATED DATA</span>` : "";
+    const modeChip = m.mode ? `<span class="tv-dem-mode" data-demand-mode="${esc(m.mode)}" title="${esc(m.mode === "DAILY" ? "Only completed daily bars are available: no real-time confirmation is implied." : "Completed bars of the current session.")}">${esc(m.modeText)}</span>` : "";
+    return `<div class="tv-dem-head">${badge}${modeChip}</div>` +
+      `<div class="tv-dem-score${m.state === "AVAILABLE" ? "" : " na"}" data-demand="score"><b class="tv-dem-val ${m.cls}">${esc(m.value)}</b><span class="tv-dem-band ${m.cls}">${esc(m.band)}</span>` +
+      `<button type="button" class="tv-info" data-demand-info="score" title="${esc(EXPLAIN_DEMAND)}" aria-label="What Market Demand means">?</button></div>` +
+      `<div class="tv-ppe-meta"><span>Coverage</span><b>${esc(m.coverage)}</b></div>` +
+      (m.stamp ? `<div class="tv-dem-stamp">${esc(m.stamp)}</div>` : "") +
+      m.lines.map((l) => stateHtml(l.code, l.text, l.detail)).join("") +
+      (m.factors.length ? `<div class="tv-ppe-sub">Key factors</div><ul class="tv-ppe-list">${m.factors.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : "") +
+      `<p class="tv-explain">${esc(EXPLAIN_DEMAND)}</p>` +
+      (o.includeDisclaimer === false ? "" : `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>`);
+  }
+  function demandSourceHtml(d, note) {
+    const m = demandModel(d);
+    if (!m.source && !note) return "";
+    return `<details class="tv-details"><summary>Data used</summary>${m.source ? `<div class="tv-dim">${esc(m.source)}</div>` : ""}${note ? `<div class="tv-dim">${esc(note)}</div>` : ""}</details>`;
+  }
+
   // ---------------------------------------------------------------- status strip -----------------------------------------
   function statusChips(d, mode) {
     const ds = (d && d.data_status) || {};
@@ -171,5 +227,5 @@
   }
 
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
-           ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, statusChips, EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE };
+           ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, statusChips, EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND };
 });

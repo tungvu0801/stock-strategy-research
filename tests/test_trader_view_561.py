@@ -25,7 +25,7 @@ CSS = (FRONT / "trader_view.css").read_text(encoding="utf-8")
 HTML = (FRONT / "index.html").read_text(encoding="utf-8")
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 DISCLAIMER = "PPE Confidence measures confidence in the overreaction classification, not the probability that the stock will rise."
-DEMAND = re.compile(r"(?i)market.?demand|order.?flow|buyer.?pressure|vwap|demand confirmation|setup readiness")
+DEMAND = re.compile(r"(?i)order.?flow|buyer.?pressure|setup readiness")      # Stage 5.7 added the Market Demand section itself; these remain non-features
 
 
 def code_only(src: str) -> str:
@@ -84,13 +84,15 @@ def test_03_no_recommendation_or_probability_language_in_the_ui():
     assert "${esc(p.disclaimer || \"\")}" in VIEW and 'class="tv-disclaimer"' in RENDER
 
 
-def test_04_no_market_demand_ui():
+def test_04_no_order_flow_or_readiness_score_ui():
+    """Stage 5.6.1 shipped no Market Demand UI; Stage 5.7 added the Market Demand section (tests/test_demand_57.py). What stays out of the
+    UI in both stages: order-flow, buyer-pressure and setup-readiness scores."""
     for name, src in (("trader_view.js", VIEW), ("trader_render.js", RENDER), ("trader_view.css", CSS)):
         assert not DEMAND.search(src), name
     import browser_tests.flows as F
     import inspect
     assert not DEMAND.search(inspect.getsource(F.trader_view))
-    assert not re.search(r"(?i)demand|readiness|order.?flow", html_of_trader_tab())
+    assert not re.search(r"(?i)readiness|order.?flow", html_of_trader_tab())
 
 
 def html_of_trader_tab() -> str:
@@ -121,7 +123,7 @@ def test_06_readme_describes_the_implemented_ppe_and_tracks_the_two_caveats():
     ppe = README[README.index("## PPE engine (Stage 5.6"):]
     ppe = ppe[:ppe.index("\n## ", 1)] if "\n## " in ppe[1:] else ppe
     assert "not live-tested" in ppe and "fake-client tests" in ppe and "credentials" in ppe              # caveat 1: real Alpaca market-data path
-    assert "Market Demand" in ppe and "not part of PPE" in ppe and "future work" in ppe                 # caveat 2: Market Demand is separate
+    assert "Market Demand" in ppe and "not part of PPE" in ppe and ("future work" in ppe or "separate score" in ppe)   # caveat 2: Market Demand is separate (Stage 5.7 implemented it as its own section)
     assert "could not be replayed" in ppe and "EVIDENCE_NOT_AVAILABLE" in ppe and "descriptive only" in ppe
     flat = " ".join(ppe.replace("*", "").split())                                                      # the README wraps lines
     assert DISCLAIMER in flat
@@ -142,7 +144,7 @@ def test_07_css_focus_styles_min_font_and_restrained_ppe_colours():
     root = re.search(r":root \{([^}]*)\}", CSS).group(1)
     assert re.search(r"--tv-up:\s*#9ecbff", root) and re.search(r"--tv-down:\s*#e8a66b", root)       # blue-ish / orange-ish, not the price palette
     assert ".tv.tv-stale" in CSS and ".tv-skel-bar" in CSS and ".tv-source.sim" in CSS and ".tv-conn.warn .tv-dot" in CSS
-    assert re.search(r"\.tv-grid \{[^}]*grid-template-columns: 200px minmax\(0, 1fr\) 320px", CSS)
+    assert re.search(r"\.tv-grid \{[^}]*grid-template-columns: 200px minmax\(0, 1fr\) 3[2-4]0px", CSS)        # 320 px in 5.6.1; 340 px since Stage 5.7 (Market Demand card)
     assert "@media (max-width: 1300px)" in CSS and "@media (max-width: 1100px)" in CSS
 
 
@@ -162,12 +164,14 @@ def test_08_harness_flow_registered_without_moving_the_pinned_order():
 
 # ---------------------------------------------------------------- 9 UI only ------------------------------------------------------
 
-UNCHANGED = ["frontend/trader_core.js", "trader_view/__init__.py", "trader_view/adapters.py", "trader_view/hub.py", "trader_view/market_real.py", "trader_view/models.py",
-             "trader_view/positions.py", "trader_view/ppe_provider.py", "trader_view/research.py", "trader_view/simulated.py", "trader_view/stream.py", "api/routes/trader_view.py",
+# Stage 5.6.1 was UI only. Stage 5.7 (Market Demand) legitimately extended trader_core.js, trader_view/{__init__,market_real,models,simulated,stream}.py,
+# api/routes/trader_view.py, config.py and the Stage 5.5 / 5.6 test expectations (state key, refresh message, GET route); those files are pinned
+# against the Stage 5.7 base in tests/test_demand_57.py instead. Everything below is still byte-identical to 24ae7d5.
+UNCHANGED = ["trader_view/adapters.py", "trader_view/hub.py", "trader_view/positions.py", "trader_view/ppe_provider.py", "trader_view/research.py",
              "ppe/__init__.py", "ppe/confidence.py", "ppe/engine.py", "ppe/evidence_context.py", "ppe/features.py", "ppe/inputs.py", "ppe/models.py", "ppe/replay.py",
-             "ppe/sectors.py", "ppe/stretch.py", "evidence/engine.py", "evidence/rules.py", "evidence/store.py", "config.py", "database/migrations.py", "api/server.py",
+             "ppe/sectors.py", "ppe/stretch.py", "evidence/engine.py", "evidence/rules.py", "evidence/store.py", "database/migrations.py", "api/server.py",
              "paper/alpaca_order_writer.py", "paper/alpaca_orders.py", "paper/alpaca_readonly.py", "portfolio/provider.py", "DESIGN_56_PPE_ENGINE.md",
-             "tests/test_trader_view_55.py", "tests/test_ppe_56.py", "tests/test_evidence_54.py", "tests/test_browser_harness_39.py", "tests/frontend/trader_core.test.cjs",
+             "tests/test_evidence_54.py", "tests/test_browser_harness_39.py", "tests/frontend/trader_core.test.cjs",
              "scratchpad/s56/PPE_VALIDATION_56.md"]
 
 

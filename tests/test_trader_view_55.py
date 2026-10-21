@@ -251,7 +251,7 @@ def test_06_arbitrary_valid_symbol(api, ts):
     assert r.status_code == 200
     j = r.json()
     assert j["symbol"] == "MSFT" and len(j["candles"]) == 240 and j["quote"]["status"] == "OK" and j["tradability"]["status"] == "SIMULATED"
-    assert set(j) == {"label", "symbol", "quote", "position", "evidence", "ppe", "tradability", "data_status", "actions", "market_state", "candles"}
+    assert set(j) == {"label", "symbol", "quote", "position", "evidence", "ppe", "demand", "tradability", "data_status", "actions", "market_state", "candles"}   # "demand": Stage 5.7
     assert api.get("/api/terminal/candles/brk.b?limit=5").json()["symbol"] == "BRK.B"
     assert len(api.get("/api/terminal/state/shop?candles=10").json()["candles"]) == 10
     with api.websocket_connect(WS_PATH) as ws:
@@ -437,7 +437,7 @@ def test_11_existing_evidence_packet_loads(api, tmp_path, monkeypatch):
         assert Rec.calls == ["SNDK"]
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe"] and Rec.calls == ["SNDK", "SNDK"]
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand"] and Rec.calls == ["SNDK", "SNDK"]   # "demand": Stage 5.7
     assert len(store.packets(limit=200)) == rows_before
     j = api.get("/api/terminal/state/SNDK?candles=0").json()["evidence"]
     assert j["status"] == "LOADED" and j["company_confirm"] in RUNG_STATUSES
@@ -492,7 +492,7 @@ def test_14_action_buttons_cannot_execute_orders(api, ts, monkeypatch):
     from api.server import app
     mine = {p: set(o) for p, o in app.openapi()["paths"].items() if p.startswith("/api/terminal")}
     assert mine == {"/api/terminal/config": {"get"}, "/api/terminal/symbols": {"get"}, "/api/terminal/state/{symbol}": {"get"},
-                    "/api/terminal/candles/{symbol}": {"get"}, "/api/terminal/ppe/{symbol}": {"get"}}
+                    "/api/terminal/candles/{symbol}": {"get"}, "/api/terminal/ppe/{symbol}": {"get"}, "/api/terminal/demand/{symbol}": {"get"}}   # demand: Stage 5.7, GET only
     for p in mine:
         assert not re.search(r"(?i)order|execute|broker|place|cancel|submit|buy|sell|preview|alert|alpaca|robinhood|trade", p), p
     for path in ("/api/terminal/config", "/api/terminal/symbols", "/api/terminal/state/NVDA", "/api/terminal/candles/NVDA"):

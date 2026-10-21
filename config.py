@@ -556,3 +556,12 @@ PPE_BARS_CACHE_SECONDS: float = float(os.getenv("PPE_BARS_CACHE_SECONDS", "900")
 # Sector benchmark extensions for PPE only: ticker -> an EXISTING sector name in data.sector_map.SECTOR_MAP (its ETF is reused). The curated map
 # itself is unchanged (earlier stages' tests rely on it). AAPL -> "Software" because that sector's ETF is XLK (Technology Select Sector), which holds AAPL.
 PPE_SECTOR_EXTENSIONS: dict = {"AAPL": "Software", **_env_json("PPE_SECTOR_EXTENSIONS_JSON", {})}
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.7 — MARKET DEMAND (demand/). Deterministic buyer-confirmation score (0 … 100) shown in Trader View NEXT TO PPE and never
+# combined with it: computed on subscribe, on refresh and every TRADER_DEMAND_REFRESH_SECONDS for the active ticker — never per quote
+# tick. Bars only (minute + daily); no order path, no recommendation, no model call, no research run, no change to PPE.
+# ------------------------------------------------------------------------------------------------------------------
+TRADER_DEMAND_REFRESH_SECONDS: float = float(os.getenv("TRADER_DEMAND_REFRESH_SECONDS", "30"))
+DEMAND_PRIOR_SESSIONS: int = int(os.getenv("DEMAND_PRIOR_SESSIONS", "5"))                # prior sessions behind the expected intraday volume curve
+DEMAND_DAILY_LOOKBACK_DAYS: int = int(os.getenv("DEMAND_DAILY_LOOKBACK_DAYS", "120"))    # calendar days of daily bars for the daily fallback (~80 sessions)

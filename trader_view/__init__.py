@@ -17,7 +17,7 @@ LABEL = "TRADER VIEW · READ ONLY · NO ORDER PATH · PREVIEW NOT CONNECTED"
 DATA_MODES = ("auto", "real", "simulated")
 NOT_CONNECTED = "Paper order preview not connected in Trader View."
 MESSAGE_TYPES = ("hello", "subscribed", "unsubscribed", "state", "quote", "candle", "candles", "watchlist", "position", "evidence",
-                 "ppe",
+                 "ppe", "demand",
                  "heartbeat", "error")
-SYMBOL_BOUND_TYPES = ("quote", "candle", "candles", "state", "position", "evidence", "ppe")      # must carry the active symbol
+SYMBOL_BOUND_TYPES = ("quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand")      # must carry the active symbol
 CLIENT_COMMANDS = ("subscribe", "unsubscribe", "ping", "refresh")
