@@ -409,6 +409,122 @@ def small_screens(c: Ctx):
     c.suffix = ""
 
 
+TV = "TraderView.state"
+TV_JS = r"""(() => { window.__tvText = (sel) => { const e = document.querySelector(sel); return e ? e.innerText : null; };
+  window.__tvState = (sel) => { const e = document.querySelector(sel); return e ? [e.dataset.state || null, e.dataset.symbol || null] : null; };
+  window.__tvVisible = (sel) => { const e = document.querySelector(sel); if (!e) return false; const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && !!e.offsetParent; };
+  window.__tvInView = (sel) => { const e = document.querySelector(sel); if (!e) return false; const b = e.getBoundingClientRect(); return b.top >= 0 && b.bottom <= innerHeight + 1; };
+  window.__tvActive = () => [...document.querySelectorAll('#tv-watchlist li.active, #tv-recent li.active')].map((e) => e.dataset.sym);
+  window.__tvMinFont = () => Math.min(...[...document.querySelectorAll('#tv-body *')].filter((e) => e.offsetParent && e.children.length === 0 && e.textContent.trim()).map((e) => parseFloat(getComputedStyle(e).fontSize)));
+  window.__tvActions = () => [...document.querySelectorAll('#tv-actions .tv-act')].map((b) => [b.dataset.action, b.disabled, b.getAttribute('aria-disabled')]);
+  window.__tvClipped = () => [...document.querySelectorAll('.tv-top, .tv-head, .tv-ppe-block, .tv-act, .tv-left, .tv-right')].filter((e) => e.scrollWidth > e.clientWidth + 2).map((e) => e.className).slice(0, 5);
+  window.__tvSwitch = (s) => { const ok = TraderView.switchTo(s); return [ok, __tvState('#tv-ppe'), __tvState('#tv-position'), __tvState('#tv-evidence'), document.getElementById('tv-symbol').innerText]; };
+})()"""
+TV_SYMBOLS = ["AAPL", "NVDA", "SNDK", "MSFT", "JPM"]
+TV_SIZES = ((1920, 1080), (1440, 900), (1366, 768), (1280, 720))
+TV_BANDS = ("NORMAL", "UPSIDE STRETCHED", "DOWNSIDE STRETCHED", "EXTREME UPSIDE", "EXTREME DOWNSIDE", "INSUFFICIENT DATA", "NOT AVAILABLE")
+PPE_DISCLAIMER = "PPE Confidence measures confidence in the overreaction classification, not the probability that the stock will rise."
+
+
+def _tv_settled(s):
+    return (f"{TV}.active === {json.dumps(s)} && {TV}.candles > 0 && !{TV}.pending.ppe && !{TV}.pending.position && !{TV}.pending.evidence "
+            f"&& __tvState('#tv-ppe')[1] === {json.dumps(s)}")
+
+
+def trader_view(c: Ctx):
+    """Stage 5.5 / 5.6 / 5.6.1: the read-only terminal tab — data source and connection unmistakable, PPE readable in seconds, explicit
+    loading / empty / error states, no stale ticker on a switch, disabled order controls, desktop sizes (simulator; no network)."""
+    c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && !!window.TraderRender && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View booted")
+    c.js(TV_JS)
+    c.wait(_tv_settled(c.js(f"{TV}.active")), 30, "first ticker settled")
+    time.sleep(1.0)
+    c.r.eq("top bar: SIMULATED DATA badge visible and persistent", [c.js("__tvText('#tv-mode')"), c.js("__tvVisible('#tv-mode')")], ["SIMULATED DATA", True])
+    c.r.eq("top bar: connection pill reads CONNECTED", (c.js("__tvText('#tv-conn')") or "").strip(), "CONNECTED")
+    c.r.check("top bar: symbol and price read together", c.js("__tvText('#tv-symbol')") == c.js(f"{TV}.active") and re.fullmatch(r"\d+\.\d\d", c.js("__tvText('#tv-price')") or ""),
+              c.js("__tvText('.tv-head')"))
+    if c.js(f"{TV}.active") == TV_SYMBOLS[0]:                                   # start away from the first symbol so every switch below is a real switch
+        c.js("TraderView.switchTo('MU')")
+        c.wait(_tv_settled("MU"), 30, "MU settled")
+    c.r.eq("switching to the ticker already shown is a no-op (no loading flash)", c.js(f"[TraderView.switchTo({TV}.active), __tvState('#tv-ppe')[0] !== 'LOADING']"), [True, True])
+    # explicit switches: the NEW ticker's panels show a loading state at once, then only that ticker's data
+    for s in TV_SYMBOLS:
+        ok, ppe_state, pos_state, ev_state, sym = c.js(f"__tvSwitch({json.dumps(s)})")
+        c.r.eq(f"switch to {s}: loading state for {s} at once, never the previous ticker's panels", [ok, ppe_state, pos_state, ev_state, sym],
+               [True, ["LOADING", s], ["LOADING", s], ["LOADING", s], s])
+        c.wait(_tv_settled(s), 30, f"{s} settled")
+        states = c.js("[__tvState('#tv-ppe'), __tvState('#tv-position'), __tvState('#tv-evidence')]")
+        c.r.check(f"{s}: PPE / position / evidence panels belong to {s}", all(x and x[1] == s and x[0] not in ("LOADING", None) for x in states), states)
+        rows = c.js("__tvActive()")
+        c.r.check(f"{s}: the highlighted watchlist / recent rows are {s} only", rows and set(rows) == {s}, rows)
+        c.r.check(f"{s}: price, change and bid are numbers", re.fullmatch(r"\d+\.\d\d", c.js("__tvText('#tv-price')") or "") and re.fullmatch(r"[+-]\d+\.\d\d%", c.js("__tvText('#tv-change')") or "")
+                  and re.fullmatch(r"\d+\.\d\d", c.js("__tvText('#tv-bid')") or ""), c.js("__tvText('.tv-top')"))
+    # the PPE card on simulated data: two separate blocks, explicit states, no 0 standing in for "unavailable"
+    c.r.eq("PPE: SIMULATED DATA tag on the card", c.js("(document.querySelector('#tv-ppe .tv-ppe-head .tv-tag') || {}).innerText"), "SIMULATED DATA")
+    stretch = c.js("(document.querySelector('#tv-ppe [data-ppe=\"stretch\"] .tv-ppe-val') || {}).innerText")
+    band = c.js("(document.querySelector('#tv-ppe [data-ppe=\"stretch\"] .tv-ppe-band') || {}).innerText")
+    c.r.check("PPE: Stretch block shows a signed one-decimal score (or —) and a band label", re.fullmatch(r"[+-]\d+\.\d|—", stretch or "") and band in TV_BANDS, [stretch, band])
+    conf = c.js("(document.querySelector('#tv-ppe [data-ppe=\"confidence\"] .tv-ppe-val') || {}).innerText")
+    cband = c.js("(document.querySelector('#tv-ppe [data-ppe=\"confidence\"] .tv-ppe-band') || {}).innerText")
+    c.r.check("PPE: Confidence block is separate and never shows 0 when unavailable", conf is not None and conf != "0" and (re.fullmatch(r"\d{1,3}", conf) or (conf == "—" and cband)), [conf, cband])
+    if cband == "EVIDENCE NOT AVAILABLE":
+        c.r.check("PPE: explicit PPE EVIDENCE NOT AVAILABLE state line", c.js("!!document.querySelector('#tv-ppe [data-state=\"PPE_EVIDENCE_NOT_AVAILABLE\"]')"))
+    c.r.check("PPE: coverage is a percentage or —", re.fullmatch(r"\d{1,3}%|—", c.js("(document.querySelector('#tv-ppe .tv-ppe-meta b') || {}).innerText") or ""))
+    c.r.eq("PPE: the exact disclaimer is visible", [c.js("__tvVisible('#tv-ppe .tv-disclaimer')"), c.js("__tvText('#tv-ppe .tv-disclaimer')")], [True, PPE_DISCLAIMER])
+    c.r.check("PPE: confidence explainer (tooltip button + visible sentence)",
+              (c.js("(document.querySelector('#tv-ppe [data-ppe-info=\"confidence\"]') || {}).title || ''")).startswith("Confidence:") and c.js("__tvVisible('#tv-ppe .tv-explain')"))
+    c.r.check("PPE: Stretch is not coloured with the price green / red",
+              c.js("(() => { const v = document.querySelector('#tv-ppe [data-ppe=\"stretch\"] .tv-ppe-val'); const col = getComputedStyle(v).color; return col !== 'rgb(63, 185, 80)' && col !== 'rgb(248, 81, 73)'; })()"))
+    # evidence + position states, actions
+    ev, ev_text = c.js("__tvState('#tv-evidence')"), c.js("__tvText('#tv-evidence')") or ""
+    c.r.check("evidence: explicit EVIDENCE NOT LOADED state or a loaded Strength row", (ev[0] == "NOT LOADED" and "EVIDENCE NOT LOADED" in ev_text) or (ev[0] == "LOADED" and "Strength" in ev_text), [ev, ev_text[:120]])
+    pos, pos_text = c.js("__tvState('#tv-position')"), c.js("__tvText('#tv-position')") or ""
+    c.r.check("position: explicit NO POSITION state with every source's status visible", pos[0] in ("NO_POSITION", "POSITION") and (pos[0] == "POSITION" or "NO POSITION" in pos_text)
+              and c.js("document.querySelectorAll('#tv-position .tv-src .tv-tag').length") == 3, [pos, pos_text[:160]])
+    c.r.eq("actions: Prepare Buy / Prepare Sell / Add Alert are disabled buttons (disabled + aria-disabled); Research enabled", c.js("__tvActions()"),
+           [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    panel_text = c.js("[...document.querySelectorAll('.tv-top, .tv-center, .tv-right .tv-panel:not(.tv-panel-last)')].map((e) => e.innerText).join('\\n')") or ""
+    c.r.check("no action language outside the disabled action labels", not TRADE_WORDS.search(panel_text), panel_text[:300])
+    # rapid switching, Back / Forward
+    c.js("; ".join(f"TraderView.switchTo({json.dumps(s)})" for s in TV_SYMBOLS))
+    c.wait(_tv_settled("JPM"), 30, "rapid switch settled on JPM")
+    c.r.eq("rapid AAPL→NVDA→SNDK→MSFT→JPM: active, subscription and every panel are JPM",
+           [c.js(f"{TV}.active"), c.js(f"{TV}.subscribed"), c.js("__tvState('#tv-ppe')[1]"), c.js("__tvState('#tv-position')[1]"), c.js("__tvActive()")], ["JPM", "JPM", "JPM", "JPM", ["JPM"]])
+    c.js("TraderView.back(); TraderView.back(); TraderView.forward()")
+    c.wait(_tv_settled("MSFT"), 30, "back, back, forward -> MSFT")
+    c.r.eq("Back / Back / Forward: MSFT everywhere, no stale panel", [c.js(f"{TV}.active"), c.js("__tvText('#tv-symbol')"), c.js("__tvState('#tv-ppe')[1]"), c.js("__tvState('#tv-evidence')[1]"), c.js("__tvActive()")],
+           ["MSFT", "MSFT", "MSFT", "MSFT", ["MSFT"]])
+    # keyboard: "/" focuses the search, Enter opens the typed ticker, an invalid ticker is refused in place
+    c.js("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true }))")
+    c.r.eq("keyboard: '/' focuses the ticker search", c.js("document.activeElement && document.activeElement.id"), "tv-input")
+    c.js("document.getElementById('tv-input').value = 'aapl'; document.getElementById('tv-search').requestSubmit()")
+    c.wait(_tv_settled("AAPL"), 30, "typed ticker")
+    c.r.eq("keyboard: typed 'aapl' + Enter opens AAPL", c.js("__tvText('#tv-symbol')"), "AAPL")
+    c.r.eq("invalid ticker: refused, active unchanged, toast explains", [c.js("TraderView.switchTo('12345')"), c.js(f"{TV}.active"), "not a valid ticker" in (c.js("__tvText('#tv-toast')") or "")], [False, "AAPL", True])
+    # reconnect: the pill leaves CONNECTED, values are marked stale, then exactly one re-subscription restores the active ticker
+    c.js("TraderView.dropSocket()")
+    time.sleep(0.2)
+    down = [c.js(f"{TV}.conn"), c.js("document.getElementById('tv-body').classList.contains('tv-stale')"), c.js("__tvText('#tv-qstate')")]
+    c.r.check("socket drop: RECONNECTING pill, stale treatment, STALE tag on the quote", down[0] in ("RECONNECTING", "DISCONNECTED", "CONNECTING") and down[1] and down[2] == "STALE", down)
+    c.wait(f"{TV}.conn === 'CONNECTED' && {TV}.subscribed === 'AAPL' && !document.getElementById('tv-body').classList.contains('tv-stale')", 30, "reconnected")
+    c.r.eq("after reconnect: CONNECTED, one active subscription (AAPL), stale treatment removed", [c.js(f"{TV}.conn"), c.js(f"{TV}.subscribed"), c.js(f"{TV}.attempt")], ["CONNECTED", "AAPL", 0])
+    c.shot("trader_view", "#tv-body")
+    c.shot("trader_view_ppe", "#tv-ppe")
+    # desktop sizes: no overflow, chart usable, PPE Stretch and the search box in view without scrolling the page, nothing clipped, ≥ 11 px text
+    for w, h in TV_SIZES:
+        c.b.viewport(w, h)
+        time.sleep(0.6)
+        chart = c.js("(() => { const b = document.querySelector('#tv-chart').getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height)]; })()")
+        detail = [chart, c.js("__tvClipped()"), c.js("__tvInView('#tv-ppe [data-ppe=\"stretch\"]')"), c.js("__tvInView('#tv-input')")]
+        c.r.check(f"{w}x{h}: no horizontal overflow, chart ≥ 600x240, PPE Stretch and the search in view, actions reachable, nothing clipped",
+                  not c.js("__overflow()") and chart[0] >= 600 and chart[1] >= 240 and detail[2] and detail[3] and c.js("__tvVisible('#tv-actions')") and detail[1] == [], detail)
+        c.r.check(f"{w}x{h}: smallest rendered text is ≥ 11 px", c.js("__tvMinFont()") >= 11, c.js("__tvMinFont()"))
+        if (w, h) in ((1920, 1080), (1280, 720)):
+            c.shot(f"trader_view_{w}")
+    c.b.viewport(1920, 1080)
+    time.sleep(0.3)
+
+
 def automation(c: Ctx):
     sid = c.world.strategies["Trend Swing"]
     c.open_lab("builder")                                  # the journal + automation panel live in the Builder view
@@ -1806,6 +1922,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, automation, saved_scans, daily_brief, brief_delivery, notification_click,
-         paper_portfolio, alpaca_paper, alpaca_orders)
+         ai_evidence, history, scanner, small_screens, trader_view, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1: trader_view sits before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)
