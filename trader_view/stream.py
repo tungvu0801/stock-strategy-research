@@ -29,7 +29,13 @@ from scanner.watchlist import load_watchlist
 from trader_view import CLIENT_COMMANDS, LABEL, STAGE
 from trader_view.adapters import MarketUnavailable, UnknownSymbol, build_market_adapter
 from trader_view.hub import Hub
-from trader_view.models import (Candle, DataStatus, EvidenceSummary, PositionState, PPEPlaceholder, Quote, TerminalState, default_actions)
+from ppe import DISCLAIMER as PPE_DISCLAIMER
+from ppe import VERSION as PPE_VERSION
+from ppe import WEIGHTS as PPE_WEIGHTS
+from ppe.models import PPEResult
+from ppe.models import not_available as ppe_not_available
+from trader_view.models import (Candle, DataStatus, EvidenceSummary, PositionState, Quote, TerminalState, default_actions)
+from trader_view.ppe_provider import PPEProvider
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -46,7 +52,7 @@ class TerminalStream:
                  demo_symbols: Optional[List[str]] = None, tick_seconds: Optional[float] = None, quote_poll_seconds: Optional[float] = None,
                  watchlist_poll_seconds: Optional[float] = None, position_poll_seconds: Optional[float] = None,
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
-                 now_fn: Callable[[], float] = time.time):
+                 ppe_poll_seconds: Optional[float] = None, ppe_provider=None, now_fn: Callable[[], float] = time.time):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -55,10 +61,12 @@ class TerminalStream:
         self.quote_every = 1 if market.mode == "simulated" else every(quote_poll_seconds or config.TRADER_QUOTE_POLL_SECONDS)
         self.watchlist_every = every(watchlist_poll_seconds or config.TRADER_WATCHLIST_POLL_SECONDS)
         self.position_every = every(position_poll_seconds or config.TRADER_POSITION_POLL_SECONDS)
+        self.ppe_every = every(ppe_poll_seconds or config.TRADER_PPE_REFRESH_SECONDS)          # PPE: bounded cadence, never per quote tick
         self.history_minutes = int(history_minutes or config.TRADER_HISTORY_MINUTES)
         self.allow_manual_tick = bool(allow_manual_tick)
         self.run_loop = bool(run_loop)
         self.now_fn = now_fn
+        self.ppe = ppe_provider or PPEProvider(market, now_fn=now_fn)
         self.hub = Hub()
         self.connections: Dict[int, WebSocket] = {}
         self._ids = count(1)
@@ -107,6 +115,17 @@ class TerminalStream:
             return EvidenceSummary(symbol=s, status="FAILED", data_status="FAILED", message=f"Evidence unavailable ({type(exc).__name__}).",
                                    disclaimer=STRENGTH_DISCLAIMER)
 
+    def _ppe(self, s: str) -> PPEResult:
+        try:
+            return self.ppe.result(s)
+        except Exception as exc:  # noqa: BLE001 - a PPE problem never hides the rest of the state; nothing is fabricated
+            log.warning("Trader View: PPE failed for %s (%s)", s, type(exc).__name__)
+            return ppe_not_available(s, _iso()[:10], mode=self.market.mode, market_data=self.market.source, computed_at=_iso(), weights=PPE_WEIGHTS,
+                                     note=f"PPE unavailable ({type(exc).__name__}).")
+
+    def ppe_result(self, symbol: str) -> PPEResult:
+        return self._ppe(symbol.upper())
+
     @staticmethod
     def _position_status(pos: PositionState) -> str:
         if not pos.sources:
@@ -120,7 +139,7 @@ class TerminalStream:
         pos = self._position(s)
         ev = self._evidence(s)
         return TerminalState(
-            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=PPEPlaceholder(), tradability=self.market.tradability(s),
+            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=self._ppe(s), tradability=self.market.tradability(s),
             data_status=DataStatus(mode=self.market.mode, market="SIMULATED" if self.market.mode == "simulated" else quote.status,
                                    market_source=self.market.source, position=self._position_status(pos), evidence=ev.status, server_time=_iso()),
             actions=default_actions(), market_state=self.market.market_state(), candles=self.candles(s) if with_candles else [])
@@ -136,13 +155,14 @@ class TerminalStream:
 
     def cadence(self) -> dict:
         t = self.tick_seconds
-        return {"tick_s": t, "quote_s": t * self.quote_every, "watchlist_s": t * self.watchlist_every, "position_s": t * self.position_every,
+        return {"tick_s": t, "quote_s": t * self.quote_every, "watchlist_s": t * self.watchlist_every, "position_s": t * self.position_every, "ppe_s": t * self.ppe_every,
                 "evidence": "on subscribe / refresh only", "idle": "nothing is polled while no browser is subscribed"}
 
     def config_payload(self) -> dict:
         return {"stage": STAGE, "label": LABEL, "mode": self.market.mode, "source": self.market.source, "cadence": self.cadence(),
                 "history_minutes": self.history_minutes, "demo_symbols": list(self.demo_symbols), "market_state": self.market.market_state(),
-                "actions": [a.model_dump() for a in default_actions()], "ppe": PPEPlaceholder().model_dump(), "chart": dict(CHART_ASSET),
+                "actions": [a.model_dump() for a in default_actions()], "ppe": {"version": PPE_VERSION, "weights": PPE_WEIGHTS, "refresh_s": self.tick_seconds * self.ppe_every, "disclaimer": PPE_DISCLAIMER,
+                        "cadence": "on subscribe, on refresh and every refresh_s for the active ticker — never per quote tick"}, "chart": dict(CHART_ASSET),
                 "client_commands": list(CLIENT_COMMANDS), "execution_preview": "NOT_CONNECTED"}
 
     # ---------------------------------------------------------------- loop ---------------------------------------------------
@@ -194,6 +214,11 @@ class TerminalStream:
                 pos = await asyncio.to_thread(self._position, symbol)
                 if self.hub.symbol_of(conn_id) == symbol:
                     await self._send(conn_id, {"type": "position", **pos.model_dump()})
+        if force_all or n % self.ppe_every == 0:                                    # PPE on its own bounded cadence (TRADER_PPE_REFRESH_SECONDS)
+            for conn_id, symbol in self.hub.items():
+                res = await asyncio.to_thread(self._ppe, symbol)
+                if self.hub.symbol_of(conn_id) == symbol:
+                    await self._send(conn_id, {"type": "ppe", **res.model_dump()})
         if self.connections and (force_all or n % HEARTBEAT_TICKS == 0):
             hb = {"type": "heartbeat", "server_time": _iso(now), "market_state": self.market.market_state(), "subscriptions": len(self.hub)}
             for conn_id in list(self.connections):
@@ -292,16 +317,19 @@ class TerminalStream:
         if s is None:
             await self._error(conn_id, "NOT_SUBSCRIBED", "subscribe to a symbol first")
             return
-        try:
-            self.positions.invalidate(s)
-        except Exception:  # noqa: BLE001 - adapters without a cache
-            pass
+        for adapter in (self.positions, self.ppe):
+            try:
+                adapter.invalidate(s)
+            except Exception:  # noqa: BLE001 - adapters without a cache
+                pass
         pos = await asyncio.to_thread(self._position, s)
         ev = await asyncio.to_thread(self._evidence, s)
+        res = await asyncio.to_thread(self._ppe, s)
         if self.hub.symbol_of(conn_id) != s:
             return
         await self._send(conn_id, {"type": "position", **pos.model_dump()})
         await self._send(conn_id, {"type": "evidence", **ev.model_dump()})
+        await self._send(conn_id, {"type": "ppe", **res.model_dump()})
 
 
 def build_stream(mode: Optional[str] = None) -> TerminalStream:

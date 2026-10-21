@@ -10,7 +10,7 @@ import math
 import random
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional
 
 from api.validation import validate_symbol
@@ -84,7 +84,7 @@ class _Stream:
 
     def quote(self) -> Quote:
         p = self.price
-        return Quote(symbol=self.symbol, status="OK", price=p, bid=round(p * (1 - 0.0002), 2), ask=round(p * (1 + 0.0002), 2),
+        return Quote(symbol=self.symbol, status="OK", price=p, open=self.prev_close, bid=round(p * (1 - 0.0002), 2), ask=round(p * (1 + 0.0002), 2),
                      prev_close=self.prev_close, change_pct=round((p / self.prev_close - 1) * 100, 3) if self.prev_close else None,
                      volume=float(sum(c["volume"] for c in self.history) + (self.live["volume"] if self.live else 0.0)),
                      ts=self.last_ts, source=SOURCE)
@@ -149,6 +149,46 @@ class SimulatedMarket:
         if st.live is not None:
             return Candle(**st.live)
         return Candle(**st.history[-1]) if st.history else None
+
+    # ---------------------------------------------------------------- synthetic daily history (Stage 5.6 PPE; SIMULATED) ---------
+    def daily_bars(self, symbols: Iterable[str], lookback_days: int = 420) -> Dict[str, list]:
+        """Deterministic synthetic completed daily sessions per symbol: business days ending the day before the simulator's clock date,
+        closing at the symbol's start price so the live intraday path continues from them. Every consumer labels this SIMULATED."""
+        from ppe.inputs import DailyBar
+        out: Dict[str, list] = {}
+        today = datetime.fromtimestamp(self.clock, tz=timezone.utc).date()
+        n = max(60, min(600, int(lookback_days * 252 / 365)))
+        for raw in symbols:
+            try:
+                s = validate_symbol(raw)
+            except ValueError:
+                continue
+            rng = random.Random(f"{self.seed}:{s}:daily")
+            days, d = [], today - timedelta(days=1)
+            while len(days) < n:
+                if d.weekday() < 5:
+                    days.append(d)
+                d -= timedelta(days=1)
+            days.reverse()
+            vol = 0.012 + rng.random() * 0.02
+            drift = rng.gauss(0.0003, 0.0004)
+            base_vol = 400_000 + rng.randrange(0, 3_000_000)
+            closes, px = [], 100.0
+            for _ in days:
+                px *= math.exp(rng.gauss(drift, vol))
+                closes.append(px)
+            scale = start_price(s) / closes[-1]
+            bars, prev = [], closes[0] * scale / math.exp(rng.gauss(0.0, vol))
+            for day, c in zip(days, closes):
+                c *= scale
+                o = prev * math.exp(rng.gauss(0.0, vol / 3))
+                h = max(o, c) * (1 + abs(rng.gauss(0.0, vol / 2)))
+                lo = min(o, c) * (1 - abs(rng.gauss(0.0, vol / 2)))
+                bars.append(DailyBar(date=day, open=round(o, 4), high=round(h, 4), low=round(lo, 4), close=round(c, 4),
+                                     volume=float(int(base_vol * (1 + abs(rng.gauss(0.0, 0.5)))))))
+                prev = c
+            out[s] = bars
+        return out
 
     def market_state(self) -> dict:
         return {"state": "SIMULATED", "label": "SIMULATED DATA", "source": SOURCE, "seed": self.seed,

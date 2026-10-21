@@ -22,7 +22,7 @@ from alpaca.data.timeframe import TimeFrame
 
 import config
 from api.validation import validate_symbol
-from data.market_data import get_data_client
+from data.market_data import fetch_daily_bars, get_data_client
 from trader_view.adapters import UnknownSymbol
 from trader_view.models import Candle, Quote, Tradability
 
@@ -100,7 +100,8 @@ class RealMarketData:
         chg = round((price / prev - 1) * 100, 3) if price and prev else None
         quote = Quote(symbol=s, status="OK", price=price, bid=_f(lq.bid_price) if lq is not None else None,
                       ask=_f(lq.ask_price) if lq is not None else None, prev_close=prev, change_pct=chg,
-                      volume=_f(db.volume) if db is not None else None, ts=_epoch(trade.timestamp), source=self.source)
+                      volume=_f(db.volume) if db is not None else None, open=_f(getattr(db, "open", None)) if db is not None else None, ts=_epoch(trade.timestamp),
+                      source=self.source)
         candle = None
         if mb is not None and mb.timestamp is not None:
             candle = Candle(time=_epoch(mb.timestamp), open=float(mb.open), high=float(mb.high), low=float(mb.low), close=float(mb.close),
@@ -148,6 +149,33 @@ class RealMarketData:
         out.sort(key=lambda c: c.time)
         self._bars[s] = (now, out)
         return out[-limit:]
+
+    # ---------------------------------------------------------------- daily bars (Stage 5.6 PPE) ------------------------------------
+    def daily_bars(self, symbols: Iterable[str], lookback_days: int = 420) -> Dict[str, list]:
+        """Daily bars through the EXISTING batched read (data.market_data.fetch_daily_bars, adjusted). One request for all symbols.
+        The PPE provider drops any bar dated on or after the current session, so a partial day is never treated as completed."""
+        from ppe.inputs import DailyBar
+        wanted = sorted({validate_symbol(s) for s in symbols})
+        if not wanted:
+            return {}
+        try:
+            self.requests += 1
+            frames = fetch_daily_bars(self._c(), wanted, lookback_days=int(lookback_days))
+            self.last_error = None
+        except Exception as exc:  # noqa: BLE001 - no bars: PPE reports NOT_AVAILABLE, nothing is invented
+            self.last_error = type(exc).__name__
+            log.warning("Trader View daily bars failed: %s", type(exc).__name__)
+            return {}
+        out: Dict[str, list] = {}
+        for s, df in (frames or {}).items():
+            bars = []
+            for ts, o, h, lo, c, v in zip(df["timestamp"], df["open"], df["high"], df["low"], df["close"], df["volume"]):
+                d = ts.date() if hasattr(ts, "date") else None
+                if d is None:
+                    continue
+                bars.append(DailyBar(date=d, open=float(o), high=float(h), low=float(lo), close=float(c), volume=float(v) if v == v else None))
+            out[s] = bars
+        return out
 
     # ---------------------------------------------------------------- state --------------------------------------------------
     @staticmethod

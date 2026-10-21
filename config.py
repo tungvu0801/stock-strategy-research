@@ -544,3 +544,15 @@ TRADER_POSITION_POLL_SECONDS: float = float(os.getenv("TRADER_POSITION_POLL_SECO
 TRADER_HISTORY_MINUTES: int = int(os.getenv("TRADER_HISTORY_MINUTES", "240"))                    # minute candles kept / backfilled
 TRADER_SIM_SEED: int = int(os.getenv("TRADER_SIM_SEED", "7"))
 TRADER_DEMO_SYMBOLS: tuple = ("AAPL", "NVDA", "SNDK")
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.6 — PPE ENGINE (ppe/). Deterministic PPE Stretch / Confidence shown in Trader View: computed on subscribe, on refresh
+# and every TRADER_PPE_REFRESH_SECONDS for the active ticker — never per quote tick. Stored Stage 5.4 evidence only; no order
+# path, no recommendation, no model call, no research run.
+# ------------------------------------------------------------------------------------------------------------------
+TRADER_PPE_REFRESH_SECONDS: float = float(os.getenv("TRADER_PPE_REFRESH_SECONDS", "60"))
+PPE_BARS_LOOKBACK_DAYS: int = int(os.getenv("PPE_BARS_LOOKBACK_DAYS", "420"))          # calendar days of daily bars (~250 sessions + warm-up)
+PPE_BARS_CACHE_SECONDS: float = float(os.getenv("PPE_BARS_CACHE_SECONDS", "900"))        # real mode: one batched bar read per symbol group per 15 min
+# Sector benchmark extensions for PPE only: ticker -> an EXISTING sector name in data.sector_map.SECTOR_MAP (its ETF is reused). The curated map
+# itself is unchanged (earlier stages' tests rely on it). AAPL -> "Software" because that sector's ETF is XLK (Technology Select Sector), which holds AAPL.
+PPE_SECTOR_EXTENSIONS: dict = {"AAPL": "Software", **_env_json("PPE_SECTOR_EXTENSIONS_JSON", {})}

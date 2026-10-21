@@ -191,11 +191,36 @@
       return head + `<div class="tv-dim">${esc(s.message || s.status)}</div>`;
     }).join("") + `<div class="tv-note">${esc(p.note)}</div>`;
   }
-  function renderPPE(ppe) {
-    const p = ppe || { status: "NOT_AVAILABLE", stretch: null, confidence: null, note: "PPE is not computed in Stage 5.5." };
-    const val = (x) => (x == null ? "NOT AVAILABLE" : String(x));
-    $("tv-ppe").innerHTML = `<div class="tv-ppe"><span>PPE Stretch</span><b>${esc(val(p.stretch))}</b><span>PPE Confidence</span><b>${esc(val(p.confidence))}</b></div>` +
-      `<div class="tv-note">${esc(p.note || "")}</div>`;
+  function renderPPE(p) {
+    // Stage 5.6: the deterministic engine result. Never a recommendation: no buy/sell text, no probability of a rise.
+    const el = $("tv-ppe");
+    if (!p || !p.stretch) {
+      el.innerHTML = `<div class="tv-ppe-grid"><span>PPE Stretch</span><b class="tv-ppe-score">NOT AVAILABLE</b><span></span><span>PPE Confidence</span><b class="tv-ppe-score">NOT AVAILABLE</b><span></span></div><div class="tv-note">PPE not loaded.</div>`;
+      return;
+    }
+    const st = p.stretch || {}, cf = p.confidence || {}, src = p.sources || {};
+    const band = (x) => (x ? String(x).replace(/_/g, " ") : "");
+    const sim = p.status === "SIMULATED_DATA";
+    const badge = sim ? `<span class="tv-tag warn">SIMULATED DATA</span>` : (p.status !== "AVAILABLE" ? `<span class="tv-tag warn">${esc(band(p.status))}</span>` : `<span class="tv-tag ok">${esc(src.benchmark_kind || "")}</span>`);
+    const stretchVal = st.score == null ? "NOT AVAILABLE" : `${st.score > 0 ? "+" : ""}${Number(st.score).toFixed(1)}`;
+    const confVal = cf.score == null ? "NOT AVAILABLE" : String(cf.score);
+    const stretchCls = st.score == null ? "" : st.score < -40 ? "down" : st.score > 40 ? "up" : "";
+    const confStatus = cf.status && cf.status !== "AVAILABLE" ? band(cf.status) : "";
+    const factors = (st.key_factors || []).slice(0, 3);
+    const reasons = (cf.reasons || []).slice(0, 3);
+    const ev = cf.evidence;
+    el.innerHTML = `
+      <div class="tv-ppe-head">${badge}</div>
+      <div class="tv-ppe-grid">
+        <span>PPE Stretch</span><b class="tv-ppe-score ${stretchCls}">${esc(stretchVal)}</b><span class="tv-ppe-band">${esc(band(st.label) || band(st.status))}</span>
+        <span>PPE Confidence</span><b class="tv-ppe-score">${esc(confVal)}</b><span class="tv-ppe-band">${esc(band(cf.label) || confStatus)}</span>
+        <span>Coverage</span><b>${st.coverage_weight != null ? Math.round(st.coverage_weight * 100) + "%" : "—"}</b><span></span>
+      </div>
+      ${factors.length ? `<div class="tv-ppe-sub">Key factors</div><ul class="tv-ppe-list">${factors.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
+      ${reasons.length && cf.status === "AVAILABLE" ? `<div class="tv-ppe-sub">Confidence drivers</div><ul class="tv-ppe-list">${reasons.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : (confStatus ? `<div class="tv-dim">${esc((cf.reasons || [])[0] || confStatus)}</div>` : "")}
+      <div class="tv-ppe-sub">Evidence</div><div class="tv-dim">${ev ? esc(`${ev.strength || "—"} / ${ev.cause || "—"} · packet ${String(ev.created_at || "").slice(0, 10)} (${ev.age_days}d old)`) : "NOT LOADED"}</div>
+      <div class="tv-ppe-src">${esc(src.market_data || "")}${src.benchmark_label ? ` · benchmark ${esc(src.benchmark_label)}` : " · no benchmark"}${src.bars_through ? ` · bars through ${esc(src.bars_through)}` : ""}${src.evidence_packet_at ? ` · evidence ${esc(String(src.evidence_packet_at).slice(0, 16))}` : ""}${src.computed_at ? ` · computed ${esc(String(src.computed_at).slice(11, 19))} UTC` : ""}</div>
+      <div class="tv-note">${esc(p.disclaimer || "")}</div>${sim && p.note ? `<div class="tv-dim">${esc(p.note)}</div>` : ""}`;
   }
   function renderEvidence(e) {
     const el = $("tv-evidence");
@@ -218,7 +243,7 @@
   function renderStatusLine(d) {
     const ds = d.data_status || {};
     $("tv-status-line").textContent = `Mode ${String(ds.mode || st.mode).toUpperCase()} · Market ${v(ds.market)} · Position ${v(ds.position)} · Evidence ${v(ds.evidence)} · ` +
-      `Tradability ${d.tradability ? d.tradability.status : "—"} · ${d.market_state && d.market_state.session_hint ? `Session ${d.market_state.session_hint} · ` : ""}${v(ds.market_source, "")}`;
+      `Tradability ${d.tradability ? d.tradability.status : "—"} · PPE ${d.ppe ? d.ppe.status : "—"} · ${d.market_state && d.market_state.session_hint ? `Session ${d.market_state.session_hint} · ` : ""}${v(ds.market_source, "")}`;
   }
   function applyState(d) {
     st.lastState = d;
@@ -307,6 +332,7 @@
       case "watchlist": m.items.forEach((it) => { if (it.price != null) st.quotes.set(it.symbol, Object.assign({}, st.quotes.get(it.symbol) || {}, it)); }); renderWatchlist(m.items); break;
       case "position": renderPosition(m); break;
       case "evidence": renderEvidence(m); break;
+      case "ppe": renderPPE(m); break;
       case "heartbeat": $("tv-hb").textContent = `♥ ${m.server_time ? m.server_time.slice(11, 19) : ""}`; break;
       case "subscribed": case "unsubscribed": break;
       case "error": toast(`${m.code}: ${m.message}`); if (m.code === "UNKNOWN_SYMBOL" || m.code === "INVALID_SYMBOL") renderQuote({ symbol: m.symbol, status: "UNAVAILABLE", message: m.message }); break;
@@ -318,7 +344,7 @@
   async function boot() {
     st.booted = true;
     shell(); setupChart(); renderPPE(null); renderActions(DEFAULT_ACTIONS);
-    try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); renderPPE(cfg.ppe); } catch (e) { /* defaults stay */ }
+    try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
     try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
     renderWatchlist(null);
     switchTo(st.symbols.default || (st.symbols.watchlist || [])[0] || "AAPL", true);
