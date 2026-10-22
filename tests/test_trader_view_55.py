@@ -251,7 +251,7 @@ def test_06_arbitrary_valid_symbol(api, ts):
     assert r.status_code == 200
     j = r.json()
     assert j["symbol"] == "MSFT" and len(j["candles"]) == 240 and j["quote"]["status"] == "OK" and j["tradability"]["status"] == "SIMULATED"
-    assert set(j) == {"label", "symbol", "quote", "position", "evidence", "ppe", "demand", "tradability", "data_status", "actions", "market_state", "candles"}   # "demand": Stage 5.7
+    assert set(j) == {"label", "symbol", "quote", "position", "evidence", "ppe", "demand", "setup", "tradability", "data_status", "actions", "market_state", "candles"}   # "demand": Stage 5.7; "setup": Stage 5.8
     assert api.get("/api/terminal/candles/brk.b?limit=5").json()["symbol"] == "BRK.B"
     assert len(api.get("/api/terminal/state/shop?candles=10").json()["candles"]) == 10
     with api.websocket_connect(WS_PATH) as ws:
@@ -437,7 +437,7 @@ def test_11_existing_evidence_packet_loads(api, tmp_path, monkeypatch):
         assert Rec.calls == ["SNDK"]
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand"] and Rec.calls == ["SNDK", "SNDK"]   # "demand": Stage 5.7
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup"] and Rec.calls == ["SNDK", "SNDK"]   # "demand": Stage 5.7; "setup": Stage 5.8
     assert len(store.packets(limit=200)) == rows_before
     j = api.get("/api/terminal/state/SNDK?candles=0").json()["evidence"]
     assert j["status"] == "LOADED" and j["company_confirm"] in RUNG_STATUSES
@@ -796,7 +796,9 @@ def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
     now = (ROOT / "api" / "server.py").read_text(encoding="utf-8").splitlines()
     assert [l for l in base if l not in now] == []
     added = [l for l in now if l not in base]
-    assert len(added) == 2 and added[0] == "from api.routes import trader_view" and added[1].startswith("app.include_router(trader_view.router)  # Stage 5.5")
+    assert added[0] == "from api.routes import trader_view" and any(l.startswith("app.include_router(trader_view.router)  # Stage 5.5") for l in added)
+    for l in added[1:]:                                                                               # Stage 5.8 added its router and the evaluator start / stop hooks
+        assert l.startswith("app.include_router(trader_view.router)  # Stage 5.5") or "setups" in l or "Setup evaluator" in l or "Stage 5.8" in l or "evaluator must never stop" in l, l
     base_cfg, now_cfg = blob("config.py").decode("utf-8"), (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "TRADER_DATA_MODE" in now_cfg                   # config is append-only
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()

@@ -565,3 +565,15 @@ PPE_SECTOR_EXTENSIONS: dict = {"AAPL": "Software", **_env_json("PPE_SECTOR_EXTEN
 TRADER_DEMAND_REFRESH_SECONDS: float = float(os.getenv("TRADER_DEMAND_REFRESH_SECONDS", "30"))
 DEMAND_PRIOR_SESSIONS: int = int(os.getenv("DEMAND_PRIOR_SESSIONS", "5"))                # prior sessions behind the expected intraday volume curve
 DEMAND_DAILY_LOOKBACK_DAYS: int = int(os.getenv("DEMAND_DAILY_LOOKBACK_DAYS", "120"))    # calendar days of daily bars for the daily fallback (~80 sessions)
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.8 — SETUP STATE MACHINE + MARKET-HOURS ALERTS (setups/). NONE / WATCH / READY (= READY FOR REVIEW) / INVALIDATED from
+# already-computed research only; persisted; alerts on transitions. The evaluator thread runs only inside the US regular session
+# (weekdays 09:30–16:00 ET; no holiday calendar exists) and never in a test process; subscribe / refresh evaluate on demand.
+# No order path, no recommendation, no model call, no research run, no 24/7 runtime.
+# ------------------------------------------------------------------------------------------------------------------
+SETUP_EVALUATOR_ENABLED: bool = os.getenv("SETUP_EVALUATOR_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+SETUP_EVAL_INTERVAL_SECONDS: float = float(os.getenv("SETUP_EVAL_INTERVAL_SECONDS", "60"))
+SETUP_MARKET_HOURS_ONLY: bool = os.getenv("SETUP_MARKET_HOURS_ONLY", "true").strip().lower() in ("1", "true", "yes", "on")
+SETUP_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("SETUP_ALERT_COOLDOWN_MINUTES", "15"))
+TRADER_SETUP_REFRESH_SECONDS: float = float(os.getenv("TRADER_SETUP_REFRESH_SECONDS", "60"))    # the active ticker's in-session cadence in Trader View

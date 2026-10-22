@@ -214,6 +214,44 @@
     return `<details class="tv-details"><summary>Data used</summary>${m.source ? `<div class="tv-dim">${esc(m.source)}</div>` : ""}${note ? `<div class="tv-dim">${esc(note)}</div>` : ""}</details>`;
   }
 
+  // ---------------------------------------------------------------- Setup state (Stage 5.8; READY means READY FOR REVIEW) ---
+  const SETUP_LABELS = { NONE: "NO ACTIVE SETUP", WATCH: "WATCH", READY: "READY FOR REVIEW", INVALIDATED: "INVALIDATED" };
+  const SETUP_CLS = { NONE: "", WATCH: "watch", READY: "ready", INVALIDATED: "invalidated" };
+  const EXPLAIN_SETUP = "Setup state is deterministic research bookkeeping for the Downside Dislocation Recovery setup: WATCH = stretched, confirmation incomplete; READY FOR REVIEW = the review threshold was met; INVALIDATED = an explicit invalidation rule fired. It is not an entry signal.";
+  function setupModel(s) {
+    const loaded = !!s && !!s.state && !!SETUP_LABELS[s.state];
+    const state = loaded ? s.state : "NONE";
+    const inputs = (s && s.inputs) || {};
+    const fmt = (v, signed) => (v == null || Number.isNaN(Number(v)) ? "—" : `${signed && Number(v) > 0 ? "+" : ""}${Math.round(Number(v))}`);
+    return { loaded, state, label: loaded ? SETUP_LABELS[state] : "NOT AVAILABLE", cls: loaded ? SETUP_CLS[state] : "", name: (s && s.setup_name) || "Downside Dislocation Recovery",
+             symbol: s ? s.symbol || null : null, since: s && s.since ? `${String(s.since).slice(11, 16)} UTC` : null,
+             evaluated: s && s.last_evaluated_at ? `${String(s.last_evaluated_at).slice(11, 19)} UTC` : null,
+             stretch: fmt(inputs.stretch, true), confidence: fmt(inputs.confidence), demand: fmt(inputs.demand), reason: (s && s.reason_text) || "",
+             reasonCode: (s && s.reason_code) || "", blockers: ((s && s.blockers) || []).map(words), paused: !!(s && s.paused), decision: (s && s.decision) || null,
+             invalidation: s && s.invalidation_reason ? words(s.invalidation_reason) : null, note: (s && s.note) || null, source: (s && s.source) || "",
+             mode: (s && s.mode) || "", disclaimer: (s && s.disclaimer) || "", explain: EXPLAIN_SETUP };
+  }
+  function setupHtml(s, opts) {
+    const o = opts || {};
+    const m = setupModel(s);
+    if (!m.loaded) return o.loading ? skeletonHtml("SETUP", o.symbol) : stateHtml("SETUP_NOT_AVAILABLE", "SETUP NOT AVAILABLE", o.symbol ? `No setup state for ${o.symbol} yet.` : "No setup state yet.");
+    const head = `<div class="tv-set-head"><span class="tv-set-state ${m.cls}" data-setup-state="${esc(m.state)}">${esc(m.label)}</span>` +
+      `${m.paused ? `<span class="tv-tag warn">PAUSED · STALE DATA</span>` : ""}${m.mode === "simulated" ? `<span class="tv-tag warn">SIMULATED DATA</span>` : ""}</div>`;
+    const name = `<div class="tv-set-name">${esc(m.name)}${m.since && m.state !== "NONE" ? `<span class="tv-set-since">since ${esc(m.since)}</span>` : ""}</div>`;
+    const metrics = `<div class="tv-set-metrics"><span>PPE Stretch <b>${esc(m.stretch)}</b></span><span>Confidence <b>${esc(m.confidence)}</b></span><span>Demand <b>${esc(m.demand)}</b></span></div>`;
+    const reason = m.reason ? `<div class="tv-set-reason"><span class="tv-ppe-sub">Reason</span><div>${esc(m.reason)}</div></div>` : "";
+    const blockers = m.blockers.length && m.state === "WATCH" ? `<div class="tv-dim">Not READY: ${esc(m.blockers.join(" · "))}</div>` : "";
+    const inval = m.invalidation && m.state === "INVALIDATED" ? `<div class="tv-dim">Invalidation: ${esc(m.invalidation)}</div>` : "";
+    const stamp = m.evaluated ? `<div class="tv-dem-stamp">evaluated ${esc(m.evaluated)}${m.decision ? ` · ${esc(m.decision.toLowerCase())}` : ""}${m.source ? ` · ${esc(m.source)}` : ""}</div>` : (m.note ? `<div class="tv-dim">${esc(m.note)}</div>` : "");
+    return head + name + metrics + reason + blockers + inval + stamp + `<p class="tv-explain">${esc(EXPLAIN_SETUP)}</p>` +
+      (o.includeDisclaimer === false ? "" : `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>`);
+  }
+  function setupAlertLine(a) {
+    const label = SETUP_LABELS[a && a.to_state] || (a && a.to_state) || "";
+    const reason = words(a && a.reason_code).toLowerCase();
+    return `${a && a.symbol} — ${label}${reason ? ` · ${reason}` : ""}${a && a.created_at ? ` · ${String(a.created_at).slice(11, 16)} UTC` : ""}`;
+  }
+
   // ---------------------------------------------------------------- status strip -----------------------------------------
   function statusChips(d, mode) {
     const ds = (d && d.data_status) || {};
@@ -227,5 +265,6 @@
   }
 
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
-           ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, statusChips, EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND };
+           ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
+           EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, SETUP_LABELS };
 });

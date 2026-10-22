@@ -596,7 +596,7 @@ def test_U2_ppe_follows_the_active_ticker_and_switches(api, ts):
         assert state_b["ppe"]["symbol"] == "NVDA" and state_b["ppe"]["stretch"]["score"] != state_a["ppe"]["stretch"]["score"]
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand"] and got[2]["symbol"] == "NVDA" and got[2]["disclaimer"] == DISCLAIMER   # "demand": Stage 5.7
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup"] and got[2]["symbol"] == "NVDA" and got[2]["disclaimer"] == DISCLAIMER   # "demand": Stage 5.7; "setup": Stage 5.8
         assert all(m.get("symbol") != "AAPL" for m in got)
 
 

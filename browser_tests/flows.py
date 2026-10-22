@@ -578,6 +578,79 @@ def market_demand(c: Ctx):
     time.sleep(0.3)
 
 
+SETUP_FIXTURE = dict(stretch_status="AVAILABLE", ppe_status="SIMULATED_DATA", ppe_coverage=1.0, confidence_status="AVAILABLE", demand_status="SIMULATED_DATA", demand_coverage=0.85,
+                     demand_mode="INTRADAY_MODE", evidence_available=True, evidence_packet_id="p" * 32, evidence_created_at="2026-10-10T00:00:00+00:00", evidence_age_days=11,
+                     evidence_cause="MIXED", evidence_strength="WEAK", quote_status="OK", market_data_source="simulator (harness)", mode="simulated")
+SETUP_STEPS = (("WATCH", "WATCH", dict(stretch=-67.0, confidence=34, demand=41)), ("READY", "READY FOR REVIEW", dict(stretch=-54.0, confidence=58, demand=72)),
+               ("WATCH", "WATCH", dict(stretch=-54.0, confidence=58, demand=44)),
+               ("INVALIDATED", "INVALIDATED", dict(stretch=-60.0, confidence=30, demand=40, evidence_cause="COMPANY_SPECIFIC_DOMINANT", evidence_strength="STRONG",
+                                                   evidence_created_at="2099-01-01T00:00:00+00:00", evidence_packet_id="q" * 32)))      # a NEW strong company-specific packet
+
+
+def _setup_settled(sym, state):
+    return f"{TV}.active === {json.dumps(sym)} && __tvState('#tv-setup')[1] === {json.dumps(sym)} && __tvState('#tv-setup')[0] === {json.dumps(state)}"
+
+
+def setup_state(c: Ctx):
+    """Stage 5.8: forced transitions through the REAL service path (in-process) — the page receives the symbol-bound state, one toast per persisted
+    alert, no duplicate on an unchanged state, the Alerts tab lists the persisted alerts; READY reads READY FOR REVIEW; actions stay disabled."""
+    from api.routes.trader_view import stream
+    from setups.models import SetupInputs
+    svc = stream().setups
+    if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+        c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+    c.js(TV_JS)
+    c.js("TraderView.switchTo('SNDK')")
+    c.wait(_tv_settled("SNDK") + " && __tvState('#tv-setup')[1] === 'SNDK'", 30, "SNDK settled")
+    c.r.eq("Setup section renders NO ACTIVE SETUP for a simulated ticker without a downside stretch", c.js("__tvText('#tv-setup .tv-set-state')"), "NO ACTIVE SETUP")
+    toasts = []
+    for state, label, over in SETUP_STEPS:
+        v = svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+        c.r.eq(f"service: forced transition to {state} persisted", [v.decision, v.state], ["TRANSITION", state])
+        c.wait(_setup_settled("SNDK", state), 20, f"page shows {state}")
+        c.r.eq(f"page: Setup chip reads {label} with the linked metrics", [c.js("__tvText('#tv-setup .tv-set-state')"), c.js("(document.querySelector('#tv-setup .tv-set-metrics') || {}).innerText") is not None], [label, True])
+        time.sleep(0.4)
+        toasts.append(c.js("(document.getElementById('tv-toast') || {}).innerText"))
+        c.r.check(f"page: one toast for the {state} alert", (toasts[-1] or "").startswith(f"SNDK — {label}"), toasts[-1])
+        if state == "READY":
+            c.shot("setup_state", "#tv-setup")
+    before = len(c.http("GET", "/api/setups/alerts?limit=50")["alerts"])
+    v = svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **SETUP_STEPS[-1][2]}))
+    time.sleep(0.4)
+    c.r.eq("unchanged state: HOLD, no new alert, no new toast text", [v.decision, len(c.http("GET", "/api/setups/alerts?limit=50")["alerts"]), c.js("(document.getElementById('tv-toast') || {}).innerText")],
+           ["HOLD", before, toasts[-1]])
+    c.r.eq("persisted: four alerts for SNDK (WATCH, READY, WATCH, INVALIDATED), newest first", [a["to_state"] for a in c.http("GET", "/api/setups/alerts?limit=50")["alerts"] if a["symbol"] == "SNDK"],
+           ["INVALIDATED", "WATCH", "READY", "WATCH"])
+    c.r.eq("stored view and transitions match", [c.http("GET", "/api/setups/SNDK")["state_label"], [t["to_state"] for t in c.http("GET", "/api/setups/events?symbol=SNDK")["transitions"]][::-1]],
+           ["INVALIDATED", ["WATCH", "READY", "WATCH", "INVALIDATED"]])
+    # stale ticker: a transition for SNDK must not paint while AAPL is active
+    c.js("TraderView.switchTo('AAPL')")
+    c.wait(_tv_settled("AAPL") + " && __tvState('#tv-setup')[1] === 'AAPL'", 30, "AAPL settled")
+    svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, "stretch": -10.0, "confidence": 58, "demand": 72}))   # INVALIDATED -> NONE (no alert)
+    time.sleep(0.4)
+    card = c.js("__tvState('#tv-setup')")
+    c.r.check("stale ticker: the SNDK transition did not touch the AAPL setup card", card[1] == "AAPL" and card[0] in ("NONE", "WATCH", "READY", "INVALIDATED"), card)
+    c.r.eq("actions stay disabled next to the setup card", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    words = c.js("__tvText('#tv-setup')") or ""
+    c.r.check("no action language in the Setup section", not TRADE_WORDS.search(words), words[:200])
+    # the Alerts tab lists the persisted alerts; mark read works
+    c.js("document.querySelector('.tab-btn[data-tab=\"alerts\"]').click()")
+    c.js("SetupAlerts.refresh()")
+    c.wait("!!document.querySelector('#setup-alerts .sa-item')", 20, "setup alerts list")
+    items = c.js("[...document.querySelectorAll('#setup-alerts .sa-item .sa-state')].map((e) => e.innerText)")
+    c.r.check("Alerts tab: persisted setup alerts render with READY FOR REVIEW wording and no trade control", "READY FOR REVIEW" in items and c.js("document.querySelectorAll('#setup-alerts button').length") > 0
+              and not TRADE_WORDS.search(c.js("__tvText('#setup-alerts')") or ""), items)
+    unread0 = c.http("GET", "/api/setups/alerts")["unread"]
+    c.js("document.querySelector('#setup-alerts [data-sa=\"read\"]').click()")
+    c.wait(f"SetupAlerts.state.data && SetupAlerts.state.data.unread === {unread0 - 1}", 20, "marked read")
+    c.r.eq("Alerts tab: Mark read acknowledges exactly one alert", c.http("GET", "/api/setups/alerts")["unread"], unread0 - 1)
+    c.shot("setup_alerts", "#setup-alerts")
+    c.js("document.querySelector('#setup-alerts [data-sa=\"open\"]').click()")
+    c.wait("document.getElementById('tab-trader').classList.contains('active')", 10, "open in Trader View")
+    c.r.check("Alerts tab: Open in Trader View switches to the ticker", c.js(f"{TV}.active") in ("SNDK", "AAPL"))
+
+
 def automation(c: Ctx):
     sid = c.world.strategies["Trend Swing"]
     c.open_lab("builder")                                  # the journal + automation panel live in the Builder view
@@ -1975,6 +2048,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, automation, saved_scans, daily_brief, brief_delivery, notification_click,
-         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7: trader_view + market_demand sit before the clock-moving flows
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

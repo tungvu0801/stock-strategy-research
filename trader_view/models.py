@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from demand.models import DemandResult
 from ppe.models import PPEResult
+from setups.models import SetupView
 from trader_view import NOT_CONNECTED
 
 
@@ -122,6 +123,7 @@ class TerminalState(_M):
     evidence: EvidenceSummary
     ppe: PPEResult
     demand: DemandResult                    # Stage 5.7 Market Demand — separate from PPE, never combined with it
+    setup: SetupView                        # Stage 5.8 setup state (NONE / WATCH / READY FOR REVIEW / INVALIDATED) — stored view, never an entry signal
     tradability: Tradability
     data_status: DataStatus
     actions: List[Action]

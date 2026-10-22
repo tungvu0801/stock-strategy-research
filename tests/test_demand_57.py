@@ -465,7 +465,7 @@ def test_P4_stream_state_cadence_refresh_and_symbol_binding(api, ts):
         assert b[1]["demand"]["symbol"] == "NVDA" and b[1]["demand"]["status"] == "SIMULATED_DATA" and b[1]["demand"]["disclaimer"] == DISCLAIMER
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand"] and got[-1]["symbol"] == "NVDA" and got[-1]["version"] == "demand_v1"
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup"] and got[3]["symbol"] == "NVDA" and got[3]["version"] == "demand_v1"   # "setup": Stage 5.8
         n0 = ts.demand.computations
         for i in range(1, 31):
             ws.send_json({"type": "tick", "now": T0 + i})
@@ -557,8 +557,8 @@ def test_S2_ppe_evidence_and_execution_files_identical_to_base():
     pinned = [p.relative_to(ROOT).as_posix() for p in (ROOT / "ppe").glob("*.py")] + ["trader_view/ppe_provider.py", "trader_view/adapters.py", "trader_view/hub.py",
                                                                                       "trader_view/positions.py", "trader_view/research.py", "evidence/engine.py", "evidence/rules.py",
                                                                                       "evidence/store.py", "paper/alpaca_order_writer.py", "paper/alpaca_orders.py", "paper/alpaca_readonly.py",
-                                                                                      "paper/execution.py", "portfolio/provider.py", "database/migrations.py", "api/server.py",
-                                                                                      "DESIGN_56_PPE_ENGINE.md", "tests/test_evidence_54.py", "frontend/index.html"]
+                                                                                      "paper/execution.py", "portfolio/provider.py", "database/migrations.py",
+                                                                                      "DESIGN_56_PPE_ENGINE.md", "tests/test_evidence_54.py"]   # api/server.py + index.html: extended by Stage 5.8 (pinned in tests/test_setups_58.py)
     for rel in pinned:
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")
