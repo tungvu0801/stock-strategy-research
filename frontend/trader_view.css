@@ -209,3 +209,31 @@
   .tv-left, .tv-right { max-height: 320px; }
   .tv-chart-wrap { min-height: 320px; }
 }
+
+/* ---- Stage 5.9: TRADE REVIEW (a review artifact; never an order) -------------------------------------------------------- */
+.tv-panel-proposal { border-top: 2px solid var(--border); padding-top: 8px; }
+.tv-prop-state { font-size: 13px; font-weight: 800; letter-spacing: .6px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); color: var(--text-dim); background: var(--badge-bg); }
+.tv-prop-state.reviewable { color: var(--tv-up); border-color: rgba(88, 166, 255, .5); background: var(--tv-up-bg); }
+.tv-prop-state.blocked { color: #d8a0a0; border-color: rgba(216, 160, 160, .45); background: rgba(216, 160, 160, .10); }
+.tv-prop-state.stale { color: var(--tv-sim); border-color: rgba(210, 153, 34, .5); background: var(--tv-sim-bg); }
+.tv-prop-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.tv-prop-cell { display: flex; flex-direction: column; font-size: 11px; color: var(--text-dim); }
+.tv-prop-cell b { color: var(--text); font-size: 13px; font-weight: 700; }
+.tv-prop-list { margin-top: 6px; font-size: 11px; }
+.tv-prop-list ul { margin: 2px 0 0 14px; padding: 0; }
+.tv-prop-list.block li { color: #d8a0a0; }
+.tv-prop-list.warn li { color: var(--tv-sim); }
+.tv-prop-status { margin-top: 6px; font-size: 12px; color: var(--text-dim); }
+.tv-prop-status b { color: var(--text); letter-spacing: .4px; }
+.tv-prop-actions { display: flex; gap: 8px; margin-top: 8px; }
+.tv-prop-btn { font: inherit; font-size: 11px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text); cursor: pointer; }
+.tv-prop-btn:disabled { opacity: .5; cursor: not-allowed; }
+.tv-prop-details { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.tv-prop-sec { margin-top: 6px; }
+.tv-prop-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.tv-prop-row b { color: var(--text); font-weight: 600; text-align: right; }
+.tv-prop-ctl { margin: 2px 0 0 0; padding: 0; list-style: none; font-size: 11px; }
+.tv-prop-res { display: inline-block; min-width: 54px; font-size: 11px; font-weight: 800; letter-spacing: .4px; text-align: center; padding: 1px 4px; border-radius: 4px; border: 1px solid var(--border); }
+.tv-prop-res.pass { color: var(--tv-up); }
+.tv-prop-res.block { color: #d8a0a0; }
+.tv-prop-res.warn, .tv-prop-res.unknown { color: var(--tv-sim); }

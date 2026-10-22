@@ -34,13 +34,13 @@
     { id: "research", label: "Research", enabled: true, status: "NAVIGATE_ONLY", message: "Opens the stored evidence workspace." },
     { id: "add_alert", label: "Add Alert", enabled: false, status: "PLACEHOLDER", message: ACTION_TEXT.add_alert },
   ];
-  const PANELS = [["tv-position", "POSITION"], ["tv-ppe", "PPE"], ["tv-demand", "DEMAND"], ["tv-setup", "SETUP"], ["tv-evidence", "EVIDENCE"]];
+  const PANELS = [["tv-position", "POSITION"], ["tv-ppe", "PPE"], ["tv-demand", "DEMAND"], ["tv-setup", "SETUP"], ["tv-proposal", "TRADE REVIEW"], ["tv-evidence", "EVIDENCE"]];
   const seenAlerts = new Set();                                                 // setup_alert ids already toasted (no duplicate toast)
 
   const st = { booted: false, visible: false, active: null, mode: "", source: "", symbols: { watchlist: [], demo: ["AAPL", "NVDA", "SNDK"], default: "AAPL" },
                candles: new Map(), quotes: new Map(), ws: null, attempt: 0, timer: null, toastTimer: null, chart: null, series: null, volume: null,
                fallback: null, haveHistory: false, nav: new core.NavigationHistory(), lastState: null, conn: "disconnected", lastCandle: null,
-               pending: { candles: false, position: false, ppe: false, demand: false, setup: false, evidence: false }, watchlist: null, hbTime: "" };
+               pending: { candles: false, position: false, ppe: false, demand: false, setup: false, proposal: false, evidence: false }, watchlist: null, hbTime: "" };
   const subs = new core.SubscriptionManager((m) => { if (st.ws && st.ws.readyState === WebSocket.OPEN) st.ws.send(JSON.stringify(m)); });
 
   // ---------------------------------------------------------------- layout -------------------------------------------------
@@ -88,6 +88,7 @@
           <section class="tv-panel"><h3>PPE</h3><div id="tv-ppe" class="tv-panel-body"></div></section>
           <section class="tv-panel tv-panel-demand"><h3>Market Demand</h3><div id="tv-demand" class="tv-panel-body"></div></section>
           <section class="tv-panel tv-panel-setup"><h3>Setup</h3><div id="tv-setup" class="tv-panel-body"></div></section>
+          <section class="tv-panel tv-panel-proposal"><h3>Trade Review</h3><div id="tv-proposal" class="tv-panel-body"></div></section>
           <section class="tv-panel"><h3>Evidence</h3><div id="tv-evidence" class="tv-panel-body"></div></section>
           <section class="tv-panel tv-panel-last"><h3>Actions</h3><div class="tv-actions" id="tv-actions"></div></section>
         </aside>
@@ -277,6 +278,24 @@
     el.setAttribute("aria-label", `Setup ${m.label}${m.paused ? " · paused, stale data" : ""}`);
     el.innerHTML = R.setupHtml(s, { includeDisclaimer: false }) + `<p class="tv-disclaimer">${esc(s.disclaimer || "")}</p>`;
   }
+  function renderProposal(p) {
+    // Stage 5.9: the stored review proposal (NOT ELIGIBLE / BLOCKED / REVIEWABLE PROPOSAL / STALE / EXPIRED). A review artifact: never a button that trades.
+    const el = $("tv-proposal"); st.pending.proposal = false;
+    el.dataset.symbol = (p && p.symbol) || st.active || "";
+    if (!p || !p.effective_status) {
+      el.dataset.state = "NOT AVAILABLE";
+      el.innerHTML = R.proposalHtml(null, { symbol: st.active });
+      return;
+    }
+    const m = R.proposalModel(p);
+    el.dataset.state = p.effective_status; el.dataset.proposalId = p.proposal_id || "";
+    el.setAttribute("aria-label", `Trade review ${m.label}`);
+    el.innerHTML = R.proposalHtml(p, { includeDisclaimer: false }) + `<p class="tv-disclaimer">${esc(p.disclaimer || "")}</p>`;
+    if (window.TradeReview && typeof window.TradeReview.bind === "function") window.TradeReview.bind(el, p);
+  }
+  function applyProposal(p) {                                                // trade_review.js hands back the proposal after a review-state change
+    if (p && p.symbol === st.active) renderProposal(p);
+  }
   function onSetupAlert(a) {
     if (!a || !a.alert_id || seenAlerts.has(a.alert_id)) return;              // one toast per persisted alert
     seenAlerts.add(a.alert_id);
@@ -307,7 +326,7 @@
   function applyState(d) {
     st.lastState = d;
     if (d.data_status && d.data_status.mode) { st.mode = d.data_status.mode; st.source = d.data_status.market_source || st.source; setMode(); }
-    st.quotes.set(d.symbol, d.quote); renderQuote(d.quote); renderPosition(d.position); renderEvidence(d.evidence); renderPPE(d.ppe); renderDemand(d.demand); renderSetup(d.setup); renderActions(d.actions); renderStatusLine(d);
+    st.quotes.set(d.symbol, d.quote); renderQuote(d.quote); renderPosition(d.position); renderEvidence(d.evidence); renderPPE(d.ppe); renderDemand(d.demand); renderSetup(d.setup); renderProposal(d.proposal); renderActions(d.actions); renderStatusLine(d);
     renderWatchlist(null); renderRecent();
   }
   function toast(text) {
@@ -334,6 +353,7 @@
     st.active = s; st.haveHistory = false; st.lastCandle = null;
     st.pending = { candles: true, position: true, ppe: true, demand: true, evidence: true };
     st.pending.setup = true;
+    st.pending.proposal = true;
     $("tv-symbol").textContent = s; $("tv-input").value = "";
     updateNav(); renderWatchlist(null); renderRecent();
     const cached = st.candles.get(s);
@@ -403,6 +423,7 @@
       case "demand": renderDemand(m); break;
       case "setup": renderSetup(m); break;
       case "setup_alert": onSetupAlert(m); break;
+      case "proposal": renderProposal(m); break;
       case "heartbeat": st.hbTime = m.server_time ? m.server_time.slice(11, 19) : ""; $("tv-hb").textContent = st.hbTime ? `heartbeat ${st.hbTime} UTC` : ""; break;
       case "subscribed": case "unsubscribed": break;
       case "error":
@@ -419,7 +440,7 @@
   // ---------------------------------------------------------------- tab lifecycle ------------------------------------------
   async function boot() {
     st.booted = true;
-    shell(); setupChart(); setMode(); renderPPE(null); renderDemand(null); renderSetup(null); renderActions(DEFAULT_ACTIONS);
+    shell(); setupChart(); setMode(); renderPPE(null); renderDemand(null); renderSetup(null); renderProposal(null); renderActions(DEFAULT_ACTIONS);
     try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
     try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
     renderWatchlist(null);
@@ -445,5 +466,6 @@
     switchTo: (s) => switchTo(s, true), back: () => { const s = st.nav.back(); if (s) switchTo(s, false); return s; },
     forward: () => { const s = st.nav.forward(); if (s) switchTo(s, false); return s; }, activate,
     dropSocket: () => { if (st.ws) st.ws.close(); return !!st.ws; },           // tests / harness only: forces the reconnect path (no server call)
+    applyProposal,                                                             // Stage 5.9: trade_review.js hands back a proposal after a review-state change (symbol-guarded)
   };
 })();

@@ -602,7 +602,7 @@ def test_I03_ui_receives_symbol_bound_setup_and_broadcast_alert(stack):
         assert [(m["type"], m["decision"]) for m in marker(ws)] == [("setup", "HOLD")] and marker(ws2) == []
         ws.send_json({"type": "refresh"})                                                                               # a refresh re-evaluates the live (simulator) inputs: no stretch -> WATCH closes, never alerted
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup"] and got[-1]["state"] == "NONE" and marker(ws2) == []
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup", "proposal"] and got[4]["state"] == "NONE" and marker(ws2) == []   # "proposal": Stage 5.9
         ws.send_json({"type": "setup_eval", "symbol": "SNDK", "inputs": {"stretch": "garbage"}})
         assert ws.receive_json()["code"] == "BAD_MESSAGE"
     assert "setup" in SYMBOL_BOUND_TYPES and "setup_alert" in MESSAGE_TYPES and "setup_alert" not in SYMBOL_BOUND_TYPES

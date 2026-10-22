@@ -10,7 +10,7 @@
   root.TraderCore = api;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
-  const SYMBOL_BOUND = new Set(["quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand", "setup"]);
+  const SYMBOL_BOUND = new Set(["quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand", "setup", "proposal"]);
   const SYMBOL_RE = /^[A-Z.\-]{1,10}$/;
 
   class NavigationHistory {

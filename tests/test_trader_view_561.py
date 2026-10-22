@@ -185,4 +185,4 @@ def test_09_backend_ppe_evidence_and_prior_tests_identical_to_base():
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = HTML.splitlines()
     assert [l for l in base_html if l not in now_html] == []
-    assert [l for l in now_html if l not in base_html] == ['    <div id="setup-alerts"></div>', '<script src="trader_render.js"></script>', '<script src="setup_alerts.js"></script>']   # + Stage 5.8's two additive lines
+    assert [l for l in now_html if l not in base_html] == ['    <div id="setup-alerts"></div>', '<script src="trader_render.js"></script>', '<script src="setup_alerts.js"></script>', '<script src="trade_review.js"></script>']   # + Stage 5.8's two additive lines + Stage 5.9's script

@@ -34,6 +34,7 @@ from api.routes import signal_research
 from api.routes import evidence
 from api.routes import trader_view
 from api.routes import setups
+from api.routes import proposals
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -142,6 +143,7 @@ app.include_router(rotation_diagnostics.router)  # Stage 5.1: attribution & benc
 app.include_router(signal_research.router)  # Stage 5.2: deterministic signal research — research only, nothing is traded or activated
 app.include_router(evidence.router)  # Stage 5.4: multi-source evidence packets — research only; evidence strength is not a price probability
 app.include_router(setups.router)  # Stage 5.8: setup state machine + alerts — read-only state, read-acknowledgement only; no order path
+app.include_router(proposals.router)  # Stage 5.9: review proposals for READY setups — review artifact only, review-state POSTs only; no order path
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 

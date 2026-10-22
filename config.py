@@ -577,3 +577,16 @@ SETUP_EVAL_INTERVAL_SECONDS: float = float(os.getenv("SETUP_EVAL_INTERVAL_SECOND
 SETUP_MARKET_HOURS_ONLY: bool = os.getenv("SETUP_MARKET_HOURS_ONLY", "true").strip().lower() in ("1", "true", "yes", "on")
 SETUP_ALERT_COOLDOWN_MINUTES: int = int(os.getenv("SETUP_ALERT_COOLDOWN_MINUTES", "15"))
 TRADER_SETUP_REFRESH_SECONDS: float = float(os.getenv("TRADER_SETUP_REFRESH_SECONDS", "60"))    # the active ticker's in-session cadence in Trader View
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.9 — DETERMINISTIC TRADE PROPOSAL / REVIEW LAYER (proposals/). For a READY FOR REVIEW setup only: a review artifact
+# (reference price, invalidation level, risk per share, risk budget, capped whole-share quantity, blockers, warnings, controls).
+# Review only: no order path, no broker write, no recommendation, no target price, no expected return, no model call.
+# The position cap reuses MAX_POSITION_PERCENT; the ATR period is the project's 14; the 4.6B hard limits apply unchanged.
+# ------------------------------------------------------------------------------------------------------------------
+TRADE_PROPOSAL_RISK_FRACTION: float = float(os.getenv("TRADE_PROPOSAL_RISK_FRACTION", "0.005"))   # 0.5 % of equity per review proposal (valid: 0 < f <= 0.01)
+TRADE_PROPOSAL_REVIEW_EQUITY: float = float(os.getenv("TRADE_PROPOSAL_REVIEW_EQUITY", "0"))         # simulated mode only: explicit hypothetical equity (0 = not set)
+TRADE_PROPOSAL_TTL_SECONDS: int = int(os.getenv("TRADE_PROPOSAL_TTL_SECONDS", "300"))               # intraday proposal expiry
+TRADE_PROPOSAL_PRICE_CHANGE_PCT: float = float(os.getenv("TRADE_PROPOSAL_PRICE_CHANGE_PCT", "0.5"))   # reference move that regenerates a proposal
+TRADE_PROPOSAL_HALT: bool = os.getenv("TRADE_PROPOSAL_HALT", "false").strip().lower() in ("1", "true", "yes", "on")             # review-only halt (no kill switch existed)
+TRADE_PROPOSAL_DAILY_LOSS_HALT: bool = os.getenv("TRADE_PROPOSAL_DAILY_LOSS_HALT", "false").strip().lower() in ("1", "true", "yes", "on")   # explicit; no automatic daily P&L exists
