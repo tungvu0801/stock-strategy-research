@@ -128,7 +128,7 @@ PPE Stretch: -67 · Confidence: 34  PPE Stretch: -54 · Confidence: 58      Reas
 
 ## 8. Persistence (`database/setup_state_migrations.py`; additive, no delete anywhere)
 
-* `setup_episodes` — one row per episode: `setup_id` (32 hex = sha256(symbol|type|started_at)[:32]), `symbol`, `setup_type`, `cycle_id`,
+* `setup_episodes` — one row per episode: `setup_id` (32 hex = sha256(symbol|type|started_at|cycle_id)[:32]), `symbol`, `setup_type`, `cycle_id`,
   `state`, `previous_state`, `started_at`, `last_transition_at`, `last_evaluated_at`, `closed_at`, `invalidation_reason`,
   `transition_reason`, `demand_low_streak`, `last_inputs_json`, `last_freshness_json`, `source`, `mode`, `updated_at`. Only the state
   fields change (no delete; at most one open episode per symbol + type — partial unique index).
