@@ -252,6 +252,74 @@
     return `${a && a.symbol} — ${label}${reason ? ` · ${reason}` : ""}${a && a.created_at ? ` · ${String(a.created_at).slice(11, 16)} UTC` : ""}`;
   }
 
+  // ---------------------------------------------------------------- Trade review proposal (Stage 5.9; a review artifact, never an order) ---
+  const PROPOSAL_LABELS = { NOT_ELIGIBLE: "NOT ELIGIBLE", BLOCKED: "BLOCKED", REVIEWABLE: "REVIEWABLE PROPOSAL", STALE: "STALE", EXPIRED: "EXPIRED" };
+  const PROPOSAL_CLS = { NOT_ELIGIBLE: "", BLOCKED: "blocked", REVIEWABLE: "reviewable", STALE: "stale", EXPIRED: "stale" };
+  const EXPLAIN_PROPOSAL = "A review proposal is deterministic bookkeeping for a READY FOR REVIEW setup: a reference price, an invalidation level, the risk per share, an account risk budget and a capped whole-share quantity. It is not an entry signal and nothing is submitted.";
+  const money = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? "—" : `$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+  const shares = (v) => (v == null || Number.isNaN(Number(v)) ? "—" : `${Number(v)} ${Number(v) === 1 ? "share" : "shares"}`);
+  const pctText = (v) => (v == null || v === "" || Number.isNaN(Number(v)) ? "—" : `${Number(v).toFixed(2)}%`);
+  function proposalModel(p) {
+    const loaded = !!p && !!p.effective_status && !!PROPOSAL_LABELS[p.effective_status];
+    const status = loaded ? p.effective_status : "NOT_ELIGIBLE";
+    const stamp = (s, n) => (s ? `${String(s).slice(11, n || 19)} UTC` : null);
+    return { loaded, status, label: loaded ? PROPOSAL_LABELS[status] : "NOT AVAILABLE", cls: loaded ? PROPOSAL_CLS[status] : "", symbol: p ? p.symbol || null : null,
+             id: (p && p.proposal_id) || null, side: (p && p.side_label) || "Long review proposal", setup: "Downside Dislocation Recovery", hasNumbers: !!(p && p.reference_price),
+             reference: money(p && p.reference_price), invalidation: money(p && p.invalidation_price), rps: money(p && p.risk_per_share), riskPct: pctText(p && p.risk_pct),
+             budget: money(p && p.risk_budget), qty: shares(p && p.final_qty), notional: money(p && p.proposed_notional), maxNotional: money(p && p.max_notional),
+             priceSource: (p && p.price_source) || "", priceMode: (p && p.price_mode) || "", stopRule: p && p.stop_rule ? words(p.stop_rule) : "",
+             blockers: ((p && p.blockers) || []).map((b) => b.text || words(b.code)), warnings: ((p && p.warnings) || []).map((w) => w.text || words(w.code)),
+             review: (p && p.review_state) || "UNREVIEWED", dismissed: !!p && p.review_state === "DISMISSED", submission: (p && p.submission_status) || "NOT SUBMITTED",
+             staleReason: (p && p.stale_reason) || null, note: (p && p.note) || null, created: stamp(p && p.created_at), expires: stamp(p && p.expires_at, 16),
+             mode: (p && p.mode) || "", source: (p && p.source) || "", disclaimer: (p && p.disclaimer) || "", explain: EXPLAIN_PROPOSAL, raw: p || null };
+  }
+  function proposalDetailsHtml(p) {
+    const m = proposalModel(p);
+    const r = m.raw || {};
+    const setup = r.setup_snapshot || {};
+    const si = setup.inputs || {};
+    const ev = r.evidence_snapshot || {};
+    const acct = (r.inputs && r.inputs.account) || {};
+    const caps = r.caps || {};
+    const row = (k, v) => `<div class="tv-prop-row"><span>${esc(k)}</span><b>${esc(v == null || v === "" ? "—" : String(v))}</b></div>`;
+    const sec = (title, body) => `<div class="tv-prop-sec"><div class="tv-ppe-sub">${esc(title)}</div>${body}</div>`;
+    const n = (v) => (v == null ? "—" : String(Math.round(Number(v))));
+    return sec("SETUP CONTEXT", row("Setup", `${setup.state_label || setup.state || "—"} · ${m.setup}`) + row("PPE Stretch", n(si.stretch)) + row("PPE Confidence", n(si.confidence)) +
+             row("Market Demand", n(si.demand)) + row("Evidence", ev.available ? `${ev.strength || "—"} · ${words(ev.cause || "")} · ${ev.age_days == null ? "—" : `${ev.age_days} d old`}` : "none")) +
+      sec("PRICE / INVALIDATION", row("Reference price", `${m.reference} (${words(m.priceSource)}${m.priceMode === "DAILY_REFERENCE" ? ", DAILY_REFERENCE" : ""})`) +
+             row("Invalidation", `${m.invalidation}${m.stopRule ? ` (${m.stopRule})` : ""}`) + row(`ATR (${r.atr_period || 14})`, money(r.atr)) + row("Structural low", money(r.structural_low)) +
+             row("Risk per share", `${m.rps} (${m.riskPct})`)) +
+      sec("ACCOUNT RISK", row("Equity", `${money(r.equity)} (${words(r.equity_source || "NOT_AVAILABLE")})`) + row("Equity as of", acct.equity_as_of || "—") +
+             row("Risk fraction", r.risk_fraction == null ? "—" : `${(Number(r.risk_fraction) * 100).toFixed(2)}% of equity`) + row("Risk budget", m.budget)) +
+      sec("SIZE", row("Risk-based qty", shares(caps.risk_based)) + row("Position-cap qty", shares(caps.position_cap)) + row("Buying-power qty", caps.buying_power == null ? "unknown" : shares(caps.buying_power)) +
+             row("Hard limit", shares(caps.hard_limit)) + row("Final qty", `${m.qty}${caps.binding ? ` (binding: ${words(caps.binding)})` : ""}`) +
+             row("Max notional", `${m.maxNotional}${r.cap_source ? ` (${r.cap_source})` : ""}`) + row("Proposed notional", m.notional) +
+             row("Existing position", r.existing_position_qty ? `${shares(r.existing_position_qty)} · ${money(r.existing_position_notional)}` : "none")) +
+      sec("CONTROLS", `<ul class="tv-prop-ctl">${(r.controls || []).map((c) => `<li><span class="tv-prop-res ${esc(String(c.result).toLowerCase())}">${esc(c.result)}</span> ${esc(words(c.control_id))}${c.reason ? ` · ${esc(c.reason)}` : ""}</li>`).join("")}</ul>`) +
+      sec("WARNINGS", m.warnings.length ? `<ul class="tv-ppe-list">${m.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : `<div class="tv-dim">none</div>`) +
+      sec("STATUS", row("Submission", m.submission) + row("Review", words(m.review))) + (m.disclaimer ? `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>` : "");
+  }
+  function proposalHtml(p, opts) {
+    const o = opts || {};
+    const m = proposalModel(p);
+    if (!m.loaded) return o.loading ? skeletonHtml("TRADE REVIEW", o.symbol) : stateHtml("PROPOSAL_NOT_AVAILABLE", "TRADE REVIEW NOT AVAILABLE", o.symbol ? `No review proposal for ${o.symbol} yet.` : "No review proposal yet.");
+    const head = `<div class="tv-set-head"><span class="tv-prop-state ${m.cls}" data-proposal-status="${esc(m.status)}">${esc(m.label)}</span>` +
+      `${m.mode === "simulated" ? `<span class="tv-tag warn">SIMULATED DATA</span>` : ""}${m.dismissed ? `<span class="tv-tag">DISMISSED</span>` : ""}</div>`;
+    const side = `<div class="tv-set-name">${esc(m.side)}<span class="tv-set-since">${esc(m.setup)}</span></div>`;
+    const grid = m.hasNumbers ? `<div class="tv-prop-grid">` +
+      [["Reference", m.reference], ["Invalidation", m.invalidation], ["Risk / share", m.rps], ["Risk budget", m.budget], ["Max quantity", m.qty], ["Max notional", m.notional]]
+        .map(([k, v]) => `<div class="tv-prop-cell"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join("") + `</div>` : "";
+    const blockers = m.blockers.length ? `<div class="tv-prop-list block"><span class="tv-ppe-sub">${m.status === "NOT_ELIGIBLE" ? "Not eligible" : "Blockers"}</span><ul>${m.blockers.map((b) => `<li>${esc(b)}</li>`).join("")}</ul></div>` : "";
+    const warnings = m.warnings.length ? `<div class="tv-prop-list warn"><span class="tv-ppe-sub">Warnings</span><ul>${m.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
+    const stale = m.staleReason && (m.status === "STALE" || m.status === "EXPIRED") ? `<div class="tv-dim">${esc(m.status === "EXPIRED" ? "Expired: " : "Stale: ")}${esc(m.staleReason)} — regenerated on the next evaluation.</div>` : "";
+    const status = `<div class="tv-prop-status">Status <b data-proposal-submission>${esc(m.submission)}</b>${m.review !== "UNREVIEWED" ? ` · ${esc(words(m.review).toLowerCase())}` : ""}</div>`;
+    const stamp = m.created ? `<div class="tv-dem-stamp">generated ${esc(m.created)}${m.expires ? ` · expires ${esc(m.expires)}` : ""}${m.source ? ` · ${esc(m.source)}` : ""}</div>` : (m.note ? `<div class="tv-dim">${esc(m.note)}</div>` : "");
+    const actions = m.id ? `<div class="tv-prop-actions" data-proposal-id="${esc(m.id)}"><button type="button" class="tv-prop-btn" data-prop="details" aria-expanded="false">View Details</button>` +
+      `<button type="button" class="tv-prop-btn" data-prop="dismiss"${m.dismissed ? " disabled" : ""}>Dismiss</button></div><div class="tv-prop-details tv-hidden" data-prop-details>${proposalDetailsHtml(p)}</div>` : "";
+    return head + side + grid + blockers + warnings + stale + status + stamp + actions + `<p class="tv-explain">${esc(EXPLAIN_PROPOSAL)}</p>` +
+      (o.includeDisclaimer === false ? "" : `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>`);
+  }
+
   // ---------------------------------------------------------------- status strip -----------------------------------------
   function statusChips(d, mode) {
     const ds = (d && d.data_status) || {};
@@ -266,5 +334,6 @@
 
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
            ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
-           EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, SETUP_LABELS };
+           proposalModel, proposalHtml, proposalDetailsHtml,
+           EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS };
 });

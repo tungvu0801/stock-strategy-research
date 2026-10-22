@@ -104,6 +104,8 @@ def prepare(tmp: Path, guard: Guard):
     os.environ["PORTFOLIO_AWARENESS_ENABLED"] = "false"
     os.environ["EVENT_WARMUP_ON_STARTUP"] = "false"
     os.environ["TRADER_DATA_MODE"] = "simulated"            # Stage 5.6.1: the Trader View flow runs on the simulator, never a market feed
+    os.environ["TRADE_PROPOSAL_REVIEW_EQUITY"] = "100000"   # Stage 5.9: explicit hypothetical review equity for the simulator (never real money)
+    os.environ["TRADER_SETUP_REFRESH_SECONDS"] = "3600"      # Stage 5.9: the in-session cadence must not re-evaluate a forced setup mid-flow (subscribe / refresh still do)
     for p in (str(TESTS), str(ROOT)):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -119,6 +121,8 @@ def prepare(tmp: Path, guard: Guard):
     config.EVENT_WARMUP_ON_STARTUP = False
     config.PORTFOLIO_AWARENESS_ENABLED = False
     config.TRADER_DATA_MODE = "simulated"
+    config.TRADE_PROPOSAL_REVIEW_EQUITY = 100000.0                   # Stage 5.9: hypothetical review equity (simulated mode only)
+    config.TRADER_SETUP_REFRESH_SECONDS = 3600.0                      # Stage 5.9: see the environment note above
     config.ANTHROPIC_API_KEY = "browser-harness-fake-key"            # makes explanations "configured"; never sent anywhere
     config.AI_EXPLANATION_HOURLY_LIMIT, config.AI_EXPLANATION_DAILY_LIMIT = 100, 300   # the harness makes ~15 fake calls
 

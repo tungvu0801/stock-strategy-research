@@ -1,8 +1,8 @@
 """
 The terminal stream: one WebSocket per browser tab, one detailed subscription per connection, bounded polling.
 
-Server -> client: hello · subscribed · unsubscribed · state · candles · quote · candle · watchlist · position · evidence · ppe · demand · heartbeat · error
-Client -> server: subscribe {symbol} · unsubscribe {symbol} · ping · refresh            (tick: tests only, refused otherwise)
+Server -> client: hello · subscribed · unsubscribed · state · candles · quote · candle · watchlist · position · evidence · ppe · demand · setup · setup_alert · proposal · heartbeat · error
+Client -> server: subscribe {symbol} · unsubscribe {symbol} · ping · refresh            (tick / setup_eval / proposal_eval: tests only, refused otherwise)
 
 Cadence (ticks of TRADER_TICK_SECONDS; nothing at all is polled while no browser is connected):
   quote + current candle   every tick (simulated) / every TRADER_QUOTE_POLL_SECONDS (real: one batched snapshot for all active symbols)
@@ -46,6 +46,8 @@ from trader_view.demand_provider import DemandProvider
 from setups.market_hours import is_regular_session
 from setups.models import SetupInputs, SetupView
 from setups.service import SetupService
+from proposals.models import ProposalView
+from proposals.service import ProposalService
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -63,7 +65,7 @@ class TerminalStream:
                  watchlist_poll_seconds: Optional[float] = None, position_poll_seconds: Optional[float] = None,
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
-                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time):
+                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -83,6 +85,9 @@ class TerminalStream:
         self.setup_every = every(setup_poll_seconds or config.TRADER_SETUP_REFRESH_SECONDS)       # Stage 5.8: in-session cadence for the active ticker
         self.setups = setup_service or SetupService(stream_fn=lambda: self)
         self.setups.listeners.append(self._setup_event)
+        self.proposals = proposal_service or ProposalService(stream_fn=lambda: self)   # Stage 5.9: review proposals for READY setups — review only, never an order
+        self.setups.listeners.append(self.proposals.on_setup_event)
+        self.proposals.listeners.append(self._proposal_event)
         self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
         self.hub = Hub()
         self.connections: Dict[int, WebSocket] = {}
@@ -182,15 +187,41 @@ class TerminalStream:
         except RuntimeError:
             pass
 
+    def _proposal_event(self, event: dict) -> None:
+        """Stage 5.9 listener (any thread): a proposal generated outside the stream's own evaluations reaches the symbol's subscribers."""
+        loop = self._loop_ref
+        if loop is None or not self.connections or loop.is_closed() or event.get("origin") == "stream":
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._fanout(dict(event)), loop)
+        except RuntimeError:
+            pass
+
     async def _fanout(self, event: dict) -> None:
         event.pop("origin", None)
         if event.get("type") == "setup_alert":
             for conn_id in list(self.connections):
                 await self._send(conn_id, event)
-        elif event.get("type") == "setup":
+        elif event.get("type") in ("setup", "proposal"):
             for conn_id, symbol in self.hub.items():
                 if symbol == event.get("symbol"):
                     await self._send(conn_id, event)
+
+    # ---------------------------------------------------------------- Stage 5.9 review proposal (stored view; generated after each setup evaluation) ----
+    def _proposal_view(self, s: str) -> ProposalView:
+        try:
+            return self.proposals.current(s)
+        except Exception as exc:  # noqa: BLE001 - the stored view never hides the rest of the state
+            log.warning("Trader View: proposal view failed for %s (%s)", s, type(exc).__name__)
+            return ProposalView(symbol=s, note=f"Proposal view unavailable ({type(exc).__name__}).")
+
+    def _evaluate_proposal(self, s: str, trigger: str, view: Optional[SetupView], prefetched: Optional[dict] = None) -> Optional[ProposalView]:
+        """Runs in a worker thread after a setup evaluation the stream initiated. Review only. None when the evaluation itself failed."""
+        try:
+            return self.proposals.evaluate(s, None, trigger, setup_view=view, prefetched=prefetched, origin="stream")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Trader View: proposal evaluation failed for %s (%s)", s, type(exc).__name__)
+            return None
 
     def setup_in_session(self, now: float) -> bool:
         return (not config.SETUP_MARKET_HOURS_ONLY) or is_regular_session(datetime.fromtimestamp(now, tz=timezone.utc))
@@ -208,7 +239,8 @@ class TerminalStream:
         pos = self._position(s)
         ev = self._evidence(s)
         return TerminalState(
-            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=self._ppe(s), demand=self._demand(s), setup=self._setup_view(s), tradability=self.market.tradability(s),
+            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=self._ppe(s), demand=self._demand(s), setup=self._setup_view(s), proposal=self._proposal_view(s),
+            tradability=self.market.tradability(s),
             data_status=DataStatus(mode=self.market.mode, market="SIMULATED" if self.market.mode == "simulated" else quote.status,
                                    market_source=self.market.source, position=self._position_status(pos), evidence=ev.status, server_time=_iso()),
             actions=default_actions(), market_state=self.market.market_state(), candles=self.candles(s) if with_candles else [])
@@ -237,6 +269,8 @@ class TerminalStream:
                 "setup": {"version": "setups_v1", "states": ["NONE", "WATCH", "READY", "INVALIDATED"], "ready_label": "READY FOR REVIEW", "refresh_s": self.tick_seconds * self.setup_every,
                           "cadence": "on subscribe, on refresh and every refresh_s for the active ticker inside the US regular session; the server-side evaluator covers the watchlist",
                           "market_hours_only": bool(config.SETUP_MARKET_HOURS_ONLY)},
+                "proposal": {"version": "proposals_v1", "statuses": ["NOT_ELIGIBLE", "BLOCKED", "REVIEWABLE", "STALE", "EXPIRED"], "reviewable_label": "REVIEWABLE PROPOSAL",
+                             "submission_status": "NOT SUBMITTED", "cadence": "generated after each setup evaluation of the active ticker; review only, never an order"},
                 "chart": dict(CHART_ASSET),
                 "client_commands": list(CLIENT_COMMANDS), "execution_preview": "NOT_CONNECTED"}
 
@@ -304,6 +338,9 @@ class TerminalStream:
                 view = await asyncio.to_thread(self._evaluate_setup, symbol, "SCHEDULED")
                 if view is not None and self.hub.symbol_of(conn_id) == symbol:
                     await self._send(conn_id, {"type": "setup", **view.model_dump()})
+                    pv = await asyncio.to_thread(self._evaluate_proposal, symbol, "SCHEDULED", view)        # Stage 5.9: the review proposal follows the setup
+                    if pv is not None and pv.effective_status != "NOT_ELIGIBLE" and self.hub.symbol_of(conn_id) == symbol:
+                        await self._send(conn_id, {"type": "proposal", **pv.model_dump()})
         if self.connections and (force_all or n % HEARTBEAT_TICKS == 0):
             hb = {"type": "heartbeat", "server_time": _iso(now), "market_state": self.market.market_state(), "subscriptions": len(self.hub)}
             for conn_id in list(self.connections):
@@ -367,6 +404,11 @@ class TerminalStream:
                         await self._error(conn_id, "NOT_ALLOWED", "forced setup evaluations are only enabled in tests")
                         continue
                     await self._setup_eval(conn_id, msg)
+                elif kind == "proposal_eval":                                  # tests / harness only: force a proposal evaluation (optional account overrides)
+                    if not self.allow_manual_tick:
+                        await self._error(conn_id, "NOT_ALLOWED", "forced proposal evaluations are only enabled in tests")
+                        continue
+                    await self._proposal_eval(conn_id, msg)
                 else:
                     await self._error(conn_id, "BAD_MESSAGE", "expected subscribe / unsubscribe / ping / refresh")
         except (WebSocketDisconnect, RuntimeError):
@@ -406,6 +448,37 @@ class TerminalStream:
         view = await asyncio.to_thread(self._evaluate_setup, s, "SUBSCRIBE", None, {"ppe": state.ppe, "demand": state.demand, "evidence": state.evidence, "quote": state.quote})
         if view is not None and view.decision == "TRANSITION" and self.hub.symbol_of(conn_id) == s:
             await self._send(conn_id, {"type": "setup", **view.model_dump()})
+        # Stage 5.9: the review proposal follows the setup evaluation; sent only when it changed (the Stage 5.5 burst stays unchanged)
+        pv = await asyncio.to_thread(self._evaluate_proposal, s, "SUBSCRIBE", view, {"quote": state.quote, "ppe": state.ppe, "position": state.position}) if view is not None else None
+        if pv is not None and self.hub.symbol_of(conn_id) == s and pv.effective_status != "NOT_ELIGIBLE" and \
+                (view.decision == "TRANSITION" or pv.proposal_id != state.proposal.proposal_id or pv.effective_status != state.proposal.effective_status):
+            await self._send(conn_id, {"type": "proposal", **pv.model_dump()})
+
+    async def _proposal_eval(self, conn_id: int, msg: dict) -> None:
+        raw = str(msg.get("symbol") or "")
+        try:
+            s = validate_symbol(raw)
+            account = msg.get("account")
+            if account is not None and not isinstance(account, dict):
+                raise ValueError("account overrides must be an object")
+        except Exception as exc:  # noqa: BLE001 - malformed fixture
+            await self._error(conn_id, "BAD_MESSAGE", f"proposal_eval needs a symbol and optional account overrides ({type(exc).__name__})")
+            return
+        if msg.get("clear"):
+            self.proposals.overrides.pop(s, None)
+        elif account is not None:
+            self.proposals.overrides[s] = dict(account)
+        view = await asyncio.to_thread(self._evaluate_proposal, s, "TEST", None, None)
+        if view is None:
+            await self._error(conn_id, "EVALUATION_FAILED", "the forced proposal evaluation raised", symbol=s)
+            return
+        sent = set()
+        for cid, symbol in self.hub.items():
+            if symbol == s:
+                await self._send(cid, {"type": "proposal", **view.model_dump()})
+                sent.add(cid)
+        if conn_id not in sent:
+            await self._send(conn_id, {"type": "proposal", **view.model_dump()})
 
     async def _setup_eval(self, conn_id: int, msg: dict) -> None:
         raw = str(msg.get("symbol") or "")
@@ -450,6 +523,9 @@ class TerminalStream:
         view = await asyncio.to_thread(self._evaluate_setup, s, "REFRESH", None, {"ppe": res, "demand": dem, "evidence": ev, "quote": None})   # Stage 5.8: explicit refresh evaluates
         if view is not None and self.hub.symbol_of(conn_id) == s:
             await self._send(conn_id, {"type": "setup", **view.model_dump()})
+            pv = await asyncio.to_thread(self._evaluate_proposal, s, "REFRESH", view, {"ppe": res, "position": pos})    # Stage 5.9: the review proposal follows the setup
+            if pv is not None and self.hub.symbol_of(conn_id) == s:
+                await self._send(conn_id, {"type": "proposal", **pv.model_dump()})
 
 
 def build_stream(mode: Optional[str] = None) -> TerminalStream:
@@ -457,4 +533,4 @@ def build_stream(mode: Optional[str] = None) -> TerminalStream:
     from trader_view.positions import StockAgentPositionAdapter
     from trader_view.research import EvidenceResearchAdapter
     return TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(), EvidenceResearchAdapter(),
-                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval) in the harness process only
+                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval) in the harness process only

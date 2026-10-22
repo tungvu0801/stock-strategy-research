@@ -484,7 +484,8 @@ def trader_view(c: Ctx):
     c.r.eq("actions: Prepare Buy / Prepare Sell / Add Alert are disabled buttons (disabled + aria-disabled); Research enabled", c.js("__tvActions()"),
            [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
     panel_text = c.js("[...document.querySelectorAll('.tv-top, .tv-center, .tv-right .tv-panel:not(.tv-panel-last)')].map((e) => e.innerText).join('\\n')") or ""
-    c.r.check("no action language outside the disabled action labels", not TRADE_WORDS.search(panel_text), panel_text[:300])
+    scan = panel_text.replace("not a recommendation or submitted order", "")                     # Stage 5.9: the Trade Review card's mandated negated sentence
+    c.r.check("no action language outside the disabled action labels", not TRADE_WORDS.search(scan), panel_text[:300])
     # rapid switching, Back / Forward
     c.js("; ".join(f"TraderView.switchTo({json.dumps(s)})" for s in TV_SYMBOLS))
     c.wait(_tv_settled("JPM"), 30, "rapid switch settled on JPM")
@@ -649,6 +650,88 @@ def setup_state(c: Ctx):
     c.js("document.querySelector('#setup-alerts [data-sa=\"open\"]').click()")
     c.wait("document.getElementById('tab-trader').classList.contains('active')", 10, "open in Trader View")
     c.r.check("Alerts tab: Open in Trader View switches to the ticker", c.js(f"{TV}.active") in ("SNDK", "AAPL"))
+
+
+def _review_settled(sym, status):
+    return f"{TV}.active === {json.dumps(sym)} && __tvState('#tv-proposal')[1] === {json.dumps(sym)} && __tvState('#tv-proposal')[0] === {json.dumps(status)}"
+
+
+def _wait_review_state(c: Ctx, symbol, state, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        if c.http("GET", f"/api/proposals/{symbol}").get("review_state") == state:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def trade_review(c: Ctx):
+    """Stage 5.9: the review proposal follows the setup state through the REAL service path (in-process) — REVIEWABLE PROPOSAL on the page for a
+    READY setup, BLOCKED when a control blocks, NOT ELIGIBLE elsewhere, NOT SUBMITTED always; View Details / Dismiss change the review state only;
+    a stale ticker's proposal never paints; Prepare Buy / Sell stay disabled."""
+    from api.routes.trader_view import stream
+    from setups.models import SetupInputs
+    st = stream()
+    svc, psvc = st.setups, st.proposals
+    words = re.compile(r"(?i)\b(buy|sell|buy now|sell now|enter now|trade now|you should|approved|execute)\b|target price|expected return|probabilit|win rate")
+    if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+        c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+    c.js(TV_JS)
+    c.js("TraderView.switchTo('AAPL')")
+    c.wait(_tv_settled("AAPL") + " && __tvState('#tv-proposal')[1] === 'AAPL'", 30, "AAPL settled")
+    c.r.eq("Trade Review renders NOT ELIGIBLE for a ticker without a READY setup", c.js("__tvText('#tv-proposal .tv-prop-state')"), "NOT ELIGIBLE")
+    c.js("TraderView.switchTo('SNDK')")
+    c.wait(_tv_settled("SNDK") + " && __tvState('#tv-proposal')[1] === 'SNDK'", 30, "SNDK settled")
+    for state, label, over in SETUP_STEPS[:2]:                                                   # WATCH, then READY FOR REVIEW — through the real setup service
+        v = svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+        c.r.eq(f"service: setup forced to {state}", [v.decision, v.state], ["TRANSITION", state])
+        time.sleep(1.1)                                                                            # distinct seconds: proposal identity includes created_at
+    c.wait(_review_settled("SNDK", "REVIEWABLE"), 20, "page shows REVIEWABLE PROPOSAL")
+    p = psvc.current("SNDK")
+    c.r.eq("service: the READY transition generated a stored REVIEWABLE proposal (NOT SUBMITTED)", [p.effective_status, p.submission_status, len(p.proposal_id or ""), p.side_label, p.final_qty >= 1],
+           ["REVIEWABLE", "NOT SUBMITTED", 32, "Long review proposal", True])
+    c.r.eq("page: chip reads REVIEWABLE PROPOSAL and the six values render", [c.js("__tvText('#tv-proposal .tv-prop-state')"), c.js("document.querySelectorAll('#tv-proposal .tv-prop-cell').length")], ["REVIEWABLE PROPOSAL", 6])
+    c.r.eq("page: status line reads NOT SUBMITTED", c.js("__tvText('#tv-proposal [data-proposal-submission]')"), "NOT SUBMITTED")
+    txt = c.js("__tvText('#tv-proposal')") or ""
+    c.r.check("page: no side, target or probability language in the Trade Review card", not words.search(txt.replace("not a recommendation", "")) and "Long review proposal" in txt and
+              "deterministic review proposal, not a recommendation or submitted order" in txt, txt[:200])
+    c.shot("trade_review", "#tv-proposal")
+    c.js("document.querySelector('#tv-proposal [data-prop=\"details\"]').click()")
+    c.wait("!document.querySelector('#tv-proposal [data-prop-details]').classList.contains('tv-hidden')", 10, "details open")
+    c.r.check("page: View Details shows the Phase 22 sections and the control results", all(k in (c.js("__tvText('#tv-proposal [data-prop-details]')") or "") for k in ("SETUP CONTEXT", "PRICE / INVALIDATION", "ACCOUNT RISK", "SIZE", "CONTROLS", "NOT SUBMITTED")))
+    c.r.check("API: View Details acknowledged the proposal as VIEWED (review state only)", _wait_review_state(c, "SNDK", "VIEWED"))
+    c.shot("trade_review_details", "#tv-proposal")
+    time.sleep(1.1)
+    psvc.overrides["SNDK"] = {"halt": True, "halt_source": "harness"}                            # a forced hard blocker through the real service path
+    b = psvc.evaluate("SNDK", trigger="TEST")
+    c.wait(_review_settled("SNDK", "BLOCKED"), 20, "page shows BLOCKED")
+    c.r.eq("service + page: the forced halt blocks the proposal and the page shows BLOCKED with the blocker text", [b.effective_status, [x["code"] for x in b.blockers], "halt" in (c.js("__tvText('#tv-proposal .tv-prop-list.block')") or "")],
+           ["BLOCKED", ["KILL_SWITCH_ACTIVE"], True])
+    rows = c.http("GET", f"/api/proposals/id/{b.proposal_id}")["control_rows"]
+    c.r.check("API: the blocked control's evaluation is on disk with what it saw", any(r["control_id"] == "KILL_SWITCH" and r["result"] == "BLOCK" and r["input"].get("source") == "harness" for r in rows))
+    time.sleep(1.1)
+    psvc.overrides.pop("SNDK", None)
+    r = psvc.evaluate("SNDK", trigger="TEST")
+    c.wait(_review_settled("SNDK", "REVIEWABLE"), 20, "page shows REVIEWABLE PROPOSAL again")
+    c.r.eq("service: clearing the halt regenerates a REVIEWABLE proposal (new id; the blocked one stays in history)", [r.effective_status, r.proposal_id != b.proposal_id, len(c.http("GET", "/api/proposals/history?symbol=SNDK")["proposals"]) >= 3],
+           ["REVIEWABLE", True, True])
+    c.js("document.querySelector('#tv-proposal [data-prop=\"dismiss\"]').click()")
+    c.r.check("API: Dismiss marks the proposal DISMISSED (review state only)", _wait_review_state(c, "SNDK", "DISMISSED"))
+    c.wait("(__tvText('#tv-proposal') || '').includes('DISMISSED') && document.querySelector('#tv-proposal [data-prop=\"dismiss\"]').disabled", 10, "dismissed re-render")
+    c.r.check("page: the dismissed proposal renders as DISMISSED with the Dismiss control disabled", "DISMISSED" in (c.js("__tvText('#tv-proposal')") or "") and
+              c.js("document.querySelector('#tv-proposal [data-prop=\"dismiss\"]').disabled") is True)
+    c.r.eq("actions stay disabled next to the proposal", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    # stale ticker: a SNDK proposal must not paint while AAPL is active
+    c.js("TraderView.switchTo('AAPL')")
+    c.wait(_tv_settled("AAPL") + " && __tvState('#tv-proposal')[1] === 'AAPL'", 30, "AAPL settled")
+    time.sleep(1.1)
+    psvc.evaluate("SNDK", trigger="TEST")
+    time.sleep(0.5)
+    card = c.js("__tvState('#tv-proposal')")
+    c.r.check("stale ticker: the SNDK proposal did not touch the AAPL Trade Review card", card == ["NOT_ELIGIBLE", "AAPL"], card)
+    ctl = c.http("GET", "/api/proposals/controls")
+    c.r.check("API: control liveness rows exist for every control with counts", len(ctl["controls"]) == 16 and all(x["evaluation_count"] >= 1 for x in ctl["controls"]) and any(x["block_count"] >= 1 for x in ctl["controls"]))
 
 
 def automation(c: Ctx):
@@ -2048,6 +2131,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

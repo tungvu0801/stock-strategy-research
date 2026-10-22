@@ -465,7 +465,7 @@ def test_P4_stream_state_cadence_refresh_and_symbol_binding(api, ts):
         assert b[1]["demand"]["symbol"] == "NVDA" and b[1]["demand"]["status"] == "SIMULATED_DATA" and b[1]["demand"]["disclaimer"] == DISCLAIMER
         ws.send_json({"type": "refresh"})
         got = marker(ws)
-        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup"] and got[3]["symbol"] == "NVDA" and got[3]["version"] == "demand_v1"   # "setup": Stage 5.8
+        assert [m["type"] for m in got] == ["position", "evidence", "ppe", "demand", "setup", "proposal"] and got[3]["symbol"] == "NVDA" and got[3]["version"] == "demand_v1"   # "setup": Stage 5.8; "proposal": Stage 5.9
         n0 = ts.demand.computations
         for i in range(1, 31):
             ws.send_json({"type": "tick", "now": T0 + i})

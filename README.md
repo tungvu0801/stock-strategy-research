@@ -666,3 +666,50 @@ Trader View. The evaluator never starts in a test process; `SETUP_EVALUATOR_ENAB
 without it. The intraday-validation limits of Stage 5.7 are inherited (Market Demand's intraday components were validated on synthetic
 sessions only). Read-only API: `GET /api/setups`, `/api/setups/{symbol}`, `/api/setups/events`, `/api/setups/evaluations`,
 `/api/setups/alerts` (+ the existing read-acknowledgement `POST …/read`, `…/read-all`), `/api/setups/controls`.
+
+## Trade proposal / review layer (Stage 5.9, deterministic, review only)
+
+**A READY FOR REVIEW setup is not a trade.** Stage 5.9 adds a *review artifact* for such a setup: a deterministic, risk-bounded
+**long review proposal** (`proposals/`, design: `DESIGN_59_TRADE_PROPOSAL_REVIEW.md`). It is not a recommendation, never a
+BUY / SELL signal, and nothing is ever submitted — the status line always reads **NOT SUBMITTED** and the card says
+"This is a deterministic review proposal, not a recommendation or submitted order." The user remains the only decision maker.
+
+* **Eligibility**: only the `DOWNSIDE_DISLOCATION_RECOVERY` setup while its state is `READY`; the stored setup inputs must be fresh
+  (PPE, Market Demand, the setup evaluation), no evidence gate or contradiction, a fresh reference price, no hard risk blocker.
+  Anything else returns explicit blockers (`NOT ELIGIBLE` / `BLOCKED`), never a silent nothing.
+* **Reference price** (first usable wins, named): quote midpoint (spread ≤ 1 %, ≤ 300 s old) → last trade → latest completed
+  1-minute close (≤ 15 min) → last completed daily close, labelled `DAILY_REFERENCE`. An invalid value blocks; nothing is invented.
+* **Invalidation level** (fixed rule, never tuned): structural low of the last 5 completed sessions (and the current session's
+  completed minute lows) minus 0.25 × ATR(14), capped by reference − 1.5 × ATR(14) (`STRUCTURAL` / `ATR_CAP` / `ATR_FALLBACK`);
+  must sit below the reference. Risk per share = reference − invalidation. No target price, no expected return, no probability.
+* **Sizing** (Decimal, whole shares): risk budget = equity × `TRADE_PROPOSAL_RISK_FRACTION` (0.5 %, max 1 %); risk-based qty =
+  floor(budget / risk per share); capped by the existing `MAX_POSITION_PERCENT` (10 %) position cap (bounded by the Stage 4.6B
+  100 000 notional / 10 000 share limits) less the existing position, by buying power with the 4.6B 5 % buffer, and by the hard
+  limit. Every cap contribution is returned; an existing position is stated explicitly and never averaged down.
+* **Equity source** (named, never faked): real mode — the Stage 4.6A Alpaca Paper snapshot (0 network calls; refreshed only by the
+  user) then the Stage 4.5 local paper portfolio; simulated mode — only the explicit `TRADE_PROPOSAL_REVIEW_EQUITY`; otherwise the
+  proposal is `BLOCKED` with `EQUITY_NOT_AVAILABLE`.
+* **Controls** (DESIGN_59 §10): 16 named controls (freshness, evidence, price, invalidation, risk per share, equity, budget, review
+  halt, daily-loss halt, tradability, duplicate pending order, buying power, position cap, quantity). Each generated proposal stores
+  one row per control with what it saw and returned (`proposal_controls`) and one upserted liveness row per control
+  (`proposal_control_status`), both readable at `GET /api/proposals/controls`. The project had **no kill switch and no daily-loss
+  guard**; Stage 5.9 adds the review-only flags `TRADE_PROPOSAL_HALT` and `TRADE_PROPOSAL_DAILY_LOSS_HALT` (default off) and observes
+  the broker's account blocks — it does not compute a daily P&L and does not add an execution kill switch.
+* **Blockers vs warnings** never mix: hard blockers make the proposal `BLOCKED`; warnings (weak evidence, moderate confidence,
+  marginal demand, daily-reference price, existing position, near close / closed, sector fallback, unknown tradability or buying
+  power, hypothetical equity, simulated data, quantity reductions) still render.
+* **Identity, persistence, expiry**: `proposal_id = sha256(setup_id | created_at | reference_price | invalidation_price |
+  risk_budget)[:32]`; `trade_proposals` is append-only (only `review_state` / `reviewed_at` change); intraday proposals expire
+  after `TRADE_PROPOSAL_TTL_SECONDS` (300 s), daily-reference ones at the next session open; a proposal reads `STALE` as soon as
+  the setup leaves READY or changes episode and `EXPIRED` past its expiry — both derived, never written. Unchanged inputs reuse
+  the stored row (no duplicate per refresh); a material change (blockers, invalidation, quantity, equity, evidence packet, a
+  reference move above `TRADE_PROPOSAL_PRICE_CHANGE_PCT` = 0.5 %, a setup transition) generates a new row and keeps the old one.
+* **Review state**: `UNREVIEWED → VIEWED → DISMISSED` through the only two POSTs (`/api/proposals/{id}/view`, `/dismiss`).
+  Read-only API: `GET /api/proposals`, `/history`, `/controls`, `/id/{proposal_id}`, `/{symbol}` (never generates).
+* **Trader View**: a **TRADE REVIEW** card under the Setup card (`REVIEWABLE PROPOSAL` / `BLOCKED` / `NOT ELIGIBLE` / `STALE` /
+  `EXPIRED`, reference, invalidation, risk per share, risk budget, max quantity, max notional, warnings, blockers, NOT SUBMITTED,
+  View Details, Dismiss). Generated after each setup evaluation of the active ticker and after evaluator transitions; the
+  `proposal` socket message is symbol-bound. Prepare Buy / Prepare Sell remain disabled (`PREVIEW_NOT_CONNECTED`).
+* **Stage 4.6B stays disconnected**: `proposals/` never imports the order writer, the order service, the order reads or any trading
+  client (pinned by `tests/test_proposals_59.py`); no proposal, alert or setup transition can place, preview, submit or cancel
+  anything; no model is called; no automatic research runs. Auto paper trading is not enabled.
