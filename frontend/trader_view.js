@@ -84,6 +84,7 @@
           <div class="tv-footnote" id="tv-footnote"></div>
         </section>
         <aside class="tv-right" aria-label="Position, PPE, evidence and actions">
+          <section class="tv-panel tv-panel-safety"><h3>Risk Controls</h3><div id="tv-safety" class="tv-panel-body"></div></section>
           <section class="tv-panel"><h3>Position</h3><div id="tv-position" class="tv-panel-body"></div></section>
           <section class="tv-panel"><h3>PPE</h3><div id="tv-ppe" class="tv-panel-body"></div></section>
           <section class="tv-panel tv-panel-demand"><h3>Market Demand</h3><div id="tv-demand" class="tv-panel-body"></div></section>
@@ -441,6 +442,7 @@
   async function boot() {
     st.booted = true;
     shell(); setupChart(); setMode(); renderPPE(null); renderDemand(null); renderSetup(null); renderProposal(null); renderActions(DEFAULT_ACTIONS);
+    if (window.RiskControls && typeof window.RiskControls.mount === "function") window.RiskControls.mount("tv-safety");   // Stage 5.9.1: the risk-controls panel owns its own reads
     try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
     try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
     renderWatchlist(null);

@@ -237,3 +237,23 @@
 .tv-prop-res.pass { color: var(--tv-up); }
 .tv-prop-res.block { color: #d8a0a0; }
 .tv-prop-res.warn, .tv-prop-res.unknown { color: var(--tv-sim); }
+
+/* ---- Stage 5.9.1: RISK CONTROLS (the persisted execution safety gate; safety state only) ------------------------------- */
+.tv-panel-safety { border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+.tv-safe-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tv-safe-state { font-size: 14px; font-weight: 800; letter-spacing: .4px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); background: var(--badge-bg); }
+.tv-safe-state.ok { border-color: rgba(88, 166, 255, .5); background: var(--tv-up-bg); }
+.tv-safe-state.paused { color: var(--tv-sim); border-color: rgba(210, 153, 34, .5); background: var(--tv-sim-bg); }
+.tv-safe-state.stopped { color: #d8a0a0; border-color: rgba(216, 160, 160, .45); background: rgba(216, 160, 160, .10); }
+.tv-safe-reason { margin-top: 6px; font-size: 12px; color: var(--text); }
+.tv-safe-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.tv-safe-btn { font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text); cursor: pointer; }
+.tv-safe-btn.danger { border-color: rgba(216, 160, 160, .6); color: #d8a0a0; }
+.tv-safe-btn:disabled { opacity: .45; cursor: not-allowed; }
+.tv-safe-link { font: inherit; font-size: 11px; margin-top: 6px; background: none; border: none; color: var(--text-dim); text-decoration: underline; cursor: pointer; padding: 0; }
+.tv-safe-details { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.tv-safe-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.tv-safe-row b { color: var(--text); font-weight: 600; text-align: right; }
+.tv-safe-hist { margin: 2px 0 0 14px; padding: 0; font-size: 11px; color: var(--text-dim); }
+.tv-prop-exec { margin-top: 4px; font-size: 11px; color: var(--text-dim); }
+.tv-prop-exec[data-exec-allowed="false"] { color: var(--tv-sim); }

@@ -48,8 +48,9 @@ def _seconds_to_close(now: datetime) -> Optional[int]:
 class ProposalService:
     def __init__(self, stream_fn: Callable[[], object], store: Optional[ProposalStore] = None, *, account: Optional[AccountAdapter] = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), owner: Optional[str] = None, risk_fraction: Optional[float] = None,
-                 max_position_pct: Optional[float] = None, ttl_seconds: Optional[int] = None, price_change_pct: Optional[float] = None):
+                 max_position_pct: Optional[float] = None, ttl_seconds: Optional[int] = None, price_change_pct: Optional[float] = None, safety=None):
         self.stream_fn = stream_fn
+        self.safety = safety                                 # Stage 5.9.1: the execution safety gate (safety.service.ExecutionSafetyService); the stream wires it
         self.store = store or ProposalStore()
         self.account = account or AccountAdapter()
         self.clock = clock
@@ -84,6 +85,15 @@ class ProposalService:
             return "STALE", "the setup transitioned since the proposal was generated"
         return row["status"], None
 
+    def execution_eligibility(self, status: str, now: datetime) -> Dict[str, Any]:
+        """Stage 5.9.1: may a future execution layer act on this proposal NOW? Derived from the live gate; never stored and never acted upon here."""
+        if self.safety is None:
+            return {"allowed": False, "state": "UNKNOWN", "state_label": "Trading stopped", "reason_codes": ["SAFETY_GATE_NOT_CONNECTED"], "reason_text": "Safety gate not connected", "evaluated_at": None}
+        sv = self.safety.current(now=now)
+        codes = list(sv.reason_codes) + ([] if status == "REVIEWABLE" else [f"PROPOSAL_{status}"])
+        return {"allowed": bool(sv.allowed_new_entry and status == "REVIEWABLE"), "state": sv.state, "state_label": sv.state_label, "reason_codes": codes,
+                "reason_text": sv.reason_text or ("" if status == "REVIEWABLE" else f"proposal {status.lower()}"), "evaluated_at": sv.evaluated_at}
+
     def view_of(self, row: Optional[dict], view: SetupView, now: datetime, *, trigger: Optional[str] = None) -> ProposalView:
         s = view.symbol
         now_iso = _iso(now)
@@ -93,13 +103,17 @@ class ProposalService:
             from proposals import TEXT
             if codes:
                 return ProposalView(symbol=s, setup_id=view.setup_id, status="NOT_ELIGIBLE", effective_status="NOT_ELIGIBLE", status_label=STATUS_LABELS["NOT_ELIGIBLE"],
-                                    blockers=[{"code": c, "text": TEXT[c]} for c in codes], setup_snapshot=view.model_dump(), trigger=trigger, mode=view.mode, source=view.source)
+                                    blockers=[{"code": c, "text": TEXT[c]} for c in codes], setup_snapshot=view.model_dump(), trigger=trigger, mode=view.mode, source=view.source,
+                                    execution_eligibility=self.execution_eligibility("NOT_ELIGIBLE", now))
             return ProposalView(symbol=s, setup_id=view.setup_id, status="NOT_ELIGIBLE", effective_status="STALE", status_label=STATUS_LABELS["STALE"], stale_reason="not generated yet",
-                                setup_snapshot=view.model_dump(), trigger=trigger, mode=view.mode, source=view.source, note=NOT_GENERATED)
+                                setup_snapshot=view.model_dump(), trigger=trigger, mode=view.mode, source=view.source, note=NOT_GENERATED,
+                                execution_eligibility=self.execution_eligibility("STALE", now))
         eff, reason = self.effective(row, view, now_iso)
-        keys = set(ProposalView.model_fields) - {"version", "side_label", "effective_status", "status_label", "stale_reason", "submission_status", "disclaimer", "note", "trigger"}
+        keys = set(ProposalView.model_fields) - {"version", "side_label", "effective_status", "status_label", "stale_reason", "submission_status", "disclaimer", "note", "trigger",
+                                                "execution_eligibility"}
         data = {k: row[k] for k in keys if k in row}
-        return ProposalView(**data, effective_status=eff, status_label=STATUS_LABELS.get(eff, eff), stale_reason=reason, trigger=trigger or row.get("trigger"))
+        return ProposalView(**data, effective_status=eff, status_label=STATUS_LABELS.get(eff, eff), stale_reason=reason, trigger=trigger or row.get("trigger"),
+                            execution_eligibility=self.execution_eligibility(eff, now))
 
     def current(self, symbol: str, now: Optional[datetime] = None) -> ProposalView:
         """The stored view for a ticker (never generates)."""
@@ -158,7 +172,8 @@ class ProposalService:
             cands.append(PriceCandidate(source="DAILY_CLOSE", status="UNAVAILABLE", mode="DAILY_REFERENCE", note="no completed daily bar"))
         intraday_lows = [c.low for c in finals if _session_today(float(c.time)) == today]
         pos = pre.get("position")
-        acct = self.account.snapshot(s, mode, now_ts, overrides if overrides is not None else self.overrides.get(s))
+        safety_view = self.safety.evaluate("PROPOSAL", now) if self.safety is not None else None            # Stage 5.9.1: the persisted gate feeds the halt controls
+        acct = self.account.snapshot(s, mode, now_ts, overrides if overrides is not None else self.overrides.get(s), safety=safety_view)
         regular = is_regular_session(now)
         session = {"regular_session": regular, "seconds_to_close": _seconds_to_close(now) if regular else None, "next_open": _iso(next_session_open(now)),
                    "session_hint": (view.inputs.session_hint if view.inputs else "")}

@@ -39,7 +39,8 @@ NEAR_CLOSE_SECONDS = 15 * 60
 DAILY_REFERENCE_MAX_TTL_SECONDS = 24 * 3600
 
 CONTROLS = ("SETUP_FRESHNESS", "PPE_FRESHNESS", "DEMAND_FRESHNESS", "EVIDENCE_GATE", "PRICE_REFERENCE", "INVALIDATION_LEVEL", "RISK_PER_SHARE",
-            "ACCOUNT_EQUITY", "RISK_BUDGET", "KILL_SWITCH", "DAILY_LOSS_HALT", "TRADABILITY", "DUPLICATE_ORDER", "BUYING_POWER", "POSITION_CAP", "QUANTITY")
+            "ACCOUNT_EQUITY", "RISK_BUDGET", "KILL_SWITCH", "DAILY_LOSS_HALT", "TRADABILITY", "DUPLICATE_ORDER", "BUYING_POWER", "POSITION_CAP", "QUANTITY",
+            "NO_NEW_ENTRIES")   # Stage 5.9.1: the persisted pause (WARN: the proposal stays visible, entries are blocked)
 CONTROL_RESULTS = ("PASS", "BLOCK", "WARN", "UNKNOWN")
 
 # ---- not eligible (computed, never stored) --------------------------------------------------------------------------------------
@@ -94,8 +95,9 @@ W_SIMULATED = "SIMULATED_DATA"
 W_CAP_REDUCED = "QTY_REDUCED_BY_POSITION_CAP"
 W_BP_REDUCED = "QTY_REDUCED_BY_BUYING_POWER"
 W_HARD_REDUCED = "QTY_REDUCED_BY_HARD_LIMIT"
+W_NO_NEW_ENTRIES = "NO_NEW_ENTRIES_ACTIVE"     # Stage 5.9.1
 WARNING_CODES = (W_EVIDENCE_WEAK, W_CONFIDENCE, W_DEMAND, W_DAILY_REF, W_EXISTING, W_NEAR_CLOSE, W_CLOSED, W_SECTOR_FALLBACK, W_TRADABILITY, W_BP_UNKNOWN,
-                 W_HYPOTHETICAL, W_SNAPSHOT_STALE, W_SIMULATED, W_CAP_REDUCED, W_BP_REDUCED, W_HARD_REDUCED)
+                 W_HYPOTHETICAL, W_SNAPSHOT_STALE, W_SIMULATED, W_CAP_REDUCED, W_BP_REDUCED, W_HARD_REDUCED, W_NO_NEW_ENTRIES)
 
 TEXT = {
     NE_NOT_FOUND: "No open setup episode for this ticker.",
@@ -141,4 +143,5 @@ TEXT = {
     W_CAP_REDUCED: "Quantity reduced by the position cap.",
     W_BP_REDUCED: "Quantity reduced by buying power.",
     W_HARD_REDUCED: "Quantity reduced by the 4.6B hard limit.",
+    W_NO_NEW_ENTRIES: "New entries are paused (Risk Controls); the proposal is for review only.",
 }

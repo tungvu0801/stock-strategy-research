@@ -313,11 +313,56 @@
     const warnings = m.warnings.length ? `<div class="tv-prop-list warn"><span class="tv-ppe-sub">Warnings</span><ul>${m.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>` : "";
     const stale = m.staleReason && (m.status === "STALE" || m.status === "EXPIRED") ? `<div class="tv-dim">${esc(m.status === "EXPIRED" ? "Expired: " : "Stale: ")}${esc(m.staleReason)} — regenerated on the next evaluation.</div>` : "";
     const status = `<div class="tv-prop-status">Status <b data-proposal-submission>${esc(m.submission)}</b>${m.review !== "UNREVIEWED" ? ` · ${esc(words(m.review).toLowerCase())}` : ""}</div>`;
+    const ex = p && p.execution_eligibility && p.execution_eligibility.state ? p.execution_eligibility : null;      // Stage 5.9.1: the live risk-controls gate
+    const elig = ex ? `<div class="tv-prop-exec" data-exec-allowed="${ex.allowed ? "true" : "false"}">Entry eligibility: ${ex.allowed ? "allowed by risk controls" : `blocked — ${esc(ex.reason_text || words((ex.reason_codes || [])[0] || "").toLowerCase())}`}</div>` : "";
     const stamp = m.created ? `<div class="tv-dem-stamp">generated ${esc(m.created)}${m.expires ? ` · expires ${esc(m.expires)}` : ""}${m.source ? ` · ${esc(m.source)}` : ""}</div>` : (m.note ? `<div class="tv-dim">${esc(m.note)}</div>` : "");
     const actions = m.id ? `<div class="tv-prop-actions" data-proposal-id="${esc(m.id)}"><button type="button" class="tv-prop-btn" data-prop="details" aria-expanded="false">View Details</button>` +
       `<button type="button" class="tv-prop-btn" data-prop="dismiss"${m.dismissed ? " disabled" : ""}>Dismiss</button></div><div class="tv-prop-details tv-hidden" data-prop-details>${proposalDetailsHtml(p)}</div>` : "";
-    return head + side + grid + blockers + warnings + stale + status + stamp + actions + `<p class="tv-explain">${esc(EXPLAIN_PROPOSAL)}</p>` +
+    return head + side + grid + blockers + warnings + stale + status + elig + stamp + actions + `<p class="tv-explain">${esc(EXPLAIN_PROPOSAL)}</p>` +
       (o.includeDisclaimer === false ? "" : `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>`);
+  }
+
+  // ---------------------------------------------------------------- Risk controls (Stage 5.9.1; the persisted execution safety gate) ---
+  const SAFETY_LABELS = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New trades paused", HALTED: "Trading stopped", UNKNOWN: "Trading stopped" };
+  const SAFETY_ICONS = { TRADING_ALLOWED: "🟢", NO_NEW_ENTRIES: "🟡", HALTED: "🔴", UNKNOWN: "🔴" };
+  const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "paused", HALTED: "stopped", UNKNOWN: "stopped" };
+  const stampOf = (iso, n) => (iso ? `${String(iso).slice(11, n || 19)} UTC` : "—");
+  function safetyModel(v) {
+    const loaded = !!v && !!v.state && !!SAFETY_LABELS[v.state];
+    const st = loaded ? v.state : "UNKNOWN";
+    const d = (v && v.daily_loss) || {};
+    const k = (v && v.kill_switch) || {};
+    const p = (v && v.no_new_entries) || {};
+    return { loaded, state: st, label: loaded ? SAFETY_LABELS[st] : "Checking risk controls…", icon: loaded ? SAFETY_ICONS[st] : "⚪", cls: loaded ? SAFETY_CLS[st] : "",
+             reason: (v && v.reason_text) || (st === "UNKNOWN" && loaded ? "Safety status unavailable" : ""), allowed: !!(v && v.allowed_new_entry),
+             killActive: !!k.active, killSince: stampOf(k.activated_at, 16), killBy: k.activated_by || "", killReason: k.reason || "",
+             pauseActive: !!p.active, pauseSince: stampOf(p.activated_at, 16), pauseBy: p.activated_by || "",
+             dailyStatus: d.status || "UNAVAILABLE", dailyLoss: d.daily_loss_pct == null ? "—" : `${Number(d.daily_loss_pct).toFixed(2)}%`, threshold: d.threshold_pct == null ? "—" : `${Number(d.threshold_pct).toFixed(2)}%`,
+             starting: money(d.starting_equity), current: money(d.current_equity), dailyDate: d.trading_date || "—", dailyCode: d.code ? words(d.code) : "", equitySource: d.equity_source ? words(d.equity_source) : "",
+             evaluated: stampOf(v && v.evaluated_at), error: (v && v.error) || null, disclaimer: (v && v.disclaimer) || "", raw: v || null };
+  }
+  function safetyHtml(v, opts) {
+    const o = opts || {};
+    const m = safetyModel(v);
+    const head = `<div class="tv-safe-head"><span class="tv-safe-state ${m.cls}" data-safety-state="${esc(m.state)}">${esc(m.icon)} ${esc(m.label)}</span></div>`;
+    if (!m.loaded) return head + (o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "");
+    const reason = m.reason ? `<div class="tv-safe-reason">Reason: ${esc(m.reason)}</div>` : "";
+    const err = o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "";
+    const btn = (kind, text, disabled, danger) => `<button type="button" class="tv-safe-btn${danger ? " danger" : ""}" data-safety="${kind}"${disabled ? " disabled" : ""}>${esc(text)}</button>`;
+    const actions = `<div class="tv-safe-actions">` + btn("pause", "Pause New Trades", m.pauseActive || m.killActive) + btn("resume", "Resume", !m.pauseActive) + btn("stop", "Emergency Stop", m.killActive, true) +
+      (m.killActive ? btn("clear", o.confirmClear ? "Confirm: clear emergency stop" : "Clear Emergency Stop", false, true) : "") + `</div>`;
+    const row = (k, val) => `<div class="tv-safe-row"><span>${esc(k)}</span><b>${esc(val)}</b></div>`;
+    const details = `<button type="button" class="tv-safe-link" data-safety="details" aria-expanded="${o.detailsOpen ? "true" : "false"}">${o.detailsOpen ? "Hide details" : "View details"}</button>` +
+      `<div class="tv-safe-details${o.detailsOpen ? "" : " tv-hidden"}" data-safety-details>` +
+      row("Daily loss", `${m.dailyLoss}${m.dailyStatus === "UNAVAILABLE" ? ` (${m.dailyCode || "unavailable"})` : ""}`) + row("Threshold", m.threshold) + row("Starting equity", `${m.starting} (${m.dailyDate})`) +
+      row("Current equity", `${m.current}${m.equitySource ? ` · ${m.equitySource}` : ""}`) + row("Kill switch", m.killActive ? `Active since ${m.killSince}${m.killBy ? ` by ${m.killBy}` : ""}${m.killReason ? ` · ${m.killReason}` : ""}` : "Off") +
+      row("New trades", m.pauseActive ? `Paused since ${m.pauseSince}${m.pauseBy ? ` by ${m.pauseBy}` : ""}` : "Allowed by you") + row("Last evaluated", m.evaluated) +
+      `<div class="tv-ppe-sub">Control history</div><ul class="tv-safe-hist" data-safety-history></ul></div>`;
+    return head + reason + err + actions + details + (m.disclaimer ? `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>` : "");
+  }
+  function safetyEventLine(e) {
+    const kind = words(e && e.kind).toLowerCase();
+    return `${stampOf(e && e.at, 16)} · ${kind}${e && e.reason ? ` · ${words(e.reason).toLowerCase()}` : ""}${e && e.actor ? ` (${e.actor})` : ""}`;
   }
 
   // ---------------------------------------------------------------- status strip -----------------------------------------
@@ -334,6 +379,6 @@
 
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
            ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
-           proposalModel, proposalHtml, proposalDetailsHtml,
-           EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS };
+           proposalModel, proposalHtml, proposalDetailsHtml, safetyModel, safetyHtml, safetyEventLine,
+           EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS, SAFETY_LABELS };
 });

@@ -17,9 +17,10 @@ LABEL = "TRADER VIEW · READ ONLY · NO ORDER PATH · PREVIEW NOT CONNECTED"
 DATA_MODES = ("auto", "real", "simulated")
 NOT_CONNECTED = "Paper order preview not connected in Trader View."
 MESSAGE_TYPES = ("hello", "subscribed", "unsubscribed", "state", "quote", "candle", "candles", "watchlist", "position", "evidence",
-                 "ppe", "demand", "setup", "setup_alert", "proposal",
+                 "ppe", "demand", "setup", "setup_alert", "proposal", "safety",
                  "heartbeat", "error")
 SYMBOL_BOUND_TYPES = ("quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand", "setup", "proposal")      # must carry the active symbol
 # "setup_alert" is deliberately NOT symbol-bound: a persisted transition alert for any watchlist ticker reaches every open Trader View tab.
 # "proposal" (Stage 5.9) is symbol-bound: a review proposal is only ever painted under its own ticker. It is never an order.
+# "safety" (Stage 5.9.1) is global (not symbol-bound): the persisted execution safety gate state, sent only to the requester of a test-only safety_eval.
 CLIENT_COMMANDS = ("subscribe", "unsubscribe", "ping", "refresh")

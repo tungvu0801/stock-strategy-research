@@ -34,6 +34,10 @@ class AccountSnapshot(_M):
     halt_source: str = ""
     daily_loss_halt: bool = False
     daily_loss_source: str = ""
+    no_new_entries: bool = False                # Stage 5.9.1: the persisted pause (from the execution safety gate)
+    no_new_entries_source: str = ""
+    safety_state: Optional[str] = None          # Stage 5.9.1: TRADING_ALLOWED | NO_NEW_ENTRIES | HALTED | UNKNOWN as the gate reported it
+    safety_reason_codes: List[str] = Field(default_factory=list)
     tradable: Optional[bool] = None
     tradability_source: str = ""
     pending_orders: int = 0
@@ -173,6 +177,7 @@ class ProposalView(_M):
     demand_snapshot: Dict[str, Any] = Field(default_factory=dict)
     evidence_snapshot: Dict[str, Any] = Field(default_factory=dict)
     setup_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    execution_eligibility: Dict[str, Any] = Field(default_factory=dict)   # Stage 5.9.1: {allowed, state, reason_codes, ...} from the LIVE safety gate, derived at read time
     review_state: str = "UNREVIEWED"
     reviewed_at: Optional[str] = None
     submission_status: str = SUBMISSION_STATUS

@@ -71,7 +71,9 @@ class AccountAdapter:
         self.alpaca_view, self.local_view, self.intents = alpaca_view, local_view, intents
 
     # ---------------------------------------------------------------- the snapshot ------------------------------------------
-    def snapshot(self, symbol: str, mode: str, now_ts: float, overrides: Optional[Dict[str, Any]] = None) -> AccountSnapshot:
+    def snapshot(self, symbol: str, mode: str, now_ts: float, overrides: Optional[Dict[str, Any]] = None, safety=None) -> AccountSnapshot:
+        """`safety` is the Stage 5.9.1 gate view (safety.models.SafetyView): the persisted kill switch, daily-loss latch and pause feed the halt fields;
+        an UNKNOWN gate (evaluator / persistence failure) counts as a halt. The review-only config flags remain additional overrides."""
         s = symbol.upper()
         snap = AccountSnapshot(halt=bool(config.TRADE_PROPOSAL_HALT), halt_source="config.TRADE_PROPOSAL_HALT" if config.TRADE_PROPOSAL_HALT else "config.TRADE_PROPOSAL_HALT (off)",
                                daily_loss_halt=bool(config.TRADE_PROPOSAL_DAILY_LOSS_HALT),
@@ -84,6 +86,16 @@ class AccountAdapter:
             if snap.equity_source == "NOT_AVAILABLE":
                 snap = self._local(snap, s)
             snap = self._intents(snap, s)
+        if safety is not None:
+            kill = bool(safety.kill_switch.active) or safety.state == "UNKNOWN"
+            daily = safety.daily_loss.status == "TRIGGERED"
+            snap = snap.model_copy(update={
+                "halt": snap.halt or kill, "halt_source": (f"execution safety gate: {safety.reason_text or safety.state}" if kill else snap.halt_source),
+                "daily_loss_halt": snap.daily_loss_halt or daily,
+                "daily_loss_source": (f"execution safety gate: daily loss {safety.daily_loss.triggered_loss_pct or safety.daily_loss.daily_loss_pct}% >= {safety.daily_loss.threshold_pct}% (latched for {safety.daily_loss.trading_date})"
+                                      if daily else snap.daily_loss_source),
+                "no_new_entries": safety.state == "NO_NEW_ENTRIES", "no_new_entries_source": safety.reason_text if safety.state == "NO_NEW_ENTRIES" else "",
+                "safety_state": safety.state, "safety_reason_codes": list(safety.reason_codes)})
         if overrides:
             snap = snap.model_copy(update={k: v for k, v in overrides.items() if k in AccountSnapshot.model_fields})
             snap.notes.append("test overrides applied: " + ", ".join(sorted(k for k in overrides if k in AccountSnapshot.model_fields)))
