@@ -35,6 +35,7 @@ from api.routes import evidence
 from api.routes import trader_view
 from api.routes import setups
 from api.routes import proposals
+from api.routes import execution_safety  # Stage 5.9.1: persisted execution safety gate (state + review-only actions)
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -67,6 +68,8 @@ async def _lifespan(_app):
     try:                                                    # Stage 5.8: market-hours setup-state evaluator (opt-out; never in tests)
         from setups.scheduler import start_if_enabled as _setups_start
         _setups_start()
+        from safety.service import startup_if_enabled as _safety_start  # Stage 5.9.1: apply the startup policy, evaluate the gate once
+        _safety_start()  # Stage 5.9.1
     except Exception as exc:  # noqa: BLE001 - the evaluator must never stop the server from starting
         logging.getLogger(__name__).warning("Setup evaluator could not start: %s", type(exc).__name__)
     yield
@@ -144,6 +147,7 @@ app.include_router(signal_research.router)  # Stage 5.2: deterministic signal re
 app.include_router(evidence.router)  # Stage 5.4: multi-source evidence packets — research only; evidence strength is not a price probability
 app.include_router(setups.router)  # Stage 5.8: setup state machine + alerts — read-only state, read-acknowledgement only; no order path
 app.include_router(proposals.router)  # Stage 5.9: review proposals for READY setups — review artifact only, review-state POSTs only; no order path
+app.include_router(execution_safety.router)  # Stage 5.9.1: execution safety gate — persisted kill switch / daily-loss halt / pause; safety state only, no order path
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 

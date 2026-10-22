@@ -48,6 +48,8 @@ from setups.models import SetupInputs, SetupView
 from setups.service import SetupService
 from proposals.models import ProposalView
 from proposals.service import ProposalService
+from safety.service import ExecutionSafetyService
+from safety.store import SafetyStore
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -65,7 +67,7 @@ class TerminalStream:
                  watchlist_poll_seconds: Optional[float] = None, position_poll_seconds: Optional[float] = None,
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
-                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None):
+                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None, safety_service=None):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -86,6 +88,10 @@ class TerminalStream:
         self.setups = setup_service or SetupService(stream_fn=lambda: self)
         self.setups.listeners.append(self._setup_event)
         self.proposals = proposal_service or ProposalService(stream_fn=lambda: self)   # Stage 5.9: review proposals for READY setups — review only, never an order
+        # Stage 5.9.1: the persisted execution safety gate shares the proposal store's database; the proposal controls consume it
+        self.safety = safety_service or ExecutionSafetyService(stream_fn=lambda: self, store=SafetyStore(self.proposals.store.path))
+        if getattr(self.proposals, "safety", None) is None:
+            self.proposals.safety = self.safety
         self.setups.listeners.append(self.proposals.on_setup_event)
         self.proposals.listeners.append(self._proposal_event)
         self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
@@ -271,6 +277,8 @@ class TerminalStream:
                           "market_hours_only": bool(config.SETUP_MARKET_HOURS_ONLY)},
                 "proposal": {"version": "proposals_v1", "statuses": ["NOT_ELIGIBLE", "BLOCKED", "REVIEWABLE", "STALE", "EXPIRED"], "reviewable_label": "REVIEWABLE PROPOSAL",
                              "submission_status": "NOT SUBMITTED", "cadence": "generated after each setup evaluation of the active ticker; review only, never an order"},
+                "safety": {"version": "safety_v1", "states": ["TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN"], "labels": {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New trades paused",
+                           "HALTED": "Trading stopped"}, "cadence": "on every proposal evaluation, on the in-session cadence, on each API read and user action; persisted"},
                 "chart": dict(CHART_ASSET),
                 "client_commands": list(CLIENT_COMMANDS), "execution_preview": "NOT_CONNECTED"}
 
@@ -334,6 +342,10 @@ class TerminalStream:
                 if self.hub.symbol_of(conn_id) == symbol:
                     await self._send(conn_id, {"type": "demand", **dem.model_dump()})
         if (force_all or n % self.setup_every == 0) and self.setup_in_session(now):          # Stage 5.8: in-session cadence only, never per quote tick
+            try:
+                await asyncio.to_thread(self.safety.evaluate, "SCHEDULED")                        # Stage 5.9.1: the gate is evaluated once per cadence (persisted)
+            except Exception as exc:  # noqa: BLE001 - the gate itself records its failure as UNKNOWN; the stream goes on
+                log.warning("Trader View: safety evaluation failed (%s)", type(exc).__name__)
             for conn_id, symbol in self.hub.items():
                 view = await asyncio.to_thread(self._evaluate_setup, symbol, "SCHEDULED")
                 if view is not None and self.hub.symbol_of(conn_id) == symbol:
@@ -404,6 +416,11 @@ class TerminalStream:
                         await self._error(conn_id, "NOT_ALLOWED", "forced setup evaluations are only enabled in tests")
                         continue
                     await self._setup_eval(conn_id, msg)
+                elif kind == "safety_eval":                                    # tests / harness only: force a safety evaluation (optional account overrides)
+                    if not self.allow_manual_tick:
+                        await self._error(conn_id, "NOT_ALLOWED", "forced safety evaluations are only enabled in tests")
+                        continue
+                    await self._safety_eval(conn_id, msg)
                 elif kind == "proposal_eval":                                  # tests / harness only: force a proposal evaluation (optional account overrides)
                     if not self.allow_manual_tick:
                         await self._error(conn_id, "NOT_ALLOWED", "forced proposal evaluations are only enabled in tests")
@@ -453,6 +470,18 @@ class TerminalStream:
         if pv is not None and self.hub.symbol_of(conn_id) == s and pv.effective_status != "NOT_ELIGIBLE" and \
                 (view.decision == "TRANSITION" or pv.proposal_id != state.proposal.proposal_id or pv.effective_status != state.proposal.effective_status):
             await self._send(conn_id, {"type": "proposal", **pv.model_dump()})
+
+    async def _safety_eval(self, conn_id: int, msg: dict) -> None:
+        account = msg.get("account")
+        if account is not None and not isinstance(account, dict):
+            await self._error(conn_id, "BAD_MESSAGE", "safety_eval account overrides must be an object")
+            return
+        if msg.get("clear"):
+            self.safety.overrides = {}
+        elif account is not None:
+            self.safety.overrides = dict(account)
+        view = await asyncio.to_thread(self.safety.evaluate, "TEST")
+        await self._send(conn_id, {"type": "safety", **view.model_dump()})
 
     async def _proposal_eval(self, conn_id: int, msg: dict) -> None:
         raw = str(msg.get("symbol") or "")
@@ -533,4 +562,4 @@ def build_stream(mode: Optional[str] = None) -> TerminalStream:
     from trader_view.positions import StockAgentPositionAdapter
     from trader_view.research import EvidenceResearchAdapter
     return TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(), EvidenceResearchAdapter(),
-                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval) in the harness process only
+                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval, safety_eval) in the harness process only

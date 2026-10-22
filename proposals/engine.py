@@ -19,7 +19,8 @@ from proposals import (ACCOUNT_SNAPSHOT_WARN_AGE_SECONDS, ATR_PERIOD, B_ATR_NA, 
                        DAILY_REFERENCE_MAX_TTL_SECONDS, DEMAND_MARGINAL_BELOW, FALLBACK_STOP_ATR, INTRADAY_MIN_BARS, MINUTE_BAR_MAX_AGE_SECONDS, NE_INVALIDATED,
                        NE_NOT_FOUND, NE_NOT_READY, NE_TYPE, NEAR_CLOSE_SECONDS, PRICE_MAX_AGE_SECONDS, RISK_FRACTION_MAX, SETUP_TYPE, STRUCTURAL_BUFFER_ATR,
                        STRUCTURAL_LOOKBACK_SESSIONS, TEXT, W_BP_REDUCED, W_BP_UNKNOWN, W_CAP_REDUCED, W_CLOSED, W_CONFIDENCE, W_DAILY_REF, W_DEMAND,
-                       W_EVIDENCE_WEAK, W_EXISTING, W_HARD_REDUCED, W_HYPOTHETICAL, W_NEAR_CLOSE, W_SECTOR_FALLBACK, W_SIMULATED, W_SNAPSHOT_STALE, W_TRADABILITY)
+                       W_EVIDENCE_WEAK, W_EXISTING, W_HARD_REDUCED, W_HYPOTHETICAL, W_NEAR_CLOSE, W_NO_NEW_ENTRIES, W_SECTOR_FALLBACK, W_SIMULATED, W_SNAPSHOT_STALE,
+                       W_TRADABILITY)
 from proposals.models import ControlEvaluation, Draft, ProposalInputs
 from setups.engine import evidence_contradiction, evidence_gate
 from setups.models import EpisodeRecord, SetupInputs
@@ -390,6 +391,13 @@ def build(inp: ProposalInputs) -> Draft:
             proposed_notional = money(Decimal(final_qty) * reference)
             c.add("QUANTITY", "PASS", f"binding cap: {binding}", proposed_notional=s(proposed_notional), **caps)
 
+    # 16. no-new-entries (Stage 5.9.1): a persisted pause never hides a reviewable proposal; it blocks execution eligibility
+    if acct.no_new_entries:
+        c.add("NO_NEW_ENTRIES", "WARN", acct.no_new_entries_source or "paused", active=True, source=acct.no_new_entries_source, safety_state=acct.safety_state, reason_codes=list(acct.safety_reason_codes))
+        c.warn(W_NO_NEW_ENTRIES)
+    else:
+        c.add("NO_NEW_ENTRIES", "PASS", "not active", active=False, source=acct.no_new_entries_source, safety_state=acct.safety_state, reason_codes=list(acct.safety_reason_codes))
+
     # session / data warnings
     sess = inp.session or {}
     if sess.get("regular_session") is False:
@@ -412,7 +420,7 @@ def build(inp: ProposalInputs) -> Draft:
     status = "BLOCKED" if c.blocked else "REVIEWABLE"
     evidence_pid = si.evidence_packet_id if si else None
     fp_src = "|".join([str(v.get("setup_id")), status, ",".join(sorted(b["code"] for b in c.blockers)), s(invalidation) or "", str(final_qty), acct.equity_source, s(money(equity)) if equity else "",
-                       evidence_pid or ""])
+                       evidence_pid or "", acct.safety_state or ""])                     # Stage 5.9.1: a change of the risk-controls state is material
     summary = {"now": inp.now, "mode": inp.mode, "setup": {k: v.get(k) for k in ("setup_id", "state", "since", "last_evaluated_at", "cycle_id")},
                "price": {"source": chosen.source if chosen else None, "mode": price_mode, "candidates": tried}, "atr": s(atr), "atr_period": ATR_PERIOD,
                "structural_low": s(structural_low), "structural_stop": s(structural_stop), "atr_stop": s(atr_stop), "daily_bars": len(bars), "intraday_bars": len(inp.intraday_lows),

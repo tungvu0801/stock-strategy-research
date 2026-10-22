@@ -590,3 +590,14 @@ TRADE_PROPOSAL_TTL_SECONDS: int = int(os.getenv("TRADE_PROPOSAL_TTL_SECONDS", "3
 TRADE_PROPOSAL_PRICE_CHANGE_PCT: float = float(os.getenv("TRADE_PROPOSAL_PRICE_CHANGE_PCT", "0.5"))   # reference move that regenerates a proposal
 TRADE_PROPOSAL_HALT: bool = os.getenv("TRADE_PROPOSAL_HALT", "false").strip().lower() in ("1", "true", "yes", "on")             # review-only halt (no kill switch existed)
 TRADE_PROPOSAL_DAILY_LOSS_HALT: bool = os.getenv("TRADE_PROPOSAL_DAILY_LOSS_HALT", "false").strip().lower() in ("1", "true", "yes", "on")   # explicit; no automatic daily P&L exists
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 5.9.1 — REAL EXECUTION SAFETY CONTROLS (safety/). A persisted manual kill switch, a persisted no-new-entries pause and a
+# REAL daily-loss halt measured against a persisted daily equity baseline. MAX_DAILY_LOSS_PERCENT (declared above with an older
+# "informational only" comment) is ENFORCED by this stage as the daily-loss threshold. The runtime state lives in the database;
+# the values below are policy / limits only. Nothing here submits, previews, liquidates or calls a broker.
+# ------------------------------------------------------------------------------------------------------------------
+EXECUTION_SAFETY_STARTUP_POLICY: str = os.getenv("EXECUTION_SAFETY_STARTUP_POLICY", "KEEP").strip().upper()      # KEEP | HALT_ON_START (never clears a stop)
+EXECUTION_SAFETY_ACCOUNT_MAX_AGE_SECONDS: float = float(os.getenv("EXECUTION_SAFETY_ACCOUNT_MAX_AGE_SECONDS", "900"))   # an older Alpaca snapshot = daily loss unverifiable
+EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL: bool = os.getenv("EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL", "false").strip().lower() in ("1", "true", "yes", "on")   # explicit operator choice; default off
+EXECUTION_SAFETY_EVALUATION_HEARTBEAT_SECONDS: float = float(os.getenv("EXECUTION_SAFETY_EVALUATION_HEARTBEAT_SECONDS", "60"))   # unchanged results re-persist at most this often

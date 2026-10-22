@@ -713,3 +713,41 @@ BUY / SELL signal, and nothing is ever submitted — the status line always read
 * **Stage 4.6B stays disconnected**: `proposals/` never imports the order writer, the order service, the order reads or any trading
   client (pinned by `tests/test_proposals_59.py`); no proposal, alert or setup transition can place, preview, submit or cancel
   anything; no model is called; no automatic research runs. Auto paper trading is not enabled.
+
+## Execution safety controls (Stage 5.9.1, persisted, no execution yet)
+
+Stage 5.9 found that the project had **no operational kill switch and no daily-loss halt**. Stage 5.9.1 adds a small, deterministic,
+**persisted** safety gate (`safety/`, design: `DESIGN_591_EXECUTION_SAFETY.md`) that a future execution layer must consult before any
+entry. It still submits nothing: no Alpaca order, no Robinhood write, no auto trading. These controls are prerequisites for Stage 6.0.
+
+* **States** (plain words first): 🟢 Trading allowed (`TRADING_ALLOWED`), 🟡 New trades paused (`NO_NEW_ENTRIES`), 🔴 Trading stopped
+  (`HALTED`, or `UNKNOWN` when the gate itself failed). Precedence: manual kill switch > daily-loss halt > no-new-entries > allowed.
+  `allowed_new_entry` is true only for `TRADING_ALLOWED` with a verifiable daily-loss control.
+* **Kill switch** — now operational and persisted (`execution_safety_state`): **Emergency Stop** activates it, **Clear Emergency Stop**
+  (a distinct two-click action) clears it; Resume never does. It survives restarts and day boundaries.
+* **No-new-entries** — a separate persisted pause (**Pause New Trades** / **Resume**): monitoring and proposals continue, entries are
+  blocked. Also entered automatically while the daily-loss control cannot be verified (no baseline, stale snapshot, invalid equity,
+  unadjustable P&L).
+* **Daily-loss halt** — now operational: `MAX_DAILY_LOSS_PERCENT` (3 %) is enforced against a **persisted daily equity baseline**
+  (`daily_risk_baselines`, created by the evaluator from the first usable fresh equity of the New York trading date and recorded as an
+  event — never derived on the fly). `daily_loss_pct = max(0, (starting − current) / starting × 100)` in Decimal; at or above the
+  threshold the halt latches for the day (`DAILY_LOSS_LIMIT_REACHED`) and stays latched even if equity recovers. The next trading day
+  resets only the daily latch and creates a new baseline; the manual kill switch is untouched.
+* **Account data**: the Stage 5.9 read-only snapshot (Alpaca Paper 4.6A view, local paper portfolio, or the explicit hypothetical review
+  equity in simulated mode). **Deposits / withdrawals limitation**: the Alpaca 4.6A snapshot carries no transfer activity, so a transfer
+  cannot be told from trading P&L; for that source the gate reports `DAILY_PNL_ADJUSTMENT_UNAVAILABLE` (new entries blocked, a raw loss
+  over the limit still halts) unless the operator explicitly sets `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL`. The local paper and hypothetical
+  accounts have no cash flows, so their P&L is reliable. A stale Alpaca snapshot (> 15 min) blocks readiness.
+* **Failure behaviour**: a persistence or evaluator failure returns `UNKNOWN` (treated as stopped, never allowed) and records an
+  `EVALUATOR_ERROR` event and the error on the control rows.
+* **Evidence**: append-only `execution_safety_events` (pause / resume / stop / clear, baseline creation, daily-loss trigger, day reset,
+  errors), append-only `execution_safety_evaluations` (bounded by a 60 s heartbeat when nothing changed) and `execution_safety_controls`
+  liveness rows (`GLOBAL_KILL_SWITCH`, `DAILY_LOSS_HALT`, `NO_NEW_ENTRIES`, `DAILY_BASELINE`: last evaluated, last fired, counts, last
+  result, last error). "When was it last evaluated / has it ever blocked / is the baseline populated" are answered from data.
+* **API**: `GET /api/execution-safety`, `/events`, `/controls`; `POST /api/execution-safety/pause-new-entries`, `/resume-new-entries`,
+  `/emergency-stop`, `/clear-emergency-stop` (safety state only). `safety.service.evaluate_execution_safety(...)` is the gate call for
+  Stage 6.0; the `KILL_SWITCH`, `DAILY_LOSS_HALT` and new `NO_NEW_ENTRIES` proposal controls consume it, and every proposal view carries
+  `execution_eligibility` from the live gate (a paused or stopped state reads "blocked" even on a stored REVIEWABLE proposal).
+* **UI**: a compact **RISK CONTROLS** panel at the top of the Trader View right column (status, one reason line, the four buttons,
+  View details). Prepare Buy / Prepare Sell remain disabled. The review-only config flags of Stage 5.9 remain honoured as overrides; the
+  persisted gate is the source of truth. Startup policy `EXECUTION_SAFETY_STARTUP_POLICY` (`KEEP` default, `HALT_ON_START`) never clears a stop.

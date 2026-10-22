@@ -731,7 +731,96 @@ def trade_review(c: Ctx):
     card = c.js("__tvState('#tv-proposal')")
     c.r.check("stale ticker: the SNDK proposal did not touch the AAPL Trade Review card", card == ["NOT_ELIGIBLE", "AAPL"], card)
     ctl = c.http("GET", "/api/proposals/controls")
-    c.r.check("API: control liveness rows exist for every control with counts", len(ctl["controls"]) == 16 and all(x["evaluation_count"] >= 1 for x in ctl["controls"]) and any(x["block_count"] >= 1 for x in ctl["controls"]))
+    c.r.check("API: control liveness rows exist for every control with counts", len(ctl["controls"]) == 17 and all(x["evaluation_count"] >= 1 for x in ctl["controls"]) and any(x["block_count"] >= 1 for x in ctl["controls"]))   # 17 since Stage 5.9.1 (NO_NEW_ENTRIES)
+
+
+def _safety_chip(c: Ctx):
+    return c.js("__tvText('#tv-safety .tv-safe-state')")
+
+
+def _wait_safety(c: Ctx, state, seconds=15):
+    c.wait(f"!!window.RiskControls && !!RiskControls.state.data && RiskControls.state.data.state === {json.dumps(state)} && document.querySelector('#tv-safety').dataset.state === {json.dumps(state)}", seconds, f"risk controls {state}")
+
+
+def risk_controls(c: Ctx):
+    """Stage 5.9.1: the RISK CONTROLS panel on the real page against the REAL persisted gate — 🟢 Trading allowed, Pause New Trades -> 🟡, Resume -> 🟢,
+    Emergency Stop -> 🔴 (Resume cannot clear it; Clear Emergency Stop is a separate two-click action), a forced daily loss -> 🔴 with its reason, details
+    hidden by default, the proposal card shows the blocked entry eligibility, Prepare Buy / Sell stay disabled. Nothing is submitted."""
+    from api.routes.trader_view import stream
+    from setups.models import SetupInputs
+    st = stream()
+    safety, psvc, svc = st.safety, st.proposals, st.setups
+    words = re.compile(r"(?i)\b(buy|sell|buy now|sell now|enter now|trade now|you should|approved|execute|recommend\w*)\b|target price|expected return|probabilit")
+    if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+        c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+    c.js(TV_JS)
+    c.js("RiskControls.refresh()")
+    _wait_safety(c, "TRADING_ALLOWED")
+    c.r.eq("Risk Controls reads Trading allowed on the simulated review account", _safety_chip(c), "🟢 Trading allowed")
+    c.r.check("details are hidden by default and the headline carries no internal enum", c.js("document.querySelector('#tv-safety [data-safety-details]').classList.contains('tv-hidden')") is True
+              and "TRADING_ALLOWED" not in (c.js("__tvText('#tv-safety')") or ""))
+    c.r.check("no action language in the Risk Controls panel", not words.search(c.js("__tvText('#tv-safety')") or ""), (c.js("__tvText('#tv-safety')") or "")[:200])
+    c.shot("risk_controls_allowed", "#tv-safety")
+    # a READY proposal to watch the entry eligibility on (SNDK may be anything after the earlier flows: reset, WATCH, READY through the real setup service)
+    c.js("TraderView.switchTo('SNDK')")
+    c.wait(_tv_settled("SNDK") + " && __tvState('#tv-proposal')[1] === 'SNDK'", 30, "SNDK settled")
+    for over in (dict(stretch=-10.0, confidence=58, demand=72), SETUP_STEPS[0][2], SETUP_STEPS[1][2]):
+        svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+        time.sleep(1.1)
+    c.wait(_review_settled("SNDK", "REVIEWABLE"), 20, "proposal reviewable")
+    c.r.eq("proposal card: entry eligibility allowed while trading is allowed", c.js("(document.querySelector('#tv-proposal .tv-prop-exec') || {}).dataset ? document.querySelector('#tv-proposal .tv-prop-exec').dataset.execAllowed : null"), "true")
+    # pause
+    c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').click()")
+    _wait_safety(c, "NO_NEW_ENTRIES")
+    c.r.eq("Pause New Trades -> New trades paused with its reason", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')")], ["🟡 New trades paused", "Reason: New trades paused by you"])
+    c.r.eq("API: the pause is persisted as NO_NEW_ENTRIES with a PAUSE_ON event", [c.http("GET", "/api/execution-safety")["state"], c.http("GET", "/api/execution-safety/events?kind=PAUSE_ON")["count"] >= 1], ["NO_NEW_ENTRIES", True])
+    time.sleep(1.1)
+    psvc.evaluate("SNDK", trigger="TEST")
+    c.wait("document.querySelector('#tv-proposal .tv-prop-exec') && document.querySelector('#tv-proposal .tv-prop-exec').dataset.execAllowed === 'false'", 20, "proposal eligibility blocked")
+    c.r.check("proposal card: still REVIEWABLE but entry eligibility blocked by the pause", c.js("__tvState('#tv-proposal')[0]") == "REVIEWABLE" and "blocked" in (c.js("__tvText('#tv-proposal .tv-prop-exec')") or ""))
+    c.shot("risk_controls_paused", "#tv-safety")
+    # resume
+    c.js("document.querySelector('#tv-safety [data-safety=\"resume\"]').click()")
+    _wait_safety(c, "TRADING_ALLOWED")
+    c.r.eq("Resume -> Trading allowed", _safety_chip(c), "🟢 Trading allowed")
+    # emergency stop
+    c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
+    _wait_safety(c, "HALTED")
+    c.r.eq("Emergency Stop -> Trading stopped with its reason; Pause / Stop disabled; Clear control shown", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
+           c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').disabled"), c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').disabled"), c.js("!!document.querySelector('#tv-safety [data-safety=\"clear\"]')")],
+           ["🔴 Trading stopped", "Reason: Emergency stop active", True, True, True])
+    c.r.eq("Resume is disabled while stopped and the stop persists", [c.js("document.querySelector('#tv-safety [data-safety=\"resume\"]').disabled"), c.http("POST", "/api/execution-safety/resume-new-entries", {})["state"]], [True, "HALTED"])
+    time.sleep(1.1)
+    psvc.evaluate("SNDK", trigger="TEST")
+    c.wait(_review_settled("SNDK", "BLOCKED"), 20, "proposal blocked by the stop")
+    c.r.check("proposal card: BLOCKED by the emergency stop (the halt blocker text)", "halt" in (c.js("__tvText('#tv-proposal .tv-prop-list.block')") or "").lower()
+              and "KILL_SWITCH_ACTIVE" in [b["code"] for b in c.http("GET", "/api/proposals/SNDK")["blockers"]])
+    c.shot("risk_controls_stopped", "#tv-safety")
+    # clear: two explicit clicks
+    c.js("document.querySelector('#tv-safety [data-safety=\"clear\"]').click()")
+    c.wait("(__tvText('#tv-safety [data-safety=\"clear\"]') || '').startsWith('Confirm')", 10, "confirm step")
+    c.r.eq("first click only asks to confirm; nothing changed", c.http("GET", "/api/execution-safety")["state"], "HALTED")
+    c.js("document.querySelector('#tv-safety [data-safety=\"clear\"]').click()")
+    _wait_safety(c, "TRADING_ALLOWED")
+    c.r.eq("second click clears the emergency stop (KILL_OFF event)", [_safety_chip(c), c.http("GET", "/api/execution-safety/events?kind=KILL_OFF")["count"] >= 1], ["🟢 Trading allowed", True])
+    # a forced daily loss through the real gate (simulated account overrides; the baseline was persisted at 100000)
+    safety.overrides = {"equity": "94000.00"}
+    v = safety.evaluate("TEST")
+    c.js("RiskControls.refresh()")
+    _wait_safety(c, "HALTED")
+    c.r.eq("forced 6% daily loss -> Trading stopped with the daily-loss reason; latched and persisted", [v.state, v.daily_loss.daily_loss_pct, _safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
+           c.http("GET", "/api/execution-safety/events?kind=DAILY_HALT_TRIGGERED")["count"]], ["HALTED", "6.00", "🔴 Trading stopped", "Reason: Daily loss limit reached", 1])
+    c.js("document.querySelector('#tv-safety [data-safety=\"details\"]').click()")
+    c.wait("!document.querySelector('#tv-safety [data-safety-details]').classList.contains('tv-hidden')", 10, "details open")
+    det = c.js("__tvText('#tv-safety [data-safety-details]')") or ""
+    c.r.check("details show the numbers and the control history", "6.00%" in det and "Threshold" in det and "Starting equity" in det and "daily halt triggered" in det, det[:300])
+    c.shot("risk_controls_daily_loss", "#tv-safety")
+    safety.overrides = {}
+    c.r.eq("actions stay disabled next to the risk controls", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    ctl = c.http("GET", "/api/execution-safety/controls")
+    c.r.check("API: control liveness rows for the four controls with fire evidence", len(ctl["controls"]) == 4 and any(x["control_id"] == "DAILY_LOSS_HALT" and x["fire_count"] >= 1 for x in ctl["controls"])
+              and any(x["control_id"] == "GLOBAL_KILL_SWITCH" and x["fire_count"] >= 1 for x in ctl["controls"]))
 
 
 def automation(c: Ctx):
@@ -2131,6 +2220,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)
