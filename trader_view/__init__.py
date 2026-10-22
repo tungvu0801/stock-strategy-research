@@ -17,7 +17,8 @@ LABEL = "TRADER VIEW · READ ONLY · NO ORDER PATH · PREVIEW NOT CONNECTED"
 DATA_MODES = ("auto", "real", "simulated")
 NOT_CONNECTED = "Paper order preview not connected in Trader View."
 MESSAGE_TYPES = ("hello", "subscribed", "unsubscribed", "state", "quote", "candle", "candles", "watchlist", "position", "evidence",
-                 "ppe", "demand",
+                 "ppe", "demand", "setup", "setup_alert",
                  "heartbeat", "error")
-SYMBOL_BOUND_TYPES = ("quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand")      # must carry the active symbol
+SYMBOL_BOUND_TYPES = ("quote", "candle", "candles", "state", "position", "evidence", "ppe", "demand", "setup")      # must carry the active symbol
+# "setup_alert" is deliberately NOT symbol-bound: a persisted transition alert for any watchlist ticker reaches every open Trader View tab.
 CLIENT_COMMANDS = ("subscribe", "unsubscribe", "ping", "refresh")

@@ -169,7 +169,7 @@ def test_08_harness_flow_registered_without_moving_the_pinned_order():
 # against the Stage 5.7 base in tests/test_demand_57.py instead. Everything below is still byte-identical to 24ae7d5.
 UNCHANGED = ["trader_view/adapters.py", "trader_view/hub.py", "trader_view/positions.py", "trader_view/ppe_provider.py", "trader_view/research.py",
              "ppe/__init__.py", "ppe/confidence.py", "ppe/engine.py", "ppe/evidence_context.py", "ppe/features.py", "ppe/inputs.py", "ppe/models.py", "ppe/replay.py",
-             "ppe/sectors.py", "ppe/stretch.py", "evidence/engine.py", "evidence/rules.py", "evidence/store.py", "database/migrations.py", "api/server.py",
+             "ppe/sectors.py", "ppe/stretch.py", "evidence/engine.py", "evidence/rules.py", "evidence/store.py", "database/migrations.py",
              "paper/alpaca_order_writer.py", "paper/alpaca_orders.py", "paper/alpaca_readonly.py", "portfolio/provider.py", "DESIGN_56_PPE_ENGINE.md",
              "tests/test_evidence_54.py", "tests/test_browser_harness_39.py", "tests/frontend/trader_core.test.cjs",
              "scratchpad/s56/PPE_VALIDATION_56.md"]
@@ -184,4 +184,5 @@ def test_09_backend_ppe_evidence_and_prior_tests_identical_to_base():
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE} (Stage 5.6.1 is UI only)"
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = HTML.splitlines()
-    assert [l for l in base_html if l not in now_html] == [] and [l for l in now_html if l not in base_html] == ['<script src="trader_render.js"></script>']
+    assert [l for l in base_html if l not in now_html] == []
+    assert [l for l in now_html if l not in base_html] == ['    <div id="setup-alerts"></div>', '<script src="trader_render.js"></script>', '<script src="setup_alerts.js"></script>']   # + Stage 5.8's two additive lines

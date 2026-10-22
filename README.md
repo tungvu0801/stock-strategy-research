@@ -635,3 +635,34 @@ order-book inference); intraday relative strength uses the session horizon only;
 **intraday validation** runs on deterministic synthetic sessions and the daily-fallback validation on the stored daily history; the
 real Alpaca minute-bar path is fake-client-tested and was **not live-tested** on the development machine. Weights, scales and bands are
 research hypotheses fixed in the design before the replay and were not tuned on future returns.
+
+## Setup state machine + market-hours alerts (Stage 5.8, deterministic, read-only)
+
+A compact **SETUP** section in Trader View and a "Setup alerts" list in the Alerts tab answer *"what is the current research setup
+state?"* for one setup, **Downside Dislocation Recovery**, with four states: NONE (no active setup), WATCH (PPE Stretch ≤ −40; a
+downside-stretched condition exists, confirmation incomplete), **READY FOR REVIEW** (WATCH plus PPE Confidence ≥ 40, Market Demand ≥ 60
+with coverage ≥ 0.60, PPE coverage ≥ 0.60, fresh inputs and no evidence blocker) and INVALIDATED (an explicit rule fired: stretch back
+above −20 after confirmation, demand below 35 on two consecutive evaluations, or a new strong company-specific evidence packet).
+Hysteresis: WATCH is left only when stretch rises above −30; READY drops back to WATCH when demand falls below 45; an invalidated
+episode closes once stretch is above −30, and a later ≤ −40 reading starts a new episode (new `setup_id`). Evidence never adds points —
+it can only **block READY** (no packet, packet older than 30 days, company-specific deterioration with MODERATE/STRONG strength, or a
+guidance-down item with company-specific / mixed cause) and the blocker is shown. Stale or missing PPE **pauses** evaluation
+(`EVALUATION_PAUSED_*`) instead of invalidating; missing Demand keeps WATCH and prevents READY. Inputs are only the already-computed PPE,
+Market Demand, stored Stage 5.4 packet, quote freshness and session; nothing is recomputed, no position or P/L is read, no model is
+called. Exact rules: `DESIGN_58_SETUP_STATE_ALERTS.md`.
+
+**READY means READY FOR REVIEW, not BUY.** Thresholds were fixed before any outcome analysis and are not tuned; there is no predictive
+claim, no auto trade, no live execution, no BUY/SELL field, and Prepare Buy / Prepare Sell stay disabled. Everything is persisted in the
+app database (`setup_episodes`, append-only `setup_transitions` / `setup_evaluations` / `setup_alerts`, `setup_controls` liveness
+rows): a restart restores active WATCH / READY / INVALIDATED episodes and their history, re-evaluating unchanged inputs is a HOLD with no
+new alert, and "when did this transition last fire?" is answered by `GET /api/setups/events` and `GET /api/setups/evaluations`.
+Alerts fire only on NONE → WATCH, WATCH → READY, READY → WATCH, WATCH → INVALIDATED and READY → INVALIDATED (an identical
+episode / state / reason alert within 15 minutes is suppressed; a different transition, and any new episode, always notifies) and carry symbol, state, reason and
+the three source metrics — no trade action. Continuous evaluation runs **only inside the US regular session** (weekdays 09:30–16:00 ET;
+no exchange-holiday calendar exists in the project, so holidays are treated as weekdays — a documented limitation), every
+`SETUP_EVAL_INTERVAL_SECONDS` (60 s) over the watchlist plus any symbol with an open episode, under a database lease so two processes
+never evaluate at once; there is **no 24/7 runtime**: outside the session nothing recomputes except an explicit subscribe / refresh in
+Trader View. The evaluator never starts in a test process; `SETUP_EVALUATOR_ENABLED=false` switches it off; manual refresh keeps working
+without it. The intraday-validation limits of Stage 5.7 are inherited (Market Demand's intraday components were validated on synthetic
+sessions only). Read-only API: `GET /api/setups`, `/api/setups/{symbol}`, `/api/setups/events`, `/api/setups/evaluations`,
+`/api/setups/alerts` (+ the existing read-acknowledgement `POST …/read`, `…/read-all`), `/api/setups/controls`.

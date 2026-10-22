@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from itertools import count
@@ -42,6 +43,9 @@ from demand.models import not_available as demand_not_available
 from trader_view.models import (Candle, DataStatus, EvidenceSummary, PositionState, Quote, TerminalState, default_actions)
 from trader_view.ppe_provider import PPEProvider
 from trader_view.demand_provider import DemandProvider
+from setups.market_hours import is_regular_session
+from setups.models import SetupInputs, SetupView
+from setups.service import SetupService
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -59,7 +63,7 @@ class TerminalStream:
                  watchlist_poll_seconds: Optional[float] = None, position_poll_seconds: Optional[float] = None,
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
-                 now_fn: Callable[[], float] = time.time):
+                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -76,6 +80,10 @@ class TerminalStream:
         self.now_fn = now_fn
         self.ppe = ppe_provider or PPEProvider(market, now_fn=now_fn)
         self.demand = demand_provider or DemandProvider(market, now_fn=now_fn)
+        self.setup_every = every(setup_poll_seconds or config.TRADER_SETUP_REFRESH_SECONDS)       # Stage 5.8: in-session cadence for the active ticker
+        self.setups = setup_service or SetupService(stream_fn=lambda: self)
+        self.setups.listeners.append(self._setup_event)
+        self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
         self.hub = Hub()
         self.connections: Dict[int, WebSocket] = {}
         self._ids = count(1)
@@ -146,6 +154,47 @@ class TerminalStream:
     def demand_result(self, symbol: str) -> DemandResult:
         return self._demand(symbol.upper())
 
+    # ---------------------------------------------------------------- Stage 5.8 setup state (stored view; evaluation only on subscribe / refresh / in-session cadence) ----
+    def _setup_view(self, s: str) -> SetupView:
+        try:
+            return self.setups.current(s)
+        except Exception as exc:  # noqa: BLE001 - the stored view never hides the rest of the state
+            log.warning("Trader View: setup view failed for %s (%s)", s, type(exc).__name__)
+            return SetupView(symbol=s, note=f"Setup state unavailable ({type(exc).__name__}).")
+
+    def _evaluate_setup(self, s: str, trigger: str, inputs: Optional[SetupInputs] = None, prefetched: Optional[dict] = None) -> Optional[SetupView]:
+        """Runs in a worker thread. Returns the view after the evaluation, or None when the evaluation itself failed (recorded as ERROR)."""
+        try:
+            return self.setups.evaluate_symbol(s, None, trigger, inputs=inputs, prefetched=prefetched, origin="stream")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Trader View: setup evaluation failed for %s (%s)", s, type(exc).__name__)
+            return None
+
+    def _setup_event(self, event: dict) -> None:
+        """Service listener (any thread): fan out persisted alerts to every connection and scheduler-driven state views to subscribers."""
+        loop = self._loop_ref
+        if loop is None or not self.connections or loop.is_closed():
+            return
+        if event.get("type") == "setup" and event.get("origin") == "stream":
+            return                                                            # the stream sends its own evaluations in order
+        try:
+            asyncio.run_coroutine_threadsafe(self._fanout(dict(event)), loop)
+        except RuntimeError:
+            pass
+
+    async def _fanout(self, event: dict) -> None:
+        event.pop("origin", None)
+        if event.get("type") == "setup_alert":
+            for conn_id in list(self.connections):
+                await self._send(conn_id, event)
+        elif event.get("type") == "setup":
+            for conn_id, symbol in self.hub.items():
+                if symbol == event.get("symbol"):
+                    await self._send(conn_id, event)
+
+    def setup_in_session(self, now: float) -> bool:
+        return (not config.SETUP_MARKET_HOURS_ONLY) or is_regular_session(datetime.fromtimestamp(now, tz=timezone.utc))
+
     @staticmethod
     def _position_status(pos: PositionState) -> str:
         if not pos.sources:
@@ -159,7 +208,7 @@ class TerminalStream:
         pos = self._position(s)
         ev = self._evidence(s)
         return TerminalState(
-            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=self._ppe(s), demand=self._demand(s), tradability=self.market.tradability(s),
+            label=LABEL, symbol=s, quote=quote, position=pos, evidence=ev, ppe=self._ppe(s), demand=self._demand(s), setup=self._setup_view(s), tradability=self.market.tradability(s),
             data_status=DataStatus(mode=self.market.mode, market="SIMULATED" if self.market.mode == "simulated" else quote.status,
                                    market_source=self.market.source, position=self._position_status(pos), evidence=ev.status, server_time=_iso()),
             actions=default_actions(), market_state=self.market.market_state(), candles=self.candles(s) if with_candles else [])
@@ -176,7 +225,7 @@ class TerminalStream:
     def cadence(self) -> dict:
         t = self.tick_seconds
         return {"tick_s": t, "quote_s": t * self.quote_every, "watchlist_s": t * self.watchlist_every, "position_s": t * self.position_every, "ppe_s": t * self.ppe_every,
-                "demand_s": t * self.demand_every, "evidence": "on subscribe / refresh only", "idle": "nothing is polled while no browser is subscribed"}
+                "demand_s": t * self.demand_every, "setup_s": t * self.setup_every, "evidence": "on subscribe / refresh only", "idle": "nothing is polled while no browser is subscribed"}
 
     def config_payload(self) -> dict:
         return {"stage": STAGE, "label": LABEL, "mode": self.market.mode, "source": self.market.source, "cadence": self.cadence(),
@@ -185,6 +234,9 @@ class TerminalStream:
                         "cadence": "on subscribe, on refresh and every refresh_s for the active ticker — never per quote tick"},
                 "demand": {"version": DEMAND_VERSION, "weights": DEMAND_WEIGHTS, "refresh_s": self.tick_seconds * self.demand_every, "disclaimer": DEMAND_DISCLAIMER,
                            "cadence": "on subscribe, on refresh and every refresh_s for the active ticker — never per quote tick", "separate_from_ppe": True},
+                "setup": {"version": "setups_v1", "states": ["NONE", "WATCH", "READY", "INVALIDATED"], "ready_label": "READY FOR REVIEW", "refresh_s": self.tick_seconds * self.setup_every,
+                          "cadence": "on subscribe, on refresh and every refresh_s for the active ticker inside the US regular session; the server-side evaluator covers the watchlist",
+                          "market_hours_only": bool(config.SETUP_MARKET_HOURS_ONLY)},
                 "chart": dict(CHART_ASSET),
                 "client_commands": list(CLIENT_COMMANDS), "execution_preview": "NOT_CONNECTED"}
 
@@ -247,6 +299,11 @@ class TerminalStream:
                 dem = await asyncio.to_thread(self._demand, symbol)
                 if self.hub.symbol_of(conn_id) == symbol:
                     await self._send(conn_id, {"type": "demand", **dem.model_dump()})
+        if (force_all or n % self.setup_every == 0) and self.setup_in_session(now):          # Stage 5.8: in-session cadence only, never per quote tick
+            for conn_id, symbol in self.hub.items():
+                view = await asyncio.to_thread(self._evaluate_setup, symbol, "SCHEDULED")
+                if view is not None and self.hub.symbol_of(conn_id) == symbol:
+                    await self._send(conn_id, {"type": "setup", **view.model_dump()})
         if self.connections and (force_all or n % HEARTBEAT_TICKS == 0):
             hb = {"type": "heartbeat", "server_time": _iso(now), "market_state": self.market.market_state(), "subscriptions": len(self.hub)}
             for conn_id in list(self.connections):
@@ -275,6 +332,7 @@ class TerminalStream:
         await websocket.accept()
         conn_id = next(self._ids)
         self.connections[conn_id] = websocket
+        self._loop_ref = asyncio.get_running_loop()
         self.ensure_running()
         try:
             await self._send(conn_id, {"type": "hello", "connection": conn_id, "stage": STAGE, "label": LABEL, "mode": self.market.mode,
@@ -304,6 +362,11 @@ class TerminalStream:
                         await self._error(conn_id, "NOT_ALLOWED", "manual ticks are only enabled in tests")
                         continue
                     await self.tick(int(msg.get("now") or self.now_fn()), force_all=bool(msg.get("all")))
+                elif kind == "setup_eval":                                     # tests / harness only: force an evaluation through the REAL service path
+                    if not self.allow_manual_tick:
+                        await self._error(conn_id, "NOT_ALLOWED", "forced setup evaluations are only enabled in tests")
+                        continue
+                    await self._setup_eval(conn_id, msg)
                 else:
                     await self._error(conn_id, "BAD_MESSAGE", "expected subscribe / unsubscribe / ping / refresh")
         except (WebSocketDisconnect, RuntimeError):
@@ -339,6 +402,30 @@ class TerminalStream:
             await self._send(conn_id, {"type": "candle", "symbol": s, **candles[-1]})
         await self._send(conn_id, {"type": "position", **d["position"]})
         await self._send(conn_id, {"type": "evidence", **d["evidence"]})
+        # Stage 5.8: opening a ticker is an explicit user action — evaluate it once (already-computed inputs; no extra research read)
+        view = await asyncio.to_thread(self._evaluate_setup, s, "SUBSCRIBE", None, {"ppe": state.ppe, "demand": state.demand, "evidence": state.evidence, "quote": state.quote})
+        if view is not None and view.decision == "TRANSITION" and self.hub.symbol_of(conn_id) == s:
+            await self._send(conn_id, {"type": "setup", **view.model_dump()})
+
+    async def _setup_eval(self, conn_id: int, msg: dict) -> None:
+        raw = str(msg.get("symbol") or "")
+        try:
+            s = validate_symbol(raw)
+            inputs = SetupInputs(**{"symbol": s, "evaluated_at": _iso(self.now_fn()), **dict(msg.get("inputs") or {})})
+        except Exception as exc:  # noqa: BLE001 - malformed fixture
+            await self._error(conn_id, "BAD_MESSAGE", f"setup_eval needs a symbol and valid inputs ({type(exc).__name__})")
+            return
+        view = await asyncio.to_thread(self._evaluate_setup, s, "TEST", inputs, None)
+        if view is None:
+            await self._error(conn_id, "EVALUATION_FAILED", "the forced evaluation raised; see setup_evaluations", symbol=s)
+            return
+        sent = set()
+        for cid, symbol in self.hub.items():
+            if symbol == s:
+                await self._send(cid, {"type": "setup", **view.model_dump()})
+                sent.add(cid)
+        if conn_id not in sent:
+            await self._send(conn_id, {"type": "setup", **view.model_dump()})
 
     async def _refresh(self, conn_id: int) -> None:
         s = self.hub.symbol_of(conn_id)
@@ -360,10 +447,14 @@ class TerminalStream:
         await self._send(conn_id, {"type": "evidence", **ev.model_dump()})
         await self._send(conn_id, {"type": "ppe", **res.model_dump()})
         await self._send(conn_id, {"type": "demand", **dem.model_dump()})
+        view = await asyncio.to_thread(self._evaluate_setup, s, "REFRESH", None, {"ppe": res, "demand": dem, "evidence": ev, "quote": None})   # Stage 5.8: explicit refresh evaluates
+        if view is not None and self.hub.symbol_of(conn_id) == s:
+            await self._send(conn_id, {"type": "setup", **view.model_dump()})
 
 
 def build_stream(mode: Optional[str] = None) -> TerminalStream:
     """Production wiring: the configured market adapter, the Stock Agent position sources and the stored-evidence reader."""
     from trader_view.positions import StockAgentPositionAdapter
     from trader_view.research import EvidenceResearchAdapter
-    return TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(), EvidenceResearchAdapter())
+    return TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(), EvidenceResearchAdapter(),
+                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval) in the harness process only
