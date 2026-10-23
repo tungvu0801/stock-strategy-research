@@ -1099,6 +1099,44 @@ def test_S03_restart_with_an_exit_required_or_submitted_or_reconciliation_requir
     assert cyc(st3)["result"] == "IDLE" and st3.sim.requests == []                               # nothing open, MONITOR_ONLY: idle, no broker call
 
 
+def test_S04_restart_between_a_partial_fill_and_the_rest_resumes_from_broker_evidence(tmp_path):
+    st = make_stack(tmp_path)
+    pv = arm(st)
+    st.sim.auto_fill = "manual"
+    cyc(st)
+    coid = st.x.store.intents()[0].client_order_id
+    st.sim.fill(coid, 2)
+    cyc(st)
+    assert st.x.store.open_position("SNDK").quantity == 2 and st.x.card("SNDK").state == "ENTRY_PARTIAL"
+    reopen(st)                                                                                  # the process dies after the partial fill was persisted
+    st.sim.fill(coid)                                                                           # the rest fills while the process is down
+    cyc(st)
+    it, pos = st.x.store.intents()[0], st.x.store.open_position("SNDK")
+    assert it.state == "FILLED" and it.filled_qty == pv.final_qty and pos.quantity == pv.final_qty and pos.entry_qty == pv.final_qty
+    assert [e["status"] for e in st.x.store.order_events(it.broker_order_id)] == ["accepted", "partially_filled", "filled"]
+    assert len(st.sim.posts) == 1 and st.sim.positions["SNDK"]["qty"] == pv.final_qty and st.x.recon_healthy
+    cyc(st)
+    assert len(st.sim.posts) == 1 and st.x.store.open_position("SNDK").quantity == pv.final_qty
+
+
+def test_E09_an_unknown_safety_gate_blocks_entries_inside_the_cycle(tmp_path):
+    from safety.models import SafetyView
+    st = make_stack(tmp_path)
+    arm(st)
+    unknown = SafetyView(state="UNKNOWN", state_label="Trading stopped", icon="🔴", error="forced evaluator failure")
+    mp = pytest.MonkeyPatch()
+    mp.setattr(st.safety, "evaluate", lambda *a, **k: unknown)
+    mp.setattr(st.safety, "current", lambda *a, **k: unknown)
+    try:
+        out = cyc(st)
+    finally:
+        mp.undo()
+    assert "SAFETY_GATE" in _blocked(st, out) and st.sim.posts == [] and st.x.store.intents() == []
+    assert ctl(st, "SAFETY_GATE")["last_result"] == "BLOCK" and out["summary"]["safety"] == "UNKNOWN"
+    out = cyc(st)                                                                               # the gate is readable again: the entry goes out once
+    assert out["summary"]['entries']["submitted"] == ["SNDK"] and len(st.sim.posts) == 1
+
+
 # ================================================================ B broker failure script =======================================================
 
 @pytest.mark.parametrize("mode,state,posts", [("connect_timeout", "NOT_SENT", 0), ("dns", "NOT_SENT", 0), ("timeout_before", "RECONCILIATION_REQUIRED", 0),
