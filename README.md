@@ -803,3 +803,56 @@ No real money, no Robinhood call, no model call anywhere in the path. It proves 
 * **Known limitations** — no holiday calendar (the broker clock is the backstop); in real-data mode the safety gate's equity still comes
   from the Stage 4.6A snapshot (≤ 15 min old, `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL` for an Alpaca source), so a stale snapshot reads
   New trades paused and the bot blocks entries — fail closed; the proposal's equity source in real mode is unchanged from Stage 5.9.
+
+## Running without VS Code (Windows background runner)
+
+The bot is the normal dashboard server: the same app as `uvicorn api.server:app`, with the Stage 5.8 setup evaluator and the Stage 6.0 paper
+executor loop. It can run in the background, so **VS Code does not need to stay open**. **The PC must stay on, awake and online.** A shut down,
+sleeping or hibernating PC, or a PC without internet, runs nothing. Windows only, local machine only (`127.0.0.1`), Alpaca PAPER only.
+
+Starting the bot never sends an order. The executor stays in **Monitor only** unless Paper Auto was enabled in the app. Even then it
+reconciles with the broker before any write, and the risk controls gate every new entry.
+
+**Option A: PowerShell runner** (from the project folder)
+
+```powershell
+.\scripts\start_stock_agent.ps1     # start in the background (detached; closing VS Code or the window does not stop it)
+.\scripts\check_stock_agent.ps1     # status: RUNNING / NOT RUNNING, mode, safety, reconciliation, executor loop
+.\scripts\stop_stock_agent.ps1      # graceful stop of exactly this process (PID file + instance id; no other python.exe is touched)
+```
+
+* Python: `.venv\Scripts\python.exe`. In a git worktree the main checkout's `.venv` is used. `-Python <path>` overrides it.
+* Environment: the project's `.env`, loaded by path. In a git worktree the main checkout's `.env` is used. `-EnvFile <path>` overrides it.
+  No secret is printed, logged or stored in a script.
+* Logs: `logs\stock_agent_stdout.log` (startup, scheduler, execution mode, paper broker configuration, shutdown),
+  `logs\stock_agent_stderr.log` (errors) and `logs\stock_agent_runner.log` (start / stop / restart decisions). Secret values are redacted.
+* Single instance: `runtime\stock_agent.pid` plus an OS file lock (`runtime\stock_agent.lock`). A second start is refused.
+  A stale PID file is cleaned without touching any process.
+* Options: `-Port 8000`, `-DbPath <file>` (default `data\stock_agent.db`).
+
+**Option B: Windows Task Scheduler** (no admin rights needed; runs as you, only while you are logged on)
+
+```powershell
+.\scripts\install_stock_agent_task.ps1 -Trigger Logon -PrintOnly    # show the task definition first
+.\scripts\install_stock_agent_task.ps1 -Trigger Logon               # register task "StockAgent": start at logon
+.\scripts\install_stock_agent_task.ps1 -Trigger Weekdays -EasternTime 09:20     # or: Monday-Friday before the open
+.\scripts\install_stock_agent_task.ps1 -Trigger Once -Date 2026-10-23 -EasternTime 09:35 -TaskName StockAgentSmokeStart   # one start
+.\scripts\install_stock_agent_task.ps1 -TaskName StockAgent -Unregister          # remove a task
+```
+
+The task runs `start_stock_agent.ps1 -Foreground`. That supervisor restarts the server after a crash, at most 3 times, 60 s apart.
+It never restarts after a deliberate stop. A second copy of the task is ignored. Stop the bot with `.\scripts\stop_stock_agent.ps1`, not
+with "End" in Task Scheduler. The task only starts the process; it never schedules an order. After any restart the executor runs its normal
+startup reconciliation before any write, and an ambiguous earlier order is looked up, never resent.
+
+**Keeping the PC awake.** The runner never changes power settings. Check them yourself before relying on the bot:
+
+```powershell
+powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE   # "AC Power Setting Index: 0x00000000" = never sleeps when plugged in
+powercfg /query SCHEME_CURRENT SUB_SLEEP HIBERNATEIDLE # the same for hibernate
+powercfg /requests                                     # what currently keeps the PC awake
+powercfg /lastwake                                     # what last woke it
+```
+
+Settings > System > Power & battery > Screen and sleep: set "When plugged in, put my device to sleep after" to **Never** for the
+trading window. Also keep the PC on mains power and connected to the internet.
