@@ -623,3 +623,19 @@ EXECUTION_DEMAND_EXIT_EVALS: int = int(os.getenv("EXECUTION_DEMAND_EXIT_EVALS", 
 EXECUTION_STRETCH_EXIT: float = float(os.getenv("EXECUTION_STRETCH_EXIT", "-20"))                       # DISLOCATION_NORMALIZED: PPE Stretch above this
 EXECUTION_MAX_EXIT_CYCLES: int = int(os.getenv("EXECUTION_MAX_EXIT_CYCLES", "3"))                       # bounded exit attempts per position; beyond it the position needs attention
 EXECUTION_LOOKUP_SPAN_SECONDS: float = float(os.getenv("EXECUTION_LOOKUP_SPAN_SECONDS", "30"))        # after an ambiguous POST: two lookups at least this far apart before NOT_SENT
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 6.0.1 - CONTINUOUS ALPACA PAPER ACCOUNT REFRESH (account_refresh/). One background owner keeps a READ-ONLY, persisted snapshot of the
+# paper account fresh (status, blocked flags, equity, cash, buying power, positions, open orders) for the Stage 5.9.1 gate and the Stage 5.9
+# proposals. Read only: no order, no cancel, no position change, no strategy change. It does NOT solve deposit / withdrawal adjustment:
+# EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL keeps its meaning and is never set by this stage. Never runs in a test / harness process.
+# ------------------------------------------------------------------------------------------------------------------
+ACCOUNT_REFRESH_ENABLED: bool = os.getenv("ACCOUNT_REFRESH_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+ACCOUNT_REFRESH_SECONDS: float = float(os.getenv("ACCOUNT_REFRESH_SECONDS", "60"))                 # inside the US regular session
+ACCOUNT_REFRESH_IDLE_SECONDS: float = float(os.getenv("ACCOUNT_REFRESH_IDLE_SECONDS", "300"))      # outside it
+ACCOUNT_REFRESH_STALE_SECONDS: float = float(os.getenv("ACCOUNT_REFRESH_STALE_SECONDS", "600"))    # no success for this long = stale (gate limit is 900 s)
+ACCOUNT_REFRESH_MAX_FAILURES: int = int(os.getenv("ACCOUNT_REFRESH_MAX_FAILURES", "3"))            # consecutive failed refreshes = stale
+ACCOUNT_REFRESH_READ_ATTEMPTS: int = int(os.getenv("ACCOUNT_REFRESH_READ_ATTEMPTS", "3"))          # bounded READ retries per refresh (never for orders)
+ACCOUNT_REFRESH_BACKOFF_SECONDS: str = os.getenv("ACCOUNT_REFRESH_BACKOFF_SECONDS", "2,5")         # delays between read attempts
+ACCOUNT_REFRESH_TEST_FAULTS: bool = os.getenv("ACCOUNT_REFRESH_TEST_FAULTS", "false").strip().lower() in ("1", "true", "yes", "on")   # test mode only
+ACCOUNT_REFRESH_FAULT_FILE: str = os.getenv("ACCOUNT_REFRESH_FAULT_FILE", "")                        # test mode: while this file exists every refresh fails (no broker call)

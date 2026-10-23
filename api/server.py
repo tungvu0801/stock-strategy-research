@@ -37,6 +37,7 @@ from api.routes import setups
 from api.routes import proposals
 from api.routes import execution_safety  # Stage 5.9.1: persisted execution safety gate (state + review-only actions)
 from api.routes import execution  # Stage 6.0: autonomous PAPER execution of READY setups / reviewable proposals behind the Stage 5.9.1 safety gate
+from api.routes import account_refresh  # Stage 6.0.1: read-only account refresh status feeding proposals and the Stage 5.9.1 gate
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -71,6 +72,8 @@ async def _lifespan(_app):
         _setups_start()
         from safety.service import startup_if_enabled as _safety_start  # Stage 5.9.1: apply the startup policy, evaluate the gate once
         _safety_start()  # Stage 5.9.1
+        from account_refresh.scheduler import start_if_enabled as _acct_start  # Stage 6.0.1: read-only account refresh for proposals / the Stage 5.9.1 gate; never in tests
+        _acct_start()  # Stage 6.0.1: first action = STARTUP refresh; until it succeeds proposals / the Stage 5.9.1 gate stay paused
         from execution.scheduler import start_if_enabled as _exec_start  # Stage 6.0: the paper executor consumes setups / proposals / the safety gate; never in tests
         _exec_start()  # Stage 6.0: setups -> proposals -> safety gate -> PAPER execution loop (idle in MONITOR_ONLY; PAPER host only)
     except Exception as exc:  # noqa: BLE001 - the evaluator must never stop the server from starting
@@ -79,6 +82,8 @@ async def _lifespan(_app):
     try:                                                    # Stage 5.8: stop the setup evaluator thread
         from execution.scheduler import shutdown as _exec_shutdown  # Stage 6.0: stop the paper executor thread before the setups evaluator
         _exec_shutdown()  # Stage 6.0 (setups / proposals consumer)
+        from account_refresh.scheduler import shutdown as _acct_shutdown  # Stage 6.0.1: stop the account refresh thread (proposals / Stage 5.9.1 gate source)
+        _acct_shutdown()  # Stage 6.0.1 (proposals / Stage 5.9.1 gate source)
         from setups.scheduler import shutdown as _setups_shutdown
         _setups_shutdown()
     except Exception as exc:  # noqa: BLE001 - shutting down regardless
@@ -154,6 +159,7 @@ app.include_router(setups.router)  # Stage 5.8: setup state machine + alerts —
 app.include_router(proposals.router)  # Stage 5.9: review proposals for READY setups — review artifact only, review-state POSTs only; no order path
 app.include_router(execution_safety.router)  # Stage 5.9.1: execution safety gate — persisted kill switch / daily-loss halt / pause; safety state only, no order path
 app.include_router(execution.router)  # Stage 6.0: autonomous PAPER execution loop (setups -> proposals -> safety gate -> paper order); mode POSTs only; PAPER host only
+app.include_router(account_refresh.router)  # Stage 6.0.1: account refresh status (GET only) - the read-only source of proposals and the Stage 5.9.1 gate
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 

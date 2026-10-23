@@ -337,6 +337,10 @@ def _run(a, app_root: Path, runtime: Path, pid_path: Path, stop_path: Path, out_
                 x, s = xs(), ss()
                 LOG.info("runner: paper executor loop %s (lease %s)", "running" if x.get("running") else "NOT running", x.get("lease"))
                 LOG.info("runner: setup evaluator loop %s", "running" if s.get("running") else "NOT running")
+                from account_refresh.scheduler import status as ars
+                ar = ars()
+                LOG.info("runner: account refresh loop %s (lease %s, every %s s in session / %s s outside; read only)", "running" if ar.get("running") else "NOT running",
+                         ar.get("lease"), ar.get("interval_s"), ar.get("idle_interval_s"))
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("runner: scheduler status unavailable (%s)", type(exc).__name__)
         last_beat = time.time()
@@ -349,6 +353,9 @@ def _run(a, app_root: Path, runtime: Path, pid_path: Path, stop_path: Path, out_
                 last_beat = time.time()
                 try:
                     from execution.scheduler import status as xs
+                    from api.routes.trader_view import stream as _stream
+                    fr = _stream().account_refresh.freshness()
+                    LOG.info("runner: heartbeat - account data %s (age %s s, %s consecutive failures)", fr["status"], fr["age_seconds"], fr["consecutive_failures"])
                     LOG.info("runner: heartbeat - execution mode %s, executor loop %s, last cycle %s", ExecutionStore().mode()["mode"],
                              "running" if xs().get("running") else "NOT running", (xs().get("last_result") or {}).get("result"))
                 except Exception as exc:  # noqa: BLE001

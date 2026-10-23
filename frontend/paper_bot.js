@@ -37,14 +37,29 @@
              safety: (d && d.safety_label) || "", safetyState: (d && d.safety_state) || "", env: (d && d.environment) || {}, lastCycle: stampOf(d && d.last_cycle_at), lastResult: (d && d.last_cycle_result) || "—",
              openPositions: n("open_positions"), pendingEntries: n("pending_entries"), pendingExits: n("pending_exits"), maxOpen: n("max_open_positions"), external: n("external_positions"),
              healthy: !!(d && d.reconciliation_healthy), changedAt: (d && d.mode_changed_at) || null, changedBy: (d && d.mode_changed_by) || null, recent: (d && d.recent) || [],
-             sched: (d && d.scheduler) || {}, disclaimer: (d && d.disclaimer) || "", raw: d || null };
+             sched: (d && d.scheduler) || {}, disclaimer: (d && d.disclaimer) || "", account: accountModel(d && d.account_data), raw: d || null };
+  }
+
+  // Stage 6.0.1: the read-only account refresher, in one beginner line ("Account data: Fresh (42s ago)" / "Stale" / "unavailable")
+  function accountModel(a) {
+    if (!a || !a.status) return { shown: false, status: "", label: "", cls: "", detail: "", counts: "", error: "" };
+    const st = a.status;
+    const age = a.age_seconds == null ? null : Math.round(Number(a.age_seconds));
+    const label = st === "FRESH" ? `Account data: Fresh (${age == null ? 0 : age}s ago)` : st === "STALE" ? "Account data: Stale"
+      : st === "STARTING" ? "Account data: Checking" : "Account data unavailable";
+    const detail = a.last_success_at ? `last success ${stampOf(a.last_success_at)}${age == null ? "" : ` (${age}s ago)`}${a.reason ? ` | ${a.reason}` : ""}`
+      : (a.reason || "no successful refresh yet");
+    return { shown: true, status: st, label, cls: st === "FRESH" ? "fresh" : (st === "STARTING" ? "" : "stale"), detail,
+             counts: `${Number(a.attempt_count || 0)} attempt(s), ${Number(a.failure_count || 0)} failed, ${Number(a.consecutive_failures || 0)} in a row`,
+             error: a.last_result && a.last_result !== "SUCCESS" ? String(a.last_error || a.last_result) : "" };
   }
 
   function botHtml(d, opts) {
     const o = opts || {};
     const m = botModel(d);
     const head = `<div class="tv-bot-head"><span class="tv-bot-state ${m.cls}" data-bot-mode="${esc(m.key)}">${esc(m.icon)} ${esc(m.label)}</span></div>`;
-    const line = `<div class="tv-bot-line" data-bot-line>${esc(m.line)}</div>`;
+    const line = `<div class="tv-bot-line" data-bot-line>${esc(m.line)}</div>` +
+      (m.account.shown ? `<div class="tv-bot-line tv-bot-acct ${m.account.cls}" data-bot-account="${esc(m.account.status)}">${esc(m.account.label)}</div>` : "");
     const enableLabel = o.confirmEnable ? "Confirm: enable Paper Auto" : "Enable Paper Auto";
     const actions = m.loaded ? `<div class="tv-bot-actions">` +
       (m.mode === "PAPER_AUTO" ? `<button type="button" class="tv-bot-btn danger" data-bot="disable"${o.busy ? " disabled" : ""}>Stop New Trades</button>`
@@ -55,6 +70,7 @@
                   ["Risk controls", m.safety || "—"], ["Open paper positions", `${m.openPositions} of ${m.maxOpen || "—"}`], ["Orders waiting", String(m.pendingEntries)], ["Exits in progress", String(m.pendingExits)],
                   ["Other broker positions", String(m.external)], ["Reconciliation", m.healthy ? "healthy" : "needs a look"], ["Last check", `${m.lastCycle} · ${words(m.lastResult)}`],
                   ["Loop", m.sched.running ? `running · every ${m.sched.interval_s || "—"} s in session` : "not running in this process"],
+                  ...(m.account.shown ? [["Account refresh", m.account.detail], ["Account refreshes", m.account.counts]].concat(m.account.error ? [["Last refresh error", m.account.error]] : []) : []),
                   ["Mode changed", m.changedAt ? `${dateOf(m.changedAt)} by ${m.changedBy || "—"}` : "never (default)"]];
     const reasons = m.reasons.length ? `<div class="tv-bot-line">${m.reasons.map((r) => esc(r)).join("<br>")}</div>` : "";
     const details = `<div class="tv-bot-details${o.detailsOpen ? "" : " tv-hidden"}" data-bot-details>${reasons}` +
@@ -209,5 +225,5 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
-  return { mount, refresh, render, state, botModel, botHtml, cardModel, cardHtml, historyLine, LABELS, ICONS };
+  return { mount, refresh, render, state, botModel, botHtml, cardModel, cardHtml, historyLine, accountModel, LABELS, ICONS };
 });
