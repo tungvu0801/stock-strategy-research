@@ -220,24 +220,34 @@ def test_B01_a_second_start_is_refused(rig):
 def test_F01_health_check_reports_running_with_mode_safety_and_reconciliation(rig):
     code, out = rig.check()
     assert code == 0, out
-    for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running"):
+    for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running", "Account data", "Account refresh loop: running"):
         assert line in out, (line, out)
     assert re.search(r"Safety: (Trading allowed|New trades paused|Trading stopped)", out), out
 
 
-def test_H01_starting_the_bot_sends_nothing_and_contacts_no_broker(rig):
+def test_H01_starting_the_bot_sends_nothing_and_only_reads_the_paper_account(rig):
     st = rig.wait_cycle()
     assert st["mode"] == "MONITOR_ONLY" and st["last_cycle_result"] == "IDLE" and st["pending_entries"] == 0 and st["open_positions"] == 0
     intents = http_get(rig.port, "/api/execution/intents")
     assert intents["intents"] == [] and intents["orders"] == []
-    assert "network guard: blocked" not in rig.log_text()                        # no outbound connection of any kind was even attempted
+    # Stage 6.0.1: the only outbound attempt is the read-only account refresh (3 GETs to the paper host; blocked by this offline run's guard)
+    blocked = re.findall(r"network guard: blocked (\S+)", rig.log_text())
+    assert blocked and set(blocked) == {"paper-api.alpaca.markets:443"}, blocked
+    deadline = time.time() + 45                                                  # the startup refresh retries its reads (2 s, 5 s) before it records the failure
+    hist = http_get(rig.port, "/api/account-refresh/history")
+    while hist["total"] < 1 and time.time() < deadline:
+        time.sleep(1)
+        hist = http_get(rig.port, "/api/account-refresh/history")
+    assert hist["total"] >= 1 and {a["result"] for a in hist["attempts"]} == {"FAILED"} and hist["attempts"][-1]["trigger"] == "STARTUP"
+    acct = http_get(rig.port, "/api/account-refresh")
+    assert acct["status"] == "UNAVAILABLE" and acct["fresh"] is False and acct["loop"]["running"] is True and acct["loop"]["lease"] == "alpaca_account_refresher"
 
 
 def test_E01_logs_record_startup_scheduler_mode_and_paper_broker(rig):
     out = (rig.logs / "stock_agent_stdout.log").read_text(encoding="utf-8")
     for needle in ("runner: startup", "loaded 4 environment names", "paper broker - Alpaca PAPER host paper-api.alpaca.markets only, credentials configured: yes (no broker call at startup)",
                    "execution mode at startup: MONITOR_ONLY", "server listening on http://127.0.0.1:", "paper executor loop running (lease paper_executor)",
-                   "setup evaluator loop running", "loopback-only network guard installed"):
+                   "setup evaluator loop running", "loopback-only network guard installed", "account refresh loop running (lease alpaca_account_refresher"):
         assert needle in out, needle
     assert (rig.logs / "stock_agent_stderr.log").exists() and (rig.logs / "stock_agent_runner.log").exists()
 

@@ -896,3 +896,34 @@ infrastructure end to end on the Alpaca PAPER account. It is not a strategy sign
 .\scripts\install_aapl_smoke_task.ps1 -Unregister                    # remove it
 .\scripts\run_aapl_paper_smoke.ps1 -RunDate 2026-10-23 -Simulated -ClockEt "2026-10-23 09:46" -ServerUrl http://127.0.0.1:8031   # offline proof
 ```
+
+## Continuous Alpaca PAPER account refresh (Stage 6.0.1, read only)
+
+The Alpaca PAPER account snapshot the bot relies on is now refreshed automatically (`account_refresh/`, design:
+`DESIGN_601_CONTINUOUS_ACCOUNT_REFRESH.md`). It no longer depends on clicking Refresh, so the risk controls no longer go stale after 15
+minutes on an unattended bot.
+
+* **One owner.** A single background thread per server holds the `alpaca_account_refresher` lease. It refreshes every **60 s** inside
+  the US regular session and every **300 s** outside it. Each refresh is three read-only GETs to the paper host: account, positions and
+  open orders. There is no per-ticker, per-request or browser refresher, and API reads never refresh.
+* **Atomic.** A complete, validated snapshot replaces the previous one in one database transaction. A failed or invalid read, such as a
+  timeout, connection reset, 429, 5xx, broken JSON, missing field or bad number, is recorded and never half-written. Reads retry at most
+  3 times (2 s, then 5 s). Order submission is unchanged and is never retried.
+* **Fresh vs stale.** The data is Fresh after a successful refresh by this process. It turns Stale after 600 s without a success or after
+  3 failed refreshes in a row. After a restart it reads Checking until the first refresh, so a cached snapshot never makes entries
+  eligible on startup. The next successful refresh recovers automatically, with no restart and no manual step.
+* **Safety.** The Stage 5.9.1 risk controls and the Stage 5.9 proposals read the refreshed snapshot through their existing account
+  seams; neither package changed. Stale or failing account data means **New trades paused** and never Trading allowed. Open paper
+  positions keep being monitored, and deterministic exits stay allowed.
+* **Limitation that remains.** The Alpaca snapshot still cannot separate deposits and withdrawals from trading P&L. With fresh data
+  the real-account risk controls therefore read "New trades paused - Deposits and withdrawals cannot be separated from trading P&L"
+  (`DAILY_PNL_ADJUSTMENT_UNAVAILABLE`), unless an operator explicitly sets `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL`. This stage never sets
+  that flag, and real-data safety is not production-complete.
+* **Evidence:** `account_refresh_snapshot` (one row), `account_refresh_attempts` (append-only) and `account_refresh_liveness` (one row:
+  last attempt or success, counts, consecutive failures, last error).
+* **API:** `GET /api/account-refresh` and `GET /api/account-refresh/history`, read only and with no credentials. The path avoids the words
+  "alpaca", "paper" and "broker", which frozen route pins reserve.
+* **UI and health check:** the Paper Bot panel shows one line, for example **Account data: Fresh (42s ago)**, Stale or unavailable, with
+  details under View details. `scripts\check_stock_agent.ps1` prints the same line and whether the refresh loop runs.
+* **Unchanged:** execution, strategy, PPE, Demand, Evidence, setup rules, proposal sizing, thresholds and order type. No Robinhood, no model
+  call, no real money.

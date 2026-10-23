@@ -161,4 +161,5 @@ class BotStatus(_M):
     recent: List[Dict[str, Any]] = Field(default_factory=list)
     mode_changed_at: Optional[str] = None
     mode_changed_by: Optional[str] = None
+    account_data: Dict[str, Any] = Field(default_factory=dict)      # Stage 6.0.1: the read-only account refresher's freshness
     disclaimer: str = DISCLAIMER

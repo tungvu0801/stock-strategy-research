@@ -283,3 +283,7 @@
 .tv-bot-cell { display: flex; flex-direction: column; font-size: 11px; color: var(--text-dim); }
 .tv-bot-cell b { color: var(--text); font-size: 13px; font-weight: 700; }
 .tv-bot-err { margin-top: 6px; font-size: 11px; color: #d8a0a0; }
+/* Stage 6.0.1 - account data freshness line in the Paper Bot panel */
+.tv-bot-acct { font-size: 11px; color: var(--text-dim); }
+.tv-bot-acct.fresh { color: var(--text-dim); }
+.tv-bot-acct.stale { color: var(--tv-sim); font-weight: 700; }
