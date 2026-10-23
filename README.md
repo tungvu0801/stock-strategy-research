@@ -856,3 +856,43 @@ powercfg /lastwake                                     # what last woke it
 
 Settings > System > Power & battery > Screen and sleep: set "When plugged in, put my device to sleep after" to **Never** for the
 trading window. Also keep the PC on mains power and connected to the internet.
+
+### Supervised one-share AAPL paper smoke (standalone, Stage 6.0)
+
+`scripts\run_aapl_paper_smoke.ps1` (wrapper) runs `scripts\run_aapl_paper_smoke.py` without VS Code. It proves the Stage 6.0 execution
+infrastructure end to end on the Alpaca PAPER account. It is not a strategy signal.
+
+* **Hard scope:** AAPL only, 1 share, BUY then SELL, at most 2 broker order submissions, Alpaca PAPER host only. An independent
+  order guard wraps the broker's single submission seam and refuses anything else before the wire. Every order is created by the real
+  Stage 6.0 executor: setup, then proposal, then safety gate, then executor, then Alpaca PAPER. No Robinhood, no model call, no live endpoint.
+* **Window:** 09:45 to 10:00 New York time on `-RunDate` only. Outside it: NO ORDER, and no catch-up later.
+* **Preconditions:** the normal Stock Agent server must answer at `http://127.0.0.1:8000` and be in Monitor only. Fresh pre-flight
+  checks then cover:
+  * the paper snapshot refresh, the paper proof, an active and unblocked account, equity and buying power;
+  * the broker clock open, AAPL tradable, a fresh AAPL quote, Trading allowed, healthy reconciliation;
+  * no AAPL order, AAPL position or earlier Stage 6.0 AAPL order at the broker, a share cap of 1, and a fresh scratch database.
+  Any failure means NO ORDER.
+* **Labels:** `SMOKE_FORCED_SETUP` forces AAPL to READY through the real setup service. `SMOKE_FORCED_EXIT` forces the setup's
+  stretch to normalize, and the executor decides and submits the exit. In real mode the process logs
+  `UNADJUSTED_PNL_ACCEPTED_FOR_SMOKE_ONLY`: the safety gate accepts the unadjusted Alpaca P&L for this process only. Permanent
+  configuration is unchanged, and unattended safety is not solved by it.
+* **Ambiguous order:** an ambiguous BUY or SELL is reconciled by `client_order_id` only and never resent. If it stays unresolved,
+  the smoke fails.
+* **Always:** Paper Auto is switched off in a `finally` block on every outcome.
+* **PASS rule:** PASS only when every final condition holds:
+  * one entry intent, one BUY and 1 share filled;
+  * one exit intent, one SELL and 1 share filled;
+  * the broker flat in AAPL and the internal position CLOSED;
+  * reconciliation healthy, no duplicate order and Paper Auto off.
+  Otherwise the result is FAIL with the reason.
+* **Never twice:** an OS lock plus `runtime\aapl_paper_smoke_state.json` stop a second run. After RUNNING, PASS or a FAIL that
+  submitted an order, every further run is refused.
+* **Files:** `runtime\aapl_paper_smoke.db` (scratch; never the bot or project database), `logs\aapl_paper_smoke.log` and
+  `runtime\aapl_paper_smoke_result.json`. Only the four `ALPACA_*` names are read from `.env`, and a secret scan runs on the logs and the result.
+
+```powershell
+.\scripts\install_aapl_smoke_task.ps1 -Date 2026-10-23 -PrintOnly    # shows the PC sleep setting and the task definition
+.\scripts\install_aapl_smoke_task.ps1 -Date 2026-10-23               # task "StockAgentSmokeRun": once at 09:45 ET, no retry, no catch-up
+.\scripts\install_aapl_smoke_task.ps1 -Unregister                    # remove it
+.\scripts\run_aapl_paper_smoke.ps1 -RunDate 2026-10-23 -Simulated -ClockEt "2026-10-23 09:46" -ServerUrl http://127.0.0.1:8031   # offline proof
+```
