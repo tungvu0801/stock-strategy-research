@@ -257,3 +257,29 @@
 .tv-safe-hist { margin: 2px 0 0 14px; padding: 0; font-size: 11px; color: var(--text-dim); }
 .tv-prop-exec { margin-top: 4px; font-size: 11px; color: var(--text-dim); }
 .tv-prop-exec[data-exec-allowed="false"] { color: var(--tv-sim); }
+
+/* Stage 6.0 — Paper Bot panel + Paper Trade card (beginner wording; internals under View Details) */
+.tv-panel-bot, .tv-panel-trade { border-top: 2px solid var(--border); padding-top: 8px; }
+.tv-bot-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tv-bot-state { font-size: 14px; font-weight: 800; letter-spacing: .4px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); background: var(--badge-bg); }
+.tv-bot-state.auto { border-color: rgba(88, 166, 255, .5); background: var(--tv-up-bg); }
+.tv-bot-state.attention { color: #d8a0a0; border-color: rgba(216, 160, 160, .45); background: rgba(216, 160, 160, .10); }
+.tv-bot-line { margin-top: 6px; font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.tv-bot-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.tv-bot-btn { font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 6px; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text); cursor: pointer; }
+.tv-bot-btn.go { border-color: rgba(88, 166, 255, .6); }
+.tv-bot-btn.danger { border-color: rgba(216, 160, 160, .6); color: #d8a0a0; }
+.tv-bot-btn:disabled { opacity: .45; cursor: not-allowed; }
+.tv-bot-link { font: inherit; font-size: 11px; margin-top: 6px; background: none; border: none; color: var(--text-dim); text-decoration: underline; cursor: pointer; padding: 0; }
+.tv-bot-details { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.tv-bot-row { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.tv-bot-row b { color: var(--text); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.tv-bot-hist { margin: 2px 0 0 14px; padding: 0; font-size: 11px; color: var(--text-dim); }
+.tv-bot-card-state { font-size: 13px; font-weight: 800; letter-spacing: .4px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); color: var(--text); background: var(--badge-bg); }
+.tv-bot-card-state.in_trade { color: var(--tv-up); border-color: rgba(88, 166, 255, .5); background: var(--tv-up-bg); }
+.tv-bot-card-state.entering, .tv-bot-card-state.exiting { color: var(--tv-sim); border-color: rgba(210, 153, 34, .5); background: var(--tv-sim-bg); }
+.tv-bot-card-state.attention, .tv-bot-card-state.stopped { color: #d8a0a0; border-color: rgba(216, 160, 160, .45); background: rgba(216, 160, 160, .10); }
+.tv-bot-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.tv-bot-cell { display: flex; flex-direction: column; font-size: 11px; color: var(--text-dim); }
+.tv-bot-cell b { color: var(--text); font-size: 13px; font-weight: 700; }
+.tv-bot-err { margin-top: 6px; font-size: 11px; color: #d8a0a0; }

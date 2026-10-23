@@ -751,3 +751,55 @@ entry. It still submits nothing: no Alpaca order, no Robinhood write, no auto tr
 * **UI**: a compact **RISK CONTROLS** panel at the top of the Trader View right column (status, one reason line, the four buttons,
   View details). Prepare Buy / Prepare Sell remain disabled. The review-only config flags of Stage 5.9 remain honoured as overrides; the
   persisted gate is the source of truth. Startup policy `EXECUTION_SAFETY_STARTUP_POLICY` (`KEEP` default, `HALT_ON_START`) never clears a stop.
+
+## Autonomous Alpaca PAPER trading (Stage 6.0, deterministic, paper only)
+
+Stage 6.0 is the first autonomous loop of Stock Agent (`execution/`, design: `DESIGN_60_AUTONOMOUS_PAPER.md`), on the **Alpaca PAPER
+account only**: READY setup (5.8) → reviewable proposal (5.9) → execution safety gate (5.9.1) → ONE paper entry → order monitoring →
+broker-confirmed fills → internal paper position → deterministic exit conditions → ONE paper exit → reconciliation → closed trade.
+No real money, no Robinhood call, no model call anywhere in the path. It proves operational execution correctness, not an edge.
+
+* **Modes** — `MONITOR_ONLY` (default; nothing is submitted) and `PAPER_AUTO` (an explicit, persisted user choice: **Enable Paper Auto**
+  takes two clicks and is refused unless the PAPER environment is proven by an account read of the constant paper host, the account is
+  active, the safety gate is readable and reconciliation is healthy). **Stop New Trades** returns to `MONITOR_ONLY`; monitoring,
+  reconciliation and deterministic exits of existing paper positions continue. The mode survives restarts; nothing is submitted before
+  the startup reconciliation completes.
+* **Paper-only boundary** — `execution/broker.py` builds every URL from the constant `paper-api.alpaca.markets`; there is no base-URL
+  setting and no live mode. The transport refuses any other host / scheme / port / path / verb before anything is sent, allows an exact GET
+  list within a per-cycle budget, and exactly one `POST /v2/orders` per intent whose body must equal the canonical payload (market, day,
+  whole shares, no extended hours, no order class). `execution/simulated.py` is a deterministic in-memory paper broker that sits below the
+  same client (tests, the browser harness, `EXECUTION_BROKER=simulated`).
+* **Entry** — only a `DOWNSIDE_DISLOCATION_RECOVERY` setup in READY with a `REVIEWABLE` proposal whose `execution_eligibility.allowed`
+  is true, LONG only, the proposal quantity exactly (`EXECUTION_MAX_SHARES_PER_ENTRY` is an optional explicit operator hard cap, default off).
+  Every precondition is a persisted control: `EXECUTION_MODE`, `PAPER_ENVIRONMENT`, `SAFETY_GATE`, `PROPOSAL_VALIDITY`, `SESSION_POLICY`
+  (weekdays 09:30–16:00 ET, not the final 15 minutes, the broker clock must agree — no holiday calendar exists), `BROKER_TRADABILITY`,
+  `DUPLICATE_ENTRY`, `BROKER_POSITION`, `BROKER_ACCOUNT` (active, buying power ≥ price × qty × 1.05), `MAX_OPEN_POSITIONS` (now enforced:
+  broker positions + pending entries < cap), `BROKER_RECONCILIATION`. At most one new entry per cycle.
+* **Exactly once** — `execution_id = sha256("entry|" + proposal_id)[:32]`, `client_order_id = stockagent-entry-<execution_id>`; the intent row
+  is written before the broker is contacted and the attempt is recorded before the wire (the database refuses a second attempt). A
+  definitive reject ends the intent (no resubmission); an ambiguous result (timeout, reset, 429 / 5xx, unreadable answer) is never retried:
+  the order is looked up by client id, adopted when found, `NOT_SENT` after two lookups at least 30 s apart. A crash at any point (after the
+  intent, after the attempt, after the POST, after a fill, after an exit intent, after an exit POST) recovers from the database and the
+  broker without a duplicate order (tests C01 / C02).
+* **Orders and positions** — every broker status change is appended (`execution_order_events`); a position is created only from
+  broker-confirmed fills with the filled quantity (partials included); rejected / canceled entries end `FAILED` with no replacement.
+* **Exits** (deterministic, precedence order) — `HARD_INVALIDATION` (price ≤ the proposal's invalidation level), `EVIDENCE_INVALIDATION`,
+  `SETUP_INVALIDATED`, `DEMAND_FAILURE` (Demand < 35 on two consecutive evaluations), `TIME_EXIT` (5 sessions), `DISLOCATION_NORMALIZED`
+  (Stretch > −20). No profit target, no prediction. `client_order_id = stockagent-exit-<position_id>-<cycle>`; a rejected / expired exit opens
+  the next bounded cycle (3), then the position needs attention. **The safety gate blocks new entries only**: pause, daily-loss halt and
+  Emergency Stop never stop a risk-reducing exit, and a stop never liquidates.
+* **Reconciliation** — every cycle and at startup: missing orders, unknown `stockagent-` orders, quantity mismatches, broker-flat /
+  internal-open, external positions (informational; they count toward the cap and block their symbol), multiple orders, unknown statuses,
+  broker unavailable. Blocking findings set `RECONCILIATION_REQUIRED` for new entries and are never fixed silently.
+* **Loop** — `execution/scheduler.py`: one daemon thread per process under the `paper_executor` lease, 30 s in session / 300 s outside,
+  exits before entries, never in a test / harness process; an idle `MONITOR_ONLY` process never contacts the broker.
+* **Evidence** — `execution_mode`, `execution_runs`, `execution_intents`, `execution_orders`, `execution_order_events`, `paper_positions`,
+  `position_events`, `execution_reconciliations`, `execution_controls` (15 liveness rows).
+* **API** — `GET /api/execution`, `/status`, `/history`, `/controls`, `/intents`, `/positions`, `/findings`, `/symbol/{symbol}`;
+  `POST /api/execution/auto/enable`, `/auto/disable` (mode only).
+* **UI** — a **Paper Bot** panel under Risk Controls (⚪ Monitor only · 🟢 Paper Auto · 🔴 Needs attention, Enable Paper Auto / Stop New
+  Trades, View details with recent paper trades) and a **Paper Trade** card per ticker (🟡 Watching · 🔵 Ready · 🟠 Entering · 🟢 In trade ·
+  🟠 Exiting · ⚪ Closed · 🔴 Needs attention). Internal states live under View Details.
+* **Known limitations** — no holiday calendar (the broker clock is the backstop); in real-data mode the safety gate's equity still comes
+  from the Stage 4.6A snapshot (≤ 15 min old, `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL` for an Alpaca source), so a stale snapshot reads
+  New trades paused and the bot blocks entries — fail closed; the proposal's equity source in real mode is unchanged from Stage 5.9.
