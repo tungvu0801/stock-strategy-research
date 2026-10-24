@@ -414,17 +414,47 @@ def test_X03_a_server_that_is_down_means_no_order(tmp_path):
     assert p.returncode == 2 and r["orders_sent"] == [] and "server reachable" in r["failure_reason"]
 
 
+def _ps_env(python=sys.executable):
+    """A child PowerShell process gets the running test interpreter through the scripts' existing STOCK_AGENT_PYTHON override (the same
+    mechanism as tests/test_windows_runner_60.py), never a repository .venv: a CI checkout has none. python=None removes the override."""
+    env = dict(os.environ)
+    env.pop("STOCK_AGENT_PYTHON", None)
+    if python is not None:
+        env["STOCK_AGENT_PYTHON"] = str(python)
+    return env
+
+
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
 def test_X04_powershell_wrapper_runs_the_simulated_smoke(tmp_path, stub_server):
     env = tmp_path / "w.env"
     env.write_text("".join(f"{k}={v}\n" for k, v in FAKE.items()), encoding="utf-8")
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "run_aapl_paper_smoke.ps1"), "-RunDate", RUN_DATE, "-Simulated",
                         "-ClockEt", "2026-10-23 09:46", "-ServerUrl", stub_server, "-EnvFile", str(env), "-RuntimeDir", str(tmp_path / "rt"), "-LogDir", str(tmp_path / "lg")],
-                       capture_output=True, text=True, timeout=240)
+                       capture_output=True, text=True, timeout=240, env=_ps_env())
     assert r.returncode == 0 and "AAPL paper smoke: PASS" in r.stdout, r.stdout + r.stderr
     r2 = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "run_aapl_paper_smoke.ps1"), "-RunDate", RUN_DATE, "-ClockEt", "2026-10-23 09:46",
-                         "-EnvFile", str(env), "-RuntimeDir", str(tmp_path / "rt2"), "-LogDir", str(tmp_path / "lg2")], capture_output=True, text=True, timeout=120)
+                         "-EnvFile", str(env), "-RuntimeDir", str(tmp_path / "rt2"), "-LogDir", str(tmp_path / "lg2")], capture_output=True, text=True, timeout=120,
+                        env=_ps_env())
     assert r2.returncode == 2 and "only allowed with -Simulated" in r2.stdout
+
+
+@pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
+def test_X05_the_wrapper_in_a_plain_checkout_runs_on_STOCK_AGENT_PYTHON_and_without_it_fails_clearly_with_no_order(tmp_path, stub_server):
+    from test_windows_runner_60 import plain_checkout                              # the tracked files only: no .venv, no .git, no .env (a CI checkout)
+    app = plain_checkout(tmp_path / "checkout")
+    env = tmp_path / "w.env"
+    env.write_text("".join(f"{k}={v}\n" for k, v in FAKE.items()), encoding="utf-8")
+    args = [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(app / "scripts" / "run_aapl_paper_smoke.ps1"), "-RunDate", RUN_DATE, "-Simulated",
+            "-ClockEt", "2026-10-23 09:46", "-ServerUrl", stub_server, "-EnvFile", str(env)]
+    r = subprocess.run(args + ["-RuntimeDir", str(tmp_path / "rt"), "-LogDir", str(tmp_path / "lg")], capture_output=True, text=True, timeout=240, env=_ps_env())
+    assert r.returncode == 0 and "AAPL paper smoke: PASS" in r.stdout, r.stdout + r.stderr
+    res = json.loads((tmp_path / "rt" / M.RESULT_FILE).read_text(encoding="utf-8"))
+    assert res["result"] == "PASS" and res["entry_posts"] == 1 and res["exit_posts"] == 1 and res["paper_auto_final"] == "OFF"   # the in-memory simulated broker only
+    wrapper_log = (tmp_path / "lg" / "stock_agent_runner.log").read_text(encoding="utf-8").lower()
+    assert f"python {sys.executable}".lower() in wrapper_log, wrapper_log                        # resolved from STOCK_AGENT_PYTHON
+    r = subprocess.run(args + ["-RuntimeDir", str(tmp_path / "rt2"), "-LogDir", str(tmp_path / "lg2")], capture_output=True, text=True, timeout=120, env=_ps_env(None))
+    assert r.returncode == 2 and "AAPL paper smoke: NO ORDER - No Python environment found" in r.stdout, r.stdout + r.stderr
+    assert not (tmp_path / "rt2" / M.RESULT_FILE).exists()                                         # the smoke never ran: nothing was sent anywhere
 
 
 # ================================================================ J Task Scheduler definition ======================================
@@ -432,8 +462,10 @@ def test_X04_powershell_wrapper_runs_the_simulated_smoke(tmp_path, stub_server):
 @pytest.mark.skipif(os.name != "nt" or not PS, reason="Windows PowerShell")
 def test_J01_smoke_task_definition_launches_project_code_only_without_retry_or_catch_up(tmp_path):
     future = (date.today() + timedelta(days=5)).isoformat()
+    envf = tmp_path / "task.env"                                                   # explicit: a CI checkout has no .env to discover
+    envf.write_text("".join(f"{k}={v}\n" for k, v in FAKE.items()), encoding="utf-8")
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "install_aapl_smoke_task.ps1"), "-Date", future, "-TaskName", "StockAgentSmokeRunTest",
-                        "-PrintOnly"], capture_output=True, text=True, timeout=120)
+                        "-EnvFile", str(envf), "-PrintOnly"], capture_output=True, text=True, timeout=120, env=_ps_env())
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
     for needle in ("Task name: StockAgentSmokeRunTest", f"once on {future} at 09:45 ET", "only when logged on, no elevation", "Execute: powershell.exe",
@@ -441,8 +473,9 @@ def test_J01_smoke_task_definition_launches_project_code_only_without_retry_or_c
                    "StartWhenAvailable=False", "WakeToRun=False", "ExecutionTimeLimit=PT45M", "PrintOnly: nothing registered.", "PC sleep"):
         assert needle in out, (needle, out)
     assert "-Simulated" not in out and "/v2/orders" not in out
+    assert f'-python "{sys.executable}"'.lower() in out.lower() and f'-envfile "{envf}"'.lower() in out.lower(), out   # explicit interpreter and env file
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "install_aapl_smoke_task.ps1"), "-Date", "2020-01-03", "-TaskName", "StockAgentSmokeRunTest",
-                        "-PrintOnly"], capture_output=True, text=True, timeout=120)
+                        "-EnvFile", str(envf), "-PrintOnly"], capture_output=True, text=True, timeout=120, env=_ps_env())
     assert r.returncode != 0 and "in the past" in (r.stdout + r.stderr)
     r = subprocess.run([PS, "-NoProfile", "-Command", "[bool](Get-ScheduledTask -TaskName StockAgentSmokeRunTest -ErrorAction SilentlyContinue)"], capture_output=True, text=True, timeout=60)
     assert r.stdout.strip() == "False"

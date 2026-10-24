@@ -6,6 +6,11 @@ the runner's loopback-only network guard and a free local port. No broker is rea
   A one instance starts · B a second start is refused · C stop stops only our process · D stale PID files · E logs · F health check
   G restart restores the persisted Stage 6.0 state and reconciles before any write · H starting sends nothing · I no secret in any log
   J the Task Scheduler definition · S supervisor (foreground) restarts after a crash, never after a stop · P paper-only / static checks
+  K a plain checkout (no .venv, no worktree): runs on the STOCK_AGENT_PYTHON interpreter; without any interpreter source it fails clearly
+
+Every child PowerShell process gets the RUNNING test interpreter through the scripts' existing STOCK_AGENT_PYTHON override
+(scripts/stock_agent_common.ps1 Resolve-SAPython: -Python, then STOCK_AGENT_PYTHON, then a repository / main-checkout .venv, else
+"No Python environment found"), so the tests never depend on a developer .venv: a CI checkout has none.
 """
 import importlib.util
 import json
@@ -29,11 +34,22 @@ pytestmark = pytest.mark.skipif(os.name != "nt" or not PS, reason="the Windows r
 FAKE = {"ALPACA_PAPER_API_KEY": "RUNNERTEST-paperkey-7f3a91c2", "ALPACA_PAPER_SECRET_KEY": "RUNNERTEST-papersecret-b81d44e0",
         "ALPACA_API_KEY": "RUNNERTEST-datakey-55aa66bb", "ALPACA_SECRET_KEY": "RUNNERTEST-datasecret-0c0ffee1"}
 OVERRIDES = {"TRADER_DATA_MODE": "simulated", "EVENT_WARMUP_ON_STARTUP": "false", "PORTFOLIO_AWARENESS_ENABLED": "false"}
+PY_OVERRIDE = "STOCK_AGENT_PYTHON"                                   # the scripts' existing interpreter override (Resolve-SAPython)
 
 
-def ps(script, *args, timeout=240):
-    r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / script), *[str(a) for a in args]],
-                       capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
+def child_env(python=sys.executable):
+    """The environment of a child PowerShell process: the running test interpreter through STOCK_AGENT_PYTHON (passed as an environment
+    value, never spliced into a command line, so a path with spaces needs no quoting). python=None removes the override."""
+    env = dict(os.environ)
+    env.pop(PY_OVERRIDE, None)
+    if python is not None:
+        env[PY_OVERRIDE] = str(python)
+    return env
+
+
+def ps(script, *args, timeout=240, env=None, scripts=SCRIPTS):
+    r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(scripts / script), *[str(a) for a in args]],
+                       capture_output=True, text=True, timeout=timeout, cwd=str(scripts.parent), env=child_env() if env is None else env)
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
@@ -298,7 +314,7 @@ def test_S01_foreground_supervisor_restarts_after_a_crash_but_never_after_a_stop
     r = Rig(tmp_path / "fg")
     args = [PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(SCRIPTS / "start_stock_agent.ps1"), "-Foreground", "-RestartDelaySeconds", "2", "-MaxRestarts", "2",
             "-Port", str(r.port), "-EnvFile", str(r.env), "-OverridesFile", str(r.overrides), "-DbPath", str(r.db), "-LoopbackOnly", "-RuntimeDir", str(r.runtime), "-LogDir", str(r.logs)]
-    sup = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    sup = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=child_env())
     try:
         def wait_up(old=None, seconds=90):
             t0 = time.time()
@@ -340,6 +356,7 @@ def test_J01_task_scheduler_definitions_are_generated_without_registering_anythi
                    "start_stock_agent.ps1", "-Foreground", "-Port 8000", "MultipleInstances=IgnoreNew", "RestartCount=3", "RestartInterval=PT1M",
                    "ExecutionTimeLimit=PT0S", "WakeToRun=False", "PrintOnly: nothing registered."):
         assert needle in out, (needle, out)
+    assert f'-python "{sys.executable}"'.lower() in out.lower(), out             # the task hands the resolved interpreter to the project start script
     future = (date.today() + timedelta(days=3)).isoformat()
     code, out = ps("install_stock_agent_task.ps1", "-Trigger", "Once", "-Date", future, "-EasternTime", "09:35", "-TaskName", name, "-PrintOnly")
     assert code == 0 and f"once on {future} at 09:35 ET" in out and "PrintOnly: nothing registered." in out, out
@@ -351,3 +368,67 @@ def test_J01_task_scheduler_definitions_are_generated_without_registering_anythi
     assert out.strip() == "False"                                                     # PrintOnly registered nothing
     for text in (out,):
         assert "/v2/orders" not in text
+
+
+# ================================================================ K plain checkout (a CI runner: no .venv, no worktree) =================
+
+def plain_checkout(dst: Path) -> Path:
+    """A project tree like a CI checkout: the tracked files only - no .venv, no .git entry (so no worktree main-checkout .venv either), no .env."""
+    names = subprocess.run(["git", "ls-files", "-z"], cwd=str(ROOT), capture_output=True, check=True).stdout.decode("utf-8").split("\0")
+    for rel in filter(None, names):
+        src = ROOT / rel
+        if src.is_file():
+            out = dst / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, out)
+    for absent in (".venv", ".git", ".env"):
+        assert not (dst / absent).exists(), absent
+    assert (dst / "scripts" / "start_stock_agent.ps1").is_file() and (dst / "scripts" / "run_stock_agent.py").is_file()
+    return dst
+
+
+def test_K01_a_plain_checkout_without_any_venv_starts_on_the_STOCK_AGENT_PYTHON_interpreter_and_sends_nothing(tmp_path):
+    app = plain_checkout(tmp_path / "checkout")
+    scripts = app / "scripts"
+    r = Rig(tmp_path / "plain")
+    try:
+        code, out = ps("start_stock_agent.ps1", "-Port", r.port, "-EnvFile", r.env, "-OverridesFile", r.overrides, "-DbPath", r.db, "-LoopbackOnly", *r.dirs, scripts=scripts)
+        assert code == 0 and "Stock Agent: STARTED" in out, out
+        info = r.pid_info()
+        procs = runner_processes(info["instance_id"])
+        assert info["pid"] in procs and len(procs) <= 2, procs
+        assert http_get(r.port, "/api/health")["status"] == "ok"
+        runner_log = (r.logs / "stock_agent_runner.log").read_text(encoding="utf-8").lower()
+        assert f"python {sys.executable}".lower() in runner_log, runner_log                       # resolved from STOCK_AGENT_PYTHON
+        stdout = (r.logs / "stock_agent_stdout.log").read_text(encoding="utf-8").lower()
+        assert f"app root {app.resolve()}".lower() in stdout and f"python {sys.executable}".lower() in stdout, stdout[:600]   # the plain checkout's own code
+        code, out = ps("check_stock_agent.ps1", *r.dirs, scripts=scripts)
+        assert code == 0, out
+        for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running"):
+            assert line in out, (line, out)
+        st = r.wait_cycle()
+        assert st["mode"] == "MONITOR_ONLY" and st["pending_entries"] == 0 and st["open_positions"] == 0
+        intents = http_get(r.port, "/api/execution/intents")
+        assert intents["intents"] == [] and intents["orders"] == []                                      # no order of any kind
+        assert "network guard: blocked" not in r.log_text()                                             # no outbound connection was even attempted
+        code, out = ps("stop_stock_agent.ps1", *r.dirs, scripts=scripts)
+        assert code == 0 and f"STOPPED cleanly (PID {info['pid']})" in out, out
+        assert runner_processes(info["instance_id"]) == []
+    finally:
+        r.cleanup()
+
+
+def test_K02_without_STOCK_AGENT_PYTHON_and_without_any_venv_every_entry_point_fails_clearly_and_starts_nothing(tmp_path):
+    app = plain_checkout(tmp_path / "checkout")
+    scripts = app / "scripts"
+    r = Rig(tmp_path / "nopython")
+    bare = child_env(python=None)
+    code, out = ps("start_stock_agent.ps1", "-Port", r.port, "-EnvFile", r.env, "-OverridesFile", r.overrides, "-DbPath", r.db, "-LoopbackOnly", *r.dirs,
+                   scripts=scripts, env=bare)
+    assert code == 1 and "Stock Agent: START FAILED - No Python environment found" in out, out
+    assert ".venv\\scripts\\python.exe" in out.lower(), out                                          # it names where it looked; no PATH fallback
+    assert r.pid_info() is None and runner_processes(r.base.name) == []
+    code, out = ps("install_stock_agent_task.ps1", "-Trigger", "Logon", "-TaskName", "StockAgentRunnerTest", "-PrintOnly", scripts=scripts, env=bare)
+    assert code != 0 and "No Python environment found" in out, out
+    code, out = ps_inline("[bool](Get-ScheduledTask -TaskName StockAgentRunnerTest -ErrorAction SilentlyContinue)")
+    assert out.strip() == "False"
