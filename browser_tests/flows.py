@@ -33,7 +33,10 @@ INSTR = r"""(() => { if (window.__h) return; window.__h = 1; window.__f = []; wi
   window.__scnGroups = () => [...document.querySelectorAll('#scn-body .scn-table tbody')].map((b) => [b.querySelector('.scn-group th').firstChild.textContent.trim(), [...b.querySelectorAll('tr.scn-row')].map((r) => r.dataset.scnRow)]);
   window.__slotsOk = () => { const shown = StrategyFit.state.shown; return [...document.querySelectorAll('#sf-body .ax-slot')].every((s) => s.dataset.axSlot.split('|')[2] === shown); };
 })()"""
-POLLING = ("/api/health", "/api/ai/usage", "/api/alerts", "/api/market/overview", "/api/watchlist", "/api/ops")
+# background refreshes the page makes on its own timers; never counted as the requests of a user action. The three Stage 5.8 / 5.9.1 /
+# 6.0 pollers (setup alerts 30 s, Risk Controls 30 s, Paper Bot 10 s) were missing, so "no request" windows failed at random (Stage 6.0.3).
+POLLING = ("/api/health", "/api/ai/usage", "/api/alerts", "/api/market/overview", "/api/watchlist", "/api/ops",
+           "GET /api/setups/alerts?limit=30", "GET /api/execution-safety", "GET /api/execution/status")                 # method-qualified: a user's POST is never filtered
 FIT = "StrategyFit.state"
 EV = "EvidenceComparison.state"
 TRADE_WORDS = re.compile(r"(?i)\b(buy|sell|enter now|trade now|recommend\w*|you should)\b")
