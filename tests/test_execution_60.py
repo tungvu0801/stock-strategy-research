@@ -1376,6 +1376,10 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
     import re as _re61
     now_html = _re61.sub(r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n", "", "\n".join(now_html) + "\n").splitlines()
     # <<< Stage 6.1
+    # >>> Stage 6.1.1: index.html also carries two marked, additive Product UI 6.1.1 blocks (the product shell stylesheet and script, pinned against the
+    # Stage 6.1.1 base by tests/test_product_ui_611.py); they are stripped as well, so the line rule below still sees exactly the Stage 6.0 script
+    now_html = _re61.sub(r"(?ms)^<!-- >>> Product UI 6\.1\.1\b.*?^<!-- <<< Product UI 6\.1\.1 -->\n", "", "\n".join(now_html) + "\n").splitlines()
+    # <<< Stage 6.1.1
     assert [l for l in base_html if l not in now_html] == [] and [l for l in now_html if l not in base_html] == ['<script src="paper_bot.js"></script>']
     base_css = blob("frontend/trader_view.css").decode("utf-8")
     assert (ROOT / "frontend" / "trader_view.css").read_text(encoding="utf-8").replace("\r\n", "\n").startswith(base_css.rstrip("\n"))

@@ -1040,6 +1040,14 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
               "scripts/run_aapl_paper_smoke.py", "scripts/start_stock_agent.ps1", "scripts/stop_stock_agent.ps1", "tests/conftest.py", "tests/test_aapl_smoke_60.py",
               "tests/test_execution_safety_591.py", "tests/test_proposals_59.py", "tests/test_setups_58.py", "tests/test_windows_runner_60.py", "tests/frontend/trader_account.test.cjs",
               "DESIGN_591_EXECUTION_SAFETY.md", "DESIGN_60_AUTONOMOUS_PAPER.md", "DESIGN_601_CONTINUOUS_ACCOUNT_REFRESH.md"]
+    # >>> Stage 6.1.1: frontend/index.html also carries two marked, additive Product UI 6.1.1 blocks (the product shell stylesheet and script, pinned against
+    # the Stage 6.1.1 base by tests/test_product_ui_611.py); they are stripped from the page before the Stage 6.1 / 6.0.2 comparisons below
+    _now_through_61 = now
+
+    def now(rel):  # noqa: F811 - wraps the read above for the one page that carries Product UI blocks
+        text = _now_through_61(rel)
+        return re.sub(r"(?ms)^<!-- >>> Product UI 6\.1\.1\b.*?^<!-- <<< Product UI 6\.1\.1 -->\n", "", text) if rel == "frontend/index.html" else text
+    # <<< Stage 6.1.1
     # >>> Stage 6.1: frontend/index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); everything
     # outside them stays byte-identical (the blocks themselves are pinned by tests/test_forward_validation_61.py)
     html61 = re.sub(r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n", "", now("frontend/index.html"))
