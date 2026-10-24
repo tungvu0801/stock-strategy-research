@@ -52,6 +52,9 @@ from safety.service import ExecutionSafetyService
 from execution.service import ExecutionService      # Stage 6.0: the autonomous PAPER executor reads setups / proposals / safety through this stream
 from execution.store import ExecutionStore
 from safety.store import SafetyStore
+from proposals.account import AccountAdapter
+from account_refresh.service import AccountRefreshService, make_alpaca_view, make_safety_account_fn   # Stage 6.0.1: continuous read-only paper account refresh
+from account_refresh.store import AccountRefreshStore
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -70,7 +73,7 @@ class TerminalStream:
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
                  setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None, safety_service=None,
-                 execution_service=None):
+                 execution_service=None, account_refresh_service=None):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -90,9 +93,13 @@ class TerminalStream:
         self.setup_every = every(setup_poll_seconds or config.TRADER_SETUP_REFRESH_SECONDS)       # Stage 5.8: in-session cadence for the active ticker
         self.setups = setup_service or SetupService(stream_fn=lambda: self)
         self.setups.listeners.append(self._setup_event)
-        self.proposals = proposal_service or ProposalService(stream_fn=lambda: self)   # Stage 5.9: review proposals for READY setups — review only, never an order
+        # Stage 6.0.1: ONE read-only account refresher per stream; the default proposal account adapter and the default safety gate read its snapshot
+        # through their existing seams (identical to the old defaults while no paper broker is configured)
+        self.account_refresh = account_refresh_service or AccountRefreshService(store=AccountRefreshStore(proposal_service.store.path if proposal_service is not None else None))
+        self.proposals = proposal_service or ProposalService(stream_fn=lambda: self, account=AccountAdapter(alpaca_view=make_alpaca_view(self.account_refresh)))   # Stage 5.9: review only, never an order
         # Stage 5.9.1: the persisted execution safety gate shares the proposal store's database; the proposal controls consume it
-        self.safety = safety_service or ExecutionSafetyService(stream_fn=lambda: self, store=SafetyStore(self.proposals.store.path))
+        self.safety = safety_service or ExecutionSafetyService(stream_fn=lambda: self, store=SafetyStore(self.proposals.store.path),
+                                                               account_fn=make_safety_account_fn(lambda: self, self.account_refresh, self.proposals.store.path))
         if getattr(self.proposals, "safety", None) is None:
             self.proposals.safety = self.safety
         self.setups.listeners.append(self.proposals.on_setup_event)

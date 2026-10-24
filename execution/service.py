@@ -854,11 +854,21 @@ class ExecutionService:
         except Exception:  # noqa: BLE001
             sched = {}
         last = self.last_cycle or {}
+        acct: Dict[str, Any] = {}
+        try:                                                                       # Stage 6.0.1: read-only account refresher freshness (display only)
+            refresher = getattr(self.stream_fn(), "account_refresh", None)
+            if refresher is not None:
+                fr = refresher.freshness()
+                acct = {k: fr.get(k) for k in ("status", "fresh", "label", "short_label", "reason", "age_seconds", "refreshed_at", "last_success_at", "last_attempt_at",
+                                               "last_result", "last_error", "consecutive_failures", "attempt_count", "failure_count")}
+        except Exception:  # noqa: BLE001 - display only
+            acct = {}
         return BotStatus(mode=m["mode"], mode_label=MODE_LABELS[m["mode"]], icon=icon, headline=label, attention=bool(attention), attention_reasons=attention, ready=self.ready,
                          environment=dict(self.environment_cache), safety_state=sv.state if sv is not None else None, safety_label=sv.state_label if sv is not None else None,
                          open_positions=len(open_pos), pending_entries=len(pending_entries), pending_exits=len(pending_exits), external_positions=len(external),
                          max_open_positions=self.max_open_positions, reconciliation_healthy=self.recon_healthy, last_cycle_at=last.get("at"), last_cycle_result=last.get("result"),
-                         scheduler=sched, cards=self.cards(now), recent=self.history(8), mode_changed_at=m.get("changed_at"), mode_changed_by=m.get("changed_by"))
+                         scheduler=sched, cards=self.cards(now), recent=self.history(8), mode_changed_at=m.get("changed_at"), mode_changed_by=m.get("changed_by"),
+                         account_data=acct)
 
     def overview(self, now: Optional[datetime] = None) -> dict:
         now = now or self.clock()

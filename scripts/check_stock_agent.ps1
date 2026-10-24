@@ -41,4 +41,15 @@ if ($s.reconciliation_healthy) { Write-Output "Reconciliation: Healthy" } else {
 $loop = $s.scheduler
 if ($null -ne $loop -and $loop.running) { Write-Output "Executor loop: running" } else { Write-Output "Executor loop: not running" }
 Write-Output ("Open paper positions: {0}   Orders waiting: {1}" -f $s.open_positions, $s.pending_entries)
+try {                                                          # Stage 6.0.1: the read-only account refresher
+    $a = Invoke-SAGet ([int]$info.port) "/api/account-refresh" 15
+    $age = if ($null -ne $a.age_seconds) { [int][Math]::Round([double]$a.age_seconds) } else { $null }
+    switch ($a.status) {
+        "FRESH" { Write-Output ("Account data: Fresh ({0}s ago)" -f $age) }
+        "STALE" { Write-Output ("Account data: Stale - {0}" -f $a.reason) }
+        "STARTING" { Write-Output "Account data: Checking (first refresh of this process pending)" }
+        default { Write-Output ("Account data unavailable - {0}" -f $a.reason) }
+    }
+    if ($null -ne $a.loop -and $a.loop.running) { Write-Output "Account refresh loop: running" } else { Write-Output "Account refresh loop: not running" }
+} catch { Write-Output "Account data: status unavailable" }
 exit 0

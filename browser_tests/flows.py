@@ -871,7 +871,9 @@ def paper_bot(c: Ctx):
         bot_text = c.js("__tvText('#tv-bot')") or ""
         c.r.check("details hidden by default; no internal enum or action language in the panel", c.js("document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')") is True
                   and "MONITOR_ONLY" not in bot_text and not words.search(bot_text), bot_text[:200])
-        c.r.eq("API: default mode MONITOR_ONLY, nothing persisted, no broker request yet", [c.http("GET", "/api/execution/status")["mode"], len(sim.requests)], ["MONITOR_ONLY", 0])
+        reads = ("/v2/account", "/v2/positions", "/v2/orders")                       # Stage 6.0.1: the startup account refresh's read-only GETs
+        c.r.eq("API: default mode MONITOR_ONLY, nothing persisted, no broker request but the read-only account refresh", [c.http("GET", "/api/execution/status")["mode"],
+               [(m, p) for m, p, _ in sim.requests if not (m == "GET" and p in reads)], sim.post_count()], ["MONITOR_ONLY", [], 0])
         c.shot("paper_bot_monitor", "#tv-bot")
         # a READY SNDK setup with a reviewable proposal (through the real setup service)
         c.js("TraderView.switchTo('SNDK')")
@@ -955,6 +957,68 @@ def paper_bot(c: Ctx):
             xsvc.disable_auto(actor="harness")
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------- Stage 6.0.1: continuous read-only account refresh ---------------------
+def _bot_account(c: Ctx):
+    return c.js("__tvText('#tv-bot [data-bot-account]')")
+
+
+def account_refresh(c: Ctx):
+    """Stage 6.0.1: the Paper Bot panel's account-data line against the REAL refresher on the simulated paper broker - Fresh, then three
+    failed refreshes -> Stale and Risk Controls New trades paused, then one successful refresh -> Fresh and Trading allowed again. Read only:
+    no order intent, no broker write, no Robinhood, no model call."""
+    from api.routes.trader_view import stream
+    st = stream()
+    ref = st.account_refresh
+    sim = ref.broker.wire()
+    real_sleep = ref.sleep
+    ref.sleep = lambda s: None                                   # bounded read backoff is not waited for in the harness
+    try:
+        if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+            c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+        c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+        c.js(TV_JS)
+        intents0, posts0 = len(st.execution.store.intents()), sim.post_count()
+        out = ref.refresh(trigger="TEST")
+        c.r.eq("a read-only refresh succeeds on the simulated paper broker", out["result"], "SUCCESS")
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-account]') || '').startsWith('Account data: Fresh')", 15, "account data fresh")
+        c.r.check("Paper Bot panel: Account data: Fresh (..s ago)", (_bot_account(c) or "").startswith("Account data: Fresh ("), _bot_account(c))
+        api = c.http("GET", "/api/account-refresh")
+        c.r.check("API: fresh, a masked account number, no credential", api["status"] == "FRESH" and api["fresh"] is True and api["snapshot"]["account_number_masked"].startswith("****")
+                  and "KEY" not in str(api).upper().replace("KEYS", ""), [api["status"], api["snapshot"]])
+        c.js("RiskControls.refresh()")
+        _wait_safety(c, "TRADING_ALLOWED")
+        c.shot("account_refresh_fresh", "#tv-bot")
+        for _ in range(3):                                          # three failed refreshes (every read attempt fails)
+            sim.read_fail_paths.extend(["/v2/account"] * ref.read_attempts)
+            r = ref.refresh(trigger="TEST")
+            c.r.eq("a failing refresh is recorded as FAILED (never half-written)", r["result"], "FAILED")
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-account]') || '') === 'Account data: Stale'", 15, "account data stale")
+        c.js("RiskControls.refresh()")
+        _wait_safety(c, "NO_NEW_ENTRIES")
+        c.r.eq("stale account data -> Risk Controls: New trades paused", [_bot_account(c), _safety_chip(c)], ["Account data: Stale", "\U0001f7e1 New trades paused"])
+        c.js("if (document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')) document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        c.wait("!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')", 10, "details open")
+        det = c.js("__tvText('#tv-bot [data-bot-details]')") or ""
+        c.r.check("bot details: account refresh detail, counts and the last error", "Account refresh" in det and "3 in a row" in det and "Last refresh error" in det, det[:300])
+        c.shot("account_refresh_stale", "#tv-bot")
+        c.js("if (!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')) document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        r = ref.refresh(trigger="TEST")                              # the broker reads recover
+        c.r.eq("the next refresh succeeds", r["result"], "SUCCESS")
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-account]') || '').startsWith('Account data: Fresh')", 15, "account data fresh again")
+        c.js("RiskControls.refresh()")
+        _wait_safety(c, "TRADING_ALLOWED")
+        c.r.eq("recovered: Account data: Fresh and Trading allowed (no restart, no manual step)", [(_bot_account(c) or "")[:19], _safety_chip(c)], ["Account data: Fresh", "\U0001f7e2 Trading allowed"])
+        hist = c.http("GET", "/api/account-refresh/history?limit=10")
+        c.r.check("API history: the attempts are recorded append-only", hist["total"] >= 5 and [a["result"] for a in hist["attempts"][:4]] == ["SUCCESS", "FAILED", "FAILED", "FAILED"], hist["attempts"][:4])
+        c.r.eq("refreshing created no order intent and sent no broker order", [len(st.execution.store.intents()) - intents0, sim.post_count() - posts0], [0, 0])
+        c.r.eq("actions stay disabled next to the account data line", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    finally:
+        ref.sleep = real_sleep
 
 
 def automation(c: Ctx):
@@ -2354,6 +2418,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

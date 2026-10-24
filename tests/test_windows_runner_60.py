@@ -7,6 +7,7 @@ the runner's loopback-only network guard and a free local port. No broker is rea
   G restart restores the persisted Stage 6.0 state and reconciles before any write · H starting sends nothing · I no secret in any log
   J the Task Scheduler definition · S supervisor (foreground) restarts after a crash, never after a stop · P paper-only / static checks
   K a plain checkout (no .venv, no worktree): runs on the STOCK_AGENT_PYTHON interpreter; without any interpreter source it fails clearly
+  W the startup wait helper: transient failures are retried only until the status endpoint's first valid 200, strict afterwards
 
 Every child PowerShell process gets the RUNNING test interpreter through the scripts' existing STOCK_AGENT_PYTHON override
 (scripts/stock_agent_common.ps1 Resolve-SAPython: -Python, then STOCK_AGENT_PYTHON, then a repository / main-checkout .venv, else
@@ -21,8 +22,10 @@ import socket
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -61,22 +64,35 @@ def free_port():
     return port
 
 
-def http_get(port, path):
-    """A raw loopback GET (the conftest blocks socket.create_connection / getaddrinfo in the test process)."""
+def http_raw(port, path, timeout=20):
+    """A raw loopback GET (the conftest blocks socket.create_connection / getaddrinfo in the test process): (HTTP status, head, body).
+    Connection refusal / reset and timeouts surface as OSError."""
     s = socket.socket()
-    s.settimeout(20)
-    s.connect(("127.0.0.1", port))
-    s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode())
-    data = b""
-    while True:
-        chunk = s.recv(65536)
-        if not chunk:
-            break
-        data += chunk
-    s.close()
+    s.settimeout(timeout)
+    try:
+        s.connect(("127.0.0.1", port))
+        s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
     head, _, body = data.partition(b"\r\n\r\n")
-    assert head.startswith(b"HTTP/1.1 200"), head[:80]
+    m = re.match(rb"HTTP/1\.[01] (\d{3})", head)
+    return (int(m.group(1)) if m else 0), head, body
+
+
+def http_get(port, path):
+    """A STRICT GET: exactly one HTTP 200 with a JSON body, or an immediate failure (used for every post-readiness assertion)."""
+    code, head, body = http_raw(port, path)
+    assert code == 200, head[:80]
     return json.loads(body)
+
+
+RETRYABLE_STARTUP_STATUSES = (500, 502, 503)                         # a cold start's transient server-side failures; never a 4xx
 
 
 def runner_processes(marker):
@@ -104,6 +120,7 @@ class Rig:
         write_env(self.env, FAKE)
         write_env(self.overrides, OVERRIDES)
         self.port = free_port()
+        self.http_timeout = 20
 
     @property
     def dirs(self):
@@ -127,13 +144,37 @@ class Rig:
         return "".join(p.read_text(encoding="utf-8", errors="replace") for p in sorted(self.logs.glob("*.log")))
 
     def wait_cycle(self, seconds=45):
-        t0 = time.time()
+        """The executor's first completed cycle, within the same bounded deadline as before. BEFORE the status endpoint has answered its
+        first valid 200 (server readiness), a connection refusal / reset, a timeout or an HTTP 500 / 502 / 503 is retried (a cold start's
+        transient); a 4xx or a malformed 200 fails at once. FROM the first valid 200 on, every status answer must be a valid 200: a later
+        500 or connection error fails immediately. The deadline failure reports the last status, body and connection error."""
+        t0, ready = time.time(), False
+        last = {"status": None, "body": None, "error": None, "answers": 0}
         while time.time() - t0 < seconds:
-            st = http_get(self.port, "/api/execution/status")
+            try:
+                code, head, body = http_raw(self.port, "/api/execution/status", timeout=self.http_timeout)
+            except OSError as exc:                                                     # refused / reset / timed out
+                assert not ready, f"the status endpoint failed after readiness: {type(exc).__name__}: {exc}"
+                last.update(error=f"{type(exc).__name__}: {exc}")
+                time.sleep(1)
+                continue
+            last.update(status=code, body=body[:300].decode(errors="replace"), error=None, answers=last["answers"] + 1)
+            if code != 200:
+                assert not ready and code in RETRYABLE_STARTUP_STATUSES, \
+                    f"the status endpoint answered HTTP {code} ({'after' if ready else 'before'} readiness): {last['body']!r}"
+                time.sleep(1)
+                continue
+            try:
+                st = json.loads(body)
+            except ValueError as exc:                                                  # a malformed 200 is never retried
+                raise AssertionError(f"malformed 200 from the status endpoint: {exc}: {last['body']!r}") from None
+            ready = True
             if st.get("last_cycle_at"):
                 return st
             time.sleep(1)
-        raise AssertionError("the executor loop did not complete a cycle")
+        raise AssertionError(f"the executor loop did not complete a cycle within {seconds} s (readiness {'reached' if ready else 'NOT reached'}; "
+                             f"last HTTP status {last['status']}, last body {last['body']!r}, last connection error {last['error']}, "
+                             f"answers {last['answers']})")
 
     def cleanup(self):
         for pid in runner_processes(self.base.name):
@@ -236,24 +277,34 @@ def test_B01_a_second_start_is_refused(rig):
 def test_F01_health_check_reports_running_with_mode_safety_and_reconciliation(rig):
     code, out = rig.check()
     assert code == 0, out
-    for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running"):
+    for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running", "Account data", "Account refresh loop: running"):
         assert line in out, (line, out)
     assert re.search(r"Safety: (Trading allowed|New trades paused|Trading stopped)", out), out
 
 
-def test_H01_starting_the_bot_sends_nothing_and_contacts_no_broker(rig):
+def test_H01_starting_the_bot_sends_nothing_and_only_reads_the_paper_account(rig):
     st = rig.wait_cycle()
     assert st["mode"] == "MONITOR_ONLY" and st["last_cycle_result"] == "IDLE" and st["pending_entries"] == 0 and st["open_positions"] == 0
     intents = http_get(rig.port, "/api/execution/intents")
     assert intents["intents"] == [] and intents["orders"] == []
-    assert "network guard: blocked" not in rig.log_text()                        # no outbound connection of any kind was even attempted
+    # Stage 6.0.1: the only outbound attempt is the read-only account refresh (3 GETs to the paper host; blocked by this offline run's guard)
+    blocked = re.findall(r"network guard: blocked (\S+)", rig.log_text())
+    assert blocked and set(blocked) == {"paper-api.alpaca.markets:443"}, blocked
+    deadline = time.time() + 45                                                  # the startup refresh retries its reads (2 s, 5 s) before it records the failure
+    hist = http_get(rig.port, "/api/account-refresh/history")
+    while hist["total"] < 1 and time.time() < deadline:
+        time.sleep(1)
+        hist = http_get(rig.port, "/api/account-refresh/history")
+    assert hist["total"] >= 1 and {a["result"] for a in hist["attempts"]} == {"FAILED"} and hist["attempts"][-1]["trigger"] == "STARTUP"
+    acct = http_get(rig.port, "/api/account-refresh")
+    assert acct["status"] == "UNAVAILABLE" and acct["fresh"] is False and acct["loop"]["running"] is True and acct["loop"]["lease"] == "alpaca_account_refresher"
 
 
 def test_E01_logs_record_startup_scheduler_mode_and_paper_broker(rig):
     out = (rig.logs / "stock_agent_stdout.log").read_text(encoding="utf-8")
     for needle in ("runner: startup", "loaded 4 environment names", "paper broker - Alpaca PAPER host paper-api.alpaca.markets only, credentials configured: yes (no broker call at startup)",
                    "execution mode at startup: MONITOR_ONLY", "server listening on http://127.0.0.1:", "paper executor loop running (lease paper_executor)",
-                   "setup evaluator loop running", "loopback-only network guard installed"):
+                   "setup evaluator loop running", "loopback-only network guard installed", "account refresh loop running (lease alpaca_account_refresher"):
         assert needle in out, needle
     assert (rig.logs / "stock_agent_stderr.log").exists() and (rig.logs / "stock_agent_runner.log").exists()
 
@@ -370,6 +421,109 @@ def test_J01_task_scheduler_definitions_are_generated_without_registering_anythi
         assert "/v2/orders" not in text
 
 
+# ================================================================ W the startup wait helper (deterministic, no server process) ===========
+
+class _ScriptedStatus(BaseHTTPRequestHandler):
+    """Answers GET /api/execution/status from the server's scripted list (code, body); a cycle-complete 200 once the script is exhausted."""
+
+    def do_GET(self):
+        answers = self.server.answers
+        code, body = answers.pop(0) if answers else (200, json.dumps({"last_cycle_at": "2026-10-24T00:00:00+00:00"}).encode())
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+def _scripted_server(answers):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _ScriptedStatus)
+    srv.answers = list(answers)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _rig_on(tmp_path, port, timeout=1):
+    r = Rig(tmp_path / "wait")
+    r.port, r.http_timeout = port, timeout
+    return r
+
+
+def test_W01_startup_wait_retries_transient_5xx_connection_refusal_and_timeouts_before_readiness(tmp_path):
+    err = json.dumps({"detail": "Internal Server Error"}).encode()
+    srv = _scripted_server([(500, err), (500, err), (503, b"busy"), (502, b""), (200, json.dumps({"mode": "MONITOR_ONLY"}).encode()), (200, json.dumps({"last_cycle_at": "x"}).encode())])
+    try:
+        t0 = time.time()
+        st = _rig_on(tmp_path, srv.server_address[1]).wait_cycle(seconds=30)
+        elapsed = time.time() - t0
+        assert st["last_cycle_at"] == "x" and srv.answers == [] and 5 <= elapsed < 20, (st, srv.answers, elapsed)     # 500 -> 500 -> 503 -> 502 -> 200 -> 200: succeeds
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    r = _rig_on(tmp_path, free_port())                                                            # nothing listening: refused (or timed out) until the deadline
+    t0 = time.time()
+    with pytest.raises(AssertionError, match=r"readiness NOT reached.*last connection error (ConnectionRefusedError|TimeoutError)") as info:   # Windows may time out instead
+        r.wait_cycle(seconds=3)
+    assert time.time() - t0 >= 3 and "last HTTP status None" in str(info.value)
+    silent = socket.socket()                                                                      # accepts the connection, never answers: timeouts
+    silent.bind(("127.0.0.1", 0))
+    silent.listen(1)
+    try:
+        t0 = time.time()
+        with pytest.raises(AssertionError, match=r"readiness NOT reached.*last connection error (timeout|TimeoutError)") as info:
+            _rig_on(tmp_path, silent.getsockname()[1], timeout=1).wait_cycle(seconds=3)
+        assert time.time() - t0 >= 3
+    finally:
+        silent.close()
+    srv = _scripted_server([(500, err)] * 100)                                                    # a 500 that never clears: the bounded deadline, with diagnostics
+    try:
+        t0 = time.time()
+        with pytest.raises(AssertionError, match=r"did not complete a cycle within 3 s \(readiness NOT reached; last HTTP status 500, last body '\{\"detail\": \"Internal Server Error\"\}'"):
+            _rig_on(tmp_path, srv.server_address[1]).wait_cycle(seconds=3)
+        assert 3 <= time.time() - t0 < 10
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_W02_startup_wait_is_strict_after_the_first_valid_200_and_never_retries_4xx_or_a_malformed_200(tmp_path):
+    ok = json.dumps({"mode": "MONITOR_ONLY"}).encode()
+    srv = _scripted_server([(200, ok), (500, json.dumps({"detail": "Internal Server Error"}).encode()), (200, json.dumps({"last_cycle_at": "x"}).encode())])
+    try:
+        t0 = time.time()
+        with pytest.raises(AssertionError, match=r"answered HTTP 500 \(after readiness\)"):             # 200 -> later 500: fails at once, not at the deadline
+            _rig_on(tmp_path, srv.server_address[1]).wait_cycle(seconds=30)
+        assert time.time() - t0 < 5 and len(srv.answers) == 1
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    srv = _scripted_server([(200, ok)])
+    try:
+        threading.Timer(0.4, lambda: (srv.shutdown(), srv.server_close())).start()                 # 200 -> the server vanishes: fails at once
+        t0 = time.time()
+        with pytest.raises(AssertionError, match=r"failed after readiness: (ConnectionRefusedError|ConnectionResetError|TimeoutError)"):
+            _rig_on(tmp_path, srv.server_address[1]).wait_cycle(seconds=30)
+        assert time.time() - t0 < 5
+    finally:
+        try:
+            srv.server_close()
+        except OSError:
+            pass
+    for answers, needle in (([(404, b"not found")], r"answered HTTP 404 \(before readiness\)"), ([(200, b"<html>")], r"malformed 200 from the status endpoint")):
+        srv = _scripted_server(answers)
+        try:
+            t0 = time.time()
+            with pytest.raises(AssertionError, match=needle):
+                _rig_on(tmp_path, srv.server_address[1]).wait_cycle(seconds=30)
+            assert time.time() - t0 < 3                                                          # never retried
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 # ================================================================ K plain checkout (a CI runner: no .venv, no worktree) =================
 
 def plain_checkout(dst: Path) -> Path:
@@ -410,7 +564,10 @@ def test_K01_a_plain_checkout_without_any_venv_starts_on_the_STOCK_AGENT_PYTHON_
         assert st["mode"] == "MONITOR_ONLY" and st["pending_entries"] == 0 and st["open_positions"] == 0
         intents = http_get(r.port, "/api/execution/intents")
         assert intents["intents"] == [] and intents["orders"] == []                                      # no order of any kind
-        assert "network guard: blocked" not in r.log_text()                                             # no outbound connection was even attempted
+        # Stage 6.0.1: the only outbound attempt is the read-only account refresh to the paper host (blocked by this offline run's guard)
+        assert set(re.findall(r"network guard: blocked (\S+)", r.log_text())) <= {"paper-api.alpaca.markets:443"}, r.log_text()[-600:]
+        acct = http_get(r.port, "/api/account-refresh")
+        assert acct["fresh"] is False and acct["loop"]["running"] is True and acct["loop"]["lease"] == "alpaca_account_refresher"
         code, out = ps("stop_stock_agent.ps1", *r.dirs, scripts=scripts)
         assert code == 0 and f"STOPPED cleanly (PID {info['pid']})" in out, out
         assert runner_processes(info["instance_id"]) == []
