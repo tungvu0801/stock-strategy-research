@@ -863,6 +863,17 @@ class ExecutionService:
                                                "last_result", "last_error", "consecutive_failures", "attempt_count", "failure_count")}
         except Exception:  # noqa: BLE001 - display only
             acct = {}
+        try:                                                                       # Stage 6.0.2: cash-flow data + the gate's adjusted daily P&L (display only)
+            cash = getattr(self.stream_fn(), "cash_flow", None)
+            if cash is not None and acct:
+                cf = cash.summary()
+                dl = sv.daily_loss if sv is not None else None
+                if dl is not None:
+                    cf.update(daily_pnl=dl.daily_pnl, daily_loss_pct=dl.daily_loss_pct, threshold_pct=dl.threshold_pct, adjustments=dl.adjustments,
+                              gate_net_external_cash_flow=dl.net_external_cash_flow, daily_loss_status=dl.status)
+                acct["cash_flow"] = cf
+        except Exception:  # noqa: BLE001 - display only
+            acct.pop("cash_flow", None)
         return BotStatus(mode=m["mode"], mode_label=MODE_LABELS[m["mode"]], icon=icon, headline=label, attention=bool(attention), attention_reasons=attention, ready=self.ready,
                          environment=dict(self.environment_cache), safety_state=sv.state if sv is not None else None, safety_label=sv.state_label if sv is not None else None,
                          open_positions=len(open_pos), pending_entries=len(pending_entries), pending_exits=len(pending_exits), external_positions=len(external),

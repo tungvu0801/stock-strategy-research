@@ -38,6 +38,7 @@ from api.routes import proposals
 from api.routes import execution_safety  # Stage 5.9.1: persisted execution safety gate (state + review-only actions)
 from api.routes import execution  # Stage 6.0: autonomous PAPER execution of READY setups / reviewable proposals behind the Stage 5.9.1 safety gate
 from api.routes import account_refresh  # Stage 6.0.1: read-only account refresh status feeding proposals and the Stage 5.9.1 gate
+from api.routes import cash_flow_status  # Stage 6.0.2: cash-flow status (GET only) - the deposits / withdrawals input of the Stage 5.9.1 gate
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -160,6 +161,7 @@ app.include_router(proposals.router)  # Stage 5.9: review proposals for READY se
 app.include_router(execution_safety.router)  # Stage 5.9.1: execution safety gate — persisted kill switch / daily-loss halt / pause; safety state only, no order path
 app.include_router(execution.router)  # Stage 6.0: autonomous PAPER execution loop (setups -> proposals -> safety gate -> paper order); mode POSTs only; PAPER host only
 app.include_router(account_refresh.router)  # Stage 6.0.1: account refresh status (GET only) - the read-only source of proposals and the Stage 5.9.1 gate
+app.include_router(cash_flow_status.router)  # Stage 6.0.2: cash-flow status (GET only) - adjusted daily P&L of the Stage 5.9.1 gate
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 
