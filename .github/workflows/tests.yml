@@ -36,6 +36,11 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      # pytest's tmp_path (where most suites keep their SQLite databases) defaults to the profile's temp folder on the runner's OS disk, where
+      # the SQLite-heavy suites measured 6-25x slower than locally; the runner's own temp folder is on its work disk, like the checkout.
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     strategy:
       fail-fast: false                      # one PR run shows every failing suite, not just the first
       matrix:
@@ -44,6 +49,10 @@ jobs:
             name: Pytest Core
           - suite: execution
             name: Pytest Execution
+          - suite: account
+            name: Pytest Account & Cash Flow
+          - suite: paper
+            name: Pytest Paper & Portfolio
           - suite: research
             name: Pytest Research
           - suite: campaign
@@ -76,7 +85,7 @@ jobs:
         run: python scripts/ci_pytest_groups.py check
 
       - name: Stage 4.6B tests (manual Alpaca PAPER orders - fakes only)
-        if: matrix.suite == 'execution'
+        if: matrix.suite == 'paper'
         run: python -m pytest tests/test_alpaca_orders_46b.py -q
 
       - name: Run the suite
@@ -112,6 +121,9 @@ jobs:
     name: Browser Harness
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      TEMP: ${{ runner.temp }}              # the harness world's SQLite database lives in a temp folder too (see the pytest job)
+      TMP: ${{ runner.temp }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -126,9 +138,12 @@ jobs:
             requirements-dev.txt
 
       - name: Install requirements
+        # The harness world is built from the test fixtures (tests/pf_fixtures.py, tests/alpaca_order_fakes.py, tests/test_explain_38.py ...),
+        # which import pytest, so the dev requirements are needed here as well.
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Browser harness (headless Edge on the runner image, simulated world, guarded local server)
         run: python -m browser_tests.run --out browser-harness-artifacts

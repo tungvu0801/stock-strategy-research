@@ -966,12 +966,14 @@ Windows runners, with no secret and no `.env`: the tests block every socket, rep
 browser harness drives a simulated world against a guarded local server. The one stable status is **CI Success**, green only when every
 job below succeeded.
 
-* **Pytest Core, Pytest Execution, Pytest Research, Pytest Model Campaign, Pytest Runner & Smoke.** Five parallel pytest jobs. Every
-  `tests/test_*.py` file belongs to exactly one job through `.github/ci/pytest_groups.json`; `python scripts/ci_pytest_groups.py check`
-  fails when a file is missing, listed twice or absent, and runs before every suite (also as `tests/test_ci_groups_603.py`). A new test
-  file that belongs to no group therefore fails CI instead of silently never running. The groups are balanced by measured runtime; the
-  Windows-only runner, smoke and desktop-notification tests stay together. The Stage 4.6B manual paper-order tests still run first as
-  their own step in the execution job.
+* **Pytest Core, Pytest Execution, Pytest Account & Cash Flow, Pytest Paper & Portfolio, Pytest Research, Pytest Model Campaign,
+  Pytest Runner & Smoke.** Seven parallel pytest jobs. Every `tests/test_*.py` file belongs to exactly one job through
+  `.github/ci/pytest_groups.json`; `python scripts/ci_pytest_groups.py check` fails when a file is missing, listed twice or absent, and
+  runs before every suite (also as `tests/test_ci_groups_603.py`). A new test file that belongs to no group therefore fails CI instead
+  of silently never running. The groups are balanced by the runtime measured on the runner, where the SQLite-heavy execution,
+  account-refresh and cash-flow suites run many times slower than locally (their databases live in pytest's temporary directory, which
+  the jobs therefore point at the runner's work-disk temp folder). The Windows-only runner, smoke and desktop-notification tests stay
+  together. The Stage 4.6B manual paper-order tests still run first as their own step, in the job that owns their file.
 * **Frontend Tests.** The Node tests (`node --test "tests/frontend/*.test.cjs"`); the same files also run through their pytest wrappers.
 * **Browser Harness.** `python -m browser_tests.run` with the runner image's headless Microsoft Edge; its screenshots and summary are
   uploaded only when it fails.

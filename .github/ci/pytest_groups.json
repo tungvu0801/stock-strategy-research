@@ -2,8 +2,9 @@
   "_doc": [
     "Stage 6.0.3 - the CI pytest groups. Every tests/test_*.py file belongs to EXACTLY ONE group; scripts/ci_pytest_groups.py check",
     "fails when a file is missing, listed twice or does not exist, and tests/test_ci_groups_603.py runs that check in every group.",
-    "Groups are balanced by measured runtime (local full suite 2026-10-24: the model campaign alone is 27 % of the suite, signal research 17 %).",
-    "The Windows-only files (runner, smoke, desktop notifications) stay together on windows-latest. Job names are the stable check names."
+    "Groups are balanced by the runtime MEASURED ON THE RUNNER (PR #16 run 36): the SQLite-heavy execution / account-refresh / cash-flow",
+    "files run 6-25x slower there than locally (the model campaign alone is 27 % of the local suite but only 1.2x slower on the runner),",
+    "so they are three jobs. The Windows-only files (runner, smoke, desktop notifications) stay together. Job names are the stable check names."
   ],
   "groups": {
     "core": {
@@ -48,23 +49,35 @@
     },
     "execution": {
       "job": "Pytest Execution",
-      "about": "setups -> proposals -> safety gate -> paper execution, account refresh, cash-flow ledger, Alpaca paper reads and manual orders, portfolio",
+      "about": "setups -> proposals -> safety gate -> autonomous paper execution (Stages 5.8, 5.9, 5.9.1, 6.0)",
+      "files": [
+        "test_execution_60.py",
+        "test_execution_safety_591.py",
+        "test_proposals_59.py",
+        "test_setups_58.py"
+      ]
+    },
+    "account": {
+      "job": "Pytest Account & Cash Flow",
+      "about": "continuous account refresh and the cash-flow ledger (Stages 6.0.1, 6.0.2): two long simulated-session tests",
       "files": [
         "test_account_refresh_601.py",
+        "test_cash_flow_602.py"
+      ]
+    },
+    "paper": {
+      "job": "Pytest Paper & Portfolio",
+      "about": "Alpaca paper reads and manual orders (Stages 4.5, 4.6, 4.6B; the Stage 4.6B step runs first in this job), portfolio, trade review",
+      "files": [
         "test_alpaca_orders_46b.py",
         "test_alpaca_orders_46b_utc_regression.py",
         "test_alpaca_paper_46.py",
-        "test_cash_flow_602.py",
-        "test_execution_60.py",
-        "test_execution_safety_591.py",
         "test_paper_45.py",
         "test_portfolio_core.py",
         "test_portfolio_policy.py",
         "test_portfolio_provider.py",
         "test_portfolio_routes.py",
-        "test_proposals_59.py",
         "test_reconciliation_grounding.py",
-        "test_setups_58.py",
         "test_trade_review.py"
       ]
     },
@@ -85,7 +98,7 @@
     },
     "campaign": {
       "job": "Pytest Model Campaign",
-      "about": "the Stage 5.0 model campaign: the single heaviest file (about a quarter of the whole suite)",
+      "about": "the Stage 5.0 model campaign: the single heaviest file locally (about a quarter of the whole suite)",
       "files": [
         "test_model_campaign_50.py"
       ]

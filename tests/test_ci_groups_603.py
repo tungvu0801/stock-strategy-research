@@ -26,6 +26,7 @@ BASE = "ccb500e5c78480c66a446e5cb4cf67f66e341b09"                  # main at the
 STAGE_603_BLOCKS = {"tests/test_trader_view_55.py": 1, "tests/test_execution_60.py": 1, "tests/test_account_refresh_601.py": 1,
                     "tests/test_cash_flow_602.py": 1}
 STRIP_603 = r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n"
+OPEN_603, CLOSE_603 = "# >>> " + "Stage 6.0.3", "# <<< " + "Stage 6.0.3"           # built, not literal: this file must not look like a carrier
 
 
 def _helper():
@@ -95,7 +96,9 @@ def test_W01_one_pytest_job_per_group_with_stable_names_fail_fast_off_and_bounde
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout"))
     assert checkout["with"]["fetch-depth"] == 0                                               # the byte pins read prior commits with `git show`
     stage46b = next(s for s in steps if s.get("name", "").startswith("Stage 4.6B tests"))
-    assert stage46b["run"].strip() == "python -m pytest tests/test_alpaca_orders_46b.py -q" and stage46b["if"] == "matrix.suite == 'execution'"
+    assert stage46b["run"].strip() == "python -m pytest tests/test_alpaca_orders_46b.py -q" and stage46b["if"] == "matrix.suite == 'paper'"
+    assert "test_alpaca_orders_46b.py" in groups["paper"]["files"]                              # the 4.6B step runs in the job that owns that file
+    assert job["env"]["TEMP"] == "${{ runner.temp }}" and job["env"]["TMP"] == "${{ runner.temp }}"   # tmp_path on the runner's work disk
 
 
 def test_W02_frontend_harness_and_aggregator_jobs():
@@ -108,6 +111,9 @@ def test_W02_frontend_harness_and_aggregator_jobs():
     hz = jobs["harness"]
     assert hz["name"] == "Browser Harness" and hz["runs-on"] == "windows-latest" and hz["timeout-minutes"] <= 45
     assert any("python -m browser_tests.run --out" in (s.get("run") or "") for s in hz["steps"])
+    install = "\n".join(s.get("run") or "" for s in hz["steps"])
+    assert "requirements.txt" in install and "requirements-dev.txt" in install        # the harness world imports the pytest fixtures (tests/pf_fixtures.py ...)
+    assert hz["env"]["TEMP"] == "${{ runner.temp }}" and hz["env"]["TMP"] == "${{ runner.temp }}"
     up = [s for s in hz["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
     assert up and up[0]["if"] == "failure()"                                                  # artifacts only when it fails, synthetic data only
     agg = jobs["ci-success"]
@@ -151,10 +157,10 @@ def test_P01_prior_stage_pin_tests_differ_from_the_stage_603_base_only_by_their_
         return out.replace(b"\r\n", b"\n")
     for rel, n in STAGE_603_BLOCKS.items():
         text = (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
-        assert text.count("# >>> Stage 6.0.3") == n and text.count("# <<< Stage 6.0.3") == n and len(re.findall(STRIP_603, text)) == n, rel
+        assert text.count(OPEN_603) == n and text.count(CLOSE_603) == n and len(re.findall(STRIP_603, text)) == n, rel
         assert re.sub(STRIP_603, "", text).encode("utf-8") == blob(rel), f"{rel} differs from {BASE} outside its Stage 6.0.3 block"
     tracked = [t for t in subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").split("\0") if t]
-    carriers = sorted(rel for rel in tracked if (ROOT / rel).is_file() and b"# >>> Stage 6.0.3" in (ROOT / rel).read_bytes())
+    carriers = sorted(rel for rel in tracked if (ROOT / rel).is_file() and OPEN_603.encode("utf-8") in (ROOT / rel).read_bytes())
     assert carriers == sorted(STAGE_603_BLOCKS), carriers
     block55 = re.findall(STRIP_603, (ROOT / "tests/test_trader_view_55.py").read_text(encoding="utf-8").replace("\r\n", "\n"))[0]
     assert [l for l in block55.splitlines() if not l.lstrip().startswith("#")] == ['PINNED.remove(".github/workflows/tests.yml")']   # the only pin dropped
