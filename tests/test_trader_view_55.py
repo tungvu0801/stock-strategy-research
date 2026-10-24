@@ -783,6 +783,10 @@ PINNED = ["rotation/engine.py", "paper/alpaca_orders.py", "paper/alpaca_order_wr
           "data/market_data.py", "portfolio/provider.py", "database/migrations.py", "frontend/app.js", "frontend/style.css",
           "frontend/evidence_research.js", "frontend/alpaca_orders.js", "frontend/alpaca_paper.js", "frontend/paper_portfolio.js",
           "frontend/strategy_fit.js", "tests/conftest.py", ".github/workflows/tests.yml"]
+# >>> Stage 6.0.3: .github/workflows/tests.yml is no longer byte-pinned here. Stage 6.0.3 restructures the workflow into parallel CI jobs and
+# tests/test_ci_groups_603.py verifies its structure (name, triggers, jobs, timeouts, no secret) instead. Every other pin is unchanged.
+PINNED.remove(".github/workflows/tests.yml")
+# <<< Stage 6.0.3
 
 
 def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
