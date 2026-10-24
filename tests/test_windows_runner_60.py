@@ -420,7 +420,10 @@ def test_K01_a_plain_checkout_without_any_venv_starts_on_the_STOCK_AGENT_PYTHON_
         assert st["mode"] == "MONITOR_ONLY" and st["pending_entries"] == 0 and st["open_positions"] == 0
         intents = http_get(r.port, "/api/execution/intents")
         assert intents["intents"] == [] and intents["orders"] == []                                      # no order of any kind
-        assert "network guard: blocked" not in r.log_text()                                             # no outbound connection was even attempted
+        # Stage 6.0.1: the only outbound attempt is the read-only account refresh to the paper host (blocked by this offline run's guard)
+        assert set(re.findall(r"network guard: blocked (\S+)", r.log_text())) <= {"paper-api.alpaca.markets:443"}, r.log_text()[-600:]
+        acct = http_get(r.port, "/api/account-refresh")
+        assert acct["fresh"] is False and acct["loop"]["running"] is True and acct["loop"]["lease"] == "alpaca_account_refresher"
         code, out = ps("stop_stock_agent.ps1", *r.dirs, scripts=scripts)
         assert code == 0 and f"STOPPED cleanly (PID {info['pid']})" in out, out
         assert runner_processes(info["instance_id"]) == []

@@ -43,7 +43,7 @@ from api.routes import trader_view as RT  # noqa: E402
 from test_trader_view_55 import T0, WL, FakePositions, FakeResearch  # noqa: E402
 from test_setups_58 import READY_IN, WATCH_IN, FakeClock, fx  # noqa: E402
 
-BASE = "1738956"                                                     # stage-60-autonomous-paper HEAD this stage branched from
+BASE = "28b9843"                                                     # main = the Stage 6.0 merge (PR #13, incl. its CI test fix 7b9a1ec): the base this stage is finalized on
 UTC = timezone.utc
 FAKE_KEY, FAKE_SECRET = "REFRESHTEST-paperkey-0a1b2c3d", "REFRESHTEST-papersecret-4e5f6a7b"
 SRC = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "account_refresh").glob("*.py")) + ["api/routes/account_refresh.py", "database/account_refresh_migrations.py"]
