@@ -106,6 +106,7 @@ def prepare(tmp: Path, guard: Guard):
     os.environ["TRADER_DATA_MODE"] = "simulated"            # Stage 5.6.1: the Trader View flow runs on the simulator, never a market feed
     os.environ["TRADE_PROPOSAL_REVIEW_EQUITY"] = "100000"   # Stage 5.9: explicit hypothetical review equity for the simulator (never real money)
     os.environ["TRADER_SETUP_REFRESH_SECONDS"] = "3600"      # Stage 5.9: the in-session cadence must not re-evaluate a forced setup mid-flow (subscribe / refresh still do)
+    os.environ["EXECUTION_BROKER"] = "simulated"             # Stage 6.0: the deterministic simulated PAPER broker behind the real client; never the network
     for p in (str(TESTS), str(ROOT)):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -123,6 +124,7 @@ def prepare(tmp: Path, guard: Guard):
     config.TRADER_DATA_MODE = "simulated"
     config.TRADE_PROPOSAL_REVIEW_EQUITY = 100000.0                   # Stage 5.9: hypothetical review equity (simulated mode only)
     config.TRADER_SETUP_REFRESH_SECONDS = 3600.0                      # Stage 5.9: see the environment note above
+    config.EXECUTION_BROKER = "simulated"                             # Stage 6.0: simulated paper broker (the executor thread itself never starts in browser_test)
     config.ANTHROPIC_API_KEY = "browser-harness-fake-key"            # makes explanations "configured"; never sent anywhere
     config.AI_EXPLANATION_HOURLY_LIMIT, config.AI_EXPLANATION_DAILY_LIMIT = 100, 300   # the harness makes ~15 fake calls
 
@@ -261,6 +263,10 @@ def prepare(tmp: Path, guard: Guard):
     from paper import alpaca_orders as APO
     ai.orders = FakeAlpaca()
     APOR.WIRE = APOW.WIRE = lambda: ai.orders
+    from execution import broker as XBK                    # Stage 6.0: the executor's own paper client; its real wire is a violation, its broker is the simulated one
+    from execution.service import shared_simulated as _sim60
+    XBK.WIRE = lambda: guard.hit("real Alpaca paper network adapter requested by the execution layer")
+    ai.paper = _sim60()
     APO._sleep = lambda seconds: None                      # the automatic 2 s lookup delay is not waited for
     APO._now = lambda: _dt.now(_tz.utc) + _td(seconds=ai.orders_offset[0])   # real time + a test offset (30 s rule)
     from api.routes import portfolio_rotation as PRT       # Stage 4.7: the harness clock; snapshots start empty (0 requests)

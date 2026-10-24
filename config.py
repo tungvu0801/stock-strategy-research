@@ -601,3 +601,25 @@ EXECUTION_SAFETY_STARTUP_POLICY: str = os.getenv("EXECUTION_SAFETY_STARTUP_POLIC
 EXECUTION_SAFETY_ACCOUNT_MAX_AGE_SECONDS: float = float(os.getenv("EXECUTION_SAFETY_ACCOUNT_MAX_AGE_SECONDS", "900"))   # an older Alpaca snapshot = daily loss unverifiable
 EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL: bool = os.getenv("EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL", "false").strip().lower() in ("1", "true", "yes", "on")   # explicit operator choice; default off
 EXECUTION_SAFETY_EVALUATION_HEARTBEAT_SECONDS: float = float(os.getenv("EXECUTION_SAFETY_EVALUATION_HEARTBEAT_SECONDS", "60"))   # unchanged results re-persist at most this often
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 6.0 — AUTONOMOUS ALPACA PAPER TRADING (execution/). The first autonomous loop: READY setup (5.8) -> reviewable proposal (5.9)
+# -> execution safety gate (5.9.1) -> ONE paper entry -> order monitoring -> fills -> internal position -> deterministic exits -> ONE
+# paper exit, on the Alpaca PAPER account only (constant host; no live mode exists anywhere). MONITOR_ONLY by default; PAPER_AUTO is an
+# explicit, persisted user choice. MAX_OPEN_POSITIONS (declared above with an older "informational only" comment) is ENFORCED by this
+# stage. No real money, no Robinhood, no model call. The executor thread never runs in a test / harness process and never contacts
+# the broker while idle in MONITOR_ONLY with nothing open.
+# ------------------------------------------------------------------------------------------------------------------
+EXECUTION_SCHEDULER_ENABLED: bool = os.getenv("EXECUTION_SCHEDULER_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+EXECUTION_BROKER: str = os.getenv("EXECUTION_BROKER", "alpaca_paper").strip().lower()                  # alpaca_paper | simulated (deterministic in-memory paper broker)
+EXECUTION_CYCLE_SECONDS: float = float(os.getenv("EXECUTION_CYCLE_SECONDS", "30"))                    # executor cadence inside the regular session
+EXECUTION_IDLE_CYCLE_SECONDS: float = float(os.getenv("EXECUTION_IDLE_CYCLE_SECONDS", "300"))         # outside the session (day orders; nothing fills)
+EXECUTION_MAX_ENTRIES_PER_CYCLE: int = int(os.getenv("EXECUTION_MAX_ENTRIES_PER_CYCLE", "1"))
+EXECUTION_MAX_SHARES_PER_ENTRY: int = int(os.getenv("EXECUTION_MAX_SHARES_PER_ENTRY", "0"))             # 0 = the proposal quantity exactly; > 0 = an explicit operator hard cap (first paper smoke)
+EXECUTION_NEAR_CLOSE_MINUTES: int = int(os.getenv("EXECUTION_NEAR_CLOSE_MINUTES", "15"))                # no market order in the final minutes of the session
+EXECUTION_MAX_HOLD_SESSIONS: int = int(os.getenv("EXECUTION_MAX_HOLD_SESSIONS", "5"))                   # TIME_EXIT after this many regular sessions
+EXECUTION_DEMAND_EXIT: int = int(os.getenv("EXECUTION_DEMAND_EXIT", "35"))                              # DEMAND_FAILURE: Demand below this on EXECUTION_DEMAND_EXIT_EVALS consecutive evaluations
+EXECUTION_DEMAND_EXIT_EVALS: int = int(os.getenv("EXECUTION_DEMAND_EXIT_EVALS", "2"))
+EXECUTION_STRETCH_EXIT: float = float(os.getenv("EXECUTION_STRETCH_EXIT", "-20"))                       # DISLOCATION_NORMALIZED: PPE Stretch above this
+EXECUTION_MAX_EXIT_CYCLES: int = int(os.getenv("EXECUTION_MAX_EXIT_CYCLES", "3"))                       # bounded exit attempts per position; beyond it the position needs attention
+EXECUTION_LOOKUP_SPAN_SECONDS: float = float(os.getenv("EXECUTION_LOOKUP_SPAN_SECONDS", "30"))        # after an ambiguous POST: two lookups at least this far apart before NOT_SENT

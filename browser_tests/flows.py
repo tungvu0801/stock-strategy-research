@@ -823,6 +823,140 @@ def risk_controls(c: Ctx):
               and any(x["control_id"] == "GLOBAL_KILL_SWITCH" and x["fire_count"] >= 1 for x in ctl["controls"]))
 
 
+# ---------------------------------------------------------------- Stage 6.0: autonomous PAPER execution on the real page --------------------
+def _bot_chip(c: Ctx):
+    return c.js("__tvText('#tv-bot .tv-bot-state')")
+
+
+def _wait_bot(c: Ctx, mode, seconds=15):
+    c.wait(f"!!window.PaperBot && !!PaperBot.state.data && !!document.querySelector('#tv-bot') && document.querySelector('#tv-bot').dataset.mode === {json.dumps(mode)}", seconds, f"paper bot {mode}")
+
+
+def _wait_card(c: Ctx, states, seconds=15):
+    c.wait(f"!!document.querySelector('#tv-paper') && {json.dumps(list(states))}.includes(document.querySelector('#tv-paper').dataset.state)", seconds, f"paper trade card {states}")
+
+
+def paper_bot(c: Ctx):
+    """Stage 6.0: the PAPER BOT panel and the PAPER TRADE card on the real page against the REAL executor and the deterministic simulated PAPER broker —
+    ⚪ Monitor only by default, Enable Paper Auto (two clicks) -> 🟢 Paper Auto, a READY SNDK proposal -> exactly ONE paper entry POST (intent persisted
+    before the wire) -> 🟠 Entering -> fill -> 🟢 In trade (position from the broker fill only) -> no duplicate on the next cycle -> Emergency Stop blocks
+    entries while the deterministic exit still runs -> exactly ONE exit POST -> ⚪ Closed with its reason -> history -> Stop New Trades. No network, no 4.6B
+    writer, no Robinhood, no model call."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+    from api.routes.trader_view import stream
+    from setups.models import SetupInputs
+    st = stream()
+    xsvc, svc, psvc = st.execution, st.setups, st.proposals
+    sim = xsvc.broker.wire()                                   # the simulated paper broker below the real client
+    words = re.compile(r"(?i)\b(buy|sell|buy now|sell now|enter now|trade now|you should|approved|execute|recommend\w*)\b|target price|expected return|probabilit")
+    clock = {"now": datetime(2026, 10, 21, 15, 0, tzinfo=timezone.utc)}      # Wednesday 11:00 New York: inside the regular session whatever the wall clock says
+    real_clock, real_price = xsvc.clock, xsvc.price_fn
+    xsvc.clock = lambda: clock["now"]
+    # the previous flow latched a forced daily loss for its trading date; the gate's designed day boundary (a different trading date) resets only that latch
+    st.safety.evaluate("TEST", clock["now"])
+
+    def tick(seconds=30):
+        clock["now"] += timedelta(seconds=seconds)
+        return xsvc.run_cycle(clock["now"], "TEST")
+    try:
+        if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+            c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+        c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+        c.js(TV_JS)
+        c.wait("!!document.getElementById('tv-bot') && !!document.getElementById('tv-paper')", 20, "paper bot panels mounted")
+        c.js("PaperBot.refresh()")
+        _wait_bot(c, "MONITOR_ONLY")
+        c.r.eq("Paper Bot reads Monitor only by default", _bot_chip(c), "⚪ Monitor only")
+        bot_text = c.js("__tvText('#tv-bot')") or ""
+        c.r.check("details hidden by default; no internal enum or action language in the panel", c.js("document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')") is True
+                  and "MONITOR_ONLY" not in bot_text and not words.search(bot_text), bot_text[:200])
+        c.r.eq("API: default mode MONITOR_ONLY, nothing persisted, no broker request yet", [c.http("GET", "/api/execution/status")["mode"], len(sim.requests)], ["MONITOR_ONLY", 0])
+        c.shot("paper_bot_monitor", "#tv-bot")
+        # a READY SNDK setup with a reviewable proposal (through the real setup service)
+        c.js("TraderView.switchTo('SNDK')")
+        c.wait(_tv_settled("SNDK") + " && __tvState('#tv-proposal')[1] === 'SNDK'", 30, "SNDK settled")
+        for _ in range(3):                                                      # whatever the earlier flows left (READY / INVALIDATED): a faded stretch closes the episode
+            if svc.current("SNDK").state == "NONE":
+                break
+            svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **dict(stretch=-10.0, confidence=58, demand=72)}))
+            time.sleep(1.1)
+        for over in (SETUP_STEPS[0][2], SETUP_STEPS[1][2]):                      # WATCH, then READY FOR REVIEW — through the real setup service
+            svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+            time.sleep(1.1)
+        c.wait(_review_settled("SNDK", "REVIEWABLE"), 20, "proposal reviewable")
+        pv = psvc.current("SNDK")
+        sim.set_price("SNDK", float(pv.reference_price))
+        c.js("PaperBot.refresh()")
+        _wait_card(c, ["READY"])
+        c.r.eq("Paper Trade card: 🔵 Ready while the proposal is reviewable", c.js("__tvText('#tv-paper .tv-bot-card-state')"), "🔵 Ready")
+        # Enable Paper Auto: two explicit clicks
+        c.js("document.querySelector('#tv-bot [data-bot=\"enable\"]').click()")
+        c.wait("(__tvText('#tv-bot [data-bot=\"enable\"]') || '').startsWith('Confirm')", 10, "confirm step")
+        c.r.eq("first click only asks to confirm; mode unchanged", c.http("GET", "/api/execution/status")["mode"], "MONITOR_ONLY")
+        c.js("document.querySelector('#tv-bot [data-bot=\"enable\"]').click()")
+        _wait_bot(c, "PAPER_AUTO")
+        ov = c.http("GET", "/api/execution")
+        c.r.eq("second click enables Paper Auto (persisted; paper environment proven on the simulated paper broker)", [_bot_chip(c), ov["environment"]["paper"], ov["environment"]["simulated"], ov["mode_events"][0]["to_mode"]],
+               ["🟢 Paper Auto", True, True, "PAPER_AUTO"])
+        c.shot("paper_bot_auto", "#tv-bot")
+        # one executor cycle: exactly one paper entry
+        posts0 = sim.post_count()
+        out = tick()
+        c.r.eq("one executor cycle: exactly one paper entry POST for SNDK", [sim.post_count() - posts0, out["summary"]["entries"]["submitted"]], [1, ["SNDK"]])
+        c.js("PaperBot.refresh()")
+        _wait_card(c, ["ENTERING"])
+        c.r.eq("card: 🟠 Entering while the paper order waits for its fill", c.js("__tvText('#tv-paper .tv-bot-card-state')"), "🟠 Entering")
+        tick()
+        c.js("PaperBot.refresh()")
+        _wait_card(c, ["IN_TRADE"])
+        txt = c.js("__tvText('#tv-paper')") or ""
+        c.r.check("card: 🟢 In trade with shares, entry, current and P/L; no action language", "In trade" in txt and "Shares" in txt and "Entry" in txt and "P/L" in txt and not words.search(txt), txt[:200])
+        pos = xsvc.store.positions(open_only=True)[0]
+        c.r.eq("position created only from the broker fill, with the proposal quantity exactly", [pos.quantity, pos.source, sim.positions["SNDK"]["qty"]], [pv.final_qty, "BROKER_FILLS", pv.final_qty])
+        c.shot("paper_bot_in_trade", "#tv-paper")
+        tick()
+        c.r.eq("no duplicate entry on the next cycle", sim.post_count() - posts0, 1)
+        # Emergency Stop blocks new entries; the deterministic exit still runs when the price reaches the invalidation level
+        c.http("POST", "/api/execution-safety/emergency-stop", {})
+        xsvc.price_fn = lambda s: (Decimal(pv.invalidation_price) - Decimal("0.50"), "TEST", clock["now"].isoformat(timespec="seconds"))
+        out = tick()
+        c.r.eq("price at the invalidation level while stopped: exactly one exit POST, no entry", [sim.post_count() - posts0, out["summary"]["exits_submitted"], (out["summary"].get("entries") or {}).get("submitted", [])], [2, 1, []])
+        c.js("PaperBot.refresh()")
+        _wait_card(c, ["EXITING", "CLOSED"])
+        tick()
+        c.js("PaperBot.refresh()")
+        _wait_card(c, ["CLOSED"])
+        txt = c.js("__tvText('#tv-paper')") or ""
+        c.r.check("card: ⚪ Closed with the exit reason", "Closed" in txt and "invalidation" in txt.lower(), txt[:200])
+        hist = c.http("GET", "/api/execution/history")["history"]
+        c.r.eq("history: one closed paper trade (HARD_INVALIDATION); the broker is flat again", [len(hist), hist[0]["reason_code"], sim.positions.get("SNDK")], [1, "HARD_INVALIDATION", None])
+        c.shot("paper_bot_closed", "#tv-paper")
+        c.http("POST", "/api/execution-safety/clear-emergency-stop", {})
+        # details + liveness
+        c.js("document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        c.wait("!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')", 10, "details open")
+        det = c.js("__tvText('#tv-bot [data-bot-details]')") or ""
+        c.r.check("bot details: the paper account, reconciliation and the recent trade", "paper" in det.lower() and "Reconciliation" in det and "SNDK" in det, det[:300])
+        ctl = c.http("GET", "/api/execution/controls")
+        ids = {x["control_id"]: x for x in ctl["controls"]}
+        c.r.check("API: control liveness rows with fire evidence for the entry and the exit", {"ENTRY_SUBMISSION", "EXIT_SUBMISSION", "EXIT_TRIGGER", "SAFETY_GATE", "PAPER_ENVIRONMENT", "DUPLICATE_ENTRY"} <= set(ids)
+                  and ids["ENTRY_SUBMISSION"]["fire_count"] >= 1 and ids["EXIT_SUBMISSION"]["fire_count"] >= 1, sorted(ids))
+        # Stop New Trades
+        c.js("document.querySelector('#tv-bot [data-bot=\"disable\"]').click()")
+        _wait_bot(c, "MONITOR_ONLY")
+        c.r.eq("Stop New Trades -> Monitor only (persisted)", [_bot_chip(c), c.http("GET", "/api/execution/status")["mode"]], ["⚪ Monitor only", "MONITOR_ONLY"])
+        c.r.check("every broker request went to the simulated PAPER broker's /v2 paths; exactly two POSTs (one entry, one exit)", all(p.startswith("/v2/") for _, p, _ in sim.requests) and sim.post_count() - posts0 == 2
+                  and all(json.loads(b)["type"] == "market" and json.loads(b)["time_in_force"] == "day" for b in sim.posts), [sim.post_count() - posts0, sim.requests[:3]])
+        c.r.eq("actions stay disabled next to the paper bot", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    finally:
+        xsvc.clock, xsvc.price_fn = real_clock, real_price
+        try:
+            xsvc.disable_auto(actor="harness")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def automation(c: Ctx):
     sid = c.world.strategies["Trend Swing"]
     c.open_lab("builder")                                  # the journal + automation panel live in the Builder view
@@ -2220,6 +2354,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

@@ -7,3 +7,6 @@ data/stock_agent.db
 data/stock_agent.db-wal
 data/stock_agent.db-shm
 .env
+
+logs/
+runtime/

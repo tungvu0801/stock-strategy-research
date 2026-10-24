@@ -49,6 +49,8 @@ from setups.service import SetupService
 from proposals.models import ProposalView
 from proposals.service import ProposalService
 from safety.service import ExecutionSafetyService
+from execution.service import ExecutionService      # Stage 6.0: the autonomous PAPER executor reads setups / proposals / safety through this stream
+from execution.store import ExecutionStore
 from safety.store import SafetyStore
 
 log = logging.getLogger(__name__)
@@ -67,7 +69,8 @@ class TerminalStream:
                  watchlist_poll_seconds: Optional[float] = None, position_poll_seconds: Optional[float] = None,
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
-                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None, safety_service=None):
+                 setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None, safety_service=None,
+                 execution_service=None):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -94,6 +97,8 @@ class TerminalStream:
             self.proposals.safety = self.safety
         self.setups.listeners.append(self.proposals.on_setup_event)
         self.proposals.listeners.append(self._proposal_event)
+        # Stage 6.0: the executor shares the database; it registers NO listener (setup / proposal events never fire an order) and the socket carries no order message
+        self.execution = execution_service or ExecutionService(stream_fn=lambda: self, store=ExecutionStore(self.proposals.store.path))
         self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
         self.hub = Hub()
         self.connections: Dict[int, WebSocket] = {}

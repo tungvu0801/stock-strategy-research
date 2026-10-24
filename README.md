@@ -751,3 +751,148 @@ entry. It still submits nothing: no Alpaca order, no Robinhood write, no auto tr
 * **UI**: a compact **RISK CONTROLS** panel at the top of the Trader View right column (status, one reason line, the four buttons,
   View details). Prepare Buy / Prepare Sell remain disabled. The review-only config flags of Stage 5.9 remain honoured as overrides; the
   persisted gate is the source of truth. Startup policy `EXECUTION_SAFETY_STARTUP_POLICY` (`KEEP` default, `HALT_ON_START`) never clears a stop.
+
+## Autonomous Alpaca PAPER trading (Stage 6.0, deterministic, paper only)
+
+Stage 6.0 is the first autonomous loop of Stock Agent (`execution/`, design: `DESIGN_60_AUTONOMOUS_PAPER.md`), on the **Alpaca PAPER
+account only**: READY setup (5.8) → reviewable proposal (5.9) → execution safety gate (5.9.1) → ONE paper entry → order monitoring →
+broker-confirmed fills → internal paper position → deterministic exit conditions → ONE paper exit → reconciliation → closed trade.
+No real money, no Robinhood call, no model call anywhere in the path. It proves operational execution correctness, not an edge.
+
+* **Modes** — `MONITOR_ONLY` (default; nothing is submitted) and `PAPER_AUTO` (an explicit, persisted user choice: **Enable Paper Auto**
+  takes two clicks and is refused unless the PAPER environment is proven by an account read of the constant paper host, the account is
+  active, the safety gate is readable and reconciliation is healthy). **Stop New Trades** returns to `MONITOR_ONLY`; monitoring,
+  reconciliation and deterministic exits of existing paper positions continue. The mode survives restarts; nothing is submitted before
+  the startup reconciliation completes.
+* **Paper-only boundary** — `execution/broker.py` builds every URL from the constant `paper-api.alpaca.markets`; there is no base-URL
+  setting and no live mode. The transport refuses any other host / scheme / port / path / verb before anything is sent, allows an exact GET
+  list within a per-cycle budget, and exactly one `POST /v2/orders` per intent whose body must equal the canonical payload (market, day,
+  whole shares, no extended hours, no order class). `execution/simulated.py` is a deterministic in-memory paper broker that sits below the
+  same client (tests, the browser harness, `EXECUTION_BROKER=simulated`).
+* **Entry** — only a `DOWNSIDE_DISLOCATION_RECOVERY` setup in READY with a `REVIEWABLE` proposal whose `execution_eligibility.allowed`
+  is true, LONG only, the proposal quantity exactly (`EXECUTION_MAX_SHARES_PER_ENTRY` is an optional explicit operator hard cap, default off).
+  Every precondition is a persisted control: `EXECUTION_MODE`, `PAPER_ENVIRONMENT`, `SAFETY_GATE`, `PROPOSAL_VALIDITY`, `SESSION_POLICY`
+  (weekdays 09:30–16:00 ET, not the final 15 minutes, the broker clock must agree — no holiday calendar exists), `BROKER_TRADABILITY`,
+  `DUPLICATE_ENTRY`, `BROKER_POSITION`, `BROKER_ACCOUNT` (active, buying power ≥ price × qty × 1.05), `MAX_OPEN_POSITIONS` (now enforced:
+  broker positions + pending entries < cap), `BROKER_RECONCILIATION`. At most one new entry per cycle.
+* **Exactly once** — `execution_id = sha256("entry|" + proposal_id)[:32]`, `client_order_id = stockagent-entry-<execution_id>`; the intent row
+  is written before the broker is contacted and the attempt is recorded before the wire (the database refuses a second attempt). A
+  definitive reject ends the intent (no resubmission); an ambiguous result (timeout, reset, 429 / 5xx, unreadable answer) is never retried:
+  the order is looked up by client id, adopted when found, `NOT_SENT` after two lookups at least 30 s apart. A crash at any point (after the
+  intent, after the attempt, after the POST, after a fill, after an exit intent, after an exit POST) recovers from the database and the
+  broker without a duplicate order (tests C01 / C02).
+* **Orders and positions** — every broker status change is appended (`execution_order_events`); a position is created only from
+  broker-confirmed fills with the filled quantity (partials included); rejected / canceled entries end `FAILED` with no replacement.
+* **Exits** (deterministic, precedence order) — `HARD_INVALIDATION` (price ≤ the proposal's invalidation level), `EVIDENCE_INVALIDATION`,
+  `SETUP_INVALIDATED`, `DEMAND_FAILURE` (Demand < 35 on two consecutive evaluations), `TIME_EXIT` (5 sessions), `DISLOCATION_NORMALIZED`
+  (Stretch > −20). No profit target, no prediction. `client_order_id = stockagent-exit-<position_id>-<cycle>`; a rejected / expired exit opens
+  the next bounded cycle (3), then the position needs attention. **The safety gate blocks new entries only**: pause, daily-loss halt and
+  Emergency Stop never stop a risk-reducing exit, and a stop never liquidates.
+* **Reconciliation** — every cycle and at startup: missing orders, unknown `stockagent-` orders, quantity mismatches, broker-flat /
+  internal-open, external positions (informational; they count toward the cap and block their symbol), multiple orders, unknown statuses,
+  broker unavailable. Blocking findings set `RECONCILIATION_REQUIRED` for new entries and are never fixed silently.
+* **Loop** — `execution/scheduler.py`: one daemon thread per process under the `paper_executor` lease, 30 s in session / 300 s outside,
+  exits before entries, never in a test / harness process; an idle `MONITOR_ONLY` process never contacts the broker.
+* **Evidence** — `execution_mode`, `execution_runs`, `execution_intents`, `execution_orders`, `execution_order_events`, `paper_positions`,
+  `position_events`, `execution_reconciliations`, `execution_controls` (15 liveness rows).
+* **API** — `GET /api/execution`, `/status`, `/history`, `/controls`, `/intents`, `/positions`, `/findings`, `/symbol/{symbol}`;
+  `POST /api/execution/auto/enable`, `/auto/disable` (mode only).
+* **UI** — a **Paper Bot** panel under Risk Controls (⚪ Monitor only · 🟢 Paper Auto · 🔴 Needs attention, Enable Paper Auto / Stop New
+  Trades, View details with recent paper trades) and a **Paper Trade** card per ticker (🟡 Watching · 🔵 Ready · 🟠 Entering · 🟢 In trade ·
+  🟠 Exiting · ⚪ Closed · 🔴 Needs attention). Internal states live under View Details.
+* **Known limitations** — no holiday calendar (the broker clock is the backstop); in real-data mode the safety gate's equity still comes
+  from the Stage 4.6A snapshot (≤ 15 min old, `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL` for an Alpaca source), so a stale snapshot reads
+  New trades paused and the bot blocks entries — fail closed; the proposal's equity source in real mode is unchanged from Stage 5.9.
+
+## Running without VS Code (Windows background runner)
+
+The bot is the normal dashboard server: the same app as `uvicorn api.server:app`, with the Stage 5.8 setup evaluator and the Stage 6.0 paper
+executor loop. It can run in the background, so **VS Code does not need to stay open**. **The PC must stay on, awake and online.** A shut down,
+sleeping or hibernating PC, or a PC without internet, runs nothing. Windows only, local machine only (`127.0.0.1`), Alpaca PAPER only.
+
+Starting the bot never sends an order. The executor stays in **Monitor only** unless Paper Auto was enabled in the app. Even then it
+reconciles with the broker before any write, and the risk controls gate every new entry.
+
+**Option A: PowerShell runner** (from the project folder)
+
+```powershell
+.\scripts\start_stock_agent.ps1     # start in the background (detached; closing VS Code or the window does not stop it)
+.\scripts\check_stock_agent.ps1     # status: RUNNING / NOT RUNNING, mode, safety, reconciliation, executor loop
+.\scripts\stop_stock_agent.ps1      # graceful stop of exactly this process (PID file + instance id; no other python.exe is touched)
+```
+
+* Python: `.venv\Scripts\python.exe`. In a git worktree the main checkout's `.venv` is used. `-Python <path>` overrides it.
+* Environment: the project's `.env`, loaded by path. In a git worktree the main checkout's `.env` is used. `-EnvFile <path>` overrides it.
+  No secret is printed, logged or stored in a script.
+* Logs: `logs\stock_agent_stdout.log` (startup, scheduler, execution mode, paper broker configuration, shutdown),
+  `logs\stock_agent_stderr.log` (errors) and `logs\stock_agent_runner.log` (start / stop / restart decisions). Secret values are redacted.
+* Single instance: `runtime\stock_agent.pid` plus an OS file lock (`runtime\stock_agent.lock`). A second start is refused.
+  A stale PID file is cleaned without touching any process.
+* Options: `-Port 8000`, `-DbPath <file>` (default `data\stock_agent.db`).
+
+**Option B: Windows Task Scheduler** (no admin rights needed; runs as you, only while you are logged on)
+
+```powershell
+.\scripts\install_stock_agent_task.ps1 -Trigger Logon -PrintOnly    # show the task definition first
+.\scripts\install_stock_agent_task.ps1 -Trigger Logon               # register task "StockAgent": start at logon
+.\scripts\install_stock_agent_task.ps1 -Trigger Weekdays -EasternTime 09:20     # or: Monday-Friday before the open
+.\scripts\install_stock_agent_task.ps1 -Trigger Once -Date 2026-10-23 -EasternTime 09:35 -TaskName StockAgentSmokeStart   # one start
+.\scripts\install_stock_agent_task.ps1 -TaskName StockAgent -Unregister          # remove a task
+```
+
+The task runs `start_stock_agent.ps1 -Foreground`. That supervisor restarts the server after a crash, at most 3 times, 60 s apart.
+It never restarts after a deliberate stop. A second copy of the task is ignored. Stop the bot with `.\scripts\stop_stock_agent.ps1`, not
+with "End" in Task Scheduler. The task only starts the process; it never schedules an order. After any restart the executor runs its normal
+startup reconciliation before any write, and an ambiguous earlier order is looked up, never resent.
+
+**Keeping the PC awake.** The runner never changes power settings. Check them yourself before relying on the bot:
+
+```powershell
+powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE   # "AC Power Setting Index: 0x00000000" = never sleeps when plugged in
+powercfg /query SCHEME_CURRENT SUB_SLEEP HIBERNATEIDLE # the same for hibernate
+powercfg /requests                                     # what currently keeps the PC awake
+powercfg /lastwake                                     # what last woke it
+```
+
+Settings > System > Power & battery > Screen and sleep: set "When plugged in, put my device to sleep after" to **Never** for the
+trading window. Also keep the PC on mains power and connected to the internet.
+
+### Supervised one-share AAPL paper smoke (standalone, Stage 6.0)
+
+`scripts\run_aapl_paper_smoke.ps1` (wrapper) runs `scripts\run_aapl_paper_smoke.py` without VS Code. It proves the Stage 6.0 execution
+infrastructure end to end on the Alpaca PAPER account. It is not a strategy signal.
+
+* **Hard scope:** AAPL only, 1 share, BUY then SELL, at most 2 broker order submissions, Alpaca PAPER host only. An independent
+  order guard wraps the broker's single submission seam and refuses anything else before the wire. Every order is created by the real
+  Stage 6.0 executor: setup, then proposal, then safety gate, then executor, then Alpaca PAPER. No Robinhood, no model call, no live endpoint.
+* **Window:** 09:45 to 10:00 New York time on `-RunDate` only. Outside it: NO ORDER, and no catch-up later.
+* **Preconditions:** the normal Stock Agent server must answer at `http://127.0.0.1:8000` and be in Monitor only. Fresh pre-flight
+  checks then cover:
+  * the paper snapshot refresh, the paper proof, an active and unblocked account, equity and buying power;
+  * the broker clock open, AAPL tradable, a fresh AAPL quote, Trading allowed, healthy reconciliation;
+  * no AAPL order, AAPL position or earlier Stage 6.0 AAPL order at the broker, a share cap of 1, and a fresh scratch database.
+  Any failure means NO ORDER.
+* **Labels:** `SMOKE_FORCED_SETUP` forces AAPL to READY through the real setup service. `SMOKE_FORCED_EXIT` forces the setup's
+  stretch to normalize, and the executor decides and submits the exit. In real mode the process logs
+  `UNADJUSTED_PNL_ACCEPTED_FOR_SMOKE_ONLY`: the safety gate accepts the unadjusted Alpaca P&L for this process only. Permanent
+  configuration is unchanged, and unattended safety is not solved by it.
+* **Ambiguous order:** an ambiguous BUY or SELL is reconciled by `client_order_id` only and never resent. If it stays unresolved,
+  the smoke fails.
+* **Always:** Paper Auto is switched off in a `finally` block on every outcome.
+* **PASS rule:** PASS only when every final condition holds:
+  * one entry intent, one BUY and 1 share filled;
+  * one exit intent, one SELL and 1 share filled;
+  * the broker flat in AAPL and the internal position CLOSED;
+  * reconciliation healthy, no duplicate order and Paper Auto off.
+  Otherwise the result is FAIL with the reason.
+* **Never twice:** an OS lock plus `runtime\aapl_paper_smoke_state.json` stop a second run. After RUNNING, PASS or a FAIL that
+  submitted an order, every further run is refused.
+* **Files:** `runtime\aapl_paper_smoke.db` (scratch; never the bot or project database), `logs\aapl_paper_smoke.log` and
+  `runtime\aapl_paper_smoke_result.json`. Only the four `ALPACA_*` names are read from `.env`, and a secret scan runs on the logs and the result.
+
+```powershell
+.\scripts\install_aapl_smoke_task.ps1 -Date 2026-10-23 -PrintOnly    # shows the PC sleep setting and the task definition
+.\scripts\install_aapl_smoke_task.ps1 -Date 2026-10-23               # task "StockAgentSmokeRun": once at 09:45 ET, no retry, no catch-up
+.\scripts\install_aapl_smoke_task.ps1 -Unregister                    # remove it
+.\scripts\run_aapl_paper_smoke.ps1 -RunDate 2026-10-23 -Simulated -ClockEt "2026-10-23 09:46" -ServerUrl http://127.0.0.1:8031   # offline proof
+```
