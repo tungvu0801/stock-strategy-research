@@ -36,11 +36,6 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: windows-latest
     timeout-minutes: 45
-    env:
-      # pytest's tmp_path (where most suites keep their SQLite databases) defaults to the profile's temp folder on the runner's OS disk, where
-      # the SQLite-heavy suites measured 6-25x slower than locally; the runner's own temp folder is on its work disk, like the checkout.
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     strategy:
       fail-fast: false                      # one PR run shows every failing suite, not just the first
       matrix:
@@ -84,11 +79,20 @@ jobs:
       - name: Verify the CI test manifest covers every pytest file
         run: python scripts/ci_pytest_groups.py check
 
+      # pytest's tmp_path (where most suites keep their SQLite databases) defaults to the profile's temp folder on the runner's OS disk, where
+      # the SQLite-heavy suites measured 6-25x slower than locally; the runner's own temp folder is on its work disk, like the checkout.
+      # (`runner.temp` is a step-level context, hence the per-step env.)
       - name: Stage 4.6B tests (manual Alpaca PAPER orders - fakes only)
         if: matrix.suite == 'paper'
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python -m pytest tests/test_alpaca_orders_46b.py -q
 
       - name: Run the suite
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: python scripts/ci_pytest_groups.py run ${{ matrix.suite }} -- -q -ra --junitxml=junit-${{ matrix.suite }}.xml
 
       - name: Upload the JUnit report
@@ -121,9 +125,6 @@ jobs:
     name: Browser Harness
     runs-on: windows-latest
     timeout-minutes: 30
-    env:
-      TEMP: ${{ runner.temp }}              # the harness world's SQLite database lives in a temp folder too (see the pytest job)
-      TMP: ${{ runner.temp }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -146,6 +147,9 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Browser harness (headless Edge on the runner image, simulated world, guarded local server)
+        env:
+          TEMP: ${{ runner.temp }}          # the harness world's SQLite database lives in a temp folder too (see the pytest job)
+          TMP: ${{ runner.temp }}
         run: python -m browser_tests.run --out browser-harness-artifacts
 
       - name: Upload harness artifacts (screenshots, results.json, harness.log - synthetic data only)

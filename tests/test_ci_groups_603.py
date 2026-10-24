@@ -98,7 +98,9 @@ def test_W01_one_pytest_job_per_group_with_stable_names_fail_fast_off_and_bounde
     stage46b = next(s for s in steps if s.get("name", "").startswith("Stage 4.6B tests"))
     assert stage46b["run"].strip() == "python -m pytest tests/test_alpaca_orders_46b.py -q" and stage46b["if"] == "matrix.suite == 'paper'"
     assert "test_alpaca_orders_46b.py" in groups["paper"]["files"]                              # the 4.6B step runs in the job that owns that file
-    assert job["env"]["TEMP"] == "${{ runner.temp }}" and job["env"]["TMP"] == "${{ runner.temp }}"   # tmp_path on the runner's work disk
+    for step in (stage46b, run_step):                                                            # tmp_path on the runner's work disk; `runner` is a
+        assert step["env"] == {"TEMP": "${{ runner.temp }}", "TMP": "${{ runner.temp }}"}, step["name"]   # step-level context, never job-level env
+    assert "env" not in job and "runner." not in json.dumps(job.get("env", {}))
 
 
 def test_W02_frontend_harness_and_aggregator_jobs():
@@ -113,7 +115,10 @@ def test_W02_frontend_harness_and_aggregator_jobs():
     assert any("python -m browser_tests.run --out" in (s.get("run") or "") for s in hz["steps"])
     install = "\n".join(s.get("run") or "" for s in hz["steps"])
     assert "requirements.txt" in install and "requirements-dev.txt" in install        # the harness world imports the pytest fixtures (tests/pf_fixtures.py ...)
-    assert hz["env"]["TEMP"] == "${{ runner.temp }}" and hz["env"]["TMP"] == "${{ runner.temp }}"
+    run_hz = next(s for s in hz["steps"] if "python -m browser_tests.run --out" in (s.get("run") or ""))
+    assert run_hz["env"] == {"TEMP": "${{ runner.temp }}", "TMP": "${{ runner.temp }}"} and "env" not in hz   # step-level only (see W01)
+    for j in jobs.values():                                                                   # no job-level env may use a step-only context
+        assert "runner." not in json.dumps(j.get("env", {})), j["name"]
     up = [s for s in hz["steps"] if str(s.get("uses", "")).startswith("actions/upload-artifact")]
     assert up and up[0]["if"] == "failure()"                                                  # artifacts only when it fails, synthetic data only
     agg = jobs["ci-success"]
