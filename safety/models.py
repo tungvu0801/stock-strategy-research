@@ -35,6 +35,10 @@ class AccountEquity(_M):
     mode: str = ""
     adjustments: str = "UNAVAILABLE"            # NONE_POSSIBLE | UNAVAILABLE (deposits / withdrawals cannot be separated)
     notes: List[str] = Field(default_factory=list)
+    # >>> Stage 6.0.2: today's cash-flow adjustment for the Alpaca paper account (None = not applicable: the Stage 5.9.1 logic runs)
+    cash_flow_status: Optional[str] = None      # ADJUSTED | PENDING | AMBIGUOUS | UNCERTAIN | STALE | UNAVAILABLE
+    net_external_cash_flow: Optional[str] = None   # (deposits + journal_in) - (withdrawals + journal_out) since the baseline; only when ADJUSTED
+    # <<< Stage 6.0.2
 
 
 class Baseline(_M):
@@ -66,6 +70,12 @@ class DailyLoss(_M):
     triggered_at: Optional[str] = None
     triggered_loss_pct: Optional[str] = None
     note: Optional[str] = None
+    # >>> Stage 6.0.2: the adjusted daily P&L (daily_pnl / daily_loss_pct above are ADJUSTED when adjustments == CASH_FLOW_ADJUSTED)
+    cash_flow_status: Optional[str] = None
+    net_external_cash_flow: Optional[str] = None
+    adjusted_starting_equity: Optional[str] = None
+    unadjusted_daily_pnl: Optional[str] = None
+    # <<< Stage 6.0.2
 
 
 class Freshness(_M):

@@ -52,4 +52,17 @@ try {                                                          # Stage 6.0.1: th
     }
     if ($null -ne $a.loop -and $a.loop.running) { Write-Output "Account refresh loop: running" } else { Write-Output "Account refresh loop: not running" }
 } catch { Write-Output "Account data: status unavailable" }
+try {                                                          # Stage 6.0.2: the read-only cash-flow ledger (deposits / withdrawals)
+    $c = Invoke-SAGet ([int]$info.port) "/api/cash-flow-status" 15
+    $cage = if ($null -ne $c.age_seconds) { [int][Math]::Round([double]$c.age_seconds) } else { $null }
+    switch ($c.status) {
+        "FRESH" { Write-Output ("Cash-flow data: Fresh ({0}s ago)" -f $cage) }
+        "STALE" { Write-Output ("Cash-flow data: Stale - {0}" -f $c.reason) }
+        "AMBIGUOUS" { Write-Output ("Cash-flow data: Unclear - {0}" -f $c.reason) }
+        default { Write-Output ("Cash-flow data: unavailable - {0}" -f $c.reason) }
+    }
+    if ($null -ne $c.adjusted -and $null -ne $c.adjusted.adjusted_daily_pnl) {
+        Write-Output ("Today: trading P/L {0}   deposits/withdrawals {1}   daily loss {2}% of limit {3}%" -f $c.adjusted.adjusted_daily_pnl, $c.net_external_cash_flow, $c.adjusted.adjusted_daily_loss_pct, $c.adjusted.threshold_pct)
+    }
+} catch { Write-Output "Cash-flow data: status unavailable" }
 exit 0

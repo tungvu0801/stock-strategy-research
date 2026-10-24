@@ -1350,6 +1350,13 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
               "frontend/trader_view.js", "frontend/trader_render.js", "tests/conftest.py", "tests/alpaca_order_fakes.py", "tests/test_setups_58.py", "tests/test_proposals_59.py",
               "tests/test_execution_safety_591.py", "tests/test_trader_view_55.py", "tests/frontend/trader_core.test.cjs", "tests/frontend/trader_render.test.cjs", "tests/frontend/trader_setup.test.cjs",
               "tests/frontend/trader_proposal.test.cjs", "tests/frontend/trader_safety.test.cjs", "DESIGN_58_SETUP_STATE_ALERTS.md", "DESIGN_59_TRADE_PROPOSAL_REVIEW.md", "DESIGN_591_EXECUTION_SAFETY.md"]
+    # >>> Stage 6.0.2: the safety files carry marked, additive Stage 6.0.2 blocks (DESIGN_602 section 6); everything outside them stays byte-identical
+    import re as _re602
+    for rel in [p for p in pinned if p.startswith("safety/")]:
+        now602 = _re602.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.2.*?^[ \t]*# <<< Stage 6\.0\.2[^\n]*\n", "", (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n"))
+        assert now602.encode("utf-8") == blob(rel), f"{rel} differs from {BASE} outside the Stage 6.0.2 blocks"
+    pinned = [p for p in pinned if not (p.startswith("safety/"))]
+    # <<< Stage 6.0.2
     for rel in pinned:
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")

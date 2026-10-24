@@ -639,3 +639,22 @@ ACCOUNT_REFRESH_READ_ATTEMPTS: int = int(os.getenv("ACCOUNT_REFRESH_READ_ATTEMPT
 ACCOUNT_REFRESH_BACKOFF_SECONDS: str = os.getenv("ACCOUNT_REFRESH_BACKOFF_SECONDS", "2,5")         # delays between read attempts
 ACCOUNT_REFRESH_TEST_FAULTS: bool = os.getenv("ACCOUNT_REFRESH_TEST_FAULTS", "false").strip().lower() in ("1", "true", "yes", "on")   # test mode only
 ACCOUNT_REFRESH_FAULT_FILE: str = os.getenv("ACCOUNT_REFRESH_FAULT_FILE", "")                        # test mode: while this file exists every refresh fails (no broker call)
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 6.0.2 - CASH-FLOW-ADJUSTED DAILY P&L (cash_flow/). A READ-ONLY, persisted ledger of the paper account's non-trade activities
+# (GET /v2/account/activities, paper host only), refreshed in the Stage 6.0.1 refresh cycle; the Stage 5.9.1 gate evaluates the daily loss
+# on (current - (start + net external cash flow)). EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL stays OFF and is no longer needed. Never runs in a
+# test / harness process (it rides on the account refresh loop).
+# ------------------------------------------------------------------------------------------------------------------
+CASH_FLOW_ENABLED: bool = os.getenv("CASH_FLOW_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+CASH_FLOW_STALE_SECONDS: float = float(os.getenv("CASH_FLOW_STALE_SECONDS", "600"))       # no successful activity read for this long = stale
+CASH_FLOW_MAX_FAILURES: int = int(os.getenv("CASH_FLOW_MAX_FAILURES", "3"))               # consecutive failed reads = stale
+CASH_FLOW_READ_ATTEMPTS: int = int(os.getenv("CASH_FLOW_READ_ATTEMPTS", "3"))             # bounded READ retries per refresh
+CASH_FLOW_BACKOFF_SECONDS: str = os.getenv("CASH_FLOW_BACKOFF_SECONDS", "2,5")            # delays between read attempts (a 429 Retry-After is honoured, capped at 30 s)
+CASH_FLOW_MARGIN_SECONDS: float = float(os.getenv("CASH_FLOW_MARGIN_SECONDS", "60"))      # timing margin around the baseline read and the current snapshot
+CASH_FLOW_LOOKBACK_DAYS: int = int(os.getenv("CASH_FLOW_LOOKBACK_DAYS", "7"))             # each read covers activities created in the last N days
+CASH_FLOW_BOOTSTRAP_DAYS: int = int(os.getenv("CASH_FLOW_BOOTSTRAP_DAYS", "30"))          # the first read of a process covers N days
+CASH_FLOW_PAGE_SIZE: int = int(os.getenv("CASH_FLOW_PAGE_SIZE", "100"))                   # Alpaca maximum
+CASH_FLOW_MAX_PAGES: int = int(os.getenv("CASH_FLOW_MAX_PAGES", "20"))                    # reaching it = INCOMPLETE (never silently truncated)
+CASH_FLOW_FAULT_FILE: str = os.getenv("CASH_FLOW_FAULT_FILE", "")                         # test mode (ACCOUNT_REFRESH_TEST_FAULTS) only: while it exists every activity read fails
+CASH_FLOW_CYCLE_WAIT_SECONDS: float = float(os.getenv("CASH_FLOW_CYCLE_WAIT_SECONDS", "15"))  # the gate waits at most this long for the activity read of the cycle whose snapshot it sees

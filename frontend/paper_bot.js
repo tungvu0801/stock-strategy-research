@@ -37,7 +37,8 @@
              safety: (d && d.safety_label) || "", safetyState: (d && d.safety_state) || "", env: (d && d.environment) || {}, lastCycle: stampOf(d && d.last_cycle_at), lastResult: (d && d.last_cycle_result) || "—",
              openPositions: n("open_positions"), pendingEntries: n("pending_entries"), pendingExits: n("pending_exits"), maxOpen: n("max_open_positions"), external: n("external_positions"),
              healthy: !!(d && d.reconciliation_healthy), changedAt: (d && d.mode_changed_at) || null, changedBy: (d && d.mode_changed_by) || null, recent: (d && d.recent) || [],
-             sched: (d && d.scheduler) || {}, disclaimer: (d && d.disclaimer) || "", account: accountModel(d && d.account_data), raw: d || null };
+             sched: (d && d.scheduler) || {}, disclaimer: (d && d.disclaimer) || "", account: accountModel(d && d.account_data),
+             cash: cashFlowModel(d && d.account_data && d.account_data.cash_flow), raw: d || null };
   }
 
   // Stage 6.0.1: the read-only account refresher, in one beginner line ("Account data: Fresh (42s ago)" / "Stale" / "unavailable")
@@ -54,12 +55,34 @@
              error: a.last_result && a.last_result !== "SUCCESS" ? String(a.last_error || a.last_result) : "" };
   }
 
+  // Stage 6.0.2: the read-only cash-flow ledger in one beginner line ("Cash-flow data: Fresh (12s ago)" / "Stale" / "Unclear" / "unavailable");
+  // today's trading P/L, the deposits / withdrawals adjustment, the daily loss and its limit live under View details only
+  function cashFlowModel(c) {
+    if (!c || !c.status) return { shown: false, status: "", label: "", cls: "", rows: [] };
+    const st = c.status;
+    const age = c.age_seconds == null ? null : Math.round(Number(c.age_seconds));
+    const label = st === "FRESH" ? `Cash-flow data: Fresh (${age == null ? 0 : age}s ago)` : st === "STALE" ? "Cash-flow data: Stale"
+      : st === "AMBIGUOUS" ? "Cash-flow data: Unclear" : "Cash-flow data unavailable";
+    const money = (x) => { const n = Number(x); return x == null || x === "" || !isFinite(n) ? "not available" : `${n > 0 ? "+" : ""}${n.toFixed(2)}`; };
+    const adjusted = c.adjustments === "CASH_FLOW_ADJUSTED";
+    const net = c.gate_net_external_cash_flow != null ? c.gate_net_external_cash_flow : c.net_external_cash_flow;
+    const detail = c.read_at ? `last read ${stampOf(c.read_at)}${age == null ? "" : ` (${age}s ago)`}${c.reason ? ` | ${c.reason}` : ""}` : (c.reason || "no activity read yet");
+    const rows = [["Today's trading P/L", adjusted ? money(c.daily_pnl) : "not available"], ["Deposits/withdrawals adjustment", money(net)],
+                  ["Daily loss", adjusted && c.daily_loss_pct != null ? `${c.daily_loss_pct}%` : "not available"],
+                  ["Daily loss limit", c.threshold_pct != null ? `${c.threshold_pct}%` : "—"], ["Cash-flow data", detail],
+                  ["Cash-flow reads", `${Number(c.attempt_count || 0)} read(s), ${Number(c.failure_count || 0)} failed, ${Number(c.consecutive_failures || 0)} in a row · ` +
+                                      `${Number(c.event_count_today || 0)} activity record(s) today`]];
+    if (c.last_result && c.last_result !== "SUCCESS") rows.push(["Last cash-flow error", String(c.last_error || c.last_result)]);
+    return { shown: true, status: st, label, cls: st === "FRESH" ? "fresh" : "stale", rows };
+  }
+
   function botHtml(d, opts) {
     const o = opts || {};
     const m = botModel(d);
     const head = `<div class="tv-bot-head"><span class="tv-bot-state ${m.cls}" data-bot-mode="${esc(m.key)}">${esc(m.icon)} ${esc(m.label)}</span></div>`;
     const line = `<div class="tv-bot-line" data-bot-line>${esc(m.line)}</div>` +
-      (m.account.shown ? `<div class="tv-bot-line tv-bot-acct ${m.account.cls}" data-bot-account="${esc(m.account.status)}">${esc(m.account.label)}</div>` : "");
+      (m.account.shown ? `<div class="tv-bot-line tv-bot-acct ${m.account.cls}" data-bot-account="${esc(m.account.status)}">${esc(m.account.label)}</div>` : "") +
+      (m.cash.shown ? `<div class="tv-bot-line tv-bot-acct ${m.cash.cls}" data-bot-cashflow="${esc(m.cash.status)}">${esc(m.cash.label)}</div>` : "");
     const enableLabel = o.confirmEnable ? "Confirm: enable Paper Auto" : "Enable Paper Auto";
     const actions = m.loaded ? `<div class="tv-bot-actions">` +
       (m.mode === "PAPER_AUTO" ? `<button type="button" class="tv-bot-btn danger" data-bot="disable"${o.busy ? " disabled" : ""}>Stop New Trades</button>`
@@ -71,6 +94,7 @@
                   ["Other broker positions", String(m.external)], ["Reconciliation", m.healthy ? "healthy" : "needs a look"], ["Last check", `${m.lastCycle} · ${words(m.lastResult)}`],
                   ["Loop", m.sched.running ? `running · every ${m.sched.interval_s || "—"} s in session` : "not running in this process"],
                   ...(m.account.shown ? [["Account refresh", m.account.detail], ["Account refreshes", m.account.counts]].concat(m.account.error ? [["Last refresh error", m.account.error]] : []) : []),
+                  ...(m.cash.shown ? m.cash.rows : []),
                   ["Mode changed", m.changedAt ? `${dateOf(m.changedAt)} by ${m.changedBy || "—"}` : "never (default)"]];
     const reasons = m.reasons.length ? `<div class="tv-bot-line">${m.reasons.map((r) => esc(r)).join("<br>")}</div>` : "";
     const details = `<div class="tv-bot-details${o.detailsOpen ? "" : " tv-hidden"}" data-bot-details>${reasons}` +
@@ -225,5 +249,5 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
-  return { mount, refresh, render, state, botModel, botHtml, cardModel, cardHtml, historyLine, accountModel, LABELS, ICONS };
+  return { mount, refresh, render, state, botModel, botHtml, cardModel, cardHtml, historyLine, accountModel, cashFlowModel, LABELS, ICONS };
 });

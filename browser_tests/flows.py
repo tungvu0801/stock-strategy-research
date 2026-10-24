@@ -1021,6 +1021,88 @@ def account_refresh(c: Ctx):
         ref.sleep = real_sleep
 
 
+# ---------------------------------------------------------------- Stage 6.0.2: cash-flow-adjusted daily P&L ----------------------------
+def _bot_cashflow(c: Ctx):
+    return c.js("__tvText('#tv-bot [data-bot-cashflow]')")
+
+
+def cash_flow(c: Ctx):
+    """Stage 6.0.2: the Paper Bot panel's cash-flow line against the REAL cash-flow ledger on the simulated paper broker's activity feed -
+    Fresh, a deposit after the day's baseline counted once (View details: Deposits/withdrawals adjustment), three failed activity reads ->
+    Stale, one good read -> Fresh again; the read-only API. Read only: no order intent, no broker write, no Robinhood, no model call."""
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    from api.routes.trader_view import stream
+    from cash_flow import rules as CFR
+    from cash_flow.simulated import feed_for, move_cash
+    st = stream()
+    ref, cf = st.account_refresh, st.cash_flow
+    sim = ref.broker.wire()
+    feed = feed_for(sim)
+    real_sleep = cf.sleep
+    cf.sleep = lambda s: None                                    # bounded read backoff is not waited for in the harness
+    try:
+        if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+            c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+        c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+        c.js(TV_JS)
+        intents0, posts0 = len(st.execution.store.intents()), sim.post_count()
+        st.safety.evaluate("TEST")                                   # today's baseline exists (the window starts at its read time)
+        now = datetime.now(timezone.utc)
+        b = st.safety.store.baseline(CFR.ny_date(now).isoformat())
+        cutoff = (CFR.parse_ts(b.equity_as_of) or CFR.parse_ts(b.baseline_created_at)) if b is not None else now
+        at = max(now - timedelta(seconds=70), cutoff + timedelta(seconds=61))
+        while datetime.now(timezone.utc) < at + timedelta(seconds=62):                 # the deposit must be older than the snapshot margin
+            _time.sleep(1)
+        feed.add("CSD", "2500.00", created_at=at, description="Cash deposit (harness)")
+        move_cash(sim, 2500)
+        ref.refresh(trigger="TEST")
+        out = cf.refresh(trigger="TEST")
+        c.r.check("a read-only activity read stores the deposit", out["result"] == "SUCCESS" and out["new_events"] >= 1, out)
+        again = cf.refresh(trigger="TEST")
+        c.r.eq("the next read dedupes it (stored once)", again["new_events"], 0)
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-cashflow]') || '').startsWith('Cash-flow data: Fresh')", 15, "cash-flow data fresh")
+        c.r.check("Paper Bot panel: Cash-flow data: Fresh (..s ago)", (_bot_cashflow(c) or "").startswith("Cash-flow data: Fresh ("), _bot_cashflow(c))
+        api = c.http("GET", "/api/cash-flow-status")
+        c.r.check("API: fresh, the deposit counted, no broker id", api["status"] == "FRESH" and api["net_external_cash_flow"] == "2500.00" and api["event_count_today"] >= 1
+                  and "::" not in json.dumps(api), [api["status"], api["net_external_cash_flow"], api["event_count_today"]])
+        c.js("document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        c.wait("!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')", 10, "details open")
+        det = c.js("__tvText('#tv-bot [data-bot-details]')") or ""
+        c.r.check("bot details: deposits / withdrawals adjustment, daily loss and its limit", "Deposits/withdrawals adjustment" in det and "+2500.00" in det
+                  and "Daily loss limit" in det and "trading P/L" in det, det[:400])
+        c.shot("cash_flow_fresh", "#tv-bot")
+        c.js("document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        for _ in range(3):                                           # three failed activity reads (every attempt fails)
+            feed.fail.extend([("connection",)] * cf.read_attempts)
+            r = cf.refresh(trigger="TEST")
+            c.r.eq("a failing activity read is recorded as FAILED (stored events kept)", r["result"], "FAILED")
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-cashflow]') || '') === 'Cash-flow data: Stale'", 15, "cash-flow data stale")
+        c.r.eq("stale cash-flow data reads plainly", _bot_cashflow(c), "Cash-flow data: Stale")
+        c.js("document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        c.wait("!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')", 10, "details open")
+        det = c.js("__tvText('#tv-bot [data-bot-details]')") or ""
+        c.r.check("bot details: the last cash-flow error and the failure count", "Last cash-flow error" in det and "3 in a row" in det, det[:400])
+        c.shot("cash_flow_stale", "#tv-bot")
+        c.js("document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
+        ref.refresh(trigger="TEST")
+        r = cf.refresh(trigger="TEST")
+        c.r.eq("the next activity read succeeds", r["result"], "SUCCESS")
+        c.js("PaperBot.refresh()")
+        c.wait("(__tvText('#tv-bot [data-bot-cashflow]') || '').startsWith('Cash-flow data: Fresh')", 15, "cash-flow data fresh again")
+        hist = c.http("GET", "/api/cash-flow-status/attempts?limit=10")
+        c.r.check("API attempts: append-only, newest first", hist["total"] >= 6 and [a["result"] for a in hist["attempts"][:4]] == ["SUCCESS", "FAILED", "FAILED", "FAILED"], hist["attempts"][:4])
+        ev = c.http("GET", "/api/cash-flow-status/events")
+        c.r.check("API events: the deposit once, no broker id or free text", sum(1 for e in ev["events"] if e["category"] == "DEPOSIT" and e["amount"] == "2500.00") == 1
+                  and "::" not in json.dumps(ev) and "description" not in json.dumps(ev), ev["total_rows"])
+        c.r.eq("reading cash flow created no order intent and sent no broker order", [len(st.execution.store.intents()) - intents0, sim.post_count() - posts0], [0, 0])
+        c.r.eq("actions stay disabled next to the cash-flow line", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+    finally:
+        cf.sleep = real_sleep
+
+
 def automation(c: Ctx):
     sid = c.world.strategies["Trend Swing"]
     c.open_lab("builder")                                  # the journal + automation panel live in the Builder view
@@ -2418,6 +2500,6 @@ def portfolio_rotation(c: Ctx):
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)
