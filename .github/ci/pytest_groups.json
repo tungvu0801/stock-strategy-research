@@ -1,0 +1,116 @@
+{
+  "_doc": [
+    "Stage 6.0.3 - the CI pytest groups. Every tests/test_*.py file belongs to EXACTLY ONE group; scripts/ci_pytest_groups.py check",
+    "fails when a file is missing, listed twice or does not exist, and tests/test_ci_groups_603.py runs that check in every group.",
+    "Groups are balanced by the runtime MEASURED ON THE RUNNER (PR #16 run 36): the SQLite-heavy execution / account-refresh / cash-flow",
+    "files run 6-25x slower there than locally (the model campaign alone is 27 % of the local suite but only 1.2x slower on the runner),",
+    "so they are three jobs. The Windows-only files (runner, smoke, desktop notifications) stay together. Job names are the stable check names."
+  ],
+  "groups": {
+    "core": {
+      "job": "Pytest Core",
+      "about": "strategy lab, backtests, evidence, explanations, scanner, briefs, Trader View, PPE, Demand, Stage 2.7-3.x surfaces, the CI manifest itself",
+      "files": [
+        "test_automation_37.py",
+        "test_backtest_32.py",
+        "test_batch_27g2.py",
+        "test_brief_delivery_43.py",
+        "test_browser_harness_39.py",
+        "test_ci_groups_603.py",
+        "test_command_center_27f.py",
+        "test_compact_28ab.py",
+        "test_daily_brief_42.py",
+        "test_daily_review_27g.py",
+        "test_demand_57.py",
+        "test_evidence_35.py",
+        "test_evidence_54.py",
+        "test_excursions_36.py",
+        "test_explain_38.py",
+        "test_fit_34.py",
+        "test_forward_33.py",
+        "test_history_budget_39.py",
+        "test_market_insights.py",
+        "test_ops_27g1.py",
+        "test_polish_28e.py",
+        "test_ppe_56.py",
+        "test_regression_27e.py",
+        "test_regression_isolation.py",
+        "test_saved_scans_41.py",
+        "test_scanner_40.py",
+        "test_stock_check.py",
+        "test_stock_result_27g3.py",
+        "test_stock_view_28c.py",
+        "test_strategy_31.py",
+        "test_trader_view_55.py",
+        "test_trader_view_561.py",
+        "test_walkforward_49.py",
+        "test_workspace_28d.py"
+      ]
+    },
+    "execution": {
+      "job": "Pytest Execution",
+      "about": "setups -> proposals -> safety gate -> autonomous paper execution (Stages 5.8, 5.9, 5.9.1, 6.0)",
+      "files": [
+        "test_execution_60.py",
+        "test_execution_safety_591.py",
+        "test_proposals_59.py",
+        "test_setups_58.py"
+      ]
+    },
+    "account": {
+      "job": "Pytest Account & Cash Flow",
+      "about": "continuous account refresh and the cash-flow ledger (Stages 6.0.1, 6.0.2): two long simulated-session tests",
+      "files": [
+        "test_account_refresh_601.py",
+        "test_cash_flow_602.py"
+      ]
+    },
+    "paper": {
+      "job": "Pytest Paper & Portfolio",
+      "about": "Alpaca paper reads and manual orders (Stages 4.5, 4.6, 4.6B; the Stage 4.6B step runs first in this job), portfolio, trade review",
+      "files": [
+        "test_alpaca_orders_46b.py",
+        "test_alpaca_orders_46b_utc_regression.py",
+        "test_alpaca_paper_46.py",
+        "test_paper_45.py",
+        "test_portfolio_core.py",
+        "test_portfolio_policy.py",
+        "test_portfolio_provider.py",
+        "test_portfolio_routes.py",
+        "test_reconciliation_grounding.py",
+        "test_trade_review.py"
+      ]
+    },
+    "research": {
+      "job": "Pytest Research",
+      "about": "signal research, rotation diagnostics / engine / handoff / store / API, research workflow, portfolio backtest",
+      "files": [
+        "test_portfolio_backtest_48.py",
+        "test_research_flow_47.py",
+        "test_rotation_47.py",
+        "test_rotation_api_47.py",
+        "test_rotation_diagnostics_51.py",
+        "test_rotation_engine_47.py",
+        "test_rotation_handoff_47.py",
+        "test_rotation_store_47.py",
+        "test_signal_research_52.py"
+      ]
+    },
+    "campaign": {
+      "job": "Pytest Model Campaign",
+      "about": "the Stage 5.0 model campaign: the single heaviest file locally (about a quarter of the whole suite)",
+      "files": [
+        "test_model_campaign_50.py"
+      ]
+    },
+    "runner": {
+      "job": "Pytest Runner & Smoke",
+      "about": "Windows-only: the background runner (real offline processes), the standalone AAPL paper smoke (simulated), desktop notifications",
+      "files": [
+        "test_aapl_smoke_60.py",
+        "test_notifications_44.py",
+        "test_windows_runner_60.py"
+      ]
+    }
+  }
+}

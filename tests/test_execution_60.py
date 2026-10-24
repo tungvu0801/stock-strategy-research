@@ -1357,6 +1357,13 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
         assert now602.encode("utf-8") == blob(rel), f"{rel} differs from {BASE} outside the Stage 6.0.2 blocks"
     pinned = [p for p in pinned if not (p.startswith("safety/"))]
     # <<< Stage 6.0.2
+    # >>> Stage 6.0.3: the Stage 5.5 pin test carries one marked, additive Stage 6.0.3 block (the workflow is verified structurally by
+    # tests/test_ci_groups_603.py instead of byte-pinned); everything outside it stays byte-identical
+    import re as _re603
+    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n", "", (ROOT / "tests/test_trader_view_55.py").read_text(encoding="utf-8").replace("\r\n", "\n"))
+    assert now603.encode("utf-8") == blob("tests/test_trader_view_55.py"), f"tests/test_trader_view_55.py differs from {BASE} outside the Stage 6.0.3 block"
+    pinned = [p for p in pinned if p != "tests/test_trader_view_55.py"]
+    # <<< Stage 6.0.3
     for rel in pinned:
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")
