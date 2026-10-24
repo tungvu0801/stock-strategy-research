@@ -162,6 +162,10 @@ def test_P01_prior_stage_pin_tests_differ_from_the_stage_603_base_only_by_their_
         return out.replace(b"\r\n", b"\n")
     for rel, n in STAGE_603_BLOCKS.items():
         text = (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        # >>> Stage 6.1: these pin tests may also carry marked, additive Stage 6.1 blocks (the forward paper validation reconciliation, pinned against the
+        # Stage 6.1 base by tests/test_forward_validation_61.py); they are stripped before the Stage 6.0.3 comparison
+        text = re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.1\b.*?^[ \t]*# <<< Stage 6\.1[^\n]*\n", "", text)
+        # <<< Stage 6.1
         assert text.count(OPEN_603) == n and text.count(CLOSE_603) == n and len(re.findall(STRIP_603, text)) == n, rel
         assert re.sub(STRIP_603, "", text).encode("utf-8") == blob(rel), f"{rel} differs from {BASE} outside its Stage 6.0.3 block"
     tracked = [t for t in subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").split("\0") if t]

@@ -610,7 +610,7 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
     # >>> Stage 6.0.3: the Stage 6.0 pin test also carries one marked, additive Stage 6.0.3 block (CI-parallelization pin reconciliation, pinned
     # against the Stage 6.0.3 base by tests/test_ci_groups_603.py); strip its Stage 6.0.2 and 6.0.3 blocks, everything outside them stays byte-identical
     import re as _re603
-    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n"))
+    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]|6\.1\b).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Stage 6.1 widened
     assert now603.encode("utf-8") == blob("tests/test_execution_60.py"), f"tests/test_execution_60.py differs from {BASE} outside its Stage 6.0.2 / 6.0.3 blocks"
     pinned = [p for p in pinned if p != "tests/test_execution_60.py"]
     # <<< Stage 6.0.3

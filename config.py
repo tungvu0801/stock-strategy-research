@@ -658,3 +658,18 @@ CASH_FLOW_PAGE_SIZE: int = int(os.getenv("CASH_FLOW_PAGE_SIZE", "100"))         
 CASH_FLOW_MAX_PAGES: int = int(os.getenv("CASH_FLOW_MAX_PAGES", "20"))                    # reaching it = INCOMPLETE (never silently truncated)
 CASH_FLOW_FAULT_FILE: str = os.getenv("CASH_FLOW_FAULT_FILE", "")                         # test mode (ACCOUNT_REFRESH_TEST_FAULTS) only: while it exists every activity read fails
 CASH_FLOW_CYCLE_WAIT_SECONDS: float = float(os.getenv("CASH_FLOW_CYCLE_WAIT_SECONDS", "15"))  # the gate waits at most this long for the activity read of the cycle whose snapshot it sees
+
+# ------------------------------------------------------------------------------------------------------------------
+# Stage 6.1 - FORWARD PAPER VALIDATION (forward_validation/). Instrumentation only: an observer records one sample per minute inside the
+# regular session (every five minutes outside it), one record per New York trading session, price marks of open paper positions and
+# process restarts, and derives descriptive operational / strategy statistics from the PERSISTED events of Stages 5.8 - 6.0.2. No
+# strategy, threshold, size, exit, mode or order change; its only action is the early stop (Paper Auto -> Monitor only on a critical
+# defect). Alpaca PAPER only. Never runs in a test / harness process.
+# ------------------------------------------------------------------------------------------------------------------
+FORWARD_VALIDATION_ENABLED: bool = os.getenv("FORWARD_VALIDATION_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+FORWARD_VALIDATION_INTERVAL_SECONDS: float = float(os.getenv("FORWARD_VALIDATION_INTERVAL_SECONDS", "60"))     # observer cadence inside the regular session
+FORWARD_VALIDATION_IDLE_SECONDS: float = float(os.getenv("FORWARD_VALIDATION_IDLE_SECONDS", "300"))            # outside it
+FORWARD_VALIDATION_TARGET_SESSIONS: int = int(os.getenv("FORWARD_VALIDATION_TARGET_SESSIONS", "30"))           # the operational milestone (never a profitability claim)
+FORWARD_VALIDATION_TARGET_EVENTS: int = int(os.getenv("FORWARD_VALIDATION_TARGET_EVENTS", "100"))              # READY transitions + reviewable proposals wanted before conclusions
+FORWARD_VALIDATION_MIN_TRADES: int = int(os.getenv("FORWARD_VALIDATION_MIN_TRADES", "30"))                     # below it the strategy status stays INSUFFICIENT_DATA
+FORWARD_VALIDATION_EARLY_STOP: bool = os.getenv("FORWARD_VALIDATION_EARLY_STOP", "true").strip().lower() in ("1", "true", "yes", "on")   # Paper Auto -> Monitor only on a critical defect

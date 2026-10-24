@@ -36,7 +36,8 @@ INSTR = r"""(() => { if (window.__h) return; window.__h = 1; window.__f = []; wi
 # background refreshes the page makes on its own timers; never counted as the requests of a user action. The three Stage 5.8 / 5.9.1 /
 # 6.0 pollers (setup alerts 30 s, Risk Controls 30 s, Paper Bot 10 s) were missing, so "no request" windows failed at random (Stage 6.0.3).
 POLLING = ("/api/health", "/api/ai/usage", "/api/alerts", "/api/market/overview", "/api/watchlist", "/api/ops",
-           "GET /api/setups/alerts?limit=30", "GET /api/execution-safety", "GET /api/execution/status")                 # method-qualified: a user's POST is never filtered
+           "GET /api/setups/alerts?limit=30", "GET /api/execution-safety", "GET /api/execution/status",                 # method-qualified: a user's POST is never filtered
+           "GET /api/forward-validation")                                                                                # Stage 6.1: the Forward Paper Validation panel's 60 s poll
 FIT = "StrategyFit.state"
 EV = "EvidenceComparison.state"
 TRADE_WORDS = re.compile(r"(?i)\b(buy|sell|enter now|trade now|recommend\w*|you should)\b")
@@ -2502,7 +2503,72 @@ def portfolio_rotation(c: Ctx):
         os.environ.pop(name, None)
 
 
+# ---------------------------------------------------------------- Stage 6.1: forward paper validation ---------------------------------------
+def forward_validation(c: Ctx):
+    """Stage 6.1: the compact Forward Paper Validation panel on the real page against the REAL observer (one observation through the service, no thread),
+    the read-only API (sessions, closed paper trades, daily summaries, reports, exports, the frozen controls) and the separate page's markup. The paper_bot
+    flow closed one paper trade earlier in this run: it must appear as a closed paper trade with slippage and P/L and the strategy status must still read
+    INSUFFICIENT FOR STRATEGY CONCLUSION. Read only: no order intent, no broker write, no mode change, no Robinhood, no model call."""
+    from datetime import datetime, timezone
+    from api.routes.trader_view import stream
+    st = stream()
+    fv, xsvc = st.forward_validation, st.execution
+    sim = xsvc.broker.wire()
+    words = re.compile(r"(?i)\b(buy|sell|buy now|sell now|enter now|trade now|you should|approved|execute|recommend\w*|profitable|winning|guaranteed)\b|target price|expected return|probabilit")
+    if not c.js("document.getElementById('tab-trader').classList.contains('active')"):
+        c.js("document.querySelector('.tab-btn[data-tab=\"trader\"]').click()")
+    c.wait(f"!!window.TraderView && {TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "Trader View")
+    c.js(TV_JS)
+    intents0, posts0, mode0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"]
+    now = datetime(2026, 10, 21, 15, 30, tzinfo=timezone.utc)                       # Wednesday 11:30 New York: an in-session observation whatever the wall clock says
+    out = fv.observe(now, "TEST")
+    c.r.eq("one observation through the real service records a sample, opens the session record and finds no attention condition", [out["result"], out["session_status"], out["attention"]], ["OK", "OPEN", []])
+    c.wait("!!document.getElementById('tv-fv')", 20, "forward validation panel mounted")
+    c.js("ForwardValidation.refresh()")
+    c.wait("(document.querySelector('#tv-fv [data-fv-state]') || {}).dataset && document.querySelector('#tv-fv [data-fv-state]').dataset.fvState === 'OK'", 20, "panel loaded")
+    txt = c.js("__tvText('#tv-fv')") or ""
+    c.r.check("compact panel: the seven beginner numbers, the insufficient-data warning, no action or performance language",
+              all(k in txt for k in ("Sessions", "Healthy", "Closed trades", "Duplicates", "Reconciliation issues", "Paper P/L", "Strategy status")) and "INSUFFICIENT FOR STRATEGY CONCLUSION" in txt
+              and not words.search(txt), txt[:300])
+    c.r.check("details hidden by default; the panel sits right after the Paper Bot panel", c.js("document.querySelector('#tv-fv [data-fv-details]').classList.contains('tv-hidden')") is True
+              and c.js("document.querySelector('.tv-panel-bot').nextElementSibling.classList.contains('tv-panel-fv')") is True, "")
+    c.shot("forward_validation_panel", "#tv-fv")
+    c.js("document.querySelector('#tv-fv [data-fv=\"details\"]').click()")
+    c.wait("!document.querySelector('#tv-fv [data-fv-details]').classList.contains('tv-hidden')", 10, "details open")
+    det = c.js("__tvText('#tv-fv [data-fv-details]')") or ""
+    c.r.check("details: expectancy, drawdown, operational status and the link to the separate page", "Expectancy" in det and "drawdown" in det.lower() and "Operational status" in det
+              and c.js("!!document.querySelector('#tv-fv [data-fv-page]')") is True, det[:300])
+    c.js("document.querySelector('#tv-fv [data-fv=\"details\"]').click()")
+    api = c.http("GET", "/api/forward-validation")
+    closed = c.http("GET", "/api/forward-validation/closed")
+    c.r.check("API: strategy status insufficient, duplicates 0, no attention; the closed paper trades are the persisted ones",
+              api["strategy"]["edge_status"] == "INSUFFICIENT_DATA" and api["operational"]["duplicate_broker_orders"] == 0 and api["needs_attention"] is False
+              and closed["count"] == len([p for p in xsvc.store.positions(open_only=False) if p.state == "CLOSED"]), [api["strategy"]["edge_status"], closed["count"]])
+    if closed["count"]:                                                             # the paper_bot flow ran earlier in this run (a full run, or --only paper_bot,forward_validation)
+        t = closed["closed"][0]
+        c.r.check("API: the paper trade the paper_bot flow closed carries slippage against its reference price, P/L and the exit reason",
+                  t["symbol"] == "SNDK" and t["exit_reason"] == "HARD_INVALIDATION" and t["entry_slippage"]["slippage_bps"] is not None and t["realized_pnl"] is not None, closed["closed"][:1])
+        trace = c.http("GET", f"/api/forward-validation/closed/{t['position_id']}")
+        c.r.check("API: the audit trace answers why considered / ready / quantity / entry / order / fill / exit / P/L from persisted rows",
+                  trace["why_ready"] and trace["why_quantity"].get("final_qty") is not None and trace["broker_order_sent"]["client_order_id"].startswith("stockagent-entry-")
+                  and trace["fill"]["filled_qty"] >= 1 and trace["why_exit_required"]["kind"] == "EXIT_REQUIRED" and trace["final_pnl"]["gross_pnl"] is not None, list(trace)[:12])
+    else:
+        c.r.eq("API: no closed paper trade yet (the paper_bot flow did not run in this harness invocation) and the unknown-id trace is a clear 404",
+               c.js("fetch('/api/forward-validation/closed/" + "0" * 32 + "').then(r => r.status)"), 404)
+    sessions = c.http("GET", "/api/forward-validation/sessions")
+    report = c.js("fetch('/api/forward-validation/report/daily').then(r => r.text())")
+    csv_text = c.js("fetch('/api/forward-validation/export/trades').then(r => r.text())")
+    page = c.js("fetch('/forward_validation.html').then(r => r.text())")
+    c.r.check("API: one OPEN session record for the observed date; the daily report and the trades CSV are plain text; the separate page is served",
+              sessions["total"] >= 1 and sessions["sessions"][0]["session_status"] in ("OPEN", "HEALTHY", "DEGRADED") and str(report or "").startswith("FORWARD PAPER VALIDATION - DAILY REPORT")
+              and str(csv_text or "").splitlines()[0].startswith("position_id,") and 'id="fv-page"' in str(page or ""), [sessions["total"], str(report or "")[:60]])
+    frozen = c.http("GET", "/api/forward-validation/frozen-controls")
+    c.r.eq("API: the frozen strategy controls are reported, never changed", [frozen["controls"]["ready_demand"], frozen["controls"]["max_hold_sessions"], frozen["controls"]["side"], len(frozen["hash"])], [60, 5, "LONG", 64])
+    c.r.eq("observing created no order intent, sent no broker request and changed no mode", [len(xsvc.store.intents()) - intents0, sim.post_count() - posts0, xsvc.mode()["mode"]], [0, 0, mode0])
+    c.r.eq("actions stay disabled next to the forward validation panel", c.js("__tvActions()"), [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]])
+
+
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

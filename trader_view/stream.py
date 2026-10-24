@@ -57,6 +57,8 @@ from account_refresh.service import AccountRefreshService, make_alpaca_view, mak
 from account_refresh.store import AccountRefreshStore
 from cash_flow.service import CashFlowService, make_cash_flow_account_fn   # Stage 6.0.2: cash-flow-adjusted daily P&L for the Stage 5.9.1 gate
 from cash_flow.store import CashFlowStore
+from forward_validation.service import ForwardValidationService   # Stage 6.1: the forward paper validation observer (reads this stream's state; never orders)
+from forward_validation.store import ForwardValidationStore
 
 log = logging.getLogger(__name__)
 HEARTBEAT_TICKS = 5
@@ -75,7 +77,7 @@ class TerminalStream:
                  history_minutes: Optional[int] = None, allow_manual_tick: bool = False, run_loop: bool = True,
                  ppe_poll_seconds: Optional[float] = None, ppe_provider=None, demand_poll_seconds: Optional[float] = None, demand_provider=None,
                  setup_service=None, setup_poll_seconds: Optional[float] = None, now_fn: Callable[[], float] = time.time, proposal_service=None, safety_service=None,
-                 execution_service=None, account_refresh_service=None, cash_flow_service=None):
+                 execution_service=None, account_refresh_service=None, cash_flow_service=None, forward_validation_service=None):
         self.market, self.positions, self.research = market, positions, research
         self.watchlist_fn = watchlist_fn
         self.demo_symbols = tuple(demo_symbols or config.TRADER_DEMO_SYMBOLS)
@@ -113,6 +115,9 @@ class TerminalStream:
         self.proposals.listeners.append(self._proposal_event)
         # Stage 6.0: the executor shares the database; it registers NO listener (setup / proposal events never fire an order) and the socket carries no order message
         self.execution = execution_service or ExecutionService(stream_fn=lambda: self, store=ExecutionStore(self.proposals.store.path))
+        # Stage 6.1: the forward paper validation observer reads this stream's setups / proposals / safety / execution / account / cash-flow state on the
+        # Stage 6.1: same database; it registers NO listener, evaluates nothing and never orders (its only action is the early stop: Paper Auto -> Monitor only)
+        self.forward_validation = forward_validation_service or ForwardValidationService(stream_fn=lambda: self, store=ForwardValidationStore(self.proposals.store.path))
         self._loop_ref: Optional[asyncio.AbstractEventLoop] = None
         self.hub = Hub()
         self.connections: Dict[int, WebSocket] = {}

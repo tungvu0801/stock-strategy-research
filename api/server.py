@@ -39,6 +39,7 @@ from api.routes import execution_safety  # Stage 5.9.1: persisted execution safe
 from api.routes import execution  # Stage 6.0: autonomous PAPER execution of READY setups / reviewable proposals behind the Stage 5.9.1 safety gate
 from api.routes import account_refresh  # Stage 6.0.1: read-only account refresh status feeding proposals and the Stage 5.9.1 gate
 from api.routes import cash_flow_status  # Stage 6.0.2: cash-flow status (GET only) - the deposits / withdrawals input of the Stage 5.9.1 gate
+from api.routes import forward_validation  # Stage 6.1: forward paper validation (GET only) - the descriptive record of the setups -> proposals -> paper execution funnel and session health
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -77,10 +78,14 @@ async def _lifespan(_app):
         _acct_start()  # Stage 6.0.1: first action = STARTUP refresh; until it succeeds proposals / the Stage 5.9.1 gate stay paused
         from execution.scheduler import start_if_enabled as _exec_start  # Stage 6.0: the paper executor consumes setups / proposals / the safety gate; never in tests
         _exec_start()  # Stage 6.0: setups -> proposals -> safety gate -> PAPER execution loop (idle in MONITOR_ONLY; PAPER host only)
+        from forward_validation.scheduler import start_if_enabled as _fv_start  # Stage 6.1: forward validation observer (reads the setups / proposals / execution state; never in tests)
+        _fv_start()  # Stage 6.1: records session health and the setups -> proposals -> execution funnel; its only action is the early stop (Paper Auto -> Monitor only)
     except Exception as exc:  # noqa: BLE001 - the evaluator must never stop the server from starting
         logging.getLogger(__name__).warning("Setup evaluator could not start: %s", type(exc).__name__)
     yield
     try:                                                    # Stage 5.8: stop the setup evaluator thread
+        from forward_validation.scheduler import shutdown as _fv_shutdown  # Stage 6.1: stop the forward validation observer first (a setups / proposals / execution reader)
+        _fv_shutdown()  # Stage 6.1 (setups / proposals / execution reader)
         from execution.scheduler import shutdown as _exec_shutdown  # Stage 6.0: stop the paper executor thread before the setups evaluator
         _exec_shutdown()  # Stage 6.0 (setups / proposals consumer)
         from account_refresh.scheduler import shutdown as _acct_shutdown  # Stage 6.0.1: stop the account refresh thread (proposals / Stage 5.9.1 gate source)
@@ -162,6 +167,7 @@ app.include_router(execution_safety.router)  # Stage 5.9.1: execution safety gat
 app.include_router(execution.router)  # Stage 6.0: autonomous PAPER execution loop (setups -> proposals -> safety gate -> paper order); mode POSTs only; PAPER host only
 app.include_router(account_refresh.router)  # Stage 6.0.1: account refresh status (GET only) - the read-only source of proposals and the Stage 5.9.1 gate
 app.include_router(cash_flow_status.router)  # Stage 6.0.2: cash-flow status (GET only) - adjusted daily P&L of the Stage 5.9.1 gate
+app.include_router(forward_validation.router)  # Stage 6.1: forward paper validation (GET only) - session health, the setups -> proposals -> execution funnel, closed paper trades, reports, exports
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 
