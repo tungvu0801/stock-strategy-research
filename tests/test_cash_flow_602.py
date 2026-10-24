@@ -1013,6 +1013,14 @@ _strip602_blocks_only = _strip602
 def _strip602(text: str) -> str:  # noqa: F811 - wraps the Stage 6.0.2 strip above
     return _strip602_blocks_only(re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n", "", text))
 # <<< Stage 6.0.3
+# >>> Stage 6.1: tests/test_execution_60.py also carries one marked, additive Stage 6.1 block (the index.html rule of the forward paper validation panel,
+# pinned against the Stage 6.1 base by tests/test_forward_validation_61.py); strip Stage 6.1 blocks as well
+_strip602_through_603 = _strip602
+
+
+def _strip602(text: str) -> str:  # noqa: F811 - wraps the Stage 6.0.2 / 6.0.3 strips above
+    return _strip602_through_603(re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.1\b.*?^[ \t]*# <<< Stage 6\.1[^\n]*\n", "", text))
+# <<< Stage 6.1
 
 
 def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
@@ -1032,6 +1040,12 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
               "scripts/run_aapl_paper_smoke.py", "scripts/start_stock_agent.ps1", "scripts/stop_stock_agent.ps1", "tests/conftest.py", "tests/test_aapl_smoke_60.py",
               "tests/test_execution_safety_591.py", "tests/test_proposals_59.py", "tests/test_setups_58.py", "tests/test_windows_runner_60.py", "tests/frontend/trader_account.test.cjs",
               "DESIGN_591_EXECUTION_SAFETY.md", "DESIGN_60_AUTONOMOUS_PAPER.md", "DESIGN_601_CONTINUOUS_ACCOUNT_REFRESH.md"]
+    # >>> Stage 6.1: frontend/index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); everything
+    # outside them stays byte-identical (the blocks themselves are pinned by tests/test_forward_validation_61.py)
+    html61 = re.sub(r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n", "", now("frontend/index.html"))
+    assert html61 == blob("frontend/index.html"), f"frontend/index.html differs from {BASE} outside the Stage 6.1 blocks"
+    pinned = [p for p in pinned if p != "frontend/index.html"]
+    # <<< Stage 6.1
     for rel in pinned:
         assert now(rel) == blob(rel), f"{rel} differs from {BASE}"
     blocks = {"safety/__init__.py": 1, "safety/models.py": 2, "safety/engine.py": 2, "tests/test_execution_60.py": 1, "tests/test_account_refresh_601.py": 1}

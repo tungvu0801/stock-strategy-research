@@ -103,6 +103,13 @@
         "test_model_campaign_50.py"
       ]
     },
+    "validation": {
+      "job": "Pytest Forward Validation",
+      "about": "Stage 6.1 forward paper validation: the observer, session health, funnel / reliability / safety statistics, reports, exports and the Stage 6.1 freeze",
+      "files": [
+        "test_forward_validation_61.py"
+      ]
+    },
     "runner": {
       "job": "Pytest Runner & Smoke",
       "about": "Windows-only: the background runner (real offline processes), the standalone AAPL paper smoke (simulated), desktop notifications",

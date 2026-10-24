@@ -1371,6 +1371,11 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "EXECUTION_SCHEDULER_ENABLED" in now_cfg and config.MAX_OPEN_POSITIONS == 10
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = HTML.splitlines()
+    # >>> Stage 6.1: index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); they are stripped before
+    # the Stage 6.0 line rule below, so every other added line is still exactly the Stage 6.0 script
+    import re as _re61
+    now_html = _re61.sub(r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n", "", "\n".join(now_html) + "\n").splitlines()
+    # <<< Stage 6.1
     assert [l for l in base_html if l not in now_html] == [] and [l for l in now_html if l not in base_html] == ['<script src="paper_bot.js"></script>']
     base_css = blob("frontend/trader_view.css").decode("utf-8")
     assert (ROOT / "frontend" / "trader_view.css").read_text(encoding="utf-8").replace("\r\n", "\n").startswith(base_css.rstrip("\n"))

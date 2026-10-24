@@ -959,6 +959,33 @@ real-account risk controls read **Trading allowed** while `EXECUTION_SAFETY_ACCE
 * **Unchanged:** execution, order submission, exits, strategy, PPE, Demand, Evidence, setups, proposals and thresholds. No Robinhood, no
   model call, no real money.
 
+## Forward Paper Validation (Stage 6.1)
+
+Stage 6.0 proved that the bot can execute safely; Stage 6.1 records whether it stays **operationally reliable** across many real Alpaca
+PAPER sessions and, kept strictly apart, what the **frozen strategy** does forward. It is instrumentation only: no strategy, threshold,
+size, exit, mode or order changes (`DESIGN_61_FORWARD_PAPER_VALIDATION.md`).
+
+* **Observer** (`forward_validation/`): one sample a minute inside the regular session (five minutes outside it) of the mode, the safety
+  gate, account and cash-flow freshness, equity, reconciliation health, open paper positions (with the executor's price as an MFE / MAE
+  mark) and the Stage 6.0 control counts; one record per New York trading session classified HEALTHY / DEGRADED / FAILED / NOT_RUN by
+  documented rules; unobserved weekdays back-filled as NOT_RUN (no exchange holiday calendar exists); process restarts recorded with the
+  state before and after, the reconciliation result and position continuity. Never runs in a test / harness process.
+* **Statistics from persisted events only**: the setup → proposal → entry → fill → position → exit → close funnel with conversion rates,
+  order reliability (duplicates, rejects, cancels, expiries, partial fills, ambiguous submissions), reconciliation findings with a resolution
+  outcome, safety fires (recovered / persistent), freshness, broker errors, closed paper trades with slippage against the persisted reference
+  price, P/L, sampled MFE / MAE, exit reason and setup attribution, drawdown on **adjusted** equity, win rate paired with trade count,
+  average win / loss, a descriptive expectancy and a conservative strategy status that reads `INSUFFICIENT_DATA` until 30 closed trades and
+  30 healthy sessions exist.
+* **The one action**: a critical defect (a duplicate broker order, a non-paper host attempt, an entry recorded while the gate was blocking,
+  a reconciliation mismatch unresolved across sessions) stops Paper Auto at once (Monitor only; positions keep their deterministic exits;
+  nothing is liquidated) and reads **NEEDS ATTENTION**.
+* **Read-only API** `GET /api/forward-validation` (+ `/sessions`, `/closed`, `/closed/{position_id}` audit trace, `/daily`,
+  `/report/daily`, `/report/weekly`, `/export/{kind}` CSV / JSON, `/restarts`, `/events`, `/samples`, `/funnel`, `/frozen-controls`);
+  the compact **Forward Paper Validation** panel after the Paper Bot panel and the separate page `forward_validation.html`.
+* **Operation**: Alpaca PAPER only, Paper Auto deliberately ON during intended validation sessions, regular hours with the existing
+  near-close cutoff, the existing detached Windows runner; the PC must stay awake with network. No forced setups, forced exits, test fault
+  files or unadjusted-P&L acceptance in normal operation. Bad trades and failed sessions stay in the data set.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted
@@ -967,7 +994,7 @@ browser harness drives a simulated world against a guarded local server. The one
 job below succeeded.
 
 * **Pytest Core, Pytest Execution, Pytest Account & Cash Flow, Pytest Paper & Portfolio, Pytest Research, Pytest Model Campaign,
-  Pytest Runner & Smoke.** Seven parallel pytest jobs. Every `tests/test_*.py` file belongs to exactly one job through
+  Pytest Forward Validation, Pytest Runner & Smoke.** Eight parallel pytest jobs. Every `tests/test_*.py` file belongs to exactly one job through
   `.github/ci/pytest_groups.json`; `python scripts/ci_pytest_groups.py check` fails when a file is missing, listed twice or absent, and
   runs before every suite (also as `tests/test_ci_groups_603.py`). A new test file that belongs to no group therefore fails CI instead
   of silently never running. The groups are balanced by the runtime measured on the runner, where the SQLite-heavy execution,

@@ -1,6 +1,6 @@
 # Stock Agent CI (Stage 6.0.3: parallel suites)
 #
-# The pytest suite runs as five parallel jobs on GitHub-hosted Windows runners (the application targets Windows); every
+# The pytest suite runs as eight parallel jobs on GitHub-hosted Windows runners (the application targets Windows); every
 # tests/test_*.py file belongs to exactly one job through .github/ci/pytest_groups.json, which scripts/ci_pytest_groups.py and
 # tests/test_ci_groups_603.py verify, so a new test file that belongs to no group fails CI instead of silently never running.
 # The Node tests and the browser harness run as their own jobs. "CI Success" is the one stable status that is green only when every
@@ -52,6 +52,8 @@ jobs:
             name: Pytest Research
           - suite: campaign
             name: Pytest Model Campaign
+          - suite: validation
+            name: Pytest Forward Validation
           - suite: runner
             name: Pytest Runner & Smoke
     steps:

@@ -184,5 +184,10 @@ def test_09_backend_ppe_evidence_and_prior_tests_identical_to_base():
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE} (Stage 5.6.1 is UI only)"
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = HTML.splitlines()
+    # >>> Stage 6.1: index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); they are stripped before
+    # the Stage 5.6.1 line rule below, so the allowed added lines stay exactly the Stage 5.8 / 5.9 / 5.9.1 / 6.0 ones
+    import re as _re61
+    now_html = _re61.sub(r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n", "", "\n".join(now_html) + "\n").splitlines()
+    # <<< Stage 6.1
     assert [l for l in base_html if l not in now_html] == []
     assert [l for l in now_html if l not in base_html] == ['    <div id="setup-alerts"></div>', '<script src="trader_render.js"></script>', '<script src="setup_alerts.js"></script>', '<script src="trade_review.js"></script>', '<script src="risk_controls.js"></script>', '<script src="paper_bot.js"></script>']   # + Stage 5.8's two additive lines + Stage 5.9's, 5.9.1's and 6.0's scripts
