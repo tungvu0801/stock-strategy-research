@@ -56,7 +56,7 @@ from api.routes import trader_view as RT  # noqa: E402
 from test_trader_view_55 import T0, WL, FakePositions, FakeResearch  # noqa: E402
 from test_setups_58 import READY_IN, WATCH_IN, FakeClock, fx  # noqa: E402
 
-BASE = "5d100d8"                                                     # stage-601-continuous-account-refresh HEAD this stage branched from
+BASE = "47e79a7"                                                     # main = the Stage 6.0.1 merge (PR #14, incl. the Stage 6.0 / 6.0.1 CI test fixes): the base this stage is finalized on
 UTC = timezone.utc
 OPEN = datetime(2026, 10, 21, 13, 31, tzinfo=UTC)                     # Wednesday 09:31 New York
 FAKE_KEY, FAKE_SECRET = "CASHFLOWTEST-paperkey-9f8e7d6c", "CASHFLOWTEST-papersecret-5b4a3928"
