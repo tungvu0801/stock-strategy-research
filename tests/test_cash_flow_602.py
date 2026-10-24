@@ -1005,6 +1005,14 @@ def test_M01_six_and_a_half_hours_no_funding_deposit_withdrawal_and_a_real_halt(
 
 def _strip602(text: str) -> str:
     return re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.2.*?^[ \t]*# <<< Stage 6\.0\.2[^\n]*\n", "", text)
+# >>> Stage 6.0.3: tests/test_execution_60.py and tests/test_account_refresh_601.py also carry one marked, additive Stage 6.0.3 block each (the
+# CI-parallelization pin reconciliation, pinned against the Stage 6.0.3 base by tests/test_ci_groups_603.py); strip those blocks as well
+_strip602_blocks_only = _strip602
+
+
+def _strip602(text: str) -> str:  # noqa: F811 - wraps the Stage 6.0.2 strip above
+    return _strip602_blocks_only(re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n", "", text))
+# <<< Stage 6.0.3
 
 
 def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():

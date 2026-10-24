@@ -958,3 +958,28 @@ real-account risk controls read **Trading allowed** while `EXECUTION_SAFETY_ACCE
   same line. Risk Controls still show only Trading allowed, New trades paused or Trading stopped.
 * **Unchanged:** execution, order submission, exits, strategy, PPE, Demand, Evidence, setups, proposals and thresholds. No Robinhood, no
   model call, no real money.
+
+## Continuous integration (Stage 6.0.3, parallel suites)
+
+`Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted
+Windows runners, with no secret and no `.env`: the tests block every socket, replace both paper-order wires with tripwires, and the
+browser harness drives a simulated world against a guarded local server. The one stable status is **CI Success**, green only when every
+job below succeeded.
+
+* **Pytest Core, Pytest Execution, Pytest Research, Pytest Model Campaign, Pytest Runner & Smoke.** Five parallel pytest jobs. Every
+  `tests/test_*.py` file belongs to exactly one job through `.github/ci/pytest_groups.json`; `python scripts/ci_pytest_groups.py check`
+  fails when a file is missing, listed twice or absent, and runs before every suite (also as `tests/test_ci_groups_603.py`). A new test
+  file that belongs to no group therefore fails CI instead of silently never running. The groups are balanced by measured runtime; the
+  Windows-only runner, smoke and desktop-notification tests stay together. The Stage 4.6B manual paper-order tests still run first as
+  their own step in the execution job.
+* **Frontend Tests.** The Node tests (`node --test "tests/frontend/*.test.cjs"`); the same files also run through their pytest wrappers.
+* **Browser Harness.** `python -m browser_tests.run` with the runner image's headless Microsoft Edge; its screenshots and summary are
+  uploaded only when it fails.
+
+Run a group locally with `python scripts/ci_pytest_groups.py run <group> -- -q`. Jobs do not share a database, port or runtime folder;
+each test picks free ports and temporary folders. `fail-fast` is off so one run shows every failing suite.
+
+The workflow is verified structurally (`tests/test_ci_groups_603.py`: job names, triggers, the Stage 4.6B step, timeouts, no secret) and
+is no longer byte-pinned by the Stage 5.5 freeze test. That pin, and the freeze tests of Stages 6.0, 6.0.1 and 6.0.2 that pin each
+other, each carry one marked, additive Stage 6.0.3 block (the `>>>` / `<<<` comment markers used since Stage 6.0.2); `test_P01` proves
+every byte outside those blocks equals the Stage 6.0.3 base and that no other file carries such a block.

@@ -607,6 +607,13 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
               "trader_view/models.py", "trader_view/__init__.py", "frontend/risk_controls.js", "frontend/trader_view.js", "frontend/trader_render.js", "frontend/trade_review.js",
               "scripts/run_aapl_paper_smoke.py", "scripts/start_stock_agent.ps1", "scripts/stop_stock_agent.ps1", "tests/conftest.py", "tests/test_execution_60.py",
               "tests/test_aapl_smoke_60.py", "tests/test_execution_safety_591.py", "tests/test_proposals_59.py", "tests/test_setups_58.py"]
+    # >>> Stage 6.0.3: the Stage 6.0 pin test also carries one marked, additive Stage 6.0.3 block (CI-parallelization pin reconciliation, pinned
+    # against the Stage 6.0.3 base by tests/test_ci_groups_603.py); strip its Stage 6.0.2 and 6.0.3 blocks, everything outside them stays byte-identical
+    import re as _re603
+    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n"))
+    assert now603.encode("utf-8") == blob("tests/test_execution_60.py"), f"tests/test_execution_60.py differs from {BASE} outside its Stage 6.0.2 / 6.0.3 blocks"
+    pinned = [p for p in pinned if p != "tests/test_execution_60.py"]
+    # <<< Stage 6.0.3
     # >>> Stage 6.0.2: the safety files and the Stage 6.0 pin test carry marked, additive Stage 6.0.2 blocks (DESIGN_602 section 6); everything outside them stays byte-identical
     import re as _re602
     for rel in [p for p in pinned if p.startswith("safety/") or p == "tests/test_execution_60.py"]:
