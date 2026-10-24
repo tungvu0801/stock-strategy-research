@@ -927,3 +927,34 @@ minutes on an unattended bot.
   details under View details. `scripts\check_stock_agent.ps1` prints the same line and whether the refresh loop runs.
 * **Unchanged:** execution, strategy, PPE, Demand, Evidence, setup rules, proposal sizing, thresholds and order type. No Robinhood, no model
   call, no real money.
+
+## Cash-flow-adjusted daily P&L (Stage 6.0.2, read only)
+
+The daily-loss control now separates money moved in or out of the Alpaca PAPER account from trading P&L (`cash_flow/`, design:
+`DESIGN_602_ADJUSTED_DAILY_PNL.md`). This removes the Stage 6.0.1 limitation: with fresh data and no unexplained account activity, the
+real-account risk controls read **Trading allowed** while `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL` stays **off**.
+
+* **Source.** Alpaca's account activity feed, `GET /v2/account/activities?category=non_trade_activity` on the paper host only. It is
+  read in the same refresh cycle as the account snapshot: snapshot, then activities, then the risk controls. Paging is bounded at 20
+  pages of 100, and reads retry at most 3 times (2 s, then 5 s; a 429 `Retry-After` is honoured up to 30 s).
+* **Ledger.** `cash_flow_events` is append-only and deduplicated by the broker's activity id; a changed record becomes a new revision.
+  `cash_flow_refresh_attempts` (append-only) and `cash_flow_liveness` (one row) record every read. Account numbers in broker text are
+  redacted.
+* **Classification.** Deposits, withdrawals and cash journals (`CSD`, `CSW`, `TRANS`, `ACATC`, `JNLC`, `JNL`) adjust the baseline. Fees,
+  dividends, interest and corporate actions stay in trading P&L. Unknown or unvalued types (`MISC`, `JNLS`, `ACATS`, anything new) are
+  never guessed: they pause new entries with `CASH_FLOW_CLASSIFICATION_UNCERTAIN`.
+* **Formula.** `adjusted start = start of day + (deposits + journals in) - (withdrawals + journals out)`; daily loss % =
+  `max(0, (adjusted start - equity) / adjusted start x 100)`. The start of day is the Stage 5.9.1 persisted baseline; nothing new is
+  stored for it. Example: start 100000, deposit 5000, equity 104000 gives a daily P&L of -1000 (0.95 %), not +4000.
+* **Timing.** An event counts from its broker timestamp. Within 60 s of the baseline read it is ambiguous for the day; a brand-new event
+  waits one refresh (`CASH_FLOW_PENDING`) until the account snapshot reflects it. A late-posted event is placed by its own time and the
+  risk controls re-evaluate at once. A new New York trading date starts a new baseline and a new window.
+* **Safety.** Healthy needs a fresh snapshot, today's baseline, a fresh activity read taken after that snapshot, and no pending,
+  ambiguous or unclassified activity. Anything else means **New trades paused**; exits continue. A halt fires from the adjusted loss and
+  stays latched for the day: a later deposit never clears it, and a withdrawal never fakes a loss.
+* **API:** `GET /api/cash-flow-status`, `/events` and `/attempts`, read only, with no broker ids or credentials.
+* **UI and health check:** the Paper Bot panel adds one line, for example **Cash-flow data: Fresh (12s ago)**, with today's trading P/L,
+  the deposits / withdrawals adjustment, the daily loss and its limit under View details. `scripts\check_stock_agent.ps1` prints the
+  same line. Risk Controls still show only Trading allowed, New trades paused or Trading stopped.
+* **Unchanged:** execution, order submission, exits, strategy, PPE, Demand, Evidence, setups, proposals and thresholds. No Robinhood, no
+  model call, no real money.

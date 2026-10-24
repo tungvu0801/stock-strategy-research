@@ -51,3 +51,21 @@ REASON_TEXT = {
 }
 STARTUP_POLICIES = ("KEEP", "HALT_ON_START")
 DISCLAIMER = "Risk controls gate future entries only. Nothing here places, previews or cancels an order."
+# >>> Stage 6.0.2: cash-flow-adjusted daily P&L (DESIGN_602_ADJUSTED_DAILY_PNL.md section 6). Additive: nothing above changes meaning.
+ADJUSTMENTS = ADJUSTMENTS + ("CASH_FLOW_ADJUSTED",)
+R_CASH_FLOW_STALE = "CASH_FLOW_DATA_STALE"
+R_CASH_FLOW_PENDING = "CASH_FLOW_PENDING"
+R_CASH_FLOW_AMBIGUOUS = "CASH_FLOW_TIMING_AMBIGUOUS"
+R_CASH_FLOW_UNCERTAIN = "CASH_FLOW_CLASSIFICATION_UNCERTAIN"
+R_ADJUSTED_BASELINE_INVALID = "ADJUSTED_BASELINE_INVALID"
+# today's cash-flow adjustment status -> the reason a new entry pauses (UNAVAILABLE keeps its Stage 5.9.1 meaning and code)
+CASH_FLOW_REASONS = {"STALE": R_CASH_FLOW_STALE, "PENDING": R_CASH_FLOW_PENDING, "AMBIGUOUS": R_CASH_FLOW_AMBIGUOUS, "UNCERTAIN": R_CASH_FLOW_UNCERTAIN,
+                     "UNAVAILABLE": R_ADJUSTMENT_NA}
+REASON_TEXT.update({
+    R_CASH_FLOW_STALE: "Deposit and withdrawal data is stale",
+    R_CASH_FLOW_PENDING: "A new deposit or withdrawal is not yet reflected in the account snapshot",
+    R_CASH_FLOW_AMBIGUOUS: "A deposit or withdrawal is too close to the daily baseline to place",
+    R_CASH_FLOW_UNCERTAIN: "An account activity could not be classified as trading or funding",
+    R_ADJUSTED_BASELINE_INVALID: "Starting equity after deposits and withdrawals is not positive",
+})
+# <<< Stage 6.0.2

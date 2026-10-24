@@ -79,6 +79,10 @@ def daily_loss(baseline: Optional[Baseline], account: AccountEquity, threshold_p
     start = D(baseline.starting_equity)
     if start is None or start <= 0:
         return _unavailable(out, R_EQUITY_INVALID)
+    # >>> Stage 6.0.2: cash-flow-adjusted daily P&L (DESIGN_602 section 6); without a cash-flow status the Stage 5.9.1 logic below is unchanged
+    if account.cash_flow_status is not None and (account.cash_flow_status == "ADJUSTED" or not accept_unadjusted):
+        return _cash_flow_daily_loss(out, account, start, cur, thr)
+    # <<< Stage 6.0.2
     pnl = money(cur - start)
     loss_pct = max(Decimal(0), (start - cur) / start * 100).quantize(PCT, rounding=ROUND_HALF_UP)
     out.daily_pnl, out.daily_loss_pct = s(pnl), s(loss_pct)
@@ -105,6 +109,34 @@ def _unavailable(out: DailyLoss, code: str) -> DailyLoss:
     return out
 
 
+# >>> Stage 6.0.2: the adjusted daily loss (DESIGN_602 sections 3 and 6). The latch semantics are the Stage 5.9.1 ones.
+def _cash_flow_daily_loss(out: DailyLoss, account: AccountEquity, start: Decimal, cur: Decimal, thr: Decimal) -> DailyLoss:
+    """Only an ADJUSTED cash-flow status is evaluated; any other status pauses new entries with its precise reason (and a day that is
+    already latched stays TRIGGERED). An unknown deposit / withdrawal never becomes a halt, a measured adjusted loss always can."""
+    from safety import CASH_FLOW_REASONS, R_ADJUSTED_BASELINE_INVALID
+    out.cash_flow_status = account.cash_flow_status
+    out.unadjusted_daily_pnl = s(money(cur - start))
+    if account.cash_flow_status != "ADJUSTED":
+        return _unavailable(out, CASH_FLOW_REASONS.get(account.cash_flow_status, R_ADJUSTMENT_NA))
+    net = D(account.net_external_cash_flow)
+    if net is None:
+        return _unavailable(out, R_ADJUSTMENT_NA)
+    adj = start + net                                                                 # adjusted_starting_equity = starting_equity + net_external_cash_flow
+    out.net_external_cash_flow, out.adjusted_starting_equity = s(money(net)), s(money(adj))
+    if adj <= 0:
+        return _unavailable(out, R_ADJUSTED_BASELINE_INVALID)
+    loss_pct = max(Decimal(0), (adj - cur) / adj * 100).quantize(PCT, rounding=ROUND_HALF_UP)
+    out.daily_pnl, out.daily_loss_pct, out.adjustments = s(money(cur - adj)), s(loss_pct), "CASH_FLOW_ADJUSTED"
+    if loss_pct >= thr:
+        out.status, out.code = "TRIGGERED", R_DAILY                                   # the halt fires from the ADJUSTED loss
+        return out
+    if out.latched:
+        return out                                                                    # latched for the day: a later deposit never clears it
+    out.status, out.code = "OK", None
+    return out
+
+
+# <<< Stage 6.0.2
 # ---------------------------------------------------------------- precedence ---------------------------------------------------------
 
 def decide(kill: KillSwitch, pause: Pause, daily: DailyLoss) -> Tuple[str, bool, List[str], str]:

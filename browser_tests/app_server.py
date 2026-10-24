@@ -270,6 +270,8 @@ def prepare(tmp: Path, guard: Guard):
     ai.paper = _sim60()
     from api.routes.trader_view import stream as _tv_stream       # Stage 6.0.1: the STARTUP account refresh the loop would make (simulated paper broker)
     _tv_stream().account_refresh.refresh(trigger="STARTUP")
+    config.CASH_FLOW_STALE_SECONDS = 3600.0                           # Stage 6.0.2: the cash-flow read of the same STARTUP cycle (simulated activity feed)
+    _tv_stream().cash_flow.refresh(trigger="STARTUP")
     APO._sleep = lambda seconds: None                      # the automatic 2 s lookup delay is not waited for
     APO._now = lambda: _dt.now(_tz.utc) + _td(seconds=ai.orders_offset[0])   # real time + a test offset (30 s rule)
     from api.routes import portfolio_rotation as PRT       # Stage 4.7: the harness clock; snapshots start empty (0 requests)

@@ -22,4 +22,4 @@ REQUIRED_ACCOUNT_FIELDS = ("status", "equity", "cash", "buying_power", "trading_
 RETRYABLE_CODES = ("TIMEOUT", "CONNECTION", "RATE_LIMITED", "UNREADABLE")            # plus any HTTP_5xx
 READ_PATHS = ("/v2/account", "/v2/positions", "/v2/orders")
 DISCLAIMER = ("Read-only Alpaca PAPER account data, refreshed automatically. It feeds the risk controls; it never places, cancels or changes an "
-              "order or a position. Deposits and withdrawals still cannot be separated from trading P&L.")
+              "order or a position. Deposits and withdrawals are separated from trading P&L by the Stage 6.0.2 cash-flow ledger.")
