@@ -55,13 +55,15 @@ FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"
 
 # ================================================================ the Stage 6.2 pins (the earlier freeze tests import them) ======================
 BASE = "9fae08b8b55373bb161decc7e2b89ba1d27ecc6d"                                          # origin/main with the WAL bootstrap fix merged (PR #21)
-NEW_62 = {"DESIGN_62_STRATEGY_VALIDATION.md", "STRATEGY_VALIDATION_HARNESS.md", "api/routes/strategy_validation.py", "database/strategy_validation_migrations.py",
+NEW_62_OWN = {"DESIGN_62_STRATEGY_VALIDATION.md", "STRATEGY_VALIDATION_HARNESS.md", "api/routes/strategy_validation.py", "database/strategy_validation_migrations.py",
           "strategy_validation/__init__.py", "strategy_validation/__main__.py", "strategy_validation/adapters.py", "strategy_validation/arms.py",
           "strategy_validation/audit.py", "strategy_validation/candidates.py", "strategy_validation/causality.py", "strategy_validation/cli.py",
           "strategy_validation/dataset.py", "strategy_validation/diagnostics.py", "strategy_validation/engine.py", "strategy_validation/metrics.py",
           "strategy_validation/models.py", "strategy_validation/replay.py", "strategy_validation/service.py", "strategy_validation/simulator.py",
           "strategy_validation/store.py", "strategy_validation/verdict.py", "tests/frontend/strategy_validation.test.cjs", "tests/strategy_validation_fixtures.py",
           "tests/test_strategy_validation_62.py"}   # Stage 6.2 files
+NEW_63 = {"DESIGN_63_DDR_REPLAY_READINESS.md"}                                                # Stage 6.3: the Downside Dislocation Recovery replay-readiness document
+NEW_62 = NEW_62_OWN | NEW_63   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py"}
 MARK_62 = "# >>> " + "Strategy Validation 6.2"                                                  # built, not literal: only browser_tests/flows.py carries it
@@ -913,6 +915,7 @@ def test_F01_main_plus_only_the_stage_62_files_and_exact_edits():
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     assert new == NEW_62, {"unexpected_new": sorted(new - NEW_62), "missing_new": sorted(NEW_62 - new)}
+    assert all(p.endswith(".md") for p in NEW_63)                                                 # Stage 6.3 adds documentation only (no replay implementation)
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed == CHANGED_62, {"unexpected_changes": sorted(changed - CHANGED_62), "missing_changes": sorted(CHANGED_62 - changed)}
     for rel in sorted(CHANGED_62):                                                              # each changed file: the base + its delimited block + its listed exact edits
@@ -959,3 +962,24 @@ def test_Z01_documents_state_the_method_and_the_limits():
     assert len(sec) == 1 and "PASS only means eligible for human review" in sec[0] and 'Downside Dislocation Recovery reads "Not yet evaluated"' in sec[0]
     assert readme.index("## Unified product flow + Strategy Lab foundation (Stage 6.1.2)") < readme.index("## Strategy validation harness (Stage 6.2") < readme.index("## Continuous integration (Stage 6.0.3")
     assert not re.search(r"(?i)\b(guaranteed|profitable|buy now|sell now)\b", readme) and not re.search(r"(?i)\bregime\b", h + d + readme)
+
+
+def test_Z02_stage_63_downside_recovery_replay_readiness_and_NOT_RUN_kept():
+    doc = now_text("DESIGN_63_DDR_REPLAY_READINESS.md")
+    for s in ("**Conclusion: FAITHFUL REPLAY NOT ESTABLISHED.**", "## 3. Strategy parity matrix", "| Live condition | Historical replay source | Replayable? | Parity | Notes |",
+              "## 4. Missing inputs (concrete)", "## 5. Point-in-time provenance", "event_date", "data_available_at", "## 6. Dataset versioning", "## 7. Corporate actions",
+              "## 8. Universe bias", "survivorship bias", "fixed, known symbol set", "Chosen policy: **PURGE**", "## 10. Persistence gate", "## 11. Candidate parity",
+              "setups.engine.evaluate", "## 12. Forward-data collection plan", "## 13. Rejected shortcuts", "## 14. Definition of ready", "is NOT_RUN"):
+        assert s in doc, s
+    matrix = doc[doc.index("## 3. Strategy parity matrix"):doc.index("## 4. Missing inputs")]
+    parity = re.findall(r"\| \*\*(EXACT|APPROXIMATE|UNAVAILABLE)\*\* \|", matrix)
+    assert len(parity) >= 15 and "UNAVAILABLE" in parity and parity.count("EXACT") <= 1   # only TIME_EXIT is exact: no entry condition is
+    for cond in ("PPE Confidence ≥ 40", "Evidence gate", "Market Demand ≥ 60"):
+        row = next(l for l in matrix.splitlines() if l.startswith(f"| {cond}"))
+        assert "**UNAVAILABLE**" in row, cond                                                  # the READY conditions have no point-in-time source
+    from strategy_registry import registry as R
+    from strategy_validation.adapters import ADAPTERS, DDR_REASON, DownsideRecoveryAdapter, adapter_for
+    assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY")) == (None, DDR_REASON) and "DESIGN_63_DDR_REPLAY_READINESS.md" in DDR_REASON
+    assert DownsideRecoveryAdapter.historical_replay_supported is False and list(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY"]   # no replay adapter was added
+    from strategy_registry import service as SR
+    assert SR.detail_view("DOWNSIDE_DISLOCATION_RECOVERY")["validation"]["validation_status"] == "NOT_RUN"

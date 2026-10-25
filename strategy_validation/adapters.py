@@ -50,7 +50,8 @@ class StrategyAdapter:
 DDR_REASON = ("No honest historical replay exists for Downside Dislocation Recovery: READY needs a point-in-time Stage 5.4 evidence packet, and no "
               "packet exists for past sessions (the Stage 5.6 PPE replay could not compute Confidence: EVIDENCE_NOT_AVAILABLE for every observation); "
               "intraday Market Demand was validated on synthetic sessions only. A backtest would have to invent that evidence, so the strategy is not "
-              "validated here. Its forward evidence is the Stage 6.1 forward paper validation.")
+              "validated here. Its forward evidence is the Stage 6.1 forward paper validation. Replay readiness, the missing inputs and the "
+              "forward-data plan: DESIGN_63_DDR_REPLAY_READINESS.md (faithful replay not established).")
 
 
 class DownsideRecoveryAdapter(StrategyAdapter):
