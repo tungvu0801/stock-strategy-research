@@ -1,10 +1,11 @@
 // Stage 6.1.1 — PRODUCT UI. Four primary sections (TRADE · POSITIONS · ACTIVITY · MORE) layered over the existing dashboard: the legacy tab
 // bar is hidden, every legacy workspace stays reachable through MORE, TRADE opens by default on the Trader View with a persistent status bar
-// (PAPER · MARKET · ACCOUNT · TRADING · AUTO), an Agent card (WATCHING · READY · ENTERING · IN TRADE · EXITING · CLOSED · NEEDS ATTENTION), a
-// compact market / setup summary, a Risk card with STOP TRADING, the current position and Paper Auto; the legacy panels become "View details".
+// (PAPER · MARKET · SYSTEM · AUTO), an Agent / Setup card (WATCHING · READY · ENTERING · IN TRADE · EXITING · CLOSED · NEEDS ATTENTION), a
+// Position card, a Risk card with STOP TRADING, a compact chart empty state and one diagnostics line; the legacy panels become "View details".
 // Display only: every number comes from the existing read-only state (Paper Bot, Risk Controls, Trader View) or the existing GET routes; the
 // two actions (STOP TRADING, Paper Auto) delegate to the existing Risk Controls / Paper Bot buttons, so their semantics (two clicks for Paper
-// Auto, the persisted POSTs) are exactly the Stage 5.9.1 / 6.0 ones. Nothing here decides a state: the backend truth is only mapped for display.
+// Auto, the persisted POSTs) are exactly the Stage 5.9.1 / 6.0 ones. Nothing here decides a state: the backend truth is only mapped for display
+// (SYSTEM HEALTHY / DEGRADED / STOPPED is a display summary of the gate, account, cash-flow, reconciliation and attention fields, never a new state).
 // Loaded as a classic script (window.ProductUI) and required by the node tests.
 (function (root, factory) {
   const api = factory();
@@ -15,6 +16,7 @@
   const G = typeof globalThis !== "undefined" ? globalThis : (typeof window !== "undefined" ? window : {});
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const words = (x) => (x == null || x === "" ? "" : String(x).replace(/_/g, " ").toLowerCase());
+  const cap = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
   const num = (x) => { const n = Number(x); return x == null || x === "" || !isFinite(n) ? null : n; };
   const money = (x) => { const n = num(x); return n == null ? "—" : `${n > 0 ? "+" : ""}${n.toFixed(2)}`; };
   const hm = (iso) => (iso ? String(iso).slice(11, 16) : "—");
@@ -25,14 +27,17 @@
   const TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled.";
   const DEFAULT = "trade";
   const MAX_HOLD_DEFAULT = 5;
+  const PENDING_GRACE_MS = 8000;                                               // "Loading candles" longer than this is shown as unavailable
   // the user-facing state model: the Stage 6.0 card keys / Stage 5.8 setup states mapped for display only (the backend state machines are untouched)
-  const AGENT = { WATCHING: ["WATCHING", "Waiting for setup conditions"], READY: ["READY", "Eligible for entry"], ENTERING: ["ENTERING", "Order submitted / awaiting fill"],
-                  IN_TRADE: ["IN TRADE", "Monitoring position"], EXITING: ["EXITING", "Exit required / order submitted"], CLOSED: ["CLOSED", "Trade completed"],
+  const AGENT = { WATCHING: ["WATCHING", "Waiting for setup conditions"], READY: ["READY", "Eligible for entry review"], ENTERING: ["ENTERING", "Order submitted / awaiting fill"],
+                  IN_TRADE: ["IN TRADE", "Monitoring exit conditions"], EXITING: ["EXITING", "Exit required / order submitted"], CLOSED: ["CLOSED", "Trade completed"],
                   ATTENTION: ["NEEDS ATTENTION", "Manual review required"], STOPPED: ["NEEDS ATTENTION", "Trading stopped by risk controls"], NONE: ["WATCHING", "Waiting for setup conditions"] };
   const SETUP_TO_AGENT = { WATCH: "WATCHING", READY: "READY", INVALIDATED: "WATCHING", NONE: "WATCHING" };
   const SAFETY_TEXT = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New trades paused", HALTED: "Trading stopped", UNKNOWN: "Risk status unknown" };
   const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "warn", HALTED: "bad", UNKNOWN: "bad" };
+  const ACCOUNT_TEXT = { FRESH: "Account data fresh", STALE: "Account data stale", STARTING: "Account data checking", UNAVAILABLE: "Account data unavailable", DISABLED: "Account refresh disabled" };
   const CASH_TEXT = { FRESH: "fresh", STALE: "stale", UNAVAILABLE: "unavailable", AMBIGUOUS: "unclear" };
+  const SYSTEM_CLS = { HEALTHY: "ok", DEGRADED: "warn", STOPPED: "bad", UNKNOWN: "" };
   // MORE: every legacy workspace, grouped; nothing is deleted. Strategy Lab workspaces are read from its own sub-navigation at run time.
   const MORE = [
     { title: "Research", items: [{ tab: "strategy", label: "Strategy Lab", lab: true }, { tab: "setups", label: "Research Setups" }, { tab: "history", label: "Research History" }] },
@@ -41,7 +46,8 @@
                                  { tab: "portfolio", label: "Portfolio (Robinhood, read only)" }] },
     { title: "Settings", items: [{ action: "settings", label: "Advanced configuration" }] },
   ];
-  const state = { section: null, legacyTab: null, timer: null, fetchTimer: null, cards: null, posDetails: null, posData: null, actData: null, limits: null, booted: false, error: null };
+  const state = { section: null, legacyTab: null, timer: null, fetchTimer: null, posDetails: null, posData: null, actData: null, limits: null, booted: false, error: null,
+                  whyOpen: false, riskOpen: false, posOpen: false, sysOpen: false, diagOpen: false, pendingSince: null, chartForced: null, chartKind: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -52,24 +58,57 @@
     let out = { key, label, text, cls: label.toLowerCase().replace(/ /g, "-") };
     if (attention && key !== "ATTENTION") out = { key: "ATTENTION", label: "NEEDS ATTENTION", text: (exec.attention_reasons && exec.attention_reasons[0]) || "Manual review required", cls: "needs-attention" };
     else if (stopped && !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION"].includes(key)) out = { key: "STOPPED", label: "NEEDS ATTENTION", text: AGENT.STOPPED[1], cls: "needs-attention" };
-    if (card && card.line && ["ENTERING", "IN_TRADE", "EXITING", "CLOSED", "ATTENTION"].includes(key) && out.key === key) out.text = card.line;
+    if (card && card.line && ["ENTERING", "EXITING", "CLOSED", "ATTENTION"].includes(key) && out.key === key) out.text = card.line;
     return out;
+  }
+
+  // the setup line under the Agent state: plain words from the stored setup state; a count only from the engine's own blocker list (never invented)
+  function setupLines(agent, dom) {
+    const s = (dom && dom.setupState) || null;
+    const blockers = (dom && dom.blockers) || [];
+    switch (agent.key) {
+      case "READY": return { line: "Setup conditions met", sub: "" };
+      case "ENTERING": return { line: "", sub: "" };                                      // the state line already says "Order submitted / awaiting fill"
+      case "IN_TRADE": return { line: "", sub: "" };                                      // "Monitoring exit conditions" is the state line
+      case "EXITING": return { line: "Exit in progress", sub: "Waiting for the exit order to fill" };
+      case "CLOSED": return { line: "Watching for the next setup", sub: "" };
+      case "ATTENTION": case "STOPPED": return { line: "Setup · on hold", sub: "" };
+      default:
+        if (s === "WATCH") return { line: "Setup · Watching", sub: blockers.length ? `${blockers.length} condition${blockers.length === 1 ? "" : "s"} outstanding` : "Waiting for conditions" };
+        if (s === "INVALIDATED") return { line: "Setup · Invalidated", sub: "Waiting for a new setup" };
+        if (s === "NONE") return { line: "Setup · No active setup", sub: "" };                  // the state line already says it is waiting
+        return { line: "Setup", sub: "Waiting for conditions" };
+    }
+  }
+
+  // SYSTEM HEALTHY / DEGRADED / STOPPED: a display summary of the existing dependencies, in precedence order; every item stays listed in the detail
+  function systemModel(exec, safety) {
+    const st = (safety && safety.state) || (exec && exec.safety_state) || null;
+    const acct = (exec && exec.account_data) || {};
+    const cash = acct.cash_flow || null;
+    const items = [];
+    if (st) items.push({ key: "gate", level: SAFETY_CLS[st] || "bad", text: `Safety gate: ${SAFETY_TEXT[st] || words(st)}`, reason: (safety && safety.reason_text) || "" });
+    for (const r of (exec && exec.attention_reasons) || []) items.push({ key: "attention", level: "bad", text: `Needs attention: ${words(r)}` });
+    if (acct.status) items.push({ key: "account", level: acct.status === "FRESH" ? "ok" : "warn", text: ACCOUNT_TEXT[acct.status] || `Account data ${words(acct.status)}` });
+    if (cash && cash.status) items.push({ key: "cash", level: cash.status === "FRESH" ? "ok" : "warn", text: `Cash-flow data ${CASH_TEXT[cash.status] || words(cash.status)}` });
+    if (exec && exec.reconciliation_healthy != null) items.push({ key: "recon", level: exec.reconciliation_healthy ? "ok" : "bad", text: exec.reconciliation_healthy ? "Reconciliation healthy" : "Reconciliation needs a look" });
+    const loaded = !!exec && !!st;
+    const stopped = st === "HALTED" || st === "UNKNOWN" || !!(exec && exec.attention);
+    const level = !loaded ? "UNKNOWN" : stopped ? "STOPPED" : items.some((i) => i.level !== "ok") ? "DEGRADED" : "HEALTHY";
+    const primary = items.find((i) => i.level === "bad") || items.find((i) => i.level === "warn") || null;
+    return { level, loaded, text: loaded ? `SYSTEM ${level}` : "SYSTEM —", cls: SYSTEM_CLS[level], items, primary: primary ? (primary.reason || primary.text) : "" };
   }
 
   function statusModel(exec, safety) {
     const env = (exec && exec.environment) || {};
-    const acct = (exec && exec.account_data) || {};
     const market = (exec && exec.scheduler && exec.scheduler.market) || {};
-    const st = (safety && safety.state) || (exec && exec.safety_state) || null;
     const mode = exec && exec.mode;
+    const sys = systemModel(exec, safety);
     const paper = { key: "paper", text: env.simulated ? "SIMULATED PAPER" : "PAPER", cls: "ok" };
     const mk = market.regular_session == null ? { key: "market", text: "MARKET —", cls: "" } : { key: "market", text: market.regular_session ? "MARKET OPEN" : "MARKET CLOSED", cls: market.regular_session ? "ok" : "" };
-    const a = acct.status || null;
-    const account = { key: "account", text: a === "FRESH" ? "ACCOUNT FRESH" : a === "STALE" ? "ACCOUNT STALE" : a === "STARTING" ? "ACCOUNT CHECKING" : a ? "ACCOUNT UNAVAILABLE" : "ACCOUNT —",
-                      cls: a === "FRESH" ? "ok" : a === "STALE" ? "warn" : a === "STARTING" || !a ? "" : "warn" };
-    const trading = { key: "trading", text: st ? (SAFETY_TEXT[st] || words(st)).toUpperCase() : "RISK —", cls: st ? SAFETY_CLS[st] || "bad" : "" };
+    const system = { key: "system", text: sys.text, cls: sys.cls, level: sys.level };
     const auto = { key: "auto", text: mode === "PAPER_AUTO" ? "AUTO ON" : mode ? "AUTO OFF" : "AUTO —", cls: mode === "PAPER_AUTO" ? "ok" : "" };
-    return [paper, mk, account, trading, auto];
+    return [paper, mk, system, auto];
   }
 
   function riskModel(exec, safety) {
@@ -80,12 +119,15 @@
     const head = SAFETY_TEXT[st] || SAFETY_TEXT.UNKNOWN;
     lines.push({ ok: st === "TRADING_ALLOWED", level: SAFETY_CLS[st] || "bad", text: head });
     if (safety && safety.reason_text && st !== "TRADING_ALLOWED") lines.push({ ok: false, level: SAFETY_CLS[st] || "warn", text: safety.reason_text, sub: true });
-    if (acct.status) lines.push({ ok: acct.status === "FRESH", level: acct.status === "FRESH" ? "ok" : "warn", text: acct.status === "FRESH" ? "Account fresh" : acct.status === "STARTING" ? "Account data checking" : acct.status === "STALE" ? "Account data stale" : "Account data unavailable" });
+    if (acct.status) lines.push({ ok: acct.status === "FRESH", level: acct.status === "FRESH" ? "ok" : "warn", text: ACCOUNT_TEXT[acct.status] || `Account data ${words(acct.status)}` });
     if (cash && cash.status) lines.push({ ok: cash.status === "FRESH", level: cash.status === "FRESH" ? "ok" : "warn", text: `Cash-flow data ${CASH_TEXT[cash.status] || words(cash.status)}` });
     if (exec && exec.reconciliation_healthy != null) lines.push({ ok: !!exec.reconciliation_healthy, level: exec.reconciliation_healthy ? "ok" : "bad", text: exec.reconciliation_healthy ? "Reconciliation healthy" : "Reconciliation needs a look" });
     for (const r of (exec && exec.attention_reasons) || []) lines.push({ ok: false, level: "bad", text: r });
     const level = lines.some((l) => l.level === "bad") ? "bad" : lines.some((l) => l.level === "warn") ? "warn" : "ok";
-    return { state: st, headline: head, level, lines, stopped: st === "HALTED" };
+    // one primary reason: the gate's own sentence, else the first dependency that is not healthy; stopped states say so plainly
+    const dep = lines.slice(1).find((l) => l.level === "bad") || lines.slice(1).find((l) => l.level === "warn") || null;
+    const primary = st === "TRADING_ALLOWED" ? (dep ? dep.text : "") : (safety && safety.reason_text) || (st === "HALTED" || st === "UNKNOWN" ? "Critical issue requires attention" : (dep ? dep.text : ""));
+    return { state: st, headline: head, level, lines, stopped: st === "HALTED", primary, critical: st === "HALTED" || st === "UNKNOWN" || !!(exec && exec.attention) };
   }
 
   function positionModel(card, position, limits) {
@@ -99,17 +141,54 @@
     return { open: true, symbol: (card && card.symbol) || p.symbol, shares: card && card.shares != null ? card.shares : p.quantity, entry: (card && card.entry) || p.average_entry_price || "—",
              current: (card && card.current) || p.last_price || "—", pnl: card && card.pnl ? `${card.pnl}${card.pnl_pct ? ` (${Number(card.pnl_pct) >= 0 ? "+" : ""}${card.pnl_pct}%)` : ""}` : "—",
              holding: held == null ? "—" : `Day ${held} / ${maxHold}`, status: status === "IN TRADE" ? "Monitoring" : status, reason: (card && card.reason) || p.exit_reason || p.attention_reason || "",
-             state: p.state || d.position_state || (card && card.state) || "" };
+             state: p.state || d.position_state || (card && card.state) || "", invalidation: p.invalidation_price || d.invalidation_price || null };
   }
 
   function marketModel(dom) {
-    // dom = { stretch, confidence, demand, evidence, setupState, proposalState } read from the legacy Trader View panels (display only)
+    // dom = { stretch, confidence, demand, evidence, evidenceText, setupState, setupLabel, setupReason, proposalState } read from the legacy panels (display only)
     const s = num(dom.stretch), c = num(dom.confidence), d = num(dom.demand);
     const ev = dom.evidence || null;
     return { ppe: s == null ? "—" : `${s > 0 ? "+" : ""}${Math.round(s)}`, confidence: c == null ? "—" : String(Math.round(c)), demand: d == null ? "—" : String(Math.round(d)),
              evidence: ev === "LOADED" ? (dom.evidenceText && dom.evidenceText !== "—" ? dom.evidenceText : "Stored") : "None stored", setup: SETUP_TO_AGENT[dom.setupState] ? (dom.setupState === "READY" ? "READY" : dom.setupState === "WATCH" ? "WATCHING" : "No active setup") : "—",
-             setupLabel: dom.setupState === "READY" ? "READY FOR REVIEW" : dom.setupState === "WATCH" ? "WATCH" : dom.setupState === "INVALIDATED" ? "INVALIDATED" : "NONE",
-             proposal: dom.proposalState === "REVIEWABLE" ? "Risk checks passed" : dom.proposalState === "BLOCKED" ? "Blocked by a risk check" : "" };
+             setupLabel: dom.setupLabel || (dom.setupState === "READY" ? "READY FOR REVIEW" : dom.setupState === "WATCH" ? "WATCH" : dom.setupState === "INVALIDATED" ? "INVALIDATED" : "NONE"),
+             setupReason: dom.setupReason || "", blockers: dom.blockers || [],
+             proposal: dom.proposalState === "REVIEWABLE" ? "Risk checks passed" : dom.proposalState === "BLOCKED" ? "Blocked by a risk check" : dom.proposalState ? cap(words(dom.proposalState)) : "" };
+  }
+
+  // the chart area: OK (normal height) or a compact, intentional empty state; LOADING keeps the normal layout (no flicker on a ticker switch)
+  function chartModel(tv, regularSession, source, now) {
+    if (!tv || !tv.active) return { kind: "NONE" };
+    const sym = tv.active;
+    if (tv.candles > 0) return { kind: "OK", symbol: sym };
+    const pending = !!(tv.pending && tv.pending.candles);
+    if (pending && !(now && state.pendingSince && now - state.pendingSince > PENDING_GRACE_MS)) return { kind: "LOADING", level: "info", title: "Waiting for market data", text: `Loading candles for ${sym}.`, symbol: sym };
+    const connected = tv.connState === "connected";
+    if (!connected) return { kind: "DISCONNECTED", level: "warn", title: "Market data unavailable", text: "The data stream is reconnecting. The chart will return automatically when data reconnects.", symbol: sym };
+    if (regularSession === false) return { kind: "CLOSED", level: "info", title: "Market closed", text: "Next session data will appear automatically. Monitoring and historical data remain available where supported.", symbol: sym };
+    return { kind: "NO_DATA", level: "warn", title: "Market data unavailable", text: `The market data feed returned no candles for ${sym}${source ? ` (${source})` : ""}. The chart will return automatically when data reconnects.`, symbol: sym };
+  }
+  function chartEmptyHtml(m) {
+    if (!m || m.kind === "OK" || m.kind === "NONE" || m.kind === "LOADING") return "";
+    return `<div class="pui-chart-empty ${esc(m.level)}" data-pui-chart="${esc(m.kind)}" role="status"><h3>${esc(m.title)}</h3><p>${esc(m.text)}</p></div>`;
+  }
+
+  // the diagnostics line: the legacy status chips (data source, position source, evidence, PPE, session) collapse into one summary + an expander
+  const DIAG_TEXT = [[/^simulated data$/i, "Simulated market data"], [/^market (.+)$/i, (m) => `Market data ${m[1]}`], [/^positions (.+)$/i, (m) => `Position source ${m[1]}`],
+                     [/^evidence (.+)$/i, (m) => `Evidence ${m[1]}`], [/^ppe (.+)$/i, (m) => `PPE ${m[1] === "not available" ? "unavailable" : m[1]}`], [/^session (.+)$/i, (m) => `Market session ${m[1]}`]];
+  function diagText(text) {
+    for (const [re, out] of DIAG_TEXT) { const m = re.exec(text); if (m) return typeof out === "function" ? out(m) : out; }
+    return cap(text);
+  }
+  function diagModel(chips) {
+    const items = (chips || []).map((c) => { const text = diagText(String(c.text || "").trim()); const sim = /^simulated/i.test(text); return { text, level: c.bad ? "bad" : (c.warn && !sim ? "warn" : "info"), simulated: sim }; });
+    const bad = items.filter((i) => i.level === "bad"), warn = items.filter((i) => i.level === "warn");
+    const summary = bad.length ? `⚠ ${bad[0].text}` : warn.length ? "⚠ Some data unavailable" : items.some((i) => i.simulated) ? "Simulated market data" : items.length ? "Data sources OK" : "";
+    return { summary, level: bad.length ? "bad" : warn.length ? "warn" : "info", items, count: items.length };
+  }
+  function diagHtml(m, open) {
+    if (!m || !m.count) return "";
+    return `<details class="pui-fold pui-diag ${esc(m.level)}" data-pui-diag="${esc(m.level)}"${open ? " open" : ""}><summary data-pui="diag"><span class="pui-diag-summary">${esc(m.summary)}</span><span class="pui-sub"> · ${m.count} source${m.count === 1 ? "" : "s"}</span></summary>` +
+      `<ul>${m.items.map((i) => `<li class="${esc(i.level)}">${esc(i.text)}</li>`).join("")}</ul></details>`;
   }
 
   function positionCards(exec, positions) {
@@ -174,8 +253,22 @@
   }
 
   // ---------------------------------------------------------------- rendering ------------------------------------------------------
-  function statusHtml(exec, safety) {
-    return statusModel(exec, safety).map((s) => `<span class="pui-seg ${esc(s.cls)}" data-pui-seg="${esc(s.key)}">${esc(s.text)}</span>`).join("") + `<span class="pui-tagline" data-pui-tagline>${esc(TAGLINE)}</span>`;
+  const lvl = (l) => (l === "ok" ? "pui-ok" : l === "warn" ? "pui-warn" : l === "bad" ? "pui-bad" : "pui-dim");
+  function statusHtml(exec, safety, opts) {
+    const o = opts || {};
+    const segs = statusModel(exec, safety);
+    const sys = systemModel(exec, safety);
+    const mode = exec && exec.mode;
+    const autoOn = mode === "PAPER_AUTO";
+    const seg = (s) => s.key === "system"
+      ? `<button type="button" class="pui-seg ${esc(s.cls)}" data-pui-seg="system" data-pui="system" aria-expanded="${o.sysOpen ? "true" : "false"}" title="System status: click for the details">${esc(s.text)} <span class="pui-caret">${o.sysOpen ? "▾" : "▸"}</span></button>`
+      : `<span class="pui-seg ${esc(s.cls)}" data-pui-seg="${esc(s.key)}">${esc(s.text)}</span>`;
+    const autoBtn = !mode ? "" : autoOn ? `<button type="button" class="pui-btn danger" data-pui="auto-off"${o.autoAvailable === false ? " disabled" : ""}>Stop New Trades</button>`
+                                       : `<button type="button" class="pui-btn go" data-pui="auto-on"${o.autoAvailable === false ? " disabled" : ""}>${esc(o.enableLabel || "Enable Paper Auto")}</button>`;
+    const auto = `<span class="pui-auto" data-pui-auto="${autoOn ? "ON" : mode ? "OFF" : "—"}"><span class="pui-seg ${autoOn ? "ok" : ""}" data-pui-seg="auto">${esc(segs[3].text)}</span>${autoBtn}</span>`;
+    const details = o.sysOpen ? `<div class="pui-system-details" data-pui-system-details>` + (sys.items.length ? sys.items.map((i) => `<div class="${lvl(i.level)}">${i.level === "ok" ? "✓" : "⚠"} ${esc(i.text)}${i.reason ? ` <span class="pui-sub">· ${esc(i.reason)}</span>` : ""}</div>`).join("")
+      : `<div class="pui-dim">System status not loaded yet.</div>`) + `</div>` : "";
+    return segs.slice(0, 3).map(seg).join("") + auto + `<span class="pui-tagline" data-pui-tagline>${esc(TAGLINE)}</span>` + details;
   }
 
   function cardsHtml(ctx) {
@@ -183,29 +276,29 @@
     const m = marketModel(ctx.dom);
     const r = riskModel(ctx.exec, ctx.safety);
     const p = positionModel(ctx.card, ctx.position, ctx.limits);
-    const mode = ctx.exec && ctx.exec.mode;
-    const autoOn = mode === "PAPER_AUTO";
-    const enableLabel = ctx.enableLabel || "Enable Paper Auto";
+    const sl = setupLines(a, ctx.dom);
     const sym = ctx.symbol || "—";
-    const agent = `<div class="pui-card agent" data-pui-card="agent" data-agent="${esc(a.label)}"><h4>Agent · ${esc(sym)}</h4><div class="pui-big">${esc(a.label)}</div><div class="pui-sub">${esc(a.text)}</div>` +
-      `<div class="pui-sub">${esc(autoOn ? "Paper Auto on" : "Paper Auto off")}${ctx.exec && ctx.exec.open_positions ? ` · ${ctx.exec.open_positions} position${ctx.exec.open_positions === 1 ? "" : "s"} open` : ""}</div></div>`;
-    const market = `<div class="pui-card market" data-pui-card="market"><h4>Market condition · ${esc(sym)}</h4><div class="pui-kv"><span>PPE</span><b>${esc(m.ppe)}</b><span>Demand</span><b>${esc(m.demand)}</b><span>Evidence</span><b>${esc(m.evidence)}</b></div>` +
-      `<div class="pui-line">Setup <b>${esc(m.setup)}</b>${m.proposal ? ` · ${esc(m.proposal)}` : ""}</div></div>`;
+    const fold = (key, open, label, body) => `<details class="pui-fold pui-why" data-pui-fold="${key}"${open ? " open" : ""}><summary data-pui="fold:${key}">${esc(label)}</summary><div class="pui-why-body">${body}</div></details>`;
+    const why = fold("why", !!ctx.whyOpen, "Why?", `<div class="pui-kv"><span>PPE stretch</span><b>${esc(m.ppe)}</b><span>Confidence</span><b>${esc(m.confidence)}</b><span>Demand</span><b>${esc(m.demand)}</b><span>Evidence</span><b>${esc(m.evidence)}</b>` +
+      `<span>Stored setup state</span><b>${esc(m.setupLabel)}</b><span>Proposal status</span><b>${esc(m.proposal || "—")}</b></div>` +
+      (m.setupReason ? `<div class="pui-sub">${esc(m.setupReason)}</div>` : "") + (m.blockers.length ? `<div class="pui-sub">Not ready: ${esc(m.blockers.join(" · "))}</div>` : ""));
+    const agent = `<div class="pui-card agent primary" data-pui-card="agent" data-pui-primary data-agent="${esc(a.label)}"><h4>Agent · ${esc(sym)}</h4><div class="pui-big">${esc(a.label)}</div><div class="pui-sub">${esc(a.text)}</div>` +
+      `${sl.line ? `<div class="pui-line">${esc(sl.line)}</div>` : ""}${sl.sub ? `<div class="pui-sub">${esc(sl.sub)}</div>` : ""}${why}</div>`;
+    const posDetails = p.open ? fold("pos", !!ctx.posOpen, "Details", `<div class="pui-kv"><span>Position state</span><b>${esc(p.state || "—")}</b><span>Invalidation level</span><b>${esc(p.invalidation || "—")}</b><span>Status</span><b>${esc(p.status)}</b></div>` +
+      `<div class="pui-sub">Broker orders, fills and reconciliation live under POSITIONS.</div>`) : "";
+    const pos = p.open ? `<div class="pui-card position" data-pui-card="position" data-open="1"><h4>Position</h4><div class="pui-big">${esc(p.symbol)} · ${esc(p.shares)} share${Number(p.shares) === 1 ? "" : "s"}</div>` +
+      `<div class="pui-kv"><span>Entry</span><b>${esc(p.entry)}</b><span>Current</span><b>${esc(p.current)}</b><span>P/L</span><b>${esc(p.pnl)}</b></div><div class="pui-line">${esc(p.holding)} · ${esc(p.status)}</div>` +
+      (p.reason ? `<div class="pui-sub">${esc(p.reason)}</div>` : "") + posDetails + `</div>`
+      : `<div class="pui-card position" data-pui-card="position" data-open="0"><h4>Position</h4><div class="pui-big">${esc(p.entering ? "Entering" : "No position")}</div><div class="pui-sub">${esc(p.entering ? "Waiting for broker fill" : "")}</div></div>`;
+    const riskDetails = fold("risk", !!ctx.riskOpen, "Details", r.lines.slice(1).map((l) => `<div class="${lvl(l.level)}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") || `<div class="pui-dim">No further detail.</div>`);
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
-      r.lines.slice(1).map((l) => `<div class="pui-line ${l.level === "ok" ? "pui-ok" : l.level === "warn" ? "pui-warn" : "pui-bad"}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") +
+      (r.primary ? `<div class="pui-sub ${r.critical ? "pui-bad" : ""}" data-pui-risk-reason>${esc(r.primary)}</div>` : "") +
       `<div class="pui-row"><button type="button" class="pui-btn stop" data-pui="stop"${r.stopped || ctx.stopAvailable === false ? " disabled" : ""}>${r.stopped ? "TRADING STOPPED" : "STOP TRADING"}</button>` +
-      (r.stopped ? `<span class="pui-sub">Clear it under View details (Risk Controls)</span>` : "") + `</div></div>`;
-    const pos = p.open ? `<div class="pui-card position" data-pui-card="position" data-open="1"><h4>Current position</h4><div class="pui-big">${esc(p.symbol)} · ${esc(p.shares)} shares</div>` +
-      `<div class="pui-kv"><span>Entry</span><b>${esc(p.entry)}</b><span>Current</span><b>${esc(p.current)}</b><span>P/L</span><b>${esc(p.pnl)}</b><span>Holding</span><b>${esc(p.holding)}</b><span>Status</span><b>${esc(p.status)}</b></div>` +
-      (p.reason ? `<div class="pui-sub">${esc(p.reason)}</div>` : "") + `</div>`
-      : `<div class="pui-card position" data-pui-card="position" data-open="0"><h4>Current position</h4><div class="pui-big">${esc(p.entering ? "Entering" : "No position")}</div><div class="pui-sub">${esc(p.entering ? "Order submitted / awaiting fill" : (sym !== "—" ? `No paper position in ${sym}` : ""))}</div></div>`;
-    const auto = `<div class="pui-card auto" data-pui-card="auto" data-auto="${autoOn ? "ON" : "OFF"}"><h4>Paper Auto</h4><div class="pui-big ${autoOn ? "pui-ok" : ""}">${autoOn ? "ON" : "OFF"}</div>` +
-      `<div class="pui-sub">${esc(autoOn ? "The bot may open paper positions when every check passes" : "Watching only; no paper orders")}</div>` +
-      `<div class="pui-row">${ctx.exec && ctx.exec.mode ? (autoOn ? `<button type="button" class="pui-btn danger" data-pui="auto-off"${ctx.autoAvailable === false ? " disabled" : ""}>Stop New Trades</button>` : `<button type="button" class="pui-btn go" data-pui="auto-on"${ctx.autoAvailable === false ? " disabled" : ""}>${esc(enableLabel)}</button>`) : ""}</div></div>`;
-    return agent + market + risk + pos + auto;
+      (r.stopped ? `<span class="pui-sub">Clear it under View details (Risk Controls)</span>` : "") + `</div>${riskDetails}</div>`;
+    return agent + pos + risk;
   }
 
-  function positionsHtml(rows, openId) {
+  function positionsHtml(rows) {
     if (!rows.length) return `<div class="pui-empty" data-pui-empty>No open paper position. The Agent opens one only when a setup is READY and every risk check passes.</div>`;
     return `<div class="pui-grid">` + rows.map(({ card, model, agent }) => `<div class="pui-pos" data-pui-pos="${esc(card.symbol)}" data-position-id="${esc(card.position_id || "")}">` +
       `<div class="pui-sym"><span>${esc(card.symbol)}</span><span class="pui-state">${esc(agent.label)}</span></div>` +
@@ -236,7 +329,7 @@
       : `<div class="pui-empty">Validation status unavailable.</div>`) + `<div><a href="forward_validation.html" target="_blank" rel="noopener" data-pui-fv-link>View validation details</a></div></div>`;
     return `<h2>Activity</h2><div class="pui-today" data-pui-today>` + [["Trades", s.trades], ["Open", s.open], ["Closed", s.closed], ["Paper P/L", s.pnl], ["Issues", s.issues]]
       .map(([k, v]) => `<div class="pui-card"><h4>${esc(k)}</h4><div class="pui-big ${k === "Issues" && v ? "pui-bad" : ""}">${esc(v)}</div></div>`).join("") + `</div>` +
-      `<ul class="pui-timeline" data-pui-timeline>${rows || '<li class="pui-day">No activity recorded yet.</li>'}</ul>` + val +
+      `<ul class="pui-timeline" data-pui-timeline>${rows || '<li class="pui-day">No activity yet.</li>'}</ul>` + val +
       `<details class="pui-fold" data-pui-alerts-fold><summary>Rule alerts and setup alerts (legacy lists)</summary></details>`;
   }
 
@@ -256,21 +349,26 @@
   function activeLegacyTab() { const b = q(".tab-btn.active"); return b ? b.dataset.tab : null; }
   function exec() { return (window.PaperBot && window.PaperBot.state && window.PaperBot.state.data) || null; }
   function safety() { return (window.RiskControls && window.RiskControls.state && window.RiskControls.state.data) || null; }
-  function activeSymbol() { const tv = window.TraderView; return (tv && tv.state && tv.state.active) || null; }
+  function tvState() { const tv = window.TraderView; return (tv && tv.state) || null; }
+  function activeSymbol() { const s = tvState(); return (s && s.active) || null; }
   function cardFor(sym) { const e = exec(); return sym && e && e.cards ? e.cards.find((c) => c.symbol === sym) || null : null; }
   function readDom() {
     const txt = (sel) => { const e = q(sel); return e ? e.textContent.trim() : null; };
     const ds = (sel) => { const e = q(sel); return e ? e.dataset.state || null : null; };
-    const evState = ds("#tv-evidence");
     const evRow = q("#tv-evidence table.tv-kv tr td:last-child");                       // the Strength row of the loaded evidence table
-    return { stretch: txt('#tv-ppe [data-ppe="stretch"] .tv-ppe-val'), confidence: txt('#tv-ppe [data-ppe="confidence"] .tv-ppe-val'), demand: txt('#tv-demand [data-demand="score"] .tv-dem-val'), evidence: evState,
-             evidenceText: evRow ? evRow.textContent.trim() : null, setupState: ds("#tv-setup"), proposalState: ds("#tv-proposal") };
+    const blockEl = [...document.querySelectorAll("#tv-setup .tv-dim")].find((e) => e.textContent.trim().startsWith("Not READY:"));
+    return { stretch: txt('#tv-ppe [data-ppe="stretch"] .tv-ppe-val'), confidence: txt('#tv-ppe [data-ppe="confidence"] .tv-ppe-val'), demand: txt('#tv-demand [data-demand="score"] .tv-dem-val'),
+             evidence: ds("#tv-evidence"), evidenceText: evRow ? evRow.textContent.trim() : null, setupState: ds("#tv-setup"), setupLabel: txt("#tv-setup [data-setup-state]"),
+             setupReason: txt("#tv-setup .tv-set-reason div"), blockers: blockEl ? blockEl.textContent.replace("Not READY:", "").split("·").map((s) => s.trim()).filter(Boolean) : [],
+             proposalState: ds("#tv-proposal") };
   }
   function enableLabel() { const b = q('#tv-bot [data-bot="enable"]'); return b ? b.textContent.trim() : "Enable Paper Auto"; }
+  function autoAvailable() { const b = q('#tv-bot [data-bot="enable"], #tv-bot [data-bot="disable"]'); return !!b && !b.disabled; }
+  function readChips() { return [...document.querySelectorAll("#tv-status-line .tv-chip")].map((e) => ({ text: e.textContent.trim(), warn: e.classList.contains("warn"), bad: e.classList.contains("bad") })); }
   const collapsed = () => { try { return localStorage.getItem("pui.details") !== "open"; } catch (e) { return true; } };
   function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } }
 
-  function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety()); }
+  function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen, enableLabel: enableLabel(), autoAvailable: autoAvailable() }); }
   function renderCards() {
     const host = $("pui-cards");
     if (!host) return;
@@ -278,9 +376,34 @@
     const card = cardFor(sym);
     let position = null;
     if (card && card.position_id && state.posData) position = (state.posData.positions || []).find((p) => p.position_id === card.position_id) || null;
-    const stopBtn = q('#tv-safety [data-safety="stop"]'), autoBtn = q('#tv-bot [data-bot="enable"], #tv-bot [data-bot="disable"]');
-    host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, enableLabel: enableLabel(),
-                                 stopAvailable: !!stopBtn && !stopBtn.disabled, autoAvailable: !!autoBtn && !autoBtn.disabled });
+    const stopBtn = q('#tv-safety [data-safety="stop"]');
+    host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, stopAvailable: !!stopBtn && !stopBtn.disabled,
+                                 whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen });
+  }
+  function renderChart(forced) {
+    if (forced !== undefined) state.chartForced = forced;                     // harness / tests: force one empty state (null restores the live one)
+    const wrap = q("#tv-body .tv-chart-wrap");
+    if (!wrap) return null;
+    const tv = tvState();
+    const now = Date.now();
+    if (tv && tv.pending && tv.pending.candles && !(tv.candles > 0)) { if (!state.pendingSince) state.pendingSince = now; } else state.pendingSince = null;
+    const market = (exec() && exec().scheduler && exec().scheduler.market) || {};
+    const m = state.chartForced || chartModel(tv, market.regular_session, (q("#tv-mode") || {}).textContent, now);
+    let el = $("pui-chart-empty");
+    const html = chartEmptyHtml(m);
+    if (!el) { el = document.createElement("div"); el.id = "pui-chart-empty"; wrap.appendChild(el); }
+    if (el.innerHTML !== html) el.innerHTML = html;
+    document.body.classList.toggle("pui-chart-empty", !!html);
+    state.chartKind = m.kind;
+    return m;
+  }
+  function renderDiag() {
+    const center = q("#tv-body .tv-center");
+    if (!center) return;
+    let el = $("pui-diag");
+    if (!el) { el = document.createElement("div"); el.id = "pui-diag"; const line = $("tv-status-line"); if (line) line.insertAdjacentElement("afterend", el); else center.appendChild(el); }
+    const html = diagHtml(diagModel(readChips()), state.diagOpen);
+    if (el.innerHTML !== html) el.innerHTML = html;
   }
   function ensureTradeCards() {
     const grid = q("#tv-body .tv-grid");
@@ -289,20 +412,23 @@
     cards.id = "pui-cards";
     cards.className = "pui-cards";
     grid.insertAdjacentElement("beforebegin", cards);
-    cards.addEventListener("click", onCardClick);
+    cards.addEventListener("click", onAction);
     setCollapsed(collapsed());
     return true;
   }
-  function onCardClick(e) {
+  function onAction(e) {
     const b = e.target.closest("[data-pui]");
     if (!b || b.disabled) return;
     const k = b.dataset.pui;
+    if (k.startsWith("fold:")) { e.preventDefault(); const key = k.slice(5); if (key === "why") state.whyOpen = !state.whyOpen; if (key === "risk") state.riskOpen = !state.riskOpen; if (key === "pos") state.posOpen = !state.posOpen; renderCards(); return; }
+    if (k === "diag") { e.preventDefault(); state.diagOpen = !state.diagOpen; renderDiag(); return; }
+    if (k === "system") { state.sysOpen = !state.sysOpen; renderStatus(); return; }
     // the actions delegate to the existing Risk Controls / Paper Bot buttons: identical POSTs, identical two-click Paper Auto confirmation
     if (k === "stop") { const t = q('#tv-safety [data-safety="stop"]'); if (t && !t.disabled) t.click(); }
     if (k === "auto-on") { const t = q('#tv-bot [data-bot="enable"]'); if (t && !t.disabled) t.click(); }
     if (k === "auto-off") { const t = q('#tv-bot [data-bot="disable"]'); if (t && !t.disabled) t.click(); }
-    setTimeout(renderCards, 50);
-    setTimeout(renderCards, 400);
+    setTimeout(() => { renderStatus(); renderCards(); }, 50);
+    setTimeout(() => { renderStatus(); renderCards(); }, 400);
   }
 
   async function getJson(path) { const r = await fetch(path); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || `HTTP ${r.status}`); return j; }
@@ -385,7 +511,7 @@
     if (nav.id === "positions") loadPositions();
     if (nav.id === "activity") loadActivity();
     if (nav.id === "more") renderMore();
-    if (nav.id === "trade" && ensureTradeCards()) renderCards();
+    if (nav.id === "trade" && ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); }
   }
   function syncNav() {
     const tab = activeLegacyTab();
@@ -402,7 +528,7 @@
 
   function tick() {
     renderStatus();
-    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) renderCards(); }
+    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } }
   }
 
   function mount() {
@@ -412,6 +538,7 @@
     document.body.classList.add("pui");
     const tabs = q("nav.tabs");
     const status = document.createElement("div"); status.id = "pui-status"; status.className = "pui-status"; status.setAttribute("role", "status");
+    status.addEventListener("click", onAction);
     const nav = document.createElement("nav"); nav.id = "pui-nav"; nav.className = "pui-nav"; nav.setAttribute("aria-label", "Primary");
     nav.innerHTML = NAV.map((n) => `<button type="button" data-pui-nav="${n.id}">${n.label}</button>`).join("") + `<span class="pui-crumb" id="pui-crumb"></span>` +
       `<span class="pui-tools"><button type="button" id="pui-details-btn" class="pui-link" aria-expanded="false">View details ▸</button></span>`;
@@ -434,6 +561,8 @@
     if (pf && !$("pui-pf-note")) { const n = document.createElement("div"); n.id = "pui-pf-note"; n.className = "pui-note";
       n.textContent = "Robinhood holdings are read only (local gateway): nothing in this app places, changes or cancels a Robinhood order. Paper orders go to the Alpaca PAPER account only."; pf.insertAdjacentElement("afterbegin", n); }
     document.querySelectorAll(".tab-btn").forEach((b) => b.addEventListener("click", () => setTimeout(syncNav, 0)));
+    const diagHost = () => $("pui-diag");
+    document.addEventListener("click", (e) => { const d = diagHost(); if (d && d.contains(e.target)) onAction(e); });
     getJson("/api/execution").then((o) => { state.limits = o.limits || null; }).catch(() => { state.limits = null; });
     // a deep link (e.g. the Daily Brief notification's /#daily-brief, consumed by brief_delivery.js) or a module that already switched the tab wins over
     // the TRADE default; the nav then simply follows the active legacy tab (MORE + crumb)
@@ -446,7 +575,7 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
-  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, agentModel, statusModel, riskModel, positionModel, marketModel, positionCards, timeline, todaySummary, moreGroups,
-           statusHtml, cardsHtml, positionsHtml, positionDetailsHtml, activityHtml, moreHtml, go, mount, tick, renderCards, renderPositions, renderActivity, renderMore, state,
-           expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed };
+  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, agentModel, setupLines, systemModel, statusModel, riskModel, positionModel, marketModel, chartModel, chartEmptyHtml, diagModel, diagHtml,
+           positionCards, timeline, todaySummary, moreGroups, statusHtml, cardsHtml, positionsHtml, positionDetailsHtml, activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart,
+           renderDiag, renderPositions, renderActivity, renderMore, state, expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed };
 });

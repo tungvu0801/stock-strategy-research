@@ -96,6 +96,7 @@ def test_W02_the_shell_reads_get_routes_only_and_delegates_its_two_actions_to_th
     assert "data-action" not in js and "Prepare Buy" not in js and "Prepare Sell" not in js and "Add Alert" not in js   # no fake primary action; the disabled placeholders stay under View details
     assert "localStorage" in js and '"pui.details"' in js                                             # the only persisted thing: the View details preference, per browser
     assert "location.hash" in js and 'already !== "overview"' in js                                   # a deep link (/#daily-brief) or an already-switched tab wins over the TRADE default
+    assert not re.search(r"(?i)retry", js) and "systemModel" in js and "chartModel" in js and "diagModel" in js   # polish pass: no fake Retry; the SYSTEM / chart / diagnostics summaries are pure models
     nav = re.search(r"const NAV = \[(.*?)\];", js, re.S).group(1)
     assert re.findall(r'label: "([A-Z]+)"', nav) == ["TRADE", "POSITIONS", "ACTIVITY", "MORE"] and 'const DEFAULT = "trade";' in js
     assert re.findall(r'host: "([a-z]+)"', nav) == ["trader", "paper", "alerts", "settings"]
@@ -113,13 +114,17 @@ def test_W03_wording_current_and_the_legacy_notes_hidden_not_deleted():
     assert not re.search(r"(?i)\b(profitable|winning|guaranteed|buy now|sell now|you should)\b", js)
     assert "Robinhood holdings are read only" in js and "Alpaca PAPER account only" in js
     assert "NEEDS ATTENTION" in js and "Risk status unknown" in js and "Validation status unavailable." in js   # problems and gaps are shown, never hidden
+    for msg in ("No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Critical issue requires attention", "Waiting for broker fill"):
+        assert msg in js, msg                                                                           # standard messages; critical states stay in plain words
+    assert "body.pui.pui-collapsed #tv-status-line { display: none; }" in css and "body.pui:not(.pui-collapsed) #pui-diag { display: none; }" in css   # one diagnostics line in the simple view; the chips return with View details
+    assert "body.pui.pui-chart-empty .tv-chart-wrap { flex: 0 0 auto; height: 250px; min-height: 250px; }" in css      # compact chart empty state
 
 
 # ================================================================ N node tests ====================================================================
 
 def test_N01_node_tests_of_the_product_shell():
     r = subprocess.run(["node", "--test", str(ROOT / "tests" / "frontend" / "product_ui.test.cjs")], capture_output=True, text=True, cwd=ROOT)
-    assert r.returncode == 0 and re.search(r"pass 13\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
+    assert r.returncode == 0 and re.search(r"pass 16\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
 
 
 # ================================================================ H harness =======================================================================
@@ -131,7 +136,7 @@ def test_H01_harness_carries_the_product_ui_flow_and_opens_the_details_before_ev
     assert src.count("c.js(TV_JS)") == 10 and len(re.findall(r"^([ \t]*)c\.js\(TV_JS\)\n\1_tv_details\(c\)\n", src, re.M)) == 9   # every prior flow; product_ui tests the collapsed default first
     flow = src[src.index("def product_ui(c: Ctx):"):src.index("\n\nFLOWS = (")]
     assert 'c.http("POST"' not in flow and "emergency-stop" not in flow and "auto/enable" not in flow        # the flow never writes
-    for shot in ("product_ui_trade", "product_ui_positions", "product_ui_activity", "product_ui_more", "product_ui_trade_1280"):
+    for shot in ("product_ui_trade", "product_ui_positions", "product_ui_activity", "product_ui_more", "product_ui_trade_1280", "product_ui_trade_768", "product_ui_chart_empty", "product_ui_degraded"):
         assert f'c.shot("{shot}"' in flow, shot
     assert "c.b.viewport(1280, 720)" in flow and "__tvInView('#tv-ppe [data-ppe=\\\"stretch\\\"]')" in flow and "__tvActions()" in flow
     import browser_tests.flows as F

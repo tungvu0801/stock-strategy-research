@@ -15,7 +15,7 @@ four primary sections and one state vocabulary, keeps every earlier workspace re
 
 | Section | Default content | Advanced content |
 |---|---|---|
-| **TRADE** (default) | chart + watchlist (Trader View), header status bar, Agent card, Market condition card, Risk card with `[ STOP TRADING ]`, Current position card, Paper Auto card | **View details** opens the Stage 5.5–6.1 detail column unchanged: PPE, Market Demand, Setup, Trade Review, Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade, Forward Paper Validation, Actions (the disabled Prepare Buy / Sell / Add Alert placeholders) |
+| **TRADE** (default) | chart + watchlist (Trader View), header status bar (PAPER · MARKET · SYSTEM · the Paper Auto control), Agent / Setup card (primary, with **Why?**), Position card, Risk card with `[ STOP TRADING ]` and **Details**, compact chart empty state, one diagnostics line | **View details** opens the Stage 5.5–6.1 detail column unchanged: PPE, Market Demand, Setup, Trade Review, Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade, Forward Paper Validation, Actions (the disabled Prepare Buy / Sell / Add Alert placeholders) |
 | **POSITIONS** | one card per open or pending paper position; "No open paper position" otherwise | click a card: setup state, demand, evidence, exit monitoring, risk state, position state, invalidation level, broker orders / fills, recent events; closed paper trades under a fold |
 | **ACTIVITY** | "Today" strip (trades, open, closed, paper P/L, issues) + timeline of persisted events + compact Validation block | the Stage 5.8 rule / setup alert lists under a fold; `forward_validation.html` for the full Forward Paper Validation report |
 | **MORE** | Research / Tools / System / Settings groups | every legacy workspace: Strategy Lab (+ its workspaces), Research Setups, Research History, AI Agent, Market dashboard, Watchlist editor, Daily Review, Trader Review, Forward Validation, Account / execution health, Risk Controls, Portfolio (Robinhood, read only), Advanced configuration |
@@ -37,10 +37,12 @@ The backend states are untouched; the shell renames them for display. `agentMode
 A live trade (`ENTERING` / `IN_TRADE` / `EXITING`) keeps its state under a halted gate: the position is still monitored and exits still run, exactly as
 Stage 6.0 defines. Nothing in the browser decides a state; it only maps the persisted one.
 
-**Header status bar** (`statusModel`): `PAPER` or `SIMULATED PAPER` (bot environment) · `MARKET OPEN / CLOSED` (scheduler market) · `ACCOUNT FRESH /
-STALE / CHECKING / UNAVAILABLE` (Stage 6.0.1 freshness) · `TRADING ALLOWED / NEW TRADES PAUSED / TRADING STOPPED / RISK STATUS UNKNOWN` (Stage 5.9.1 gate) ·
-`AUTO ON / OFF` (persisted mode), plus the policy line **"Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."**
-A missing value is a dash. A problem is always shown.
+**Header status bar** (`statusModel` / `systemModel`): `PAPER` or `SIMULATED PAPER` (bot environment) · `MARKET OPEN / CLOSED` (scheduler market) ·
+`SYSTEM HEALTHY / DEGRADED / STOPPED` · the Paper Auto control (`AUTO ON / OFF` + the enable / stop button), plus the policy line
+**"Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."** The SYSTEM word is a display summary, never a backend state:
+STOPPED when the Stage 5.9.1 gate is `HALTED` / `UNKNOWN` or the bot's `attention` flag is set; DEGRADED when the gate is `NO_NEW_ENTRIES`, the Stage
+6.0.1 account freshness is not `FRESH`, the Stage 6.0.2 cash-flow status is not `FRESH` or reconciliation is unhealthy; HEALTHY otherwise; a dash while
+nothing is loaded. Clicking it lists every dependency with its own state and the gate's reason sentence. A missing value is a dash. A problem is always shown.
 
 **Risk card** (`riskModel`): the gate's state in words and its reason, account freshness, cash-flow freshness (Stage 6.0.2), reconciliation health,
 every attention reason; level `ok / warn / bad`. **Current position** (`positionModel`): shares, entry, current, P/L (and %), `Day N / max hold` (the
@@ -124,3 +126,29 @@ those files keep passing; the Stage 6.1 test counts its own blocks after strippi
 No route, schema, scheduler, broker, strategy, risk or execution change. No new poll. No model call. No Robinhood call. No real order. The Stage 6.0 /
 6.1 runner (`scripts/start_stock_agent.ps1`) is unchanged; the preview of this stage runs the same runner from the stage worktree on a separate port with
 every background loop off.
+
+## 9. Polish pass (2026-10-24, before the first real forward-paper session)
+
+Complex inside, simple outside. UI / frontend only (`product_ui.js`, `product_ui.css`, the node tests, the harness flow, this document, the README);
+no backend, strategy, risk, execution, broker, schema, scheduler or API change; Paper Auto semantics unchanged.
+
+* **Header**: `PAPER · MARKET · SYSTEM HEALTHY / DEGRADED / STOPPED · AUTO` instead of five segments; the account, cash-flow, reconciliation and gate
+  lines moved behind the SYSTEM expander (`systemModel`, derived only from the existing payload fields). Paper Auto became a compact header control
+  (`AUTO OFF [Enable Paper Auto]` / `AUTO ON [Stop New Trades]`) that still clicks the legacy Paper Bot button, so the two-click confirmation and its
+  POST are untouched.
+* **Cards**: five equal cards became three - **Agent / Setup** (primary: larger state, one setup line in plain words, the engine's blocker count when
+  it exists, **Why?** for PPE stretch / confidence / demand / evidence / stored setup state / proposal status), **Position** (`No position`, `Entering ·
+  Waiting for broker fill`, or shares / entry / current / P/L / `Day N / max` with broker fields under POSITIONS) and **Risk** (one headline, one primary
+  reason - the gate's own sentence or the first unhealthy dependency - `[ STOP TRADING ]`, every line under **Details**; critical reasons stay listed).
+  No setup-progress count is invented: the engine exposes unmet READY blockers, not a total.
+* **Chart**: `chartModel` keeps the normal layout while candles load (no flicker on a switch) and, once the feed is settled with no candles, shrinks the
+  chart to a 250 px centred message: `Market closed` (informational, when the scheduler says the regular session is closed), `Market data unavailable`
+  (feed returned nothing, or the stream is reconnecting; returns automatically when data reconnects). A "Loading candles" state older than eight seconds
+  counts as unavailable. No Retry button exists because the page has no user refresh action (the stream reconnects by itself).
+* **Diagnostics**: in the simple view the Stage 5.5 status chips (`simulated data`, `positions ok`, `evidence not loaded`, `PPE …`, `session …`) collapse
+  into one line (`Simulated market data` / `⚠ Some data unavailable` / a critical item verbatim) with an expander listing every chip; View details shows
+  the original chips unchanged. The toolbar's data-source and connection badges stay visible (smaller).
+* **Typography and spacing**: three levels (state cards; ticker / chart / watchlist; technical detail), uppercase only for status words, quieter Back /
+  Forward and source / connection badges, larger symbol and price, a calmer watchlist (more row spacing, clear active row, quieter Recent list), more
+  whitespace between regions; everything stays at or above 11 px and fits 1280×720; cards stack at narrow widths.
+* **Deep links**: unchanged (a `/#daily-brief` link still lands on Strategy Lab › Daily Brief).

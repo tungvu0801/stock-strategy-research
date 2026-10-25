@@ -1,6 +1,8 @@
 /* Stage 6.1.1 — PRODUCT UI: four primary sections (TRADE · POSITIONS · ACTIVITY · MORE) layered over the existing dashboard. The legacy
    tab bar, the stale disclaimer and the two "not available" placeholders are hidden (not removed); every legacy workspace stays reachable
-   through MORE. Uses the style.css variables. */
+   through MORE. Complex inside, simple outside: three levels of hierarchy (state cards / ticker, chart, watchlist / technical detail),
+   colour used semantically (green healthy, amber watching or degraded, red stopped or attention, neutral for sources and controls).
+   Uses the style.css variables. */
 body.pui nav.tabs { display: none; }
 body.pui .disclaimer { display: none; }
 body.pui #tab-paper .unavailable-panel { display: none; }
@@ -8,18 +10,27 @@ body.pui #tab-settings .unavailable-panel { display: none; }
 body.pui #tab-settings .unavailable-panel.pui-shown { display: block; }
 body.pui #tab-portfolio .pf-readonly-note { display: none; }
 .pui-note { font-size: 12px; color: var(--text-dim); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.pui-ok { color: var(--green); }
+.pui-warn { color: var(--amber); }
+.pui-bad { color: var(--red); }
+.pui-dim, .pui-sub { font-size: 12px; color: var(--text-dim); }
 
-/* ------------------------------------------------------------------ status bar ------------------------------------------------------------ */
-.pui-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 12px; }
-.pui-seg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text); font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+/* ------------------------------------------------------------------ status bar (level 1 summary) --------------------------------------- */
+.pui-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 9px 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border); font-size: 12px; }
+.pui-seg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--badge-bg); color: var(--text); font-weight: 700; letter-spacing: .03em; white-space: nowrap; font-size: 12px; font-family: inherit; }
 .pui-seg::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .pui-seg.ok::before { background: var(--green); }
 .pui-seg.warn::before { background: var(--amber); }
 .pui-seg.bad::before { background: var(--red); }
 .pui-seg.ok { border-color: rgba(63, 185, 80, .5); }
-.pui-seg.warn { border-color: rgba(210, 153, 34, .6); }
+.pui-seg.warn { border-color: rgba(210, 153, 34, .6); color: #ffe6b0; }
 .pui-seg.bad { border-color: rgba(248, 81, 73, .7); color: #ffd6d2; }
-.pui-tagline { margin-left: auto; color: var(--text-dim); font-size: 12px; }
+button.pui-seg { cursor: pointer; }
+button.pui-seg:hover { border-color: var(--accent); }
+.pui-seg .pui-caret { color: var(--text-dim); font-size: 11px; }
+.pui-auto { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.pui-tagline { color: var(--text-dim); font-size: 11px; }
+.pui-system-details { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 4px 0 0; font-size: 12px; }
 
 /* ------------------------------------------------------------------ primary nav ----------------------------------------------------------- */
 .pui-nav { display: flex; gap: 4px; padding: 0 20px; background: var(--bg-panel); border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: stretch; }
@@ -31,12 +42,13 @@ body.pui #tab-portfolio .pf-readonly-note { display: none; }
 .pui-nav .pui-tools { display: none; align-self: center; margin-left: 14px; padding: 8px 0; }
 body[data-pui-section="trade"] .pui-nav .pui-tools { display: inline-flex; }
 
-/* ------------------------------------------------------------------ TRADE cards ----------------------------------------------------------- */
-.pui-cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 10px 0; }
-.pui-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-height: 96px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.pui-card h4 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); font-weight: 700; }
-.pui-card .pui-big { font-size: 18px; font-weight: 700; line-height: 1.2; }
-.pui-card .pui-sub { font-size: 12px; color: var(--text-dim); }
+/* ------------------------------------------------------------------ TRADE cards (level 1) ------------------------------------------------- */
+.pui-cards { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin: 12px 0 14px; }
+.pui-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-height: 104px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pui-card h4 { margin: 0 0 2px; font-size: 12px; color: var(--text-dim); font-weight: 600; letter-spacing: 0; text-transform: none; }
+.pui-card .pui-big { font-size: 20px; font-weight: 700; line-height: 1.2; }
+.pui-card.primary { border-color: rgba(88, 166, 255, .45); background: linear-gradient(180deg, rgba(88, 166, 255, .06), var(--bg-card) 60%); }
+.pui-card.primary .pui-big { font-size: 28px; letter-spacing: .02em; }
 .pui-card .pui-line { font-size: 13px; }
 .pui-card.agent[data-agent="WATCHING"] .pui-big { color: var(--amber); }
 .pui-card.agent[data-agent="READY"] .pui-big { color: var(--accent); }
@@ -49,10 +61,7 @@ body[data-pui-section="trade"] .pui-nav .pui-tools { display: inline-flex; }
 .pui-kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .pui-kv span { color: var(--text-dim); }
 .pui-kv b { font-weight: 600; text-align: right; }
-.pui-ok { color: var(--green); }
-.pui-warn { color: var(--amber); }
-.pui-bad { color: var(--red); }
-.pui-btn { background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.pui-btn { background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; font-family: inherit; }
 .pui-btn:hover { border-color: var(--accent); }
 .pui-btn:disabled { opacity: .55; cursor: default; }
 .pui-btn.stop { border-color: var(--red); color: #ffd6d2; background: rgba(248, 81, 73, .12); }
@@ -60,6 +69,13 @@ body[data-pui-section="trade"] .pui-nav .pui-tools { display: inline-flex; }
 .pui-btn.danger { border-color: var(--amber); }
 .pui-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; align-items: center; }
 .pui-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; text-align: left; }
+/* level 3: the technical detail behind "Why?" / "Details" */
+details.pui-fold summary { cursor: pointer; color: var(--text-dim); font-size: 12px; margin: 6px 0; list-style: none; }
+details.pui-fold summary::-webkit-details-marker { display: none; }
+details.pui-fold summary::before { content: "▸ "; color: var(--text-dim); }
+details.pui-fold[open] summary::before { content: "▾ "; }
+details.pui-why summary { color: var(--accent); margin: 4px 0 0; }
+.pui-why-body { padding: 4px 0 0; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 
 /* collapsed (default): the legacy right column (PPE, Demand, Setup, Trade Review, Evidence, Position sources, Risk Controls, Paper Bot, Actions) is the
    advanced detail; TRADE keeps the watchlist and the chart. Expanded ("View details"): the Stage 5.5 three-column layout, unchanged, and the cards
@@ -70,52 +86,90 @@ body.pui.pui-collapsed .tv-right { display: none; }
 @media (max-width: 1100px) { body.pui.pui-collapsed .tv-grid { grid-template-columns: 1fr; } }
 body.pui:not(.pui-collapsed) .pui-cards { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 body.pui:not(.pui-collapsed) .pui-card { flex-direction: row; align-items: center; gap: 10px; min-height: 0; padding: 5px 10px; }
-body.pui:not(.pui-collapsed) .pui-card .pui-big { font-size: 13px; }
-body.pui:not(.pui-collapsed) .pui-card .pui-kv, body.pui:not(.pui-collapsed) .pui-card .pui-sub, body.pui:not(.pui-collapsed) .pui-card .pui-line { display: none; }
-body.pui:not(.pui-collapsed) .pui-card.market { display: none; }
+body.pui:not(.pui-collapsed) .pui-card .pui-big, body.pui:not(.pui-collapsed) .pui-card.primary .pui-big { font-size: 13px; }
+body.pui:not(.pui-collapsed) .pui-card .pui-kv, body.pui:not(.pui-collapsed) .pui-card .pui-sub, body.pui:not(.pui-collapsed) .pui-card .pui-line, body.pui:not(.pui-collapsed) .pui-card details { display: none; }
 body.pui:not(.pui-collapsed) .pui-card .pui-row { margin-top: 0; }
+
+/* ------------------------------------------------------------------ Trader View chrome (level 2 / 3), display only ----------------------- */
+body.pui .tv-top { gap: 8px 10px; }
+body.pui .tv-nav button { font-size: 12px; padding: 4px 8px; min-height: 28px; color: var(--text-dim); background: transparent; }
+body.pui .tv-top form button { font-size: 12px; min-height: 30px; padding: 4px 10px; }
+body.pui .tv-top input { font-size: 13px; min-height: 30px; }
+body.pui .tv-symbol, body.pui .tv-price { font-size: 26px; }
+body.pui .tv-source, body.pui .tv-conn { font-size: 11px; font-weight: 600; letter-spacing: .3px; padding: 3px 8px; }
+body.pui .tv-left h3 { text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 600; }   /* the detail panels keep their Stage 5.5 headings */
+body.pui .tv-left h3 .hint { font-size: 11px; }
+body.pui .tv-list li { padding: 7px 8px; }                                                          /* a little more row height; the Stage 5.5 widths stay (180 px column) */
+body.pui .tv-list li.active { background: rgba(88, 166, 255, .10); }
+body.pui #tv-recent li { opacity: .75; font-size: 12px; padding: 5px 8px; }
+body.pui #tv-recent li.active { opacity: 1; }
+body.pui .tv-footnote { font-size: 11px; opacity: .7; }
+/* the diagnostics line: one summary + an expander in the simple view; the legacy chips come back with View details */
+body.pui.pui-collapsed #tv-status-line { display: none; }
+body.pui:not(.pui-collapsed) #pui-diag { display: none; }
+#pui-diag { margin-top: 8px; font-size: 12px; min-height: 18px; }
+#pui-diag details.pui-fold summary { margin: 0; }
+#pui-diag .pui-diag-summary { color: var(--text-dim); }
+#pui-diag [data-pui-diag="warn"] .pui-diag-summary { color: var(--amber); }
+#pui-diag [data-pui-diag="bad"] .pui-diag-summary { color: var(--red); }
+#pui-diag ul { margin: 4px 0 0; padding-left: 18px; color: var(--text-dim); }
+#pui-diag li.warn { color: #ffe6b0; }
+#pui-diag li.bad { color: #ffd6d2; }
+/* the chart empty state: compact, centred, intentional (market closed is informational, not an error) */
+#pui-chart-empty:empty { display: none; }
+.pui-chart-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 16px; z-index: 2; }
+.pui-chart-empty h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--text); }
+.pui-chart-empty.warn h3 { color: var(--amber); }
+.pui-chart-empty p { margin: 0; max-width: 440px; font-size: 13px; color: var(--text-dim); }
+body.pui.pui-chart-empty .tv-grid { height: auto; }
+body.pui.pui-chart-empty .tv-left, body.pui.pui-chart-empty .tv-right { max-height: 60vh; }
+body.pui.pui-chart-empty .tv-chart-wrap { flex: 0 0 auto; height: 250px; min-height: 250px; }
+body.pui.pui-chart-empty #tv-chart, body.pui.pui-chart-empty #tv-fallback { opacity: .18; }
+body.pui.pui-chart-empty #tv-chart-note { display: none; }
 
 /* ------------------------------------------------------------------ POSITIONS / ACTIVITY / MORE ------------------------------------------- */
 .pui-section { padding: 0 0 20px; }
-.pui-section h2 { font-size: 16px; margin: 0 0 10px; }
-.pui-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); margin: 16px 0 8px; }
-.pui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.pui-pos { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; cursor: pointer; }
+.pui-section h2 { font-size: 16px; margin: 0 0 12px; }
+.pui-section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-dim); margin: 16px 0 8px; }
+.pui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.pui-pos { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; cursor: pointer; }
 .pui-pos:hover { border-color: var(--accent); }
 .pui-pos .pui-sym { font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; }
 .pui-pos .pui-state { font-size: 11px; font-weight: 700; letter-spacing: .06em; }
-.pui-pos-details { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 10px; font-size: 13px; }
+.pui-pos-details { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 12px; font-size: 13px; }
 .pui-pos-details ul { margin: 6px 0; padding-left: 18px; }
 .pui-empty { color: var(--text-dim); font-size: 13px; padding: 8px 0; }
-.pui-today { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.pui-today { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .pui-today .pui-card { min-height: 0; }
+.pui-today .pui-card h4 { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
 .pui-timeline { list-style: none; margin: 0; padding: 0; }
-.pui-timeline li { display: grid; grid-template-columns: 54px 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.pui-timeline li { display: grid; grid-template-columns: 54px 1fr; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .pui-timeline li time { color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .pui-timeline li.bad { color: #ffd6d2; }
 .pui-timeline li.warn { color: #ffe6b0; }
-.pui-timeline .pui-day { grid-template-columns: 1fr; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 0; margin-top: 8px; }
-.pui-validation { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-top: 12px; }
+.pui-timeline .pui-day { grid-template-columns: 1fr; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; border-bottom: 0; margin-top: 10px; }
+.pui-validation { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-top: 14px; }
 .pui-validation .pui-kv { grid-template-columns: auto auto; justify-content: start; gap: 2px 24px; }
 .pui-validation a, .pui-more-group a { color: var(--accent); }
-.pui-more { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.pui-more-group { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+.pui-more { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.pui-more-group { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
 .pui-more-group h3 { margin: 0 0 8px; }
-.pui-more-group button, .pui-more-group a { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); padding: 7px 8px; font-size: 13px; cursor: pointer; text-decoration: none; box-sizing: border-box; }
+.pui-more-group button, .pui-more-group a { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 6px; color: var(--text); padding: 7px 8px; font-size: 13px; cursor: pointer; text-decoration: none; box-sizing: border-box; font-family: inherit; }
 .pui-more-group button:hover, .pui-more-group a:hover { border-color: var(--border); background: var(--bg-panel); }
-.pui-more-group .pui-sub { display: block; padding: 0 8px 6px; font-size: 12px; color: var(--text-dim); }
+.pui-more-group .pui-sub { display: block; padding: 0 8px 6px; }
 #pui-more-body pre { white-space: pre-wrap; font-size: 12px; }
-details.pui-fold summary { cursor: pointer; color: var(--text-dim); font-size: 12px; margin: 6px 0; }
-.pui-sub { font-size: 12px; color: var(--text-dim); }
 
+/* ------------------------------------------------------------------ responsive ------------------------------------------------------------- */
 @media (max-width: 1100px) {
-  .pui-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pui-cards { grid-template-columns: 1fr; }
+  .pui-card.primary .pui-big { font-size: 24px; }
   .pui-nav > button { padding: 10px 12px; font-size: 13px; }
   .pui-status, .pui-nav { padding-left: 12px; padding-right: 12px; }
 }
-@media (max-width: 640px) {
-  .pui-cards { grid-template-columns: 1fr; }
+@media (max-width: 820px) {
+  .pui-auto { margin-left: 0; }
+  .pui-tagline { flex-basis: 100%; }
   .pui-timeline li { grid-template-columns: 46px 1fr; }
-  .pui-tagline { margin-left: 0; flex-basis: 100%; }
   .pui-nav .pui-crumb { margin-left: 0; flex-basis: 100%; }
+  .pui-nav .pui-crumb:empty { display: none; }
 }

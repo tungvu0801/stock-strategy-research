@@ -993,17 +993,23 @@ still there - the thirteen legacy tabs are hidden, not removed, and MORE reaches
 Agent and the risk status first. The shell is display only: every value is the Paper Bot / Risk Controls payload or a GET route mapped for display,
 and its two actions click the existing Risk Controls / Paper Bot buttons, so nothing about execution, risk or Paper Auto changed.
 
-* **Header status bar** (always visible): `PAPER` (or `SIMULATED PAPER`) · `MARKET OPEN / CLOSED` · `ACCOUNT FRESH / STALE / UNAVAILABLE` ·
-  `TRADING ALLOWED / NEW TRADES PAUSED / TRADING STOPPED` · `AUTO ON / OFF`, plus the policy line
+* **Header status bar** (always visible): `PAPER` (or `SIMULATED PAPER`) · `MARKET OPEN / CLOSED` · `SYSTEM HEALTHY / DEGRADED / STOPPED` (a
+  display summary of the Stage 5.9.1 gate, the Stage 6.0.1 account freshness, the Stage 6.0.2 cash-flow freshness, reconciliation and the bot's
+  attention flag: STOPPED = halted / unknown gate or attention, DEGRADED = anything paused, stale or unavailable, HEALTHY otherwise; click it for
+  every reason) · the Paper Auto control (`AUTO ON / OFF` with the enable / stop button), plus the policy line
   "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled." A missing value shows a dash; a problem (stale account, unknown gate, attention) is never hidden.
-* **TRADE**: the Trader View chart and watchlist with five cards above them - **Agent** (`WATCHING · READY · ENTERING · IN TRADE · EXITING ·
-  CLOSED · NEEDS ATTENTION`: the Stage 6.0 card keys and the Stage 5.8 setup states renamed for display; a stopped or unknown risk gate reads
-  NEEDS ATTENTION unless a paper position is live), **Market condition** (PPE stretch, demand, evidence, setup and the review result), **Risk**
-  (the gate's state, account / cash-flow freshness, reconciliation, every attention reason and `[ STOP TRADING ]`), **Current position** (shares,
-  entry, current, P/L, `Day N / max hold`, status) and **Paper Auto** (ON / OFF with the enable / stop button). `[ STOP TRADING ]` is the Stage 5.9.1
-  emergency stop and the Paper Auto button is the Stage 6.0 two-click one (the first click only arms the confirmation). **View details** (top right)
-  opens the Stage 5.5-6.1 detail column - PPE, Market Demand, Setup, Trade Review, Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade,
-  Forward Paper Validation and the disabled Prepare Buy / Sell / Add Alert placeholders; the choice is remembered per browser.
+* **TRADE**: the Trader View chart and watchlist with three cards above them - **Agent / Setup** (the primary card: `WATCHING · READY · ENTERING ·
+  IN TRADE · EXITING · CLOSED · NEEDS ATTENTION`, the Stage 6.0 card keys and the Stage 5.8 setup states renamed for display, a halted or unknown
+  risk gate reads NEEDS ATTENTION unless a paper position is live; one setup line in plain words, the engine's own blocker count when it has one,
+  and **Why?** for PPE stretch, confidence, demand, evidence, the stored setup state and the proposal status), **Position** (`No position`,
+  `Entering · Waiting for broker fill`, or shares / entry / current / P/L / `Day N / max hold`; broker and reconciliation fields stay under POSITIONS)
+  and **Risk** (one headline, one primary reason, `[ STOP TRADING ]`, every dependency and attention reason under **Details**). `[ STOP TRADING ]`
+  is the Stage 5.9.1 emergency stop and the header's Paper Auto button is the Stage 6.0 two-click one (the first click only arms the confirmation).
+  When the feed has no candles the chart shrinks to a compact, centred message (`Market closed` is informational; `Market data unavailable` returns
+  automatically when data reconnects; there is no Retry button because no refresh action exists), and the Stage 5.5 status chips collapse into one
+  diagnostics line with an expander. **View details** (top right) opens the Stage 5.5-6.1 detail column - PPE, Market Demand, Setup, Trade Review,
+  Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade, Forward Paper Validation, the status chips and the disabled Prepare Buy / Sell /
+  Add Alert placeholders; the choice is remembered per browser.
 * **POSITIONS**: one card per open or pending paper position (quantity, entry, current, P/L, holding day); a click shows setup state, demand,
   evidence, exit monitoring, risk state, broker orders and fills and the recent position events. Closed paper trades sit under a fold.
 * **ACTIVITY**: a "Today" strip (trades, open, closed, paper P/L, issues) and a timeline built only from persisted rows - setup transitions,
