@@ -63,17 +63,44 @@
             ok: "Confirm Emergency Stop", cls: "stop" },
     clear: { title: "Clear Emergency Stop?", text: "This removes the emergency-stop latch. Trading resumes only if all safety checks pass.", ok: "Confirm: clear Emergency Stop", cls: "danger" },
   };
-  // MORE: every legacy workspace, grouped; nothing is deleted. Strategy Lab workspaces are read from its own sub-navigation at run time.
+  // MORE (Stage 6.1.2): three groups only - Research / System / Settings - each a collapsed fold (progressive disclosure). Nothing is deleted: the Strategy
+  // Lab registry is the research entry, the legacy rule builder / backtests and the research tabs sit under Research, the legacy tools under System ›
+  // Diagnostics, Robinhood only there. The Strategy Lab's own workspaces are listed inside the registry panel (read from its sub-navigation at run time).
   const MORE = [
-    { title: "Research", items: [{ tab: "strategy", label: "Strategy Lab", lab: true }, { tab: "setups", label: "Research Setups" }, { tab: "history", label: "Research History" }] },
-    { title: "Tools", items: [{ tab: "agent", label: "AI Agent" }, { tab: "overview", label: "Market dashboard" }, { tab: "watchlist", label: "Watchlist editor" }, { tab: "daily", label: "Daily Review" }, { tab: "review", label: "Trader Review" }] },
-    { title: "System", items: [{ href: "forward_validation.html", label: "Forward Validation" }, { action: "health", label: "Account / execution health" }, { action: "risk", label: "Risk Controls" },
-                                 { tab: "portfolio", label: "Portfolio (Robinhood, read only)" }] },
-    { title: "Settings", items: [{ action: "settings", label: "Advanced configuration" }] },
+    { id: "research", title: "Research", text: "Strategy Lab, backtests, research history.",
+      items: [{ action: "lab", label: "Strategy Lab" }, { tab: "strategy", label: "Backtests (rule builder, legacy lab)" }, { tab: "history", label: "Research History" }, { tab: "setups", label: "Research Setups" }] },
+    { id: "system", title: "System", text: "Broker connection, data sources, validation, diagnostics, logs.",
+      items: [{ action: "health", label: "Broker Connection" }, { action: "data", label: "Data Sources" }, { href: "forward_validation.html", label: "Forward Validation" },
+              { action: "diagnostics", label: "Diagnostics", tools: [{ tab: "overview", label: "Market dashboard" }, { tab: "agent", label: "AI Agent" }, { tab: "watchlist", label: "Watchlist editor" },
+                                                                   { tab: "daily", label: "Daily Review (research)" }, { tab: "review", label: "Trader Review" }, { tab: "portfolio", label: "Portfolio (Robinhood, read only)" }] },
+              { action: "logs", label: "Logs" }] },
+    { id: "settings", title: "Settings", text: "Risk, automation, notifications. Read only here; configured server-side.",
+      items: [{ action: "risk", label: "Risk" }, { action: "automation", label: "Automation" }, { action: "notifications", label: "Notifications" }, { action: "settings", label: "Advanced configuration" }] },
   ];
+  // legacy deep links (the old tab names and the old bookmarks) mapped to the product sections; the four product hashes map to themselves. A hash that is not
+  // listed (e.g. #daily-brief, consumed by brief_delivery.js) is left to its legacy consumer.
+  const LEGACY_LINKS = {
+    trade: { section: "trade" }, positions: { section: "positions" }, activity: { section: "activity" }, more: { section: "more" },
+    portfolio: { section: "positions" }, paper: { section: "activity", filter: "trades" }, "paper-trades": { section: "activity", filter: "trades" },
+    trader: { section: "trade" }, "trader-view": { section: "trade" }, watchlist: { section: "trade" }, overview: { section: "trade" }, dashboard: { section: "trade" },
+    alerts: { section: "activity" }, daily: { section: "activity" }, "daily-review": { section: "activity" }, review: { section: "activity" },
+    strategy: { section: "more", more: "lab" }, "strategy-lab": { section: "more", more: "lab" }, setups: { section: "more", more: "lab" }, history: { section: "more", more: "research" },
+    agent: { section: "more", more: "diagnostics" }, settings: { section: "more", more: "settings" }, "forward-validation": { section: "more", more: "system" }, validation: { section: "more", more: "system" },
+  };
+  const FILTERS = [["all", "All"], ["trades", "Trades"], ["safety", "Safety"], ["system", "System"], ["research", "Research"]];
+  const GROUP_OF = { setup: "research", proposal: "trades", order: "trades", fill: "trades", position: "trades", exit: "trades", attention: "safety", safety: "safety", reconciliation: "system", validation: "system" };
+  // the presentation-only priority order of the TRADE focus strip (no backend decision changes): a system problem outranks a stock
+  const PRIORITY = ["ATTENTION", "EXIT", "POSITION_ATTENTION", "DEGRADED", "IN_TRADE", "REVIEWABLE", "READY", "WATCHING", "MARKET"];
+  const READY_NOTE = "READY means the setup is eligible. Execution eligibility is decided separately by the safety gate and the entry controls.";
+  const NO_SCORE = "No opportunity score: one strategy, no cross-strategy ranking yet.";
+  const NO_SUPPORT = "No other strategy evaluated.";
   const state = { section: null, legacyTab: null, timer: null, fetchTimer: null, posDetails: null, posData: null, actData: null, limits: null, booted: false, error: null,
                   whyOpen: false, riskOpen: false, posOpen: false, sysOpen: false, diagOpen: false, pendingSince: null, chartForced: null, chartKind: null, confirm: null, confirmTimer: null,
-                  autoPending: null, autoError: null, autoWatch: null, botObserver: null };
+                  autoPending: null, autoError: null, autoWatch: null, botObserver: null,
+                  // Stage 6.1.2: the strategy registry and the frozen controls (read once), the per-symbol terminal state behind Why? (on demand, 10 s cache), the WHY technical fold,
+                  // the ACTIVITY filter, the MORE fold state, the open MORE panel and the Strategy Lab detail
+                  registry: null, registryBusy: false, registryFailedAt: null, frozen: null, frozenBusy: false, frozenFailedAt: null, terminal: {}, terminalBusy: false, techOpen: false, filter: "all", moreOpen: {}, moreAction: null,
+                  labDetail: null, labError: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -281,12 +308,12 @@
       `<ul>${m.items.map((i) => `<li class="${esc(i.level)}">${esc(i.text)}</li>`).join("")}</ul></details>`;
   }
 
-  function positionCards(exec, positions) {
+  function positionCards(exec, positions, events, strategyName) {
     const cards = ((exec && exec.cards) || []).filter((c) => ["IN_TRADE", "EXITING", "ENTERING", "ATTENTION"].includes(c.key));
     const byId = {};
     for (const p of positions || []) byId[p.position_id] = p;
-    return cards.map((c) => ({ card: c, position: c.position_id ? byId[c.position_id] || null : null, model: positionModel(c, c.position_id ? byId[c.position_id] : null, state.limits),
-                                agent: agentModel(c, null, null, null) }));
+    return cards.map((c) => { const position = c.position_id ? byId[c.position_id] || null : null;
+                              return { card: c, position, model: positionModel(c, position, state.limits), agent: agentModel(c, null, null, null), life: positionLifecycle(position, c, [], state.limits, strategyName, events, state.frozen) }; });
   }
 
   // the ACTIVITY timeline: persisted rows of the earlier stages only; nothing is inferred and nothing is invented
@@ -339,7 +366,198 @@
   }
 
   function moreGroups(labViews) {
-    return MORE.map((g) => ({ title: g.title, items: g.items.flatMap((it) => (it.lab && labViews && labViews.length ? [it, ...labViews.map((v) => ({ tab: "strategy", lab: v.view, label: `· ${v.label}` }))] : [it])) }));
+    // the Strategy Lab's workspaces are listed inside the registry panel (not in MORE); the argument stays for the callers and the tests
+    void labViews;
+    return MORE.map((g) => ({ id: g.id, title: g.title, text: g.text, items: g.items.map((it) => ({ ...it, tools: it.tools ? it.tools.map((t) => ({ ...t })) : undefined })) }));
+  }
+  function moreTabs() { return MORE.flatMap((g) => g.items.flatMap((it) => [it.tab, ...(it.tools || []).map((t) => t.tab)].filter(Boolean))); }
+
+  // ---------------------------------------------------------------- Stage 6.1.2: pure models -------------------------------------------
+  // legacy deep links: #portfolio -> POSITIONS, #paper -> ACTIVITY · Trades, #trader -> TRADE, #strategy -> MORE › Strategy Lab; null = not ours (left to the legacy consumer)
+  function routeFor(hash) {
+    const key = String(hash || "").replace(/^#\/?/, "").toLowerCase().split(/[?&/]/)[0];
+    const r = key ? LEGACY_LINKS[key] : null;
+    return r ? { section: r.section, filter: r.filter || null, more: r.more || null, hash: key } : null;
+  }
+  function minutesToClose(et) { const m = /^(\d{2}):(\d{2})$/.exec(String(et || "")); return m ? 16 * 60 - (Number(m[1]) * 60 + Number(m[2])) : null; }
+
+  // the strategy display on TRADE: real strategy state only. The registry says which strategies are implemented and active (one today); placeholders are never
+  // "evaluated", never "supporting" and never carry a score. No opportunity score exists (one strategy, no cross-strategy ranking), so none is shown.
+  function strategyModel(card, dom, registry, proposalState) {
+    const rows = (registry && registry.strategies) || [];
+    const live = rows.filter((s) => s.implemented && s.active);
+    const key = card && card.key && card.key !== "NONE" ? card.key : (SETUP_TO_AGENT[dom && dom.setupState] || "WATCHING");
+    const setup = dom && dom.setupState;
+    const best = live[0] || null;
+    return { loaded: !!registry, best: best ? best.display_name : null, bestId: best ? best.strategy_id : null, bestStatus: best ? best.status_label || best.status : null,
+             bestState: setup === "READY" ? "Setup conditions met" : setup === "WATCH" ? "Setup on watch" : setup === "INVALIDATED" ? "Setup invalidated" : "No active setup",
+             evaluated: live.length, placeholders: rows.filter((s) => !s.implemented).length, supporting: [], supportingText: NO_SUPPORT, score: null, scoreText: NO_SCORE,
+             ready: key === "READY", label: key === "READY" ? "Best strategy" : "Best setup", proposalLink: ["REVIEWABLE", "BLOCKED"].includes(proposalState || "") };
+  }
+
+  // ONE consistent execution-eligibility surface ("Cannot enter · <one sentence>"): the first deterministic reason in precedence - safety gate, reconciliation, account
+  // data, position cap, session, the proposal's own blocker - else "automatic entry off" (Monitor only) or allowed. Never a prediction: READY is setup eligibility.
+  function blockerModel(exec, safety, dom, terminal, limits) {
+    const st = (safety && safety.state) || (exec && exec.safety_state) || null;
+    const k = (safety && safety.kill_switch) || {};
+    const acct = (exec && exec.account_data) || {};
+    const market = (exec && exec.scheduler && exec.scheduler.market) || {};
+    const prop = (terminal && terminal.proposal) || null;
+    const blocked = (reason, code) => ({ level: "blocked", title: "Cannot enter", reason, code });
+    if (!st) return { level: "unknown", title: "Execution status unknown", reason: "Risk status unknown.", code: "SAFETY_UNKNOWN" };
+    if (st === "HALTED" || st === "UNKNOWN") return blocked(k.active ? "Trading safety is stopped (emergency stop)." : safety && safety.reason_text ? `Trading safety is stopped: ${safety.reason_text}` : "Trading safety is stopped.", k.active ? "KILL_SWITCH_ACTIVE" : "SAFETY_HALTED");
+    if (st === "NO_NEW_ENTRIES") return blocked(safety && safety.reason_text ? `Trading safety is paused: ${safety.reason_text}` : "Trading safety is paused.", "NO_NEW_ENTRIES");
+    if (exec && exec.reconciliation_healthy === false) return blocked("Reconciliation required.", "RECONCILIATION_REQUIRED");
+    if (acct.status && acct.status !== "FRESH") return blocked("Account equity unavailable.", `ACCOUNT_${acct.status}`);
+    const maxOpen = num(limits && limits.max_open_positions) || num(exec && exec.max_open_positions);
+    if (maxOpen != null && (num(exec && exec.open_positions) || 0) + (num(exec && exec.pending_entries) || 0) >= maxOpen) return blocked("Maximum open positions reached.", "MAX_OPEN_POSITIONS");
+    if (market.regular_session === false) return blocked("Market closed: no entry outside the regular session.", "MARKET_CLOSED");
+    const mtc = minutesToClose(market.et_time);
+    if (market.regular_session && mtc != null && mtc <= (num(limits && limits.near_close_minutes) || 15)) return blocked("Near-close entry cutoff reached.", "NEAR_CLOSE");
+    if (prop && prop.effective_status === "BLOCKED" && (prop.blockers || []).length) return blocked(prop.blockers[0].text || cap(words(prop.blockers[0].code)), prop.blockers[0].code);
+    const el = prop && prop.execution_eligibility;
+    if (el && el.allowed === false && prop.effective_status === "REVIEWABLE" && el.reason_text) return blocked(el.reason_text, (el.reason_codes || [])[0] || el.state || "NOT_ELIGIBLE");
+    if (exec && exec.mode !== "PAPER_AUTO") return { level: "off", title: "Automatic entry off", reason: "Monitor only: no order is sent. Paper Auto would allow automatic paper entries.", code: "MONITOR_ONLY" };
+    return { level: "ok", title: "Entry allowed when every check passes", reason: "The safety gate allows new entries; the entry controls run at order time.", code: "ALLOWED" };
+  }
+
+  // the presentation-only priority of the TRADE focus strip: a system problem first, then exits, positions needing attention, a degraded system, a reviewable proposal, READY,
+  // WATCHING, the market summary. Nothing here decides anything; it orders what the backend already says.
+  function priorityModel(ctx) {
+    const exec = ctx.exec, safety = ctx.safety, card = ctx.card, dom = ctx.dom || {};
+    const sys = systemModel(exec, safety);
+    const cards = (exec && exec.cards) || [];
+    const items = [];
+    const push = (kind, title, text, action) => items.push({ kind, rank: PRIORITY.indexOf(kind) + 1, title, text, action: action || null });
+    if (sys.level === "STOPPED") push("ATTENTION", "NEEDS ATTENTION", sys.primary || "Critical issue requires attention", { go: "trade", label: "Risk details" });
+    else if (exec && exec.reconciliation_healthy === false) push("ATTENTION", "NEEDS ATTENTION", "Reconciliation needs a look", { go: "positions", label: "Open POSITIONS" });
+    for (const c of cards.filter((x) => x.key === "EXITING")) push("EXIT", `${c.symbol} · EXIT REQUIRED`, c.line || "Exit in progress", { go: "positions", label: "Open POSITIONS" });
+    for (const c of cards.filter((x) => x.key === "ATTENTION" && x.shares != null)) push("POSITION_ATTENTION", `${c.symbol} · NEEDS ATTENTION`, c.line || "Manual review required", { go: "positions", label: "Open POSITIONS" });
+    if (sys.level === "DEGRADED") push("DEGRADED", "SYSTEM DEGRADED", sys.primary || "Some data unavailable; new entries wait until it recovers.", { pui: "system", label: "System details" });
+    for (const c of cards.filter((x) => x.key === "IN_TRADE")) push("IN_TRADE", `${c.symbol} · IN TRADE`, c.line || "Existing trade continues. Exit conditions monitored.", { go: "positions", label: "Open POSITIONS" });
+    const sym = ctx.symbol || "—";
+    if (dom.proposalState === "REVIEWABLE" && (!card || !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION", "CLOSED"].includes(card.key))) push("REVIEWABLE", `${sym} · REVIEWABLE`, "A review proposal passed the risk checks. Execution eligibility is separate.", { fold: "why", label: "Why?" });
+    else if ((card && card.key === "READY") || (dom.setupState === "READY" && (!card || card.key === "NONE"))) push("READY", `${sym} · READY`, READY_NOTE, { fold: "why", label: "Why?" });
+    else if ((card && card.key === "WATCHING") || (["WATCH", "NONE", "INVALIDATED", null, undefined].includes(dom.setupState) && (!card || card.key === "NONE"))) push("WATCHING", `${sym} · WATCHING`, "Waiting for setup conditions.", { fold: "why", label: "Why?" });
+    const market = (exec && exec.scheduler && exec.scheduler.market) || {};
+    push("MARKET", market.regular_session == null ? "Market —" : market.regular_session ? "Market open" : "Market closed", market.regular_session ? "Regular session · monitoring." : "Monitoring continues; new entries wait for the regular session.", null);
+    items.sort((a, b) => a.rank - b.rank);
+    return { items, focus: items[0], systemLevel: sys.level };
+  }
+
+  // Paper Auto and the safety gate are independent: the valid combinations are shown as one label (AUTO ON · TRADING PAUSED …); the real controls stay the three rows
+  function sessionModel(exec, safety, opts) {
+    const am = autoModel(exec, safety, (opts || {}).autoPending, (opts || {}).autoError);
+    const cm = controlsModel(exec, safety, {}, opts);
+    const trading = cm.trading.label;
+    const text = am.key === "ON" && trading === "ALLOWED" ? "Automatic paper entries may be submitted when every check passes."
+      : am.key === "ON" ? "Auto is armed, but safety currently blocks new entries. Existing positions stay monitored."
+      : trading === "ALLOWED" ? "Monitoring only: no automatic entry. The gate would allow entries." : "Monitoring only; the gate also blocks new entries.";
+    return { auto: am.header, trading: `TRADING ${trading}`, headline: `${am.header} · TRADING ${trading}`, text, autoKey: am.key, tradingKey: trading,
+             future: "A single START TRADING SESSION control is planned; today Paper Auto, Pause New Trades and Emergency Stop are the real controls." };
+  }
+
+  // why a position is still held: every exit rule that has NOT fired, in the engine's precedence, from the persisted position, its card and the live panel values
+  function holdingLines(card, pos, dom, limits, fz) {
+    const p = pos || {}, d = (card && card.details) || {}, f = fz || {};
+    const out = [];
+    const inv = p.invalidation_price || d.invalidation_price, last = p.last_price || (card && card.current);
+    if (inv) out.push(`Invalidation ${inv} vs current ${last || "—"}${num(last) != null && num(inv) != null ? (num(last) <= num(inv) ? " - reached (HARD_INVALIDATION due)" : " - not reached") : ""}`);
+    const streak = num(p.demand_low_streak) || 0, need = num(f.demand_exit_evals) || 2, lvl = f.demand_exit != null ? f.demand_exit : 35;
+    out.push(`Demand below ${lvl}: ${streak} / ${need} consecutive evaluations${streak >= need ? " - DEMAND_FAILURE due" : ""}`);
+    const held = num(p.sessions_held != null ? p.sessions_held : d.sessions_held), max = num(limits && limits.max_hold_sessions) || MAX_HOLD_DEFAULT;
+    if (held != null) out.push(`Holding Day ${held} / ${max}${held >= max ? " - TIME_EXIT due" : ""}`);
+    const s = num(dom && dom.stretch), se = f.stretch_exit != null ? f.stretch_exit : -20;
+    if (s != null) out.push(`PPE stretch ${s > 0 ? "+" : ""}${Math.round(s)} vs exit level ${se}${s > se ? " - DISLOCATION_NORMALIZED due" : ""}`);
+    if (p.weakening_reason) out.push(`Weakening (informational): ${words(p.weakening_reason)}`);
+    if (p.exit_reason || (card && card.key === "EXITING")) out.push(`Exit reason: ${(card && card.reason) || words(p.exit_reason) || "exit in progress"}`);
+    else out.push("Held: no exit rule has fired.");
+    return out;
+  }
+
+  // the reusable WHY panel: deterministic backend evidence only (card, stored setup, proposal, gate, account, limits), structured Signal · Strategy · Supporting evidence ·
+  // Against / risks · Portfolio · Safety · Decision, with the raw values under Technical details. Nothing is inferred and no model is consulted.
+  function whyModel(ctx) {
+    const exec = ctx.exec, safety = ctx.safety, card = ctx.card, dom = ctx.dom || {}, t = ctx.terminal || {}, limits = ctx.limits, pos = ctx.position || null, fz = ctx.frozen || {};
+    const a = agentModel(card, dom.setupState, safety && safety.state, exec);
+    const m = marketModel(dom);
+    const sm = strategyModel(card, dom, ctx.registry, dom.proposalState);
+    const setup = t.setup || {}, prop = t.proposal || {};
+    const bl = blockerModel(exec, safety, dom, t, limits);
+    const vs = (v, op, k, label) => (fz[k] == null ? `${label} ${v}` : `${label} ${v} (needs ${op} ${fz[k]})`);
+    const blockers = setup.blockers && setup.blockers.length ? setup.blockers.map(words) : (dom.blockers || []);
+    const question = { WATCHING: "Why is this stock WATCHING?", READY: "Why is it READY?", ENTERING: "Why is the order pending?", IN_TRADE: "Why is the position still held?", EXITING: "Why is the position exiting?",
+                       CLOSED: "Why did the position exit?", ATTENTION: "Why does it need attention?", STOPPED: "Why is trading stopped?", ENTRY_FAILED: "Why did the entry fail?" }[a.key] || "Why?";
+    const signal = [`Setup ${m.setupLabel}${setup.since ? ` since ${hm(setup.since)}` : ""}${setup.reason_text ? ` · ${setup.reason_text}` : dom.setupReason ? ` · ${dom.setupReason}` : ""}`];
+    if (blockers.length && (a.key === "WATCHING" || a.key === "STOPPED")) signal.push(`Not ready: ${blockers.join(" · ")}`);
+    const strategy = [sm.best ? `${sm.best} (${sm.bestId}${sm.bestStatus ? ` · ${sm.bestStatus}` : ""})` : "Strategy registry not loaded", `${sm.evaluated} strateg${sm.evaluated === 1 ? "y" : "ies"} evaluated · ${sm.supportingText}`, sm.scoreText];
+    const support = [vs(m.ppe, "<=", "watch_enter_stretch", "PPE stretch"), vs(m.confidence, ">=", "ready_confidence", "Confidence"), vs(m.demand, ">=", "ready_demand", "Demand"), `Evidence ${m.evidence}`];
+    const against = [...(prop.warnings || []).map((w) => w.text || cap(words(w.code))), ...(prop.blockers || []).map((b) => `Blocker: ${b.text || cap(words(b.code))}`)];
+    if (!against.length) against.push("No warning or blocker recorded.");
+    const portfolio = [`Open positions ${exec && exec.open_positions != null ? exec.open_positions : "—"} / ${num(limits && limits.max_open_positions) || (exec && exec.max_open_positions) || "—"}`,
+                       exec && exec.pending_entries ? `${exec.pending_entries} pending entr${exec.pending_entries === 1 ? "y" : "ies"}` : "No pending entry"];
+    const r = riskModel(exec, safety);
+    const exe = `Execution: ${bl.title}${bl.level === "ok" ? "" : ` - ${bl.reason}`}`;
+    const decision = [];
+    if (a.key === "READY") decision.push(READY_NOTE, exe);
+    else if (a.key === "WATCHING") decision.push(`The engine holds WATCHING: ${setup.reason_text || dom.setupReason || "setup conditions are not met"}`, exe);
+    else if (a.key === "IN_TRADE" || a.key === "EXITING") decision.push(...holdingLines(card, pos, dom, limits, fz));
+    else if (a.key === "CLOSED") decision.push(card && card.reason ? `Exit reason: ${card.reason}` : "Trade completed.");
+    else if (a.key === "ENTRY_FAILED") decision.push(card && card.line ? card.line : "The entry did not fill.", "No automatic replacement order.");
+    else if (a.key === "ENTERING") decision.push("Order submitted. Waiting for broker reconciliation.");
+    else decision.push(a.text, exe);
+    const el = prop.execution_eligibility;
+    const technical = [["PPE stretch", m.ppe], ["Confidence", m.confidence], ["Demand", m.demand], ["Evidence", m.evidence], ["Stored setup state", m.setupLabel], ["Proposal status", m.proposal || "—"],
+                       ["Setup id", setup.setup_id || "—"], ["Last evaluated", setup.last_evaluated_at || "—"], ["Proposal id", prop.proposal_id || "—"], ["Reference price", prop.reference_price || "—"],
+                       ["Invalidation price", prop.invalidation_price || (pos && pos.invalidation_price) || "—"], ["Risk budget", prop.risk_budget || (pos && pos.risk_budget) || "—"], ["Final quantity", prop.final_qty != null ? prop.final_qty : "—"],
+                       ["Execution eligibility", el ? (el.allowed ? "allowed" : `not allowed · ${(el.reason_codes || []).map(words).join(", ") || words(el.state)}`) : "—"], ["Blocker code", bl.code]];
+    return { question, key: a.key, sections: [["Signal", signal], ["Strategy", strategy], ["Supporting evidence", support], ["Against / risks", against], ["Portfolio", portfolio], ["Safety", [r.headline, r.primary].filter(Boolean)], ["Decision", decision]],
+             technical, blocker: bl, setupReason: setup.reason_text || dom.setupReason || "", blockers };
+  }
+
+  // POSITIONS: the lifecycle of one paper position - ENTERING · IN TRADE · EXIT REQUIRED · EXITING · CLOSED · NEEDS ATTENTION - from the persisted position, its card and its intents
+  function positionLifecycle(position, card, intents, limits, strategyName, events, frozen) {
+    const p = position || {}, c = card || {}, d = c.details || {};
+    const exitIntent = (intents || []).find((i) => i.intent_type === "EXIT" && ["PENDING", "SUBMITTED", "PARTIALLY_FILLED", "RECONCILIATION_REQUIRED"].includes(i.state)) || null;
+    const st = p.state || d.position_state || "";
+    let stage = "IN TRADE";
+    if (!position && c.key === "ENTERING") stage = "ENTERING";
+    else if (st === "CLOSED" || (!position && c.key === "CLOSED")) stage = "CLOSED";
+    else if (st === "ATTENTION" || (!position && c.key === "ATTENTION")) stage = "NEEDS ATTENTION";
+    else if (st === "EXIT_SUBMITTED" || exitIntent) stage = "EXITING";
+    else if (st === "EXIT_REQUIRED" || c.key === "EXITING") stage = "EXIT REQUIRED";
+    const maxHold = num(limits && limits.max_hold_sessions) || MAX_HOLD_DEFAULT;
+    const held = num(p.sessions_held != null ? p.sessions_held : d.sessions_held);
+    const opened = (events || []).find((e) => e.kind === "OPENED" && (!p.position_id || e.position_id === p.position_id)) || null;
+    const pnl = stage === "CLOSED" ? (p.realized_pnl != null ? money(p.realized_pnl) : c.pnl || "—") : c.pnl ? `${c.pnl}${c.pnl_pct ? ` (${Number(c.pnl_pct) >= 0 ? "+" : ""}${c.pnl_pct}%)` : ""}` : "—";
+    return { stage, symbol: p.symbol || c.symbol || "—", shares: p.quantity != null ? p.quantity : c.shares != null ? c.shares : "—", entry: p.average_entry_price || c.entry || "—",
+             current: stage === "CLOSED" ? p.average_exit_price || c.current || "—" : p.last_price || c.current || "—", pnl, strategy: strategyName || "—",
+             entryReason: `READY setup with a reviewable proposal${opened && opened.reason ? ` · ${opened.reason}` : ""}`, holding: held == null ? "—" : `Day ${held} / ${maxHold}`,
+             openedAt: p.opened_at || c.since || null, invalidation: p.invalidation_price || d.invalidation_price || null, riskBudget: p.risk_budget || null, exitCycle: num(p.exit_cycle != null ? p.exit_cycle : d.exit_cycle) || 0,
+             exitReason: p.exit_reason ? c.reason || cap(words(p.exit_reason)) : c.key === "EXITING" ? c.reason || "" : "", brokerStatus: exitIntent ? `${cap(words(exitIntent.state))}${exitIntent.broker_status ? ` · broker ${words(exitIntent.broker_status)}` : ""}` : "",
+             attention: p.attention_reason ? cap(words(p.attention_reason)) : c.key === "ATTENTION" ? c.line || "" : "", closedAt: p.closed_at || null,
+             whyHolding: stage === "IN TRADE" || stage === "EXIT REQUIRED" ? holdingLines(card, p, null, limits, frozen || {}) : [] };   // the frozen thresholds when loaded; the stretch rule needs the live panel (TRADE › Why?)
+  }
+
+  // ACTIVITY: one timeline (persisted rows only), de-duplicated, grouped for the filters; the Daily Review counts only what the persisted rows support (no market classification, no estimate)
+  function dedupe(items) { const seen = new Set(); return items.filter((it) => { const k = `${it.at}|${it.text}`; if (seen.has(k)) return false; seen.add(k); return true; }); }
+  function activityItems(src) { return dedupe(timeline(src)).map((it) => ({ ...it, group: GROUP_OF[it.kind] || "system" })); }
+  function filterItems(items, filter) { return !filter || filter === "all" ? items : items.filter((it) => it.group === filter); }
+  function dailyReview(src, exec, safety, fv, today) {
+    const d = (x) => day(x) === today;
+    const sys = systemModel(exec, safety);
+    const market = (exec && exec.scheduler && exec.scheduler.market) || {};
+    const tr = (src.transitions || []).filter((t) => d(t.evaluated_at));
+    const entries = (src.intents || []).filter((i) => i.intent_type === "ENTRY" && i.submitted_at && d(i.submitted_at));
+    const exits = (src.intents || []).filter((i) => i.intent_type === "EXIT" && i.submitted_at && d(i.submitted_at));
+    const closed = (src.positions || []).filter((p) => p.state === "CLOSED" && d(p.closed_at));
+    const blocked = (src.proposals || []).filter((p) => p.status === "BLOCKED" && d(p.created_at));
+    const safetyBlocks = (src.safety_events || []).filter((e) => ["KILL_ON", "PAUSE_ON", "DAILY_HALT_TRIGGERED"].includes(e.kind) && d(e.at));
+    const pnl = closed.reduce((s, p) => s + (num(p.realized_pnl) || 0), 0);
+    const attention = ((exec && exec.attention_reasons) || []).length + (src.findings || []).filter((f) => f.blocking && d(f.at)).length + ((fv && fv.attention) || []).length;
+    return { today, system: sys.loaded ? sys.level : "—", systemCls: sys.cls, market: market.regular_session == null ? "—" : market.regular_session ? "OPEN" : "CLOSED", setupChanges: tr.length,
+             symbols: new Set(tr.map((t) => t.symbol)).size, ready: tr.filter((t) => t.to_state === "READY").length, entries: entries.length, exits: exits.length, closed: closed.length,
+             blocked: blocked.length, safetyBlocks: safetyBlocks.length, pnl: closed.length ? money(pnl) : "—", attention };
   }
 
   // ---------------------------------------------------------------- rendering ------------------------------------------------------
@@ -370,7 +588,9 @@
       `<span class="pui-ctl-action">${r.action ? `<button type="button" class="pui-btn ${r.action === "auto-on" ? "go" : r.action === "stop" ? "stop" : r.action === "clear" || r.action === "auto-off" ? "danger" : ""}" data-pui="${esc(r.action)}"${r.enabled ? "" : " disabled"}>${esc(r.actionLabel)}</button>` : ""}</span>` +
       `<span class="pui-ctl-text">${esc(r.text)}</span></div>` + (r.failure ? `<div class="pui-ctl-fail pui-bad" data-pui-auto-error>${esc(r.failure)}</div>` : "") +
       (confirm && ((confirm === "auto-on" && key === "auto") || ((confirm === "stop" || confirm === "clear") && key === "stop")) ? confirmHtml(confirm) : "");
-    return `<div class="pui-ctl" data-pui-controls data-pui-auto-state="${esc(m.auto.key)}"><h5>Automation / Trading Controls</h5>` + row("auto", "Paper Auto", m.auto) + row("trading", "Trading", m.trading) + row("stop", "Emergency Stop", m.stop) + `</div>`;
+    const sm = sessionModel(exec, safety, opts);                                          // Paper Auto and the gate are independent: the valid combination, named
+    return `<div class="pui-ctl" data-pui-controls data-pui-auto-state="${esc(m.auto.key)}"><h5>Automation / Trading Controls</h5>` + row("auto", "Paper Auto", m.auto) + row("trading", "Trading", m.trading) + row("stop", "Emergency Stop", m.stop) +
+      `<div class="pui-session" data-pui-session="${esc(sm.headline)}"><span class="pui-session-k">Trading session</span><b>${esc(sm.headline)}</b><span class="pui-sub">${esc(sm.text)}</span></div></div>`;
   }
 
   function cardsHtml(ctx) {
@@ -381,12 +601,17 @@
     const sl = setupLines(a, ctx.dom);
     const note = positionNote(ctx.card, ctx.exec, ctx.safety);
     const sym = ctx.symbol || "—";
+    const sm = strategyModel(ctx.card, ctx.dom, ctx.registry, ctx.dom.proposalState);
+    const bl = blockerModel(ctx.exec, ctx.safety, ctx.dom, ctx.terminal, ctx.limits);
     const fold = (key, open, label, body) => `<details class="pui-fold pui-why" data-pui-fold="${key}"${open ? " open" : ""}><summary data-pui="fold:${key}">${esc(label)}</summary><div class="pui-why-body">${body}</div></details>`;
-    const why = fold("why", !!ctx.whyOpen, "Why?", `<div class="pui-kv"><span>PPE stretch</span><b>${esc(m.ppe)}</b><span>Confidence</span><b>${esc(m.confidence)}</b><span>Demand</span><b>${esc(m.demand)}</b><span>Evidence</span><b>${esc(m.evidence)}</b>` +
-      `<span>Stored setup state</span><b>${esc(m.setupLabel)}</b><span>Proposal status</span><b>${esc(m.proposal || "—")}</b></div>` +
-      (m.setupReason ? `<div class="pui-sub">${esc(m.setupReason)}</div>` : "") + (m.blockers.length ? `<div class="pui-sub">Not ready: ${esc(m.blockers.join(" · "))}</div>` : ""));
+    const why = fold("why", !!ctx.whyOpen, "Why?", whyHtml(whyModel(ctx), !!ctx.techOpen));
+    // the strategy display (real state only): best setup / best strategy from the registry, no invented supporting strategies, no opportunity score; READY adds the execution line
+    const strat = `<div class="pui-strategy" data-pui-strategy="${esc(sm.bestId || "")}"><div class="pui-line"><span class="pui-dim">${esc(sm.label)}</span> · ${esc(sm.loaded ? sm.best || "No strategy result available" : "—")}</div>` +
+      (sm.ready ? `<div class="pui-sub">${esc(sm.supportingText)} ${esc(sm.scoreText)}</div>` : "") + `</div>`;
+    const exe = sm.ready ? `<div class="pui-exec ${bl.level === "blocked" ? "pui-warn" : bl.level === "ok" ? "pui-ok" : "pui-dim"}" data-pui-exec="${esc(bl.level)}" data-pui-blocker="${esc(bl.code)}"><b>${esc(bl.title)}</b>${bl.level === "ok" ? "" : ` · ${esc(bl.reason)}`}</div>` : "";
+    const actions = sm.ready ? `<div class="pui-row pui-actions"><button type="button" class="pui-btn" data-pui="fold:why">Why?</button>${sm.proposalLink ? `<button type="button" class="pui-btn" data-pui="proposal">View Proposal</button>` : ""}</div>` : "";
     const agent = `<div class="pui-card agent primary" data-pui-card="agent" data-pui-primary data-agent="${esc(a.label)}"><h4>Agent · ${esc(sym)}</h4><div class="pui-big">${esc(a.label)}</div><div class="pui-sub">${esc(a.text)}</div>` +
-      `${note ? `<div class="pui-line pui-note-line" data-pui-position-note>${esc(note)}</div>` : ""}${sl.line ? `<div class="pui-line">${esc(sl.line)}</div>` : ""}${sl.sub ? `<div class="pui-sub">${esc(sl.sub)}</div>` : ""}${why}</div>`;
+      `${note ? `<div class="pui-line pui-note-line" data-pui-position-note>${esc(note)}</div>` : ""}${sl.line ? `<div class="pui-line">${esc(sl.line)}</div>` : ""}${sl.sub ? `<div class="pui-sub">${esc(sl.sub)}</div>` : ""}${strat}${exe}${actions}${why}</div>`;
     const posDetails = p.open ? fold("pos", !!ctx.posOpen, "Details", `<div class="pui-kv"><span>Position state</span><b>${esc(p.state || "—")}</b><span>Invalidation level</span><b>${esc(p.invalidation || "—")}</b><span>Status</span><b>${esc(p.status)}</b></div>` +
       `<div class="pui-sub">Broker orders, fills and reconciliation live under POSITIONS.</div>`) : "";
     const pos = p.open ? `<div class="pui-card position" data-pui-card="position" data-open="1"><h4>Position</h4><div class="pui-big">${esc(p.symbol)} · ${esc(p.shares)} share${Number(p.shares) === 1 ? "" : "s"}</div>` +
@@ -397,15 +622,53 @@
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}" data-kill="${r.killActive ? "1" : "0"}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
       (r.primary ? `<div class="pui-sub ${r.critical ? "pui-bad" : ""}" data-pui-risk-reason>${esc(r.primary)}</div>` : "") +
       controlsHtml(ctx.exec, ctx.safety, ctx.avail, ctx.confirm, { autoPending: ctx.autoPending, autoError: ctx.autoError }) + riskDetails + `</div>`;
-    return agent + pos + risk;
+    return focusHtml(priorityModel(ctx)) + agent + pos + risk;
   }
 
+  // the focus strip above the cards: the first item of the priority model (a system problem outranks a stock); never a card, never a decision
+  function focusHtml(pr) {
+    const f = pr && pr.focus;
+    if (!f) return "";
+    const act = !f.action ? "" : f.action.go ? `<button type="button" class="pui-link" data-pui="go:${esc(f.action.go)}">${esc(f.action.label)} ▸</button>`
+      : f.action.fold ? `<button type="button" class="pui-link" data-pui="fold:${esc(f.action.fold)}">${esc(f.action.label)}</button>` : f.action.pui ? `<button type="button" class="pui-link" data-pui="${esc(f.action.pui)}">${esc(f.action.label)} ▸</button>` : "";
+    return `<div class="pui-focus ${esc(f.kind.toLowerCase())}" data-pui-focus="${esc(f.kind)}" data-pui-focus-rank="${f.rank}"><span class="pui-focus-k">Focus</span><b>${esc(f.title)}</b><span class="pui-focus-text">${esc(f.text)}</span>${act}</div>`;
+  }
+
+  // the WHY panel body: the question, the seven sections in plain words, the raw values under a Technical details fold (level 3)
+  function whyHtml(w, techOpen) {
+    return `<div class="pui-why-q">${esc(w.question)}</div>` + w.sections.map(([t, lines]) => `<div class="pui-why-sec" data-pui-why="${esc(t.toLowerCase().replace(/[^a-z]+/g, "-"))}"><span class="pui-why-t">${esc(t)}</span>${lines.map((l) => `<div>${esc(l)}</div>`).join("")}</div>`).join("") +
+      `<div class="pui-why-sec" data-pui-why="stored"><span class="pui-why-t">Stored state</span><div>Stored setup state ${esc(w.technical[4][1])} · Proposal status ${esc(w.technical[5][1])}</div></div>` +
+      `<details class="pui-fold pui-tech" data-pui-fold="tech"${techOpen ? " open" : ""}><summary data-pui="fold:tech">Technical details</summary><div class="pui-kv">${w.technical.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join("")}</div>` +
+      (w.setupReason ? `<div class="pui-sub">${esc(w.setupReason)}</div>` : "") + (w.blockers.length ? `<div class="pui-sub">Not ready: ${esc(w.blockers.join(" · "))}</div>` : "") + `</details>`;
+  }
+
+  // POSITIONS: one lifecycle card per open or pending paper position (ENTERING · IN TRADE · EXIT REQUIRED · EXITING · NEEDS ATTENTION) with strategy, entry reason, risk / invalidation,
+  // holding duration, "Why still holding?" and the exit / broker order status; the exit logic itself is untouched (display of the persisted position only)
   function positionsHtml(rows) {
     if (!rows.length) return `<div class="pui-empty" data-pui-empty>No open paper position. The Agent opens one only when a setup is READY and every risk check passes.</div>`;
-    return `<div class="pui-grid">` + rows.map(({ card, model, agent }) => `<div class="pui-pos" data-pui-pos="${esc(card.symbol)}" data-position-id="${esc(card.position_id || "")}">` +
-      `<div class="pui-sym"><span>${esc(card.symbol)}</span><span class="pui-state">${esc(agent.label)}</span></div>` +
-      (model.open ? `<div class="pui-kv"><span>Quantity</span><b>${esc(model.shares)}</b><span>Entry</span><b>${esc(model.entry)}</b><span>Current</span><b>${esc(model.current)}</b><span>P/L</span><b>${esc(model.pnl)}</b><span>Holding</span><b>${esc(model.holding)}</b></div>`
-                  : `<div class="pui-sub">${esc(card.line || agent.text)}</div>`) + `<div class="pui-sub">${esc(card.reason || "")}</div></div>`).join("") + `</div>`;
+    return `<div class="pui-grid">` + rows.map(({ card, model, agent, life }) => {
+      const L = life || positionLifecycle(null, card, [], null, null, []);
+      return `<div class="pui-pos" data-pui-pos="${esc(card.symbol)}" data-position-id="${esc(card.position_id || "")}" data-pui-stage="${esc(L.stage)}">` +
+        `<div class="pui-sym"><span>${esc(card.symbol)}</span><span class="pui-state">${esc(L.stage)}</span></div>` +
+        (model.open ? `<div class="pui-kv"><span>Quantity</span><b>${esc(model.shares)}</b><span>Entry</span><b>${esc(model.entry)}</b><span>Current</span><b>${esc(model.current)}</b><span>P/L</span><b>${esc(model.pnl)}</b><span>Holding</span><b>${esc(model.holding)}</b></div>`
+                    : `<div class="pui-sub">${esc(card.line || agent.text)}</div>`) +
+        `<div class="pui-kv pui-life"><span>Strategy</span><b>${esc(L.strategy)}</b><span>Entry reason</span><b>${esc(L.entryReason)}</b>` +
+        (L.invalidation ? `<span>Risk / invalidation</span><b>${esc(L.invalidation)}${L.riskBudget ? ` · budget ${esc(L.riskBudget)}` : ""}</b>` : "") + (L.openedAt ? `<span>Holding since</span><b>${esc(day(L.openedAt))} ${esc(hm(L.openedAt))}</b>` : "") + `</div>` +
+        (L.stage === "EXIT REQUIRED" || L.stage === "EXITING" ? `<div class="pui-line pui-warn" data-pui-exit>${esc(L.stage)}${L.exitReason ? ` · ${esc(L.exitReason)}` : ""}${L.brokerStatus ? ` · order ${esc(L.brokerStatus)}` : ""}</div>` : "") +
+        (L.stage === "NEEDS ATTENTION" && L.attention ? `<div class="pui-line pui-bad">${esc(L.attention)}</div>` : "") +
+        (L.whyHolding.length ? `<details class="pui-fold" data-pui-fold="holding"><summary>Why still holding?</summary><div class="pui-why-body">${L.whyHolding.map((l) => `<div>${esc(l)}</div>`).join("")}</div></details>` : "") +
+        `<div class="pui-sub">${esc(card.reason || "")}</div></div>`;
+    }).join("") + `</div>`;
+  }
+
+  // the closed paper trades: realized paper P/L and the exit reason per position (persisted rows; nothing recomputed)
+  function closedHtml(positions, strategyName, limits) {
+    const closed = (positions || []).filter((p) => p.state === "CLOSED").sort((a, b) => ((a.closed_at || "") < (b.closed_at || "") ? 1 : -1)).slice(0, 20);
+    if (!closed.length) return `<div class="pui-sub" data-pui-closed-empty>No closed paper trade yet.</div>`;
+    return `<div class="pui-grid" data-pui-closed>` + closed.map((p) => { const L = positionLifecycle(p, { key: "CLOSED", symbol: p.symbol }, [], limits, strategyName, []);
+      return `<div class="pui-pos pui-closed" data-pui-closed-pos="${esc(p.symbol)}" data-pui-stage="CLOSED"><div class="pui-sym"><span>${esc(p.symbol)}</span><span class="pui-state">CLOSED</span></div>` +
+        `<div class="pui-kv"><span>Realized paper P/L</span><b>${esc(L.pnl)}</b><span>Exit reason</span><b>${esc(L.exitReason || "—")}</b><span>Entry → exit</span><b>${esc(L.entry)} → ${esc(L.current)}</b><span>Shares</span><b>${esc(p.entry_qty != null ? p.entry_qty : "—")}</b>` +
+        `<span>Held</span><b>${esc(L.holding)}</b><span>Closed</span><b>${esc(day(p.closed_at))} ${esc(hm(p.closed_at))}</b></div></div>`; }).join("") + `</div>`;
   }
 
   function positionDetailsHtml(d) {
@@ -417,11 +680,17 @@
       `<div class="pui-sub">Broker orders and fills</div><ul>${intents || "<li>none</li>"}</ul><div class="pui-sub">Recent events</div><ul>${ev || "<li>none</li>"}</ul></div>`;
   }
 
-  function activityHtml(src, exec, fv, today) {
-    const s = todaySummary(src, exec, today);
-    const items = timeline(src).slice(0, 120);
+  function activityHtml(src, exec, fv, today, opts) {
+    const o = opts || {};
+    const dr = dailyReview(src, exec, o.safety, fv, today);
+    const items = filterItems(activityItems(src), o.filter).slice(0, 120);
     let last = "";
-    const rows = items.map((it) => { const d = day(it.at); const head = d !== last ? `<li class="pui-day">${esc(d === today ? "Today" : d)}</li>` : ""; last = d; return head + `<li class="${esc(it.cls)}" data-pui-kind="${esc(it.kind)}"><time>${esc(hm(it.at))}</time><span>${esc(it.text)}</span></li>`; }).join("");
+    const rows = items.map((it) => { const d = day(it.at); const head = d !== last ? `<li class="pui-day">${esc(d === today ? "Today" : d)}</li>` : ""; last = d; return head + `<li class="${esc(it.cls)}" data-pui-kind="${esc(it.kind)}" data-pui-group="${esc(it.group)}"><time>${esc(hm(it.at))}</time><span>${esc(it.text)}</span></li>`; }).join("");
+    // the Daily Review: only counts the persisted rows support (no market classification, no estimate); the market state is the scheduler's regular-session flag
+    const review = `<div class="pui-today" data-pui-today>` + [["System", dr.system], ["Market", dr.market], ["Setup changes", dr.setupChanges], ["READY setups", dr.ready], ["Entries", dr.entries], ["Exits", dr.exits],
+      ["Blocked", dr.blocked], ["Safety blocks", dr.safetyBlocks], ["Paper P/L", dr.pnl], ["Attention", dr.attention]]
+      .map(([k, v]) => `<div class="pui-card"><h4>${esc(k)}</h4><div class="pui-big ${k === "Attention" && v ? "pui-bad" : k === "System" ? lvl(dr.systemCls) : ""}">${esc(v)}</div></div>`).join("") + `</div>`;
+    const filters = `<div class="pui-filters" data-pui-filters>${FILTERS.map(([id, label]) => `<button type="button" class="pui-chip${(o.filter || "all") === id ? " active" : ""}" data-pui-filter="${id}">${esc(label)}</button>`).join("")}</div>`;
     const FVlib = G.ForwardValidation || null;
     const fvm = fv && FVlib ? FVlib.summaryModel(fv) : null;
     const val = `<div class="pui-validation" data-pui-validation><h3>Validation</h3>` + (fvm && fvm.loaded ?
@@ -429,19 +698,58 @@
       `<div class="pui-line" style="margin-top:6px">Strategy <b>${esc(fvm.edgeLabel)}</b>${fvm.insufficient ? ` <span class="pui-sub">${esc(fvm.insufficientText)}</span>` : ""}</div>` +
       (fvm.needsAttention ? `<div class="pui-bad">⚠ ${esc(fvm.critical ? "NEEDS ATTENTION" : "Needs a look")}: ${fvm.attention.map((a) => esc(words(a.code))).join(", ")}</div>` : "")
       : `<div class="pui-empty">Validation status unavailable.</div>`) + `<div><a href="forward_validation.html" target="_blank" rel="noopener" data-pui-fv-link>View validation details</a></div></div>`;
-    return `<h2>Activity</h2><div class="pui-today" data-pui-today>` + [["Trades", s.trades], ["Open", s.open], ["Closed", s.closed], ["Paper P/L", s.pnl], ["Issues", s.issues]]
-      .map(([k, v]) => `<div class="pui-card"><h4>${esc(k)}</h4><div class="pui-big ${k === "Issues" && v ? "pui-bad" : ""}">${esc(v)}</div></div>`).join("") + `</div>` +
+    return `<h2>Activity</h2><h3>Today${dr.today ? ` · ${esc(dr.today)}` : ""}</h3>` + review + filters +
       `<ul class="pui-timeline" data-pui-timeline>${rows || '<li class="pui-day">No activity yet.</li>'}</ul>` + val +
       `<details class="pui-fold" data-pui-alerts-fold><summary>Rule alerts and setup alerts (legacy lists)</summary></details>`;
   }
 
-  function moreHtml(groups) {
-    return `<h2>More</h2><p class="pui-sub">Research, tools and system views. Nothing here is removed; it is simply not part of the daily TRADE workflow.</p><div class="pui-more">` +
-      groups.map((g) => `<div class="pui-more-group" data-pui-group="${esc(g.title)}"><h3>${esc(g.title)}</h3>` + g.items.map((it) =>
-        it.href ? `<a href="${esc(it.href)}" target="_blank" rel="noopener" data-pui-more="${esc(it.href)}">${esc(it.label)}</a>`
-        : `<button type="button" data-pui-more="${esc(it.action ? "action:" + it.action : "tab:" + it.tab + (it.lab && it.lab !== true ? ":" + it.lab : ""))}">${esc(it.label)}</button>`).join("") +
-        (g.title === "Settings" ? `<span class="pui-sub">Server-side configuration (config.py / .env). Secrets are never shown.</span>` : "") + `</div>`).join("") + `</div>` +
+  // MORE: three collapsed groups (progressive disclosure); a group opens on click, an item opens its panel below or its legacy workspace; the Diagnostics tools are a nested fold
+  function moreHtml(groups, open) {
+    const o = open || {};
+    const item = (it) => it.href ? `<a href="${esc(it.href)}" target="_blank" rel="noopener" data-pui-more="${esc(it.href)}">${esc(it.label)}</a>`
+      : it.tools ? `<details class="pui-more-sub" data-pui-sub="${esc(it.action || "tools")}"${o[it.action] ? " open" : ""}><summary data-pui-sub-toggle="${esc(it.action || "tools")}">${esc(it.label)}</summary>${it.tools.map((t) => `<button type="button" data-pui-more="tab:${esc(t.tab)}">${esc(t.label)}</button>`).join("")}</details>`
+      : `<button type="button" data-pui-more="${esc(it.action ? "action:" + it.action : "tab:" + it.tab + (it.lab && it.lab !== true ? ":" + it.lab : ""))}">${esc(it.label)}</button>`;
+    return `<h2>More</h2><p class="pui-sub">Research, system and settings. Nothing here is removed; it is simply not part of the daily TRADE workflow.</p><div class="pui-more">` +
+      groups.map((g) => `<details class="pui-more-group" data-pui-group="${esc(g.title)}"${o[g.id] ? " open" : ""}><summary data-pui-group-toggle="${esc(g.id)}"><h3>${esc(g.title)}</h3><span class="pui-sub">${esc(g.text)}</span></summary>` +
+        g.items.map(item).join("") + (g.id === "settings" ? `<span class="pui-sub">Server-side configuration (config.py / .env). Secrets are never shown.</span>` : "") + `</details>`).join("") + `</div>` +
       `<div id="pui-more-body"></div>`;
+  }
+
+  // the Strategy Lab registry (MORE › Research › Strategy Lab): every registered strategy with its real lifecycle status; placeholders are marked as such and never active
+  function registryHtml(reg, views, error) {
+    const rows = (reg && reg.strategies) || [];
+    const badge = (s) => `<span class="pui-badge ${s.implemented ? (s.active ? "ok" : "") : "dim"}" data-pui-status="${esc(s.status)}">${esc(s.status_label || cap(words(s.status)))}</span>` +
+      (s.implemented ? "" : ` <span class="pui-badge dim" data-pui-placeholder>placeholder · not active</span>`);
+    const qc = reg && reg.quantconnect;
+    return `<div class="pui-lab" data-pui-lab-panel><h3>Strategy Lab</h3><p class="pui-sub">${esc((reg && reg.disclaimer) || "")}</p>` +
+      `<div class="pui-pipeline" data-pui-pipeline>${((reg && reg.pipeline) || []).map(esc).join(" → ")}</div>` +
+      `<div class="pui-sources">${((reg && reg.sources) || []).map((s) => `<span class="pui-badge" data-pui-source="${esc(s.source)}" title="${esc(s.note || "")}">${esc(s.source)} · ${s.count}</span>`).join("")}` +
+      (qc && !qc.integrated ? `<span class="pui-sub">QuantConnect: source supported, ${qc.registered} registered, not integrated (adapter architecture only).</span>` : "") + `</div>` +
+      `<table class="pui-registry" data-pui-registry><thead><tr><th>Strategy</th><th>Source</th><th>Lifecycle</th><th>Horizon</th><th>Direction</th><th>Version</th><th>Updated</th></tr></thead><tbody>` +
+      rows.map((s) => `<tr data-pui-strategy-row="${esc(s.strategy_id)}" data-pui-implemented="${s.implemented ? "1" : "0"}" data-pui-active="${s.active ? "1" : "0"}"><td><button type="button" class="pui-link" data-pui-lab="${esc(s.strategy_id)}">${esc(s.display_name)}</button><div class="pui-sub">${esc(s.strategy_id)}</div></td>` +
+        `<td>${esc(s.source)}</td><td>${badge(s)}</td><td>${esc(words(s.time_horizon))}</td><td>${esc(words(s.direction_capability))}</td><td>${esc(s.version)}</td><td>${esc(s.updated_at)}</td></tr>`).join("") + `</tbody></table>` +
+      (error ? `<div class="pui-bad">${esc(error)}</div>` : "") +
+      `<details class="pui-fold" data-pui-lab-tools><summary>Legacy research workspaces (${views.length})</summary><div class="pui-more-group pui-tools">${views.map((v) => `<button type="button" data-pui-more="tab:strategy:${esc(v.view)}">${esc(v.label)}</button>`).join("") || `<span class="pui-sub">Open MORE › Research › Backtests once to load them.</span>`}</div></details></div>`;
+  }
+
+  // one strategy's detail: the thirteen sections as documented / live / "Not yet evaluated" / unavailable; raw facts and sources behind Technical details
+  function strategyDetailHtml(det, views) {
+    void views;
+    const e = det.entry || {}, lc = det.lifecycle || {};
+    const label = (st) => (st === "NOT_EVALUATED" ? "Not yet evaluated" : st === "UNAVAILABLE" ? "Unavailable" : st === "LIVE" ? "Live" : "Documented");
+    const sec = (s, open) => `<details class="pui-fold pui-sec" data-pui-section="${esc(s.key)}" data-pui-section-state="${esc(s.state)}"${open ? " open" : ""}><summary>${esc(s.title)} <span class="pui-badge ${s.state === "LIVE" ? "ok" : s.state === "DOCUMENTED" ? "" : "dim"}">${esc(label(s.state))}</span></summary><div class="pui-why-body">` +
+      (s.items || []).map((i) => `<div>${esc(i)}</div>`).join("") + (s.note ? `<div class="pui-sub">${esc(s.note)}</div>` : "") +
+      (Object.keys(s.facts || {}).length ? `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify(s.facts, null, 1))}</pre></details>` : "") +
+      ((s.sources || []).length ? `<div class="pui-sub">Sources: ${esc(s.sources.join(" · "))}</div>` : "") + `</div></details>`;
+    return `<div class="pui-lab" data-pui-lab-panel data-pui-lab-detail="${esc(e.strategy_id)}"><button type="button" class="pui-link" data-pui-lab="back">◂ Strategy registry</button>` +
+      `<h3>${esc(e.display_name)} <span class="pui-badge ${e.active ? "ok" : "dim"}">${esc(e.status_label || e.status)}</span>${e.implemented ? "" : ` <span class="pui-badge dim" data-pui-placeholder>placeholder · not active</span>`}</h3>` +
+      `<div class="pui-kv"><span>Strategy id</span><b>${esc(e.strategy_id)}</b><span>Source</span><b>${esc(e.source_label || e.source)}</b><span>Asset class</span><b>${esc(words(e.asset_class))}</b><span>Direction</span><b>${esc(words(e.direction_capability))}</b>` +
+      `<span>Horizon</span><b>${esc(words(e.time_horizon))}</b><span>Version</span><b>${esc(e.version)}</b><span>Created</span><b>${esc(e.created_at)}</b><span>Updated</span><b>${esc(e.updated_at)}</b>` +
+      `<span>Lifecycle</span><b>${esc(lc.label || e.status)}${lc.declared && lc.declared !== lc.status ? ` (declared ${esc(words(lc.declared))})` : ""}</b></div>` +
+      ((lc.basis || []).length ? `<div class="pui-sub">${esc(lc.basis.join(" · "))}</div>` : "") + (lc.decision ? `<div class="pui-sub">${esc(lc.decision)}</div>` : "") +
+      (det.sections || []).map((s, i) => sec(s, i === 0)).join("") +
+      `<div class="pui-row">${det.links && det.links.validation ? `<a class="pui-btn" href="${esc(det.links.validation)}" target="_blank" rel="noopener">Paper validation</a>` : ""}<button type="button" class="pui-btn" data-pui-go="trade">Open TRADE</button></div>` +
+      `<div class="pui-sub">${esc(det.disclaimer || "")}</div></div>`;
   }
 
   // ---------------------------------------------------------------- page wiring (browser only) ---------------------------------------
@@ -486,9 +794,33 @@
     const card = cardFor(sym);
     let position = null;
     if (card && card.position_id && state.posData) position = (state.posData.positions || []).find((p) => p.position_id === card.position_id) || null;
+    loadRegistry(); loadFrozen();
+    if (state.whyOpen) loadTerminal(sym);                                        // the proposal's own blocker and the stored setup detail: on demand (Why? open), 10 s cache
     host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
-                                 whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError });
+                                 whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError,
+                                 registry: state.registry, terminal: (state.terminal[sym] || {}).data || null, frozen: state.frozen, techOpen: state.techOpen });
   }
+  // Stage 6.1.2 read-only loaders: the registry and the frozen controls once per page, the terminal state of the active ticker only while Why? is open
+  // a failed read is read again at most once a minute (never a 2 s poll)
+  const REREAD_MS = 60000;
+  function loadRegistry() {
+    if (state.registry || state.registryBusy || (state.registryFailedAt && Date.now() - state.registryFailedAt < REREAD_MS)) return;
+    state.registryBusy = true;
+    getJson("/api/strategy-registry").then((r) => { state.registry = r; state.registryFailedAt = null; }).catch(() => { state.registry = null; state.registryFailedAt = Date.now(); }).finally(() => { state.registryBusy = false; });
+  }
+  function loadFrozen() {
+    if (state.frozen || state.frozenBusy || (state.frozenFailedAt && Date.now() - state.frozenFailedAt < REREAD_MS)) return;
+    state.frozenBusy = true;
+    getJson("/api/forward-validation/frozen-controls").then((r) => { state.frozen = (r && r.controls) || null; state.frozenFailedAt = state.frozen ? null : Date.now(); }).catch(() => { state.frozen = null; state.frozenFailedAt = Date.now(); }).finally(() => { state.frozenBusy = false; });
+  }
+  function loadTerminal(sym) {
+    const t = state.terminal[sym];
+    if (!sym || state.terminalBusy || (t && Date.now() - t.at < 10000)) return;
+    state.terminalBusy = true;
+    getJson(`/api/terminal/state/${encodeURIComponent(sym)}?candles=0`).then((d) => { state.terminal[sym] = { at: Date.now(), data: d }; renderCards(); }).catch(() => { state.terminal[sym] = { at: Date.now(), data: null }; }).finally(() => { state.terminalBusy = false; });
+  }
+  function strategyName() { const s = ((state.registry && state.registry.strategies) || []).find((x) => x.implemented && x.active); return s ? s.display_name : null; }
+  function viewProposal() { setCollapsed(false); const el = q("#tv-proposal"); if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" }); }   // the Stage 5.9 review panel; nothing is submitted
   function renderChart(forced) {
     if (forced !== undefined) state.chartForced = forced;                     // harness / tests: force one empty state (null restores the live one)
     const wrap = q("#tv-body .tv-chart-wrap");
@@ -573,7 +905,9 @@
     const b = e.target.closest("[data-pui]");
     if (!b || b.disabled) return;
     const k = b.dataset.pui;
-    if (k.startsWith("fold:")) { e.preventDefault(); const key = k.slice(5); if (key === "why") state.whyOpen = !state.whyOpen; if (key === "risk") state.riskOpen = !state.riskOpen; if (key === "pos") state.posOpen = !state.posOpen; renderCards(); return; }
+    if (k.startsWith("fold:")) { e.preventDefault(); const key = k.slice(5); if (key === "why") state.whyOpen = !state.whyOpen; if (key === "risk") state.riskOpen = !state.riskOpen; if (key === "pos") state.posOpen = !state.posOpen; if (key === "tech") state.techOpen = !state.techOpen; renderCards(); return; }
+    if (k.startsWith("go:")) { go(k.slice(3)); return; }                                                     // the focus strip: open POSITIONS / TRADE
+    if (k === "proposal") { viewProposal(); return; }                                                        // READY: the review proposal (Trade Review panel), never an order
     if (k === "diag") { e.preventDefault(); state.diagOpen = !state.diagOpen; renderDiag(); return; }
     if (k === "system") { state.sysOpen = !state.sysOpen; renderStatus(); return; }
     // explanations first: Enable Paper Auto, Emergency Stop and Clear Emergency Stop open a confirmation panel; nothing is clicked or posted yet
@@ -589,16 +923,19 @@
 
   async function getJson(path) { const r = await fetch(path); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || `HTTP ${r.status}`); return j; }
   async function loadPositions() {
-    try { state.posData = await getJson("/api/execution/positions?open_only=true&limit=100"); if (window.PaperBot) await window.PaperBot.refresh(); state.error = null; }
+    try { state.posData = await getJson("/api/execution/positions?limit=100"); if (window.PaperBot) await window.PaperBot.refresh(); state.error = null; }   // open and closed: the lifecycle view
     catch (e) { state.error = `Positions unavailable (${e.message}).`; }
+    loadRegistry(); loadFrozen();
     renderPositions();
   }
   function renderPositions() {
     const host = $("pui-positions");
     if (!host) return;
-    const rows = positionCards(exec(), state.posData && state.posData.positions);
+    const positions = (state.posData && state.posData.positions) || [];
+    const rows = positionCards(exec(), positions, state.posData && state.posData.events, strategyName());
+    const closed = positions.filter((p) => p.state === "CLOSED").length;
     host.innerHTML = `<h2>Positions</h2>` + (state.error ? `<div class="pui-bad">${esc(state.error)}</div>` : "") + positionsHtml(rows) + `<div id="pui-pos-detail"></div>` +
-      `<details class="pui-fold"><summary>Closed paper trades (history)</summary><div class="pui-sub" data-pui-history>${esc(((exec() || {}).recent || []).map((h) => window.PaperBot ? window.PaperBot.historyLine(h) : "").join("\n") || "No closed paper trade yet.")}</div></details>`;
+      `<details class="pui-fold" data-pui-closed-fold><summary>Closed paper trades (${closed})</summary>${closedHtml(positions, strategyName(), state.limits)}</details>`;
     if (state.posDetails) renderPositionDetails(state.posDetails);
   }
   async function openPosition(symbol, positionId) {
@@ -630,7 +967,7 @@
     const host = $("pui-activity");
     if (!host || !state.actData) return;
     const today = (exec() && exec().scheduler && exec().scheduler.market && exec().scheduler.market.session_date) || new Date().toISOString().slice(0, 10);
-    host.innerHTML = activityHtml(state.actData.src, exec(), state.actData.fv, today);
+    host.innerHTML = activityHtml(state.actData.src, exec(), state.actData.fv, today, { safety: safety(), filter: state.filter });
     const fold = host.querySelector("[data-pui-alerts-fold]");
     const legacy = $("pui-legacy-alerts");
     if (fold && legacy) fold.appendChild(legacy);
@@ -642,20 +979,90 @@
     if (!host) return;
     const body = $("pui-more-body");
     const keep = body ? body.innerHTML : "";
-    host.innerHTML = moreHtml(moreGroups(labViews()));
+    host.innerHTML = moreHtml(moreGroups(labViews()), state.moreOpen);
     if (keep) $("pui-more-body").innerHTML = keep;
   }
   function onMoreClick(e) {
+    const lab = e.target.closest("[data-pui-lab]");
+    if (lab) { renderLab(lab.dataset.puiLab === "back" ? null : lab.dataset.puiLab); return; }
+    const g = e.target.closest("[data-pui-go]");
+    if (g) { go(g.dataset.puiGo); return; }
     const b = e.target.closest("[data-pui-more]");
     if (!b || b.tagName === "A") return;
-    const [kind, name, lab] = b.dataset.puiMore.split(":");
-    if (kind === "tab") { openLegacy(name); if (lab) setTimeout(() => { const v = q(`#sl-subnav [data-sfv="${lab}"]`); if (v) v.click(); }, 300); return; }
-    if (kind === "action") {
-      const body = $("pui-more-body");
-      if (name === "settings") { const p = q("#tab-settings .unavailable-panel"); if (p) p.classList.toggle("pui-shown"); return; }
-      if (name === "risk") { body.innerHTML = `<h3>Risk Controls</h3><p class="pui-sub">The persisted execution safety gate. Pause / Resume / Emergency Stop live in TRADE (Risk card and View details). Current state:</p><pre class="pui-sub" data-pui-health>${esc(JSON.stringify(safety() ? { state: safety().state, label: safety().state_label, reasons: safety().reason_codes, evaluated_at: safety().evaluated_at } : { state: "unavailable" }, null, 1))}</pre>`; return; }
-      if (name === "health") { getJson("/api/account-refresh").then((a) => { body.innerHTML = `<h3>Account / execution health</h3><pre class="pui-sub" data-pui-health>${esc(JSON.stringify({ account: { status: a.status, label: a.label, last_success_at: a.last_success_at, consecutive_failures: a.consecutive_failures, loop: a.loop && a.loop.running }, execution: exec() ? { mode: exec().mode, reconciliation_healthy: exec().reconciliation_healthy, last_cycle_at: exec().last_cycle_at, loop: exec().scheduler && exec().scheduler.running } : "unavailable" }, null, 1))}</pre>`; }).catch((err) => { body.innerHTML = `<div class="pui-bad">Health unavailable (${esc(err.message)}).</div>`; }); }
+    const [kind, name, lab2] = b.dataset.puiMore.split(":");
+    if (kind === "tab") { openLegacy(name); if (lab2) setTimeout(() => { const v = q(`#sl-subnav [data-sfv="${lab2}"]`); if (v) v.click(); }, 300); return; }
+    if (kind === "action") openMoreAction(name);
+  }
+  // a MORE target from a legacy deep link: open the group (and the Strategy Lab / Diagnostics panel) the old tab maps to
+  function openMore(target) {
+    const groupOf = { lab: "research", research: "research", system: "system", diagnostics: "system", settings: "settings" };
+    if (groupOf[target]) state.moreOpen[groupOf[target]] = true;
+    if (target === "diagnostics") state.moreOpen.diagnostics = true;
+    renderMore();
+    if (target === "lab") renderLab(null);
+  }
+  const kv = (rows) => `<div class="pui-kv">${rows.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v == null || v === "" ? "—" : v)}</b>`).join("")}</div>`;
+  function openMoreAction(name) {
+    const body = $("pui-more-body");
+    if (!body) return;
+    state.moreAction = name;
+    const fail = (what, err) => { body.innerHTML = `<div class="pui-bad">${esc(what)} unavailable (${esc(err.message)}).</div>`; };
+    if (name === "settings") { const p = q("#tab-settings .unavailable-panel"); if (p) p.classList.toggle("pui-shown"); return; }
+    if (name === "lab") { renderLab(null); return; }
+    if (name === "health") {                                                                        // Broker Connection: the read-only account refresh + the executor's environment proof
+      getJson("/api/account-refresh").then((a) => { const x = exec() || {}; const env = x.environment || {};
+        body.innerHTML = `<h3>Broker Connection</h3><p class="pui-sub">Alpaca PAPER account, read only here. Robinhood holdings are read only (MORE › System › Diagnostics › Portfolio).</p>` +
+          kv([["Account refresh", a.label || a.status], ["Last success", a.last_success_at], ["Consecutive failures", a.consecutive_failures], ["Refresh loop", a.loop && a.loop.running ? "running" : "off"],
+              ["Paper environment", env.label || (env.paper ? "PAPER" : "—")], ["Simulated broker", env.simulated ? "yes" : env.paper ? "no" : "—"], ["Account", env.account_number_masked], ["Execution mode", x.mode],
+              ["Reconciliation", x.reconciliation_healthy == null ? "—" : x.reconciliation_healthy ? "healthy" : "needs a look"], ["Last executor cycle", x.last_cycle_at]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Broker connection", err));
+      return;
     }
+    if (name === "data") {                                                                          // Data Sources: the Trader View feed and the diagnostics chips, read from the page
+      const d = diagModel(readChips());
+      body.innerHTML = `<h3>Data Sources</h3>` + kv([["Market data", (q("#tv-mode") || {}).textContent || "—"], ["Stream", (q("#tv-conn") || {}).textContent || "—"], ["Summary", d.summary || "—"]]) +
+        (d.items.length ? `<ul class="pui-sub">${d.items.map((i) => `<li class="${esc(i.level)}">${esc(i.text)}</li>`).join("")}</ul>` : `<div class="pui-sub">Open TRADE once to read the data-source chips.</div>`);
+      return;
+    }
+    if (name === "logs") {                                                                          // Logs: the persisted executor cycle records (10 newest) and the scheduler's last error
+      getJson("/api/execution").then((o) => { const runs = o.runs || []; const s = o.scheduler || {};
+        body.innerHTML = `<h3>Logs</h3><p class="pui-sub">The persisted executor cycle records (newest ${runs.length}); file logs are written by the Windows runner under logs/ (README › Running without VS Code).</p>` +
+          kv([["Scheduler", s.running ? "running" : "off"], ["Last error", s.last_error], ["Last result", s.last_result && s.last_result.result]]) +
+          (runs.length ? `<ul class="pui-sub pui-runs" data-pui-runs>${runs.map((r) => `<li>${esc(hm(r.started_at))} · ${esc(r.trigger || "")} · ${esc(r.mode || "")} · ${esc(r.result || "")}${r.error ? ` · ${esc(r.error)}` : ""}</li>`).join("")}</ul>` : `<div class="pui-sub" data-pui-runs>No executor cycle recorded yet.</div>`); }).catch((err) => fail("Logs", err));
+      return;
+    }
+    if (name === "risk") {                                                                          // Risk: the frozen risk constants (read only) and the gate's current state
+      getJson("/api/forward-validation/frozen-controls").then((f) => { const c = f.controls || {}; const sv = safety(); const lim = state.limits || {};
+        body.innerHTML = `<h3>Risk</h3><p class="pui-sub">Frozen Stage 6.1 controls (hash ${esc(String(f.hash || "").slice(0, 12))}…). Configured server-side (config.py / .env); the controls live on TRADE › Risk card.</p>` +
+          kv([["Risk per entry", c.risk_fraction != null ? `${c.risk_fraction} of equity` : null], ["Max position", c.max_position_pct != null ? `${c.max_position_pct} % of equity` : null], ["Max daily loss", c.max_daily_loss_pct != null ? `${c.max_daily_loss_pct} %` : null],
+              ["Max open positions", c.max_open_positions != null ? c.max_open_positions : lim.max_open_positions], ["Max hold", c.max_hold_sessions != null ? `${c.max_hold_sessions} sessions` : null], ["Near-close cutoff", c.near_close_minutes != null ? `${c.near_close_minutes} min` : null],
+              ["Order", c.order_type && c.time_in_force ? `${c.order_type} / ${c.time_in_force} · ${c.side}` : null], ["Leverage / shorts", c.leverage ? `${c.leverage} / ${c.shorts}` : null],
+              ["Gate now", sv ? `${SAFETY_TEXT[sv.state] || sv.state}${sv.reason_text ? ` · ${sv.reason_text}` : ""}` : "unavailable"]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Risk settings", err));
+      return;
+    }
+    if (name === "automation") {                                                                    // Automation: Paper Auto and the background loops, read only; the controls stay on TRADE
+      getJson("/api/account-refresh").then((a) => { const x = exec() || {}; const s = x.scheduler || {}; const sv = safety();
+        body.innerHTML = `<h3>Automation</h3><p class="pui-sub">Paper Auto, Pause New Trades and Emergency Stop are on TRADE › Risk card. Paper Auto ON is not trading allowed: the gate decides separately.</p>` +
+          kv([["Paper Auto", x.mode === "PAPER_AUTO" ? "ON" : x.mode === "MONITOR_ONLY" ? "OFF" : "—"], ["Trading", sv ? (sv.state === "TRADING_ALLOWED" ? "ALLOWED" : sv.state === "NO_NEW_ENTRIES" ? "PAUSED" : sv.state === "HALTED" ? "STOPPED" : "UNKNOWN") : "—"],
+              ["Executor loop", s.enabled === false ? "disabled" : s.running ? `running · ${s.interval_s || "—"} s` : "off"], ["Account refresh loop", a.loop && a.loop.running ? "running" : "off"], ["Last cycle", x.last_cycle_at], ["Mode changed", x.mode_changed_at ? `${hm(x.mode_changed_at)} by ${x.mode_changed_by || "—"}` : null]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Automation", err));
+      return;
+    }
+    if (name === "notifications") {                                                                 // Notifications: in-app setup alerts (ACTIVITY) and the Daily Brief delivery workspace
+      const brief = labViews().find((v) => v.view === "brief");
+      body.innerHTML = `<h3>Notifications</h3>` + kv([["Setup alerts", "in-app toasts + the ACTIVITY timeline (persisted)"], ["Daily Brief delivery", brief ? "Strategy Lab › Daily Brief" : "open MORE › Research › Backtests once to load the workspace"]]) +
+        (brief ? `<div class="pui-more-group pui-tools"><button type="button" data-pui-more="tab:strategy:brief">Open Daily Brief delivery</button></div>` : "");
+    }
+  }
+  // the Strategy Lab panel: GET /api/strategy-registry (list) and GET /api/strategy-registry/{id} (detail); every number is the backend's, nothing is posted
+  async function renderLab(detailId) {
+    const body = $("pui-more-body");
+    if (!body) return;
+    state.moreAction = "lab";
+    body.innerHTML = `<div class="pui-lab" data-pui-lab-panel><h3>Strategy Lab</h3><div class="pui-sub">Loading the strategy registry…</div></div>`;
+    try { if (!state.registry) state.registry = await getJson("/api/strategy-registry"); state.labError = null; } catch (e) { state.labError = `Strategy registry unavailable (${e.message}).`; }
+    if (detailId && state.registry) { try { state.labDetail = await getJson(`/api/strategy-registry/${encodeURIComponent(detailId)}`); } catch (e) { state.labDetail = null; state.labError = `Strategy detail unavailable (${e.message}).`; } }
+    else state.labDetail = null;
+    if (state.moreAction !== "lab") return;
+    body.innerHTML = state.labDetail ? strategyDetailHtml(state.labDetail, labViews()) : registryHtml(state.registry, labViews(), state.labError);
   }
 
   function openLegacy(tab) { const b = legacyTab(tab); if (b) b.click(); }
@@ -664,10 +1071,19 @@
     state.section = nav.id;
     openLegacy(nav.host);
     syncNav();
+    // the bookmarkable hash follows the section the user opens (a foreign hash such as #daily-brief is left alone at load time: mount() never calls go() for it)
+    try { if (G.history && G.history.replaceState) G.history.replaceState(null, "", `#${nav.id}`); } catch (e) { /* display only */ }
     if (nav.id === "positions") loadPositions();
     if (nav.id === "activity") loadActivity();
     if (nav.id === "more") renderMore();
     if (nav.id === "trade" && ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); }
+  }
+  function openRoute(route) {
+    if (!route) return false;
+    if (route.filter) state.filter = route.filter;
+    go(route.section);
+    if (route.more) openMore(route.more);
+    return true;
   }
   function syncNav() {
     const tab = activeLegacyTab();
@@ -706,14 +1122,16 @@
     setCollapsed(collapsed());
     // POSITIONS / ACTIVITY / MORE live inside legacy panels that only held placeholders or the alert lists, so the legacy tab logic keeps showing one panel at a time
     const pos = document.createElement("section"); pos.id = "pui-positions"; pos.className = "pui-section"; $("tab-paper").appendChild(pos);
-    pos.addEventListener("click", (e) => { const c = e.target.closest("[data-pui-pos]"); if (c) openPosition(c.dataset.puiPos, c.dataset.positionId || null); });
+    pos.addEventListener("click", (e) => { if (e.target.closest("summary, details.pui-fold")) return; const c = e.target.closest("[data-pui-pos]"); if (c) openPosition(c.dataset.puiPos, c.dataset.positionId || null); });
     const act = document.createElement("section"); act.id = "pui-activity"; act.className = "pui-section";
+    act.addEventListener("click", (e) => { const f = e.target.closest("[data-pui-filter]"); if (f) { state.filter = f.dataset.puiFilter; renderActivity(); } });
     const alertsHost = $("tab-alerts");
     const legacyAlerts = document.createElement("div"); legacyAlerts.id = "pui-legacy-alerts";
     while (alertsHost.firstChild) legacyAlerts.appendChild(alertsHost.firstChild);          // the rule alerts and setup alerts stay mounted, inside a fold
     alertsHost.appendChild(act); alertsHost.appendChild(legacyAlerts);
     const more = document.createElement("section"); more.id = "pui-more"; more.className = "pui-section"; $("tab-settings").insertAdjacentElement("afterbegin", more);
     more.addEventListener("click", onMoreClick);
+    more.addEventListener("toggle", (e) => { const t = e.target; if (t && t.dataset) { const g = t.querySelector(":scope > summary[data-pui-group-toggle], :scope > summary[data-pui-sub-toggle]"); const id = g ? (g.dataset.puiGroupToggle || g.dataset.puiSubToggle) : null; if (id) state.moreOpen[id] = t.open; } }, true);
     const pf = $("tab-portfolio");
     if (pf && !$("pui-pf-note")) { const n = document.createElement("div"); n.id = "pui-pf-note"; n.className = "pui-note";
       n.textContent = "Robinhood holdings are read only (local gateway): nothing in this app places, changes or cancels a Robinhood order. Paper orders go to the Alpaca PAPER account only."; pf.insertAdjacentElement("afterbegin", n); }
@@ -723,7 +1141,11 @@
     // a deep link (e.g. the Daily Brief notification's /#daily-brief, consumed by brief_delivery.js) or a module that already switched the tab wins over
     // the TRADE default; the nav then simply follows the active legacy tab (MORE + crumb)
     const already = activeLegacyTab();
-    if (location.hash || (already && already !== "overview")) { state.section = HOST_OF[already] || "more"; syncNav(); } else go(DEFAULT);
+    // Stage 6.1.2: a legacy deep link (#portfolio, #paper, #trader, #strategy …) or a product hash opens its section; any other hash / an already-switched tab keeps the 6.1.1 rule
+    const route = routeFor(location.hash);
+    if (route) openRoute(route);
+    else if (location.hash || (already && already !== "overview")) { state.section = HOST_OF[already] || "more"; syncNav(); } else go(DEFAULT);
+    window.addEventListener("hashchange", () => { const r = routeFor(location.hash); if (r && r.section !== state.section) openRoute(r); });
     tick();
     state.timer = setInterval(tick, 2000);
     state.fetchTimer = setInterval(() => { if (state.section === "positions" && activeLegacyTab() === "paper") loadPositions(); if (state.section === "activity" && activeLegacyTab() === "alerts") loadActivity(); }, 30000);
@@ -734,5 +1156,8 @@
   return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,
            activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart, renderDiag, renderPositions, renderActivity, renderMore, state,
-           expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed };
+           expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed,
+           // Stage 6.1.2
+           LEGACY_LINKS, FILTERS, PRIORITY, READY_NOTE, NO_SCORE, NO_SUPPORT, routeFor, minutesToClose, moreTabs, strategyModel, blockerModel, priorityModel, sessionModel, whyModel, holdingLines, positionLifecycle,
+           dedupe, activityItems, filterItems, dailyReview, focusHtml, whyHtml, closedHtml, registryHtml, strategyDetailHtml, openRoute, openMore, renderLab };
 });

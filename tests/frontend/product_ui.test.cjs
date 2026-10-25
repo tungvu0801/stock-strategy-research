@@ -68,15 +68,14 @@ test("1 four primary sections, TRADE first and default, each hosted by a legacy 
   assert.match(CSS, /body\.pui #tab-settings \.unavailable-panel \{ display: none; \}/);
 });
 
-test("2 MORE reaches every legacy workspace that is not one of the four hosts, plus Forward Validation and Advanced configuration", () => {
+test("2 MORE reaches every legacy workspace that is not one of the four hosts, in three groups (Stage 6.1.2: Research / System / Settings), plus Forward Validation and Advanced configuration", () => {
   const hosts = new Set(PUI.NAV.map((n) => n.host));
-  const tabs = PUI.MORE.flatMap((g) => g.items.filter((i) => i.tab).map((i) => i.tab));
-  assert.deepEqual(new Set(tabs), new Set(LEGACY_TABS.filter((t) => !hosts.has(t))));
-  assert.deepEqual(PUI.MORE.map((g) => g.title), ["Research", "Tools", "System", "Settings"]);
-  assert.ok(PUI.MORE[2].items.some((i) => i.href === "forward_validation.html"));
-  assert.deepEqual(PUI.MORE[3].items.map((i) => i.label), ["Advanced configuration"]);
+  assert.deepEqual(new Set(PUI.moreTabs()), new Set(LEGACY_TABS.filter((t) => !hosts.has(t))));                // Stage 6.1.2: the Diagnostics tools (a nested fold) count
+  assert.deepEqual(PUI.MORE.map((g) => g.title), ["Research", "System", "Settings"]);                           // Stage 6.1.2: the Tools group folded into System › Diagnostics
+  assert.ok(PUI.MORE[1].items.some((i) => i.href === "forward_validation.html"));
+  assert.deepEqual(PUI.MORE[2].items.map((i) => i.label), ["Risk", "Automation", "Notifications", "Advanced configuration"]);
   const h = PUI.moreHtml(PUI.moreGroups([{ view: "fit", label: "Strategy Fit" }]));
-  assert.ok(h.includes('data-pui-more="tab:strategy"') && h.includes('data-pui-more="tab:strategy:fit"') && h.includes('data-pui-more="tab:agent"') && h.includes('data-pui-more="action:settings"'));
+  assert.ok(h.includes('data-pui-more="tab:strategy"') && h.includes('data-pui-more="action:lab"') && h.includes('data-pui-more="tab:agent"') && h.includes('data-pui-more="action:settings"'));   // Stage 6.1.2: the lab workspaces are listed inside the registry panel
   assert.ok(h.includes('href="forward_validation.html"') && h.includes("Robinhood, read only") && h.includes("Secrets are never shown") && !words.test(text(h)));
 });
 
@@ -263,7 +262,7 @@ test("12 Risk card states: paused, emergency stop active (Clear exposed), after 
   const healthy = cardOf(PUI.cardsHtml(CTX), "risk");
   assert.ok(rows(healthy).trading === "ALLOWED" && rows(healthy).stop === "INACTIVE" && rows(healthy).auto === "OFF");
   assert.ok(!/exits? (are |remain )?(blocked|disabled|stopped)/i.test(JS) && !/reset trade/i.test(JS) && !/data-pui="reset/.test(JS));       // never implies exits are blocked; no Reset Trade
-  assert.ok(!PUI.cardsHtml({ ...CTX, safety: KILLED }).includes("TRADING STOPPED"));
+  assert.ok(!/pui-big">TRADING STOPPED/.test(PUI.cardsHtml({ ...CTX, safety: KILLED })));                                  // the headline reads EMERGENCY STOP ACTIVE; Stage 6.1.2 names the combination (AUTO … · TRADING STOPPED) on the session line only
 });
 
 test("13 existing position with Paper Auto OFF or the emergency stop active; entering / failed / closed messaging; Disable Auto does not reset the position display", () => {
@@ -350,7 +349,7 @@ test("16 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fill
 test("17 ACTIVITY and POSITIONS views: the Today strip, the timeline, the Validation block, position cards and details", () => {
   const h = PUI.activityHtml(SRC, EXEC, FV, "2026-10-21");
   const t = text(h);
-  for (const k of ["Trades", "Open", "Closed", "Paper P/L", "Issues"]) assert.ok(h.includes(`<h4>${k}</h4>`), k);
+  for (const k of ["System", "Market", "Setup changes", "READY setups", "Entries", "Exits", "Blocked", "Safety blocks", "Paper P/L", "Attention"]) assert.ok(h.includes(`<h4>${k}</h4>`), k);   // Stage 6.1.2: the Daily Review strip
   assert.ok(h.includes("data-pui-timeline") && h.includes('data-pui-kind="fill"') && h.includes('class="pui-day">Today</li>'));
   assert.ok(h.includes("data-pui-validation") && t.includes("Sessions 7 / 30") && t.includes("INSUFFICIENT FOR STRATEGY CONCLUSION") && h.includes('href="forward_validation.html"') && h.includes("data-pui-alerts-fold"));
   assert.ok(text(PUI.activityHtml({}, null, null, "2026-10-21")).includes("Validation status unavailable.") && text(PUI.activityHtml({}, null, null, "2026-10-21")).includes("No activity yet."));
@@ -383,7 +382,8 @@ test("19 read-only wiring: GET routes only, every action delegates to a legacy b
   assert.ok(!JS.includes("/api/portfolio") && !JS.includes("/api/agent"));
   const routes = [...JS.matchAll(/["`](\/api\/[a-z0-9_\-\/]+)/g)].map((m) => m[1]);
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
-                   "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/"];
+                   "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
+                   "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls"];                    // Stage 6.1.2: the registry and the frozen controls (GET)
   assert.ok(routes.length >= 10 && routes.every((r) => allowed.includes(r)), routes);
   for (const sel of ['#tv-safety [data-safety="stop"]', '#tv-safety [data-safety="pause"]', '#tv-safety [data-safety="resume"]', '#tv-safety [data-safety="clear"]', '#tv-bot [data-bot="enable"]', '#tv-bot [data-bot="disable"]']) assert.ok(JS.includes(sel), sel);
   assert.ok(!JS.includes("data-action") && !JS.includes("Prepare Buy") && !JS.includes("Prepare Sell") && !JS.includes("Add Alert"));   // no fake primary action
