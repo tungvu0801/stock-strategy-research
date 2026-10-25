@@ -1010,6 +1010,11 @@ and its two actions click the existing Risk Controls / Paper Bot buttons, so not
   diagnostics line with an expander. **View details** (top right) opens the Stage 5.5-6.1 detail column - PPE, Market Demand, Setup, Trade Review,
   Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade, Forward Paper Validation, the status chips and the disabled Prepare Buy / Sell /
   Add Alert placeholders; the choice is remembered per browser.
+* **Trading controls** (Risk card, one block): Paper Auto `ON / OFF` with `Enable Paper Auto` / `Disable Auto`, Trading `ALLOWED / PAUSED /
+  STOPPED` with `Pause New Trades` / `Resume New Trades`, Emergency Stop `INACTIVE / ACTIVE` with `Emergency Stop` / `Clear Emergency Stop`. Enable,
+  Emergency Stop and Clear show an explanation first and only Confirm clicks the legacy button (the Stage 6.0 / 5.9.1 two-click flows stay intact);
+  Disable, Pause and Resume delegate directly. Resume never clears the emergency-stop latch, a cleared stop shows whatever the gate says next, and an
+  existing position keeps its monitoring and protective exits whatever the control state - the cards say so in plain words. No Reset Trade exists.
 * **POSITIONS**: one card per open or pending paper position (quantity, entry, current, P/L, holding day); a click shows setup state, demand,
   evidence, exit monitoring, risk state, broker orders and fills and the recent position events. Closed paper trades sit under a fold.
 * **ACTIVITY**: a "Today" strip (trades, open, closed, paper P/L, issues) and a timeline built only from persisted rows - setup transitions,

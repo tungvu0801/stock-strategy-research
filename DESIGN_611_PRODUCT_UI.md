@@ -152,3 +152,36 @@ no backend, strategy, risk, execution, broker, schema, scheduler or API change; 
   Forward and source / connection badges, larger symbol and price, a calmer watchlist (more row spacing, clear active row, quieter Recent list), more
   whitespace between regions; everything stays at or above 11 px and fits 1280×720; cards stack at narrow widths.
 * **Deep links**: unchanged (a `/#daily-brief` link still lands on Strategy Lab › Daily Brief).
+
+## 10. Trading controls (2026-10-24, same PR)
+
+One compact **Automation / Trading Controls** block on the Risk card, three rows, one status word and at most one relevant button each; every button
+delegates to the legacy Risk Controls / Paper Bot button (same POST, same persisted semantics). The shell never posts and never forces a state.
+
+| Row | Status (from the payloads) | Button offered | Delegates to |
+|---|---|---|---|
+| Paper Auto | `ON` / `OFF` (`mode`) | `Enable Paper Auto` (OFF) · `Disable Auto` (ON) | `#tv-bot [data-bot="enable"]` (two legacy clicks after the shell's confirmation) · `#tv-bot [data-bot="disable"]` |
+| Trading | `ALLOWED` / `PAUSED` / `STOPPED` / `UNKNOWN` (gate state) | `Pause New Trades` (not paused, no stop, not halted) · `Resume New Trades` (pause active) | `#tv-safety [data-safety="pause"]` · `[data-safety="resume"]` |
+| Emergency Stop | `INACTIVE` / `ACTIVE` (`kill_switch.active`) | `Emergency Stop` (inactive) · `Clear Emergency Stop` (active) | `[data-safety="stop"]` (one legacy click after the shell's confirmation) · `[data-safety="clear"]` (two legacy clicks after the shell's confirmation) |
+
+* **Confirmations.** Enable Paper Auto, Emergency Stop and Clear Emergency Stop first open an inline explanation with Confirm / Cancel (closes by itself
+  after 20 s); nothing is clicked or posted until Confirm. Confirm then performs the legacy clicks: the Paper Auto enable and the Clear keep their
+  Stage 6.0 / 5.9.1 two-click flow (first legacy click arms, second posts; an already-armed legacy button gets one click), the Emergency Stop one click.
+  Wording: Paper Auto - "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and
+  risk conditions pass. Live trading remains disabled."; Emergency Stop - "This immediately blocks all new entries. Existing positions remain monitored
+  and protective exits remain allowed. The emergency stop stays active until cleared manually."; Clear - "This removes the emergency-stop latch. Trading
+  resumes only if all safety checks pass." Disable Auto, Pause and Resume delegate directly (the legacy buttons have no confirmation either).
+* **Vocabulary.** Paper Auto OFF: "Monitoring only. No new automatic entries. Existing positions continue to be monitored."; ON: "Automatic paper entries
+  enabled.". Paused by the user: "New trades paused" + "Existing positions continue normally."; paused by a check: the gate's own reason. Emergency stop
+  active: the Risk headline becomes **EMERGENCY STOP ACTIVE** with "New entries blocked. Existing positions remain protected."; a daily-loss halt reads
+  "Trading stopped" with its reason and offers no Clear (there is nothing to clear). Resume is only offered while the pause is active and never touches
+  the latch (the backend's own rule). After a Clear the display simply follows the next gate payload: `Trading allowed` only if the backend says so,
+  otherwise `New trades paused` with the real reason.
+* **Existing positions.** With a live position the Agent card adds "New automatic entries are disabled. Existing position monitoring continues." (Paper
+  Auto OFF) or "No new entries. Existing position remains protected." (emergency stop active); the Position card is byte-identical in both modes.
+  Nothing resets, abandons or deletes a position; there is no Reset Trade button.
+* **State messaging.** ENTERING: "Order submitted. Waiting for broker reconciliation."; ENTRY FAILED (a rejected / cancelled / unsent entry today, i.e.
+  card key `ATTENTION` with internal state `FAILED` and no position): "No position opened. No automatic replacement order."; IN TRADE: "Existing trade
+  continues. Exit conditions monitored."; CLOSED: the backend's "Trade completed · P/L · reason" line. The next setup episode returns the symbol to
+  WATCHING through the backend's own card key.
+* **Header.** `AUTO ON / OFF` stays a status segment; the buttons live only on the Risk card (no duplicate control).

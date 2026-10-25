@@ -1,8 +1,9 @@
 // Node tests for the Stage 6.1.1 product shell (frontend/product_ui.js): four primary sections (TRADE default · POSITIONS · ACTIVITY · MORE) over the
-// unchanged legacy page, the user-facing state model (WATCHING · READY · ENTERING · IN TRADE · EXITING · CLOSED · NEEDS ATTENTION) mapped from the
-// Stage 6.0 card keys / Stage 5.8 setup states / Stage 5.9.1 safety states, the simplified header (PAPER · MARKET · SYSTEM HEALTHY / DEGRADED / STOPPED ·
-// AUTO) with its detail expander, the three cards (Agent / Setup primary, Position, Risk headline + one reason), the compact chart empty state, the
-// one-line diagnostics summary, the persisted-rows-only ACTIVITY timeline, the MORE groups, the current wording and the read-only wiring.
+// unchanged legacy page, the user-facing state model (WATCHING · READY · ENTERING · IN TRADE · EXITING · CLOSED · ENTRY FAILED · NEEDS ATTENTION) mapped
+// from the Stage 6.0 card keys / Stage 5.8 setup states / Stage 5.9.1 safety states, the simplified header (PAPER · MARKET · SYSTEM HEALTHY / DEGRADED /
+// STOPPED · AUTO) with its detail expander, the three cards (Agent / Setup primary, Position, Risk with the Automation / Trading Controls), the
+// explanatory confirmations in front of the legacy buttons, the compact chart empty state, the one-line diagnostics summary, the persisted-rows-only
+// ACTIVITY timeline, the MORE groups, the current wording and the read-only wiring.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -20,13 +21,24 @@ const LEGACY_TABS = [...HTML.matchAll(/data-tab="([a-z]+)"/g)].map((m) => m[1]);
 
 const EXEC = { mode: "MONITOR_ONLY", attention: false, attention_reasons: [], open_positions: 0, reconciliation_healthy: true, environment: { paper: true, simulated: false },
                scheduler: { market: { regular_session: true, session_date: "2026-10-21" } }, account_data: { status: "FRESH", cash_flow: { status: "FRESH" } }, cards: [], recent: [] };
-const SAFE = { state: "TRADING_ALLOWED", state_label: "Trading allowed", reason_text: "" };
-const IN_TRADE = { key: "IN_TRADE", symbol: "SNDK", label: "In trade", line: "Holding 3 shares since 10:31", shares: 3, entry: "61.20", current: "62.10", pnl: "+2.70", pnl_pct: "1.47", position_id: "p1",
+const AUTO = { ...EXEC, mode: "PAPER_AUTO" };
+const SAFE = { state: "TRADING_ALLOWED", state_label: "Trading allowed", reason_text: "", kill_switch: { active: false }, no_new_entries: { active: false }, daily_loss: { status: "OK" } };
+const PAUSED = { ...SAFE, state: "NO_NEW_ENTRIES", state_label: "New trades paused", reason_text: "New trades paused by you.", no_new_entries: { active: true, activated_by: "user" } };
+const BLOCKED = { ...SAFE, state: "NO_NEW_ENTRIES", reason_text: "Daily loss control degraded: account data stale." };
+const KILLED = { ...SAFE, state: "HALTED", state_label: "Trading stopped", reason_text: "Emergency stop active.", kill_switch: { active: true, activated_by: "user", activated_at: "2026-10-21T15:00:00Z" } };
+const DAILY = { ...SAFE, state: "HALTED", reason_text: "Daily loss limit reached.", daily_loss: { status: "TRIGGERED", daily_loss_pct: "3.2" } };
+const IN_TRADE = { key: "IN_TRADE", symbol: "SNDK", label: "In trade", line: "3 shares · entry 61.20 · now 62.10 · +2.70", shares: 3, entry: "61.20", current: "62.10", pnl: "+2.70", pnl_pct: "1.47", position_id: "p1",
                    state: "POSITION_OPEN", details: { sessions_held: 2 } };
+const MU = { key: "IN_TRADE", symbol: "MU", label: "In trade", line: "4 shares · entry 830.00 · now 835.50 · +22.00", shares: 4, entry: "830.00", current: "835.50", pnl: "+22.00", pnl_pct: "0.66", position_id: "p2",
+             state: "POSITION_OPEN", details: { sessions_held: 1 } };
+const ENTERING = { key: "ENTERING", symbol: "AAPL", label: "Entering", line: "Waiting for the paper order to fill · 2 shares", shares: 2, state: "ENTRY_SUBMITTED", details: { intent: { state: "SUBMITTED" } } };
+const FAILED = { key: "ATTENTION", symbol: "AAPL", label: "Needs attention", line: "Last paper order rejected (broker rejected)", state: "FAILED", details: { intent: { intent_type: "ENTRY", state: "REJECTED", failure_code: "BROKER_REJECTED" } } };
+const CLOSED = { key: "CLOSED", symbol: "AAPL", label: "Closed", line: "Trade completed · +4.20 · Time exit after 5 sessions", shares: 2, entry: "227.10", current: "229.20", pnl: "+4.20", state: "CLOSED" };
 const DOM = { stretch: "+1.8", confidence: "62", demand: "71", evidence: "LOADED", evidenceText: "strong", setupState: "READY", setupLabel: "READY FOR REVIEW", setupReason: "Buyer confirmation strengthened.",
               blockers: [], proposalState: "REVIEWABLE" };
 const WATCH_DOM = { ...DOM, setupState: "WATCH", setupLabel: "WATCH", proposalState: "NOT_ELIGIBLE", blockers: ["demand 48 < 60", "confidence 31 < 40"] };
-const CTX = { exec: EXEC, safety: SAFE, card: null, position: null, dom: DOM, symbol: "AAPL", limits: { max_hold_sessions: 5 }, stopAvailable: true };
+const AVAIL = { auto: true, pause: true, resume: true, stop: true, clear: true };
+const CTX = { exec: EXEC, safety: SAFE, card: null, position: null, dom: DOM, symbol: "AAPL", limits: { max_hold_sessions: 5 }, avail: AVAIL, confirm: null };
 const SRC = { transitions: [{ symbol: "AAPL", to_state: "READY", evaluated_at: "2026-10-21T14:35:00Z" }, { symbol: "AAPL", to_state: "INVALIDATED", reason_code: "BOUNCE_FAILED", evaluated_at: "2026-10-20T19:00:00Z" }],
               proposals: [{ symbol: "AAPL", status: "REVIEWABLE", final_qty: 2, created_at: "2026-10-21T14:36:00Z" }, { symbol: "MSFT", status: "BLOCKED", blockers: [{ code: "DEMAND_NA" }], created_at: "2026-10-21T13:00:00Z" }],
               intents: [{ symbol: "AAPL", intent_type: "ENTRY", side: "buy", qty: 2, state: "FILLED", submitted_at: "2026-10-21T14:36:05Z", resolved_at: "2026-10-21T14:36:07Z", filled_avg_price: "227.10" },
@@ -42,6 +54,8 @@ const FV = { sessions: { completed: 7, healthy: 7, degraded: 0, failed: 0, not_r
              attention: [], needs_attention: false };
 const primaryPart = (card) => card.split("<details")[0];                              // what a beginner sees before expanding Why? / Details
 const cardOf = (html, key) => { const i = html.indexOf(`data-pui-card="${key}"`); const j = html.indexOf('<div class="pui-card', i + 1); return html.slice(html.lastIndexOf('<div class="pui-card', i), j < 0 ? undefined : j); };
+const buttons = (html) => [...String(html).matchAll(/<button[^>]*data-pui="([a-z:-]+)"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => [m[1], text(m[2])]);
+const rows = (html) => Object.fromEntries([...String(html).matchAll(/data-pui-row="([a-z]+)" data-pui-status="([A-Z—]+)"/g)].map((m) => [m[1], m[2]]));
 
 test("1 four primary sections, TRADE first and default, each hosted by a legacy panel; the legacy tab bar is hidden by the shell, not removed", () => {
   assert.deepEqual(PUI.NAV.map((n) => [n.id, n.label]), [["trade", "TRADE"], ["positions", "POSITIONS"], ["activity", "ACTIVITY"], ["more", "MORE"]]);
@@ -73,21 +87,24 @@ test("3 Agent state: the backend card keys and setup states are mapped for displ
   assert.deepEqual(lab({ key: "NONE" }, "READY", "TRADING_ALLOWED", EXEC), ["READY", "Eligible for entry review"]);
   assert.deepEqual(lab({ key: "WATCHING" }, "READY", "TRADING_ALLOWED", EXEC), ["WATCHING", "Waiting for setup conditions"]);
   assert.deepEqual(lab({ key: "READY" }, "READY", "TRADING_ALLOWED", EXEC), ["READY", "Eligible for entry review"]);
-  assert.deepEqual(lab({ key: "ENTERING" }, "READY", "TRADING_ALLOWED", EXEC), ["ENTERING", "Order submitted / awaiting fill"]);
-  assert.deepEqual(lab(IN_TRADE, "NONE", "TRADING_ALLOWED", EXEC), ["IN TRADE", "Monitoring exit conditions"]);
-  assert.deepEqual(lab({ key: "EXITING" }, "NONE", "TRADING_ALLOWED", EXEC), ["EXITING", "Exit required / order submitted"]);
-  assert.deepEqual(lab({ key: "CLOSED" }, "NONE", "TRADING_ALLOWED", EXEC), ["CLOSED", "Trade completed"]);
-  assert.deepEqual(lab({ key: "ATTENTION" }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "Manual review required"]);
+  assert.deepEqual(lab(ENTERING, "READY", "TRADING_ALLOWED", EXEC), ["ENTERING", "Order submitted. Waiting for broker reconciliation."]);
+  assert.deepEqual(lab(IN_TRADE, "NONE", "TRADING_ALLOWED", EXEC), ["IN TRADE", "Existing trade continues. Exit conditions monitored."]);
+  assert.deepEqual(lab({ key: "EXITING", line: "3 shares · Price reached the invalidation level" }, "NONE", "TRADING_ALLOWED", EXEC), ["EXITING", "3 shares · Price reached the invalidation level"]);
+  assert.deepEqual(lab(CLOSED, "NONE", "TRADING_ALLOWED", EXEC), ["CLOSED", "Trade completed · +4.20 · Time exit after 5 sessions"]);
+  assert.deepEqual(lab({ key: "CLOSED" }, "NONE", "TRADING_ALLOWED", EXEC), ["CLOSED", "Trade completed."]);
+  assert.deepEqual(lab({ key: "ATTENTION", line: "3 shares · qty mismatch", shares: 3 }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "3 shares · qty mismatch"]);
+  assert.deepEqual(lab(FAILED, "NONE", "TRADING_ALLOWED", EXEC), ["ENTRY FAILED", "No position opened. No automatic replacement order."]);
   assert.deepEqual(lab({ key: "STOPPED" }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
   assert.deepEqual(lab(null, "WATCH", "HALTED", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
   assert.deepEqual(lab(null, "WATCH", "UNKNOWN", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
-  assert.deepEqual(lab(IN_TRADE, "NONE", "HALTED", EXEC), ["IN TRADE", "Monitoring exit conditions"]);                // an open paper position is still monitored
+  assert.deepEqual(lab(IN_TRADE, "NONE", "HALTED", EXEC), ["IN TRADE", "Existing trade continues. Exit conditions monitored."]);   // an open paper position is still monitored
+  assert.deepEqual(lab(FAILED, "NONE", "HALTED", EXEC), ["ENTRY FAILED", "No position opened. No automatic replacement order."]);
   assert.deepEqual(lab({ key: "WATCHING" }, "WATCH", "TRADING_ALLOWED", { ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }), ["NEEDS ATTENTION", "RECONCILIATION_REQUIRED"]);
   assert.deepEqual(Object.values(PUI.AGENT).map((x) => x[0]).filter((v, i, a) => a.indexOf(v) === i).sort(),
-                   ["CLOSED", "ENTERING", "EXITING", "IN TRADE", "NEEDS ATTENTION", "READY", "WATCHING"]);
+                   ["CLOSED", "ENTERING", "ENTRY FAILED", "EXITING", "IN TRADE", "NEEDS ATTENTION", "READY", "WATCHING"]);
 });
 
-test("4 Setup line: plain words from the stored setup state; a count only from the engine's own blocker list, never invented", () => {
+test("4 Setup line: plain words from the stored setup state; a count only from the engine's own blocker list, never invented; no sentence repeated", () => {
   const sl = (card, dom) => PUI.setupLines(PUI.agentModel(card, dom.setupState, "TRADING_ALLOWED", EXEC), dom);
   assert.deepEqual(sl(null, WATCH_DOM), { line: "Setup · Watching", sub: "2 conditions outstanding" });
   assert.deepEqual(sl(null, { ...WATCH_DOM, blockers: ["demand 48 < 60"] }), { line: "Setup · Watching", sub: "1 condition outstanding" });
@@ -95,11 +112,12 @@ test("4 Setup line: plain words from the stored setup state; a count only from t
   assert.deepEqual(sl(null, { ...DOM, setupState: "NONE", blockers: [] }), { line: "Setup · No active setup", sub: "" });
   assert.deepEqual(sl(null, { ...DOM, setupState: "INVALIDATED" }), { line: "Setup · Invalidated", sub: "Waiting for a new setup" });
   assert.deepEqual(sl(null, { ...DOM, setupState: null }), { line: "Setup", sub: "Waiting for conditions" });
-  assert.deepEqual(sl(null, DOM), { line: "Setup conditions met", sub: "" });                               // the state line already reads "Eligible for entry review"
-  assert.deepEqual(sl({ key: "ENTERING" }, DOM), { line: "", sub: "" });
-  assert.deepEqual(sl(IN_TRADE, DOM), { line: "", sub: "" });                                               // no sentence repeated under the state
-  assert.deepEqual(sl({ key: "CLOSED" }, DOM), { line: "Watching for the next setup", sub: "" });
-  assert.ok(!JS.includes("conditions met\n") && !/\d+ \/ \d+ conditions/.test(JS));                           // no "2 / 4 conditions met": the engine exposes no total
+  assert.deepEqual(sl(null, DOM), { line: "Setup conditions met", sub: "" });
+  assert.deepEqual(sl(ENTERING, DOM), { line: "", sub: "" });
+  assert.deepEqual(sl(IN_TRADE, DOM), { line: "", sub: "" });
+  assert.deepEqual(sl(CLOSED, DOM), { line: "Watching for the next setup", sub: "" });
+  assert.deepEqual(sl(FAILED, DOM), { line: "Watching for the next setup", sub: "" });
+  assert.ok(!/\d+ \/ \d+ conditions/.test(JS));                                                                     // no "2 / 4 conditions met": the engine exposes no total
 });
 
 test("5 SYSTEM HEALTHY / DEGRADED / STOPPED is derived from the existing gate, account, cash-flow, reconciliation and attention fields only", () => {
@@ -107,60 +125,58 @@ test("5 SYSTEM HEALTHY / DEGRADED / STOPPED is derived from the existing gate, a
   assert.deepEqual(sys(EXEC, SAFE), ["HEALTHY", "SYSTEM HEALTHY", "ok", ""]);
   assert.deepEqual(sys({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Account data stale"]);
   assert.deepEqual(sys({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { state: "NO_NEW_ENTRIES", reason_text: "" }), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Safety gate: New trades paused"]);
-  assert.deepEqual(sys(EXEC, { state: "NO_NEW_ENTRIES", reason_text: "Paused by the user." }), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Paused by the user."]);
+  assert.deepEqual(sys(EXEC, PAUSED), ["DEGRADED", "SYSTEM DEGRADED", "warn", "New trades paused by you."]);
   assert.deepEqual(sys({ ...EXEC, account_data: { status: "FRESH", cash_flow: { status: "AMBIGUOUS" } } }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Cash-flow data unclear"]);
   assert.deepEqual(sys({ ...EXEC, reconciliation_healthy: false }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Reconciliation needs a look"]);
-  assert.deepEqual(sys(EXEC, { state: "HALTED", reason_text: "Emergency stop active." }), ["STOPPED", "SYSTEM STOPPED", "bad", "Emergency stop active."]);
+  assert.deepEqual(sys(EXEC, KILLED), ["STOPPED", "SYSTEM STOPPED", "bad", "Emergency stop active."]);
   assert.deepEqual(sys({ ...EXEC, safety_state: "UNKNOWN" }, null)[0], "STOPPED");
   assert.deepEqual(sys({ ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, SAFE), ["STOPPED", "SYSTEM STOPPED", "bad", "Needs attention: reconciliation required"]);
   assert.deepEqual(sys(null, null), ["UNKNOWN", "SYSTEM —", "", ""]);                                             // nothing loaded: a dash, never a guess
-  const items = PUI.systemModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, { state: "NO_NEW_ENTRIES", reason_text: "Daily loss control degraded." }).items;
+  const items = PUI.systemModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, BLOCKED).items;
   assert.deepEqual(items.map((i) => [i.text, i.level]), [["Safety gate: New trades paused", "warn"], ["Account data unavailable", "warn"], ["Cash-flow data unavailable", "warn"], ["Reconciliation healthy", "ok"]]);
-  assert.equal(items[0].reason, "Daily loss control degraded.");
-  assert.ok(!/SYSTEM (HEALTHY|DEGRADED|STOPPED)/.test(JSON.stringify(EXEC)) && !JS.includes("fetch(\"/api/system"));   // a display summary: no backend health state exists or is called
+  assert.equal(items[0].reason, "Daily loss control degraded: account data stale.");
+  assert.ok(!JS.includes("fetch(\"/api/system"));                                                                   // a display summary: no backend health state exists or is called
 });
 
-test("6 header status bar: PAPER · MARKET · SYSTEM · AUTO, the detail reasons behind the SYSTEM expander, Paper Auto as a compact header control", () => {
+test("6 header status bar: PAPER · MARKET · SYSTEM · AUTO as statuses, the detail reasons behind the SYSTEM expander, no action button in the bar", () => {
   const segs = (e, s) => PUI.statusModel(e, s).map((x) => [x.key, x.text, x.cls]);
   assert.deepEqual(segs(EXEC, SAFE), [["paper", "PAPER", "ok"], ["market", "MARKET OPEN", "ok"], ["system", "SYSTEM HEALTHY", "ok"], ["auto", "AUTO OFF", ""]]);
-  const degraded = { ...EXEC, mode: "PAPER_AUTO", environment: { simulated: true }, scheduler: { market: { regular_session: false } }, account_data: { status: "UNAVAILABLE" } };
+  const degraded = { ...AUTO, environment: { simulated: true }, scheduler: { market: { regular_session: false } }, account_data: { status: "UNAVAILABLE" } };
   assert.deepEqual(segs(degraded, { state: "NO_NEW_ENTRIES" }), [["paper", "SIMULATED PAPER", "ok"], ["market", "MARKET CLOSED", ""], ["system", "SYSTEM DEGRADED", "warn"], ["auto", "AUTO ON", "ok"]]);
   assert.deepEqual(segs(null, null).map((x) => x[1]), ["PAPER", "MARKET —", "SYSTEM —", "AUTO —"]);
-  const h = PUI.statusHtml(EXEC, SAFE, { sysOpen: false, enableLabel: "Enable Paper Auto", autoAvailable: true });
-  assert.ok(h.includes('data-pui-seg="paper"') && h.includes('data-pui-seg="market"') && h.includes('data-pui-seg="system"') && h.includes('data-pui-seg="auto"'));
+  const h = PUI.statusHtml(EXEC, SAFE, { sysOpen: false });
+  assert.ok(h.includes('data-pui-seg="paper"') && h.includes('data-pui-seg="market"') && h.includes('data-pui-seg="system"') && h.includes('data-pui-seg="auto"') && h.includes('data-pui-auto="OFF"'));
   assert.ok(!h.includes('data-pui-seg="account"') && !h.includes('data-pui-seg="trading"') && !text(h).includes("ACCOUNT FRESH") && !text(h).includes("TRADING ALLOWED"));   // not repeated in the header
   assert.ok(h.includes('<button type="button" class="pui-seg ok" data-pui-seg="system" data-pui="system" aria-expanded="false"') && !h.includes("data-pui-system-details"));
-  assert.ok(h.includes('data-pui-auto="OFF"') && h.includes('data-pui="auto-on">Enable Paper Auto</button>') && h.includes(PUI.TAGLINE));
-  const open = PUI.statusHtml({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, { state: "NO_NEW_ENTRIES", reason_text: "Daily loss control degraded." }, { sysOpen: true });
+  assert.deepEqual(buttons(h).map((b) => b[0]), ["system"]);                                                       // the only button: the SYSTEM expander (the controls live on the Risk card)
+  assert.ok(h.includes(PUI.TAGLINE));
+  const open = PUI.statusHtml({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, BLOCKED, { sysOpen: true });
   const d = text(open.slice(open.indexOf("data-pui-system-details")));
-  assert.ok(open.includes("SYSTEM DEGRADED") && d.includes("Safety gate: New trades paused · Daily loss control degraded.") && d.includes("Account data unavailable") && d.includes("Cash-flow data unavailable") && d.includes("Reconciliation healthy"), d);
-  const on = PUI.statusHtml({ ...EXEC, mode: "PAPER_AUTO" }, SAFE, {});
-  assert.ok(on.includes('data-pui-auto="ON"') && on.includes("AUTO ON") && on.includes('data-pui="auto-off"') && on.includes("Stop New Trades"));
-  assert.ok(PUI.statusHtml(EXEC, SAFE, { enableLabel: "Confirm: enable Paper Auto" }).includes('data-pui="auto-on">Confirm: enable Paper Auto</button>'));   // the legacy two-click label is mirrored
-  assert.ok(PUI.statusHtml(EXEC, SAFE, { autoAvailable: false }).includes('data-pui="auto-on" disabled>'));
-  assert.ok(!PUI.statusHtml(null, null, {}).includes("data-pui=\"auto-"));                                         // no mode known: no button
+  assert.ok(open.includes("SYSTEM DEGRADED") && d.includes("Safety gate: New trades paused · Daily loss control degraded: account data stale.") && d.includes("Account data unavailable") && d.includes("Reconciliation healthy"), d);
+  assert.ok(PUI.statusHtml(AUTO, SAFE, {}).includes('data-pui-auto="ON"') && PUI.statusHtml(AUTO, SAFE, {}).includes("AUTO ON"));
 });
 
 test("7 Risk: one headline and one primary reason in front; every dependency, reason and attention item behind Details; stopped states say so plainly", () => {
   const r = PUI.riskModel(EXEC, SAFE);
-  assert.deepEqual([r.headline, r.level, r.stopped, r.primary, r.critical], ["Trading allowed", "ok", false, "", false]);
+  assert.deepEqual([r.headline, r.level, r.stopped, r.killActive, r.primary, r.critical], ["Trading allowed", "ok", false, false, "", false]);
   assert.deepEqual(r.lines.map((l) => l.text), ["Trading allowed", "Account data fresh", "Cash-flow data fresh", "Reconciliation healthy"]);
-  const stale = PUI.riskModel({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE);
-  assert.deepEqual([stale.headline, stale.level, stale.primary], ["Trading allowed", "warn", "Account data stale"]);
-  const paused = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "AMBIGUOUS" } } }, { state: "NO_NEW_ENTRIES", reason_text: "Paused by the user." });
-  assert.deepEqual([paused.headline, paused.level, paused.primary], ["New trades paused", "warn", "Paused by the user."]);
-  assert.deepEqual(paused.lines.map((l) => l.text), ["New trades paused", "Paused by the user.", "Account data unavailable", "Cash-flow data unclear", "Reconciliation healthy"]);
-  const noReason = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { state: "NO_NEW_ENTRIES", reason_text: "" });
-  assert.equal(noReason.primary, "Account data unavailable");                                                       // one root cause, not four warnings
-  const halted = PUI.riskModel({ ...EXEC, reconciliation_healthy: false, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED", "BROKER_UNAVAILABLE"] }, { state: "HALTED", reason_text: "" });
-  assert.deepEqual([halted.headline, halted.level, halted.stopped, halted.critical, halted.primary], ["Trading stopped", "bad", true, true, "Critical issue requires attention"]);
-  assert.deepEqual(halted.lines.filter((l) => l.level === "bad").map((l) => l.text), ["Trading stopped", "Reconciliation needs a look", "RECONCILIATION_REQUIRED", "BROKER_UNAVAILABLE"]);   // critical details stay exposed
+  assert.deepEqual([PUI.riskModel({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE).level, PUI.riskModel({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE).primary], ["warn", "Account data stale"]);
+  const paused = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "AMBIGUOUS" } } }, PAUSED);
+  assert.deepEqual([paused.headline, paused.level, paused.paused, paused.primary], ["New trades paused", "warn", true, "Existing positions continue normally."]);
+  assert.deepEqual(paused.lines.map((l) => l.text), ["New trades paused", "New trades paused by you.", "Account data unavailable", "Cash-flow data unclear", "Reconciliation healthy"]);
+  const blocked = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { ...BLOCKED, reason_text: "" });
+  assert.deepEqual([blocked.headline, blocked.paused, blocked.primary], ["New trades paused", false, "Account data unavailable"]);                 // one root cause, not four warnings
+  const killed = PUI.riskModel({ ...EXEC, reconciliation_healthy: false, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, KILLED);
+  assert.deepEqual([killed.headline, killed.level, killed.stopped, killed.killActive, killed.critical, killed.primary], ["EMERGENCY STOP ACTIVE", "bad", true, true, true, "New entries blocked. Existing positions remain protected."]);
+  assert.deepEqual(killed.lines.filter((l) => l.level === "bad").map((l) => l.text), ["Trading stopped", "Emergency stop active.", "Reconciliation needs a look", "RECONCILIATION_REQUIRED"]);   // critical details stay exposed
+  const daily = PUI.riskModel(EXEC, DAILY);
+  assert.deepEqual([daily.headline, daily.killActive, daily.primary], ["Trading stopped", false, "Daily loss limit reached."]);
   assert.deepEqual([PUI.riskModel(null, null).headline, PUI.riskModel(null, null).level, PUI.riskModel(null, null).primary], ["Risk status unknown", "bad", "Critical issue requires attention"]);
 });
 
 test("8 Position: no position / entering / in trade with the holding day from the backend limit; raw broker fields are not part of the model's front", () => {
   assert.deepEqual(PUI.positionModel(null, null, null), { open: false, text: "No position", entering: false, symbol: null });
-  assert.deepEqual(PUI.positionModel({ key: "ENTERING", symbol: "AAPL" }, null, null).entering, true);
+  assert.deepEqual(PUI.positionModel(ENTERING, null, null).entering, true);
   const p = PUI.positionModel(IN_TRADE, { position_id: "p1", symbol: "SNDK", quantity: 3, sessions_held: 2, state: "HEALTHY", invalidation_price: "59.90" }, { max_hold_sessions: 5 });
   assert.deepEqual([p.open, p.symbol, p.shares, p.entry, p.current, p.pnl, p.holding, p.status, p.state, p.invalidation], [true, "SNDK", 3, "61.20", "62.10", "+2.70 (+1.47%)", "Day 2 / 5", "Monitoring", "HEALTHY", "59.90"]);
   assert.equal(PUI.positionModel(IN_TRADE, null, { max_hold_sessions: 3 }).holding, "Day 2 / 3");            // the limit is read from /api/execution, not hard-coded
@@ -168,50 +184,112 @@ test("8 Position: no position / entering / in trade with the holding day from th
   assert.equal(PUI.positionModel({ ...IN_TRADE, key: "EXITING", reason: "Price reached the invalidation level" }, null, null).reason, "Price reached the invalidation level");
 });
 
-test("9 TRADE cards: Agent / Setup primary, Position, Risk; technical terms only behind Why?; Paper Auto no longer a card; [ STOP TRADING ] visible", () => {
+test("9 TRADE cards: Agent / Setup primary, Position, Risk with the controls; technical terms only behind Why?; Emergency Stop visible and not implied active", () => {
   const h = PUI.cardsHtml({ ...CTX, dom: WATCH_DOM });
   assert.deepEqual([...h.matchAll(/data-pui-card="([a-z]+)"/g)].map((m) => m[1]), ["agent", "position", "risk"]);
-  assert.ok(!h.includes('data-pui-card="market"') && !h.includes('data-pui-card="auto"') && !h.includes('data-pui="auto-on"'));
+  assert.ok(!h.includes('data-pui-card="market"') && !h.includes('data-pui-card="auto"'));
   const agent = cardOf(h, "agent");
   assert.ok(agent.includes('class="pui-card agent primary"') && agent.includes("data-pui-primary") && agent.includes('data-agent="WATCHING"'));
   const front = text(primaryPart(agent));
   assert.ok(front.includes("Agent · AAPL WATCHING Waiting for setup conditions Setup · Watching 2 conditions outstanding"), front);
   for (const term of ["PPE", "Demand", "Evidence", "Proposal", "Confidence", "Stored setup"]) assert.ok(!front.includes(term), term);   // hidden from the primary view
-  assert.ok(agent.includes('data-pui-fold="why"') && agent.includes('data-pui="fold:why">Why?</summary>') && !agent.includes("<details class=\"pui-fold pui-why\" data-pui-fold=\"why\" open>"));
+  assert.ok(agent.includes('data-pui-fold="why"') && agent.includes('data-pui="fold:why">Why?</summary>'));
   const why = text(agent.slice(agent.indexOf("pui-why-body")));
   assert.ok(why.includes("PPE stretch +2") && why.includes("Confidence 62") && why.includes("Demand 71") && why.includes("Evidence strong") && why.includes("Stored setup state WATCH") && why.includes("Proposal status Not eligible")
-            && why.includes("Buyer confirmation strengthened.") && why.includes("Not ready: demand 48 < 60 · confidence 31 < 40"), why);
+            && why.includes("Not ready: demand 48 < 60 · confidence 31 < 40"), why);
   assert.ok(PUI.cardsHtml({ ...CTX, whyOpen: true }).includes('data-pui-fold="why" open>'));
   const pos = cardOf(h, "position");
   assert.ok(text(pos) === "Position No position" && pos.includes('data-open="0"'), text(pos));
   const risk = cardOf(h, "risk");
-  assert.ok(risk.includes('data-risk="ok"') && text(primaryPart(risk)) === "Risk Trading allowed STOP TRADING", text(primaryPart(risk)));
-  assert.ok(risk.includes('<button type="button" class="pui-btn stop" data-pui="stop">STOP TRADING</button>') && risk.includes('data-pui-fold="risk"') && risk.includes('data-pui="fold:risk">Details</summary>'));
-  assert.ok(text(risk.slice(risk.indexOf("pui-why-body"))).includes("✓ Account data fresh ✓ Cash-flow data fresh ✓ Reconciliation healthy"));
-  assert.ok(!words.test(text(h)) && !/never places a trade|no order path/i.test(text(h)));
+  assert.ok(risk.includes('data-risk="ok"') && risk.includes('data-kill="0"') && text(primaryPart(risk)).startsWith("Risk Trading allowed Automation / Trading Controls Paper Auto OFF Enable Paper Auto"), text(primaryPart(risk)));
+  assert.deepEqual(buttons(primaryPart(risk)), [["auto-on", "Enable Paper Auto"], ["pause", "Pause New Trades"], ["stop", "Emergency Stop"]]);   // one relevant button per row, nothing duplicated
+  assert.ok(!text(risk).includes("ACTIVE") || text(risk).includes("INACTIVE"));                                      // the inactive stop never reads as active
+  assert.ok(risk.includes('data-pui-fold="risk"') && text(risk.slice(risk.indexOf("pui-why-body"))).includes("✓ Account data fresh ✓ Cash-flow data fresh ✓ Reconciliation healthy"));
+  assert.ok(!words.test(text(h)) && !/never places a trade|no order path|STOP TRADING/.test(text(h)));
 });
 
-test("10 TRADE cards in a live trade, a paused gate and a halt: simple position front, one risk reason, critical details exposed, stop disabled when halted", () => {
-  const live = PUI.cardsHtml({ ...CTX, exec: { ...EXEC, mode: "PAPER_AUTO", open_positions: 1, cards: [IN_TRADE] }, card: IN_TRADE, position: { position_id: "p1", symbol: "SNDK", quantity: 3, sessions_held: 1, state: "HEALTHY", invalidation_price: "59.90" }, symbol: "SNDK" });
-  const agent = cardOf(live, "agent"), pos = cardOf(live, "position");
-  assert.ok(agent.includes('data-agent="IN TRADE"') && text(primaryPart(agent)).includes("IN TRADE Monitoring exit conditions Monitoring exit conditions") === false);
-  assert.ok(text(primaryPart(agent)).includes("Agent · SNDK IN TRADE Monitoring exit conditions"), text(primaryPart(agent)));
-  assert.equal(text(primaryPart(pos)), "Position SNDK · 3 shares Entry 61.20 Current 62.10 P/L +2.70 (+1.47%) Day 1 / 5 · Monitoring");
-  for (const raw of ["broker", "reconciliation", "client_order", "execution_id"]) assert.ok(!primaryPart(pos).toLowerCase().includes(raw), raw);
-  assert.ok(pos.includes('data-pui-fold="pos"') && text(pos.slice(pos.indexOf("pui-why-body"))).includes("Position state HEALTHY Invalidation level 59.90 Status Monitoring"));
-  const entering = cardOf(PUI.cardsHtml({ ...CTX, card: { key: "ENTERING", symbol: "AAPL", line: "Order submitted" } }), "position");
-  assert.equal(text(entering), "Position Entering Waiting for broker fill");
-  const paused = cardOf(PUI.cardsHtml({ ...CTX, exec: { ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, safety: { state: "NO_NEW_ENTRIES", reason_text: "" } }), "risk");
-  assert.equal(text(primaryPart(paused)), "Risk New trades paused Account data unavailable STOP TRADING");
-  assert.equal((primaryPart(paused).match(/⚠/g) || []).length, 0);                                                 // not four warnings for one root cause
-  assert.ok(text(paused.slice(paused.indexOf("pui-why-body"))).includes("⚠ Account data unavailable ⚠ Cash-flow data unavailable ✓ Reconciliation healthy"));
-  const halted = cardOf(PUI.cardsHtml({ ...CTX, exec: { ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, safety: { state: "HALTED", reason_text: "Emergency stop active." } }), "risk");
-  assert.ok(halted.includes('data-risk="bad"') && halted.includes('data-pui="stop" disabled>TRADING STOPPED</button>') && text(primaryPart(halted)).includes("Trading stopped Emergency stop active."));
-  assert.ok(halted.includes('class="pui-sub pui-bad" data-pui-risk-reason') && text(halted).includes("RECONCILIATION_REQUIRED") && text(halted).includes("Clear it under View details"));
-  assert.ok(cardOf(PUI.cardsHtml({ ...CTX, stopAvailable: false }), "risk").includes('data-pui="stop" disabled>STOP TRADING</button>'));
+test("10 controls: statuses from the payloads and exactly one relevant action per row; pause and resume are distinct; resume never clears the emergency stop", () => {
+  const cm = (e, s, a) => { const m = PUI.controlsModel(e, s, a || AVAIL); return { auto: [m.auto.label, m.auto.action, m.auto.actionLabel], trading: [m.trading.label, m.trading.action, m.trading.actionLabel, m.trading.text], stop: [m.stop.label, m.stop.action, m.stop.actionLabel] }; };
+  assert.deepEqual(cm(EXEC, SAFE), { auto: ["OFF", "auto-on", "Enable Paper Auto"], trading: ["ALLOWED", "pause", "Pause New Trades", "New entries allowed when every check passes."], stop: ["INACTIVE", "stop", "Emergency Stop"] });
+  assert.deepEqual(cm(AUTO, SAFE).auto, ["ON", "auto-off", "Disable Auto"]);
+  assert.equal(PUI.controlsModel(AUTO, SAFE).auto.text, "Automatic paper entries enabled.");
+  assert.equal(PUI.controlsModel(EXEC, SAFE).auto.text, "Monitoring only. No new automatic entries. Existing positions continue to be monitored.");
+  assert.deepEqual(cm(EXEC, PAUSED).trading, ["PAUSED", "resume", "Resume New Trades", "Existing positions continue normally."]);
+  assert.deepEqual(cm(EXEC, PAUSED).stop, ["INACTIVE", "stop", "Emergency Stop"]);                                   // pausing is not stopping
+  assert.deepEqual(cm(EXEC, BLOCKED).trading, ["PAUSED", "pause", "Pause New Trades", "Daily loss control degraded: account data stale."]);   // paused by a check: the real reason, the user may still pause
+  assert.deepEqual(cm(EXEC, KILLED).trading, ["STOPPED", null, "Pause New Trades", "Blocked by the emergency stop."]);                          // no pause / resume while the stop is active
+  assert.deepEqual(cm(EXEC, KILLED).stop, ["ACTIVE", "clear", "Clear Emergency Stop"]);
+  const both = cm(EXEC, { ...KILLED, no_new_entries: { active: true } });
+  assert.deepEqual([both.trading[1], both.stop], ["resume", ["ACTIVE", "clear", "Clear Emergency Stop"]]);          // resume lifts the pause only; the stop stays ACTIVE with its own Clear
+  assert.deepEqual(cm(EXEC, DAILY).trading, ["STOPPED", null, "Pause New Trades", "Daily loss limit reached. Resets on the next trading day."]);
+  assert.deepEqual(cm(EXEC, DAILY).stop, ["INACTIVE", "stop", "Emergency Stop"]);                                    // a daily halt is not an emergency stop: nothing to clear
+  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).trading.slice(0, 2), ["UNKNOWN", null]);
+  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).stop.slice(0, 2), ["INACTIVE", "stop"]);                           // the stop stays reachable while the gate is unknown
+  assert.deepEqual(cm(null, null).auto.slice(0, 2), ["—", null]);
+  const m = PUI.controlsModel(EXEC, SAFE, { stop: false, pause: false, auto: false });
+  assert.deepEqual([m.stop.enabled, m.trading.enabled, m.auto.enabled], [false, false, false]);                    // availability mirrors the legacy buttons
+  assert.ok(PUI.controlsModel(EXEC, SAFE).stop.text.includes("existing positions stay protected"));
 });
 
-test("11 chart state: normal when candles exist; compact empty state only once the feed is settled; market closed is informational; no Retry", () => {
+test("11 confirmations: Enable Paper Auto, Emergency Stop and Clear Emergency Stop open an explanation first; Confirm / Cancel; one panel at a time; exact wording", () => {
+  assert.equal(PUI.CONFIRM["auto-on"].text, "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.");
+  assert.equal(PUI.CONFIRM.stop.text, "This immediately blocks all new entries. Existing positions remain monitored and protective exits remain allowed. The emergency stop stays active until cleared manually.");
+  assert.equal(PUI.CONFIRM.clear.text, "This removes the emergency-stop latch. Trading resumes only if all safety checks pass.");
+  const none = PUI.cardsHtml(CTX);
+  assert.ok(!none.includes("data-pui-confirm"));
+  const a = PUI.cardsHtml({ ...CTX, confirm: "auto-on" });
+  assert.ok(a.includes('data-pui-confirm="auto-on"') && text(a).includes(PUI.CONFIRM["auto-on"].text) && a.includes('data-pui="auto-on-confirm">Confirm: enable Paper Auto</button>') && a.includes('data-pui="cancel">Cancel</button>'));
+  assert.equal((a.match(/data-pui-confirm=/g) || []).length, 1);
+  const s = PUI.cardsHtml({ ...CTX, confirm: "stop" });
+  assert.ok(s.includes('data-pui-confirm="stop"') && text(s).includes(PUI.CONFIRM.stop.text) && s.includes('data-pui="stop-confirm">Confirm Emergency Stop</button>') && (s.match(/data-pui-confirm=/g) || []).length === 1);
+  const c = PUI.cardsHtml({ ...CTX, safety: KILLED, confirm: "clear" });
+  assert.ok(c.includes('data-pui-confirm="clear"') && text(c).includes(PUI.CONFIRM.clear.text) && c.includes('data-pui="clear-confirm">Confirm: clear Emergency Stop</button>'));
+  assert.ok(a.includes('role="alertdialog"') && !PUI.confirmHtml("nope"));
+  // the confirm buttons delegate to the legacy buttons: the two-click ones get their two clicks, nothing in the shell posts
+  assert.ok(JS.includes('clickLegacy("auto-on", armed ? 1 : 2)') && JS.includes('clickLegacy("clear", armed ? 1 : 2)') && JS.includes('clickLegacy("stop", 1)') && !JS.includes('method: "POST"'));
+  assert.deepEqual(PUI.LEGACY, { "auto-on": '#tv-bot [data-bot="enable"]', "auto-off": '#tv-bot [data-bot="disable"]', pause: '#tv-safety [data-safety="pause"]', resume: '#tv-safety [data-safety="resume"]',
+                                 stop: '#tv-safety [data-safety="stop"]', clear: '#tv-safety [data-safety="clear"]' });
+});
+
+test("12 Risk card states: paused, emergency stop active (Clear exposed), after a clear the backend truth is shown, never a forced Trading allowed", () => {
+  const paused = cardOf(PUI.cardsHtml({ ...CTX, safety: PAUSED }), "risk");
+  assert.ok(text(primaryPart(paused)).startsWith("Risk New trades paused Existing positions continue normally.") && buttons(paused).some((b) => b[0] === "resume" && b[1] === "Resume New Trades") && !buttons(paused).some((b) => b[0] === "pause"));
+  const killed = cardOf(PUI.cardsHtml({ ...CTX, safety: KILLED }), "risk");
+  assert.ok(killed.includes('data-kill="1"') && text(primaryPart(killed)).startsWith("Risk EMERGENCY STOP ACTIVE New entries blocked. Existing positions remain protected."), text(primaryPart(killed)));
+  assert.deepEqual(buttons(primaryPart(killed)), [["auto-on", "Enable Paper Auto"], ["clear", "Clear Emergency Stop"]]);                     // no Emergency Stop, no Pause / Resume while active
+  assert.ok(rows(killed).stop === "ACTIVE" && rows(killed).trading === "STOPPED");
+  const cleared = cardOf(PUI.cardsHtml({ ...CTX, exec: { ...EXEC, account_data: { status: "UNAVAILABLE" } }, safety: { ...BLOCKED, reason_text: "" } }), "risk");
+  assert.ok(text(primaryPart(cleared)).startsWith("Risk New trades paused Account data unavailable") && rows(cleared).stop === "INACTIVE" && rows(cleared).trading === "PAUSED");   // another blocker: the real reason
+  const healthy = cardOf(PUI.cardsHtml(CTX), "risk");
+  assert.ok(rows(healthy).trading === "ALLOWED" && rows(healthy).stop === "INACTIVE" && rows(healthy).auto === "OFF");
+  assert.ok(!/exits? (are |remain )?(blocked|disabled|stopped)/i.test(JS) && !/reset trade/i.test(JS) && !/data-pui="reset/.test(JS));       // never implies exits are blocked; no Reset Trade
+  assert.ok(!PUI.cardsHtml({ ...CTX, safety: KILLED }).includes("TRADING STOPPED"));
+});
+
+test("13 existing position with Paper Auto OFF or the emergency stop active; entering / failed / closed messaging; Disable Auto does not reset the position display", () => {
+  const live = (exec, safety, card) => PUI.cardsHtml({ ...CTX, exec: { ...exec, open_positions: 1, cards: [card] }, safety, card, symbol: card.symbol });
+  const off = live(EXEC, SAFE, MU);
+  assert.ok(cardOf(off, "agent").includes('data-agent="IN TRADE"') && text(cardOf(off, "agent")).includes("New automatic entries are disabled. Existing position monitoring continues."));
+  const on = live(AUTO, SAFE, MU);
+  assert.ok(!text(cardOf(on, "agent")).includes("automatic entries are disabled") && cardOf(on, "position") === cardOf(off, "position"));   // the position card is identical ON vs OFF
+  assert.ok(text(cardOf(off, "position")).startsWith("Position MU · 4 shares Entry 830.00 Current 835.50 P/L +22.00 (+0.66%) Day 1 / 5 · Monitoring"));
+  const stopped = live(EXEC, KILLED, MU);
+  assert.ok(cardOf(stopped, "agent").includes('data-agent="IN TRADE"') && text(cardOf(stopped, "agent")).includes("No new entries. Existing position remains protected.") && cardOf(stopped, "position") === cardOf(off, "position"));
+  assert.ok(!/reset|abandon|delete/i.test(text(cardOf(stopped, "agent")) + text(cardOf(stopped, "position"))));
+  assert.equal(PUI.positionNote(MU, EXEC, KILLED), "No new entries. Existing position remains protected.");
+  assert.equal(PUI.positionNote(MU, AUTO, SAFE), "");
+  assert.equal(PUI.positionNote(null, EXEC, KILLED), "");
+  const entering = PUI.cardsHtml({ ...CTX, card: ENTERING });
+  assert.ok(text(cardOf(entering, "agent")).includes("ENTERING Order submitted. Waiting for broker reconciliation.") && text(cardOf(entering, "position")) === "Position Entering Order submitted. Waiting for broker fill.");
+  const failed = PUI.cardsHtml({ ...CTX, card: FAILED });
+  assert.ok(cardOf(failed, "agent").includes('data-agent="ENTRY FAILED"') && text(cardOf(failed, "agent")).includes("ENTRY FAILED No position opened. No automatic replacement order."));
+  assert.equal(text(cardOf(failed, "position")), "Position No position The entry did not fill. No automatic replacement order.");
+  assert.ok(!/resubmit|replacement order will|retry/i.test(text(failed)));
+  const closed = PUI.cardsHtml({ ...CTX, card: CLOSED });
+  assert.ok(cardOf(closed, "agent").includes('data-agent="CLOSED"') && text(cardOf(closed, "agent")).includes("CLOSED Trade completed · +4.20") && text(cardOf(closed, "position")) === "Position No position");
+});
+
+test("14 chart state: normal when candles exist; compact empty state only once the feed is settled; market closed is informational; no Retry", () => {
   const tv = (o) => ({ active: "MSFT", candles: 0, pending: { candles: false }, connState: "connected", ...o });
   assert.equal(PUI.chartModel(null).kind, "NONE");
   assert.deepEqual(PUI.chartModel(tv({ candles: 240 }), false), { kind: "OK", symbol: "MSFT" });
@@ -236,7 +314,7 @@ test("11 chart state: normal when candles exist; compact empty state only once t
   assert.match(CSS, /body\.pui\.pui-chart-empty \.tv-grid \{ height: auto; \}/);
 });
 
-test("12 diagnostics: the legacy status chips collapse into one summary with an expander; faults keep their level; simulated data is a note, not a fault", () => {
+test("15 diagnostics: the legacy status chips collapse into one summary with an expander; faults keep their level; simulated data is a note, not a fault", () => {
   const chips = [{ text: "simulated data", warn: true }, { text: "positions ok" }, { text: "evidence not loaded" }, { text: "PPE not available" }, { text: "session weekend" }];
   const m = PUI.diagModel(chips);
   assert.deepEqual(m.items.map((i) => [i.text, i.level]), [["Simulated market data", "info"], ["Position source ok", "info"], ["Evidence not loaded", "info"], ["PPE unavailable", "info"], ["Market session weekend", "info"]]);
@@ -253,7 +331,7 @@ test("12 diagnostics: the legacy status chips collapse into one summary with an 
   assert.match(CSS, /body\.pui:not\(\.pui-collapsed\) #pui-diag \{ display: none; \}/);                            // View details brings the legacy chips back unchanged
 });
 
-test("13 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fills, positions, safety gate, reconciliation, validation), newest first", () => {
+test("16 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fills, positions, safety gate, reconciliation, validation), newest first", () => {
   const tl = PUI.timeline(SRC);
   const texts = tl.map((e) => e.text);
   assert.deepEqual(tl.map((e) => e.at), tl.map((e) => e.at).slice().sort().reverse());
@@ -269,7 +347,7 @@ test("13 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fill
   assert.deepEqual(PUI.todaySummary(SRC, EXEC, "2026-10-22"), { trades: 0, open: 0, closed: 0, pnl: "—", issues: 0 });
 });
 
-test("14 ACTIVITY and POSITIONS views: the Today strip, the timeline, the Validation block, position cards and details", () => {
+test("17 ACTIVITY and POSITIONS views: the Today strip, the timeline, the Validation block, position cards and details", () => {
   const h = PUI.activityHtml(SRC, EXEC, FV, "2026-10-21");
   const t = text(h);
   for (const k of ["Trades", "Open", "Closed", "Paper P/L", "Issues"]) assert.ok(h.includes(`<h4>${k}</h4>`), k);
@@ -278,33 +356,35 @@ test("14 ACTIVITY and POSITIONS views: the Today strip, the timeline, the Valida
   assert.ok(text(PUI.activityHtml({}, null, null, "2026-10-21")).includes("Validation status unavailable.") && text(PUI.activityHtml({}, null, null, "2026-10-21")).includes("No activity yet."));
   assert.ok(!words.test(t));
   assert.ok(text(PUI.positionsHtml([])).startsWith("No open paper position."));
-  const rows = PUI.positionCards({ ...EXEC, cards: [IN_TRADE, { key: "WATCHING", symbol: "AAPL" }, { key: "ENTERING", symbol: "MSFT", line: "Order submitted" }, { key: "CLOSED", symbol: "JPM" }] },
-                                 [{ position_id: "p1", symbol: "SNDK", quantity: 3, sessions_held: 2, state: "HEALTHY" }]);
-  assert.deepEqual(rows.map((r) => [r.card.symbol, r.agent.label, r.model.open]), [["SNDK", "IN TRADE", true], ["MSFT", "ENTERING", false]]);
-  const ph = PUI.positionsHtml(rows);
-  assert.ok(ph.includes('data-pui-pos="SNDK"') && text(ph).includes("Quantity 3 Entry 61.20 Current 62.10 P/L +2.70 (+1.47%) Holding Day 2 / 5") && ph.includes('data-pui-pos="MSFT"'));
+  const rowsP = PUI.positionCards({ ...EXEC, cards: [IN_TRADE, { key: "WATCHING", symbol: "AAPL" }, ENTERING, CLOSED] }, [{ position_id: "p1", symbol: "SNDK", quantity: 3, sessions_held: 2, state: "HEALTHY" }]);
+  assert.deepEqual(rowsP.map((r) => [r.card.symbol, r.agent.label, r.model.open]), [["SNDK", "IN TRADE", true], ["AAPL", "ENTERING", false]]);
+  const ph = PUI.positionsHtml(rowsP);
+  assert.ok(ph.includes('data-pui-pos="SNDK"') && text(ph).includes("Quantity 3 Entry 61.20 Current 62.10 P/L +2.70 (+1.47%) Holding Day 2 / 5") && ph.includes('data-pui-pos="AAPL"'));
   const d = text(PUI.positionDetailsHtml({ symbol: "SNDK", agent: "IN TRADE", setup: "READY FOR REVIEW", demand: "71", evidence: "strong", exit: "monitored · HEALTHY", risk: "Trading allowed", state: "HEALTHY", invalidation: "59.90",
                                            events: [{ at: "2026-10-21T14:36:07Z", kind: "OPENED", to_state: "OPEN" }], intents: [{ intent_type: "ENTRY", side: "buy", qty: 3, state: "FILLED", filled_qty: 3, filled_avg_price: "61.20", broker_order_id: "abcdef1234" }] }));
   for (const k of ["Setup state READY FOR REVIEW", "Broker orders and fills", "ENTRY buy 3 · filled · filled 3 @ 61.20 · broker abcdef12", "14:36 · opened → open"]) assert.ok(d.includes(k), k);
 });
 
-test("15 wording: standard empty / error messages, no stale sentences, the policy line, no raw exception names in the front", () => {
-  for (const stale of ["never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares"])
+test("18 wording: standard empty / error messages, no stale sentences, the policy line, the control vocabulary, no raw exception names in the front", () => {
+  for (const stale of ["never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Stop New Trades"])
     assert.ok(!JS.includes(stale) && !CSS.includes(stale), stale);
-  for (const msg of ["No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Waiting for broker fill"]) assert.ok(JS.includes(msg), msg);
+  for (const msg of ["No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Waiting for broker fill", "Monitoring only. No new automatic entries.",
+                     "Automatic paper entries enabled.", "Existing positions continue to be monitored.", "Existing positions continue normally.", "EMERGENCY STOP ACTIVE", "New entries blocked.",
+                     "Existing positions remain protected.", "Disable Auto", "Pause New Trades", "Resume New Trades", "Clear Emergency Stop", "Emergency Stop"]) assert.ok(JS.includes(msg), msg);
   assert.ok(JS.includes(PUI.TAGLINE) && JS.includes("Robinhood holdings are read only") && JS.includes("Paper orders go to the Alpaca PAPER account only"));
   assert.match(CSS, /body\.pui #tab-portfolio \.pf-readonly-note \{ display: none; \}/);
   assert.ok(!/Error\(|Exception|Traceback/.test(text(PUI.cardsHtml(CTX)) + text(PUI.statusHtml(EXEC, SAFE, {}))));
   assert.ok(!words.test(text(PUI.cardsHtml({ ...CTX, card: IN_TRADE, symbol: "SNDK" }))));
 });
 
-test("16 read-only wiring: GET routes only, the two actions delegate to the legacy buttons, no broker / Robinhood / model call, index.html carries two marked blocks", () => {
-  assert.ok(!JS.includes('method: "POST"') && !JS.includes("/api/execution/auto") && !JS.includes("emergency-stop") && !JS.includes("pause-new-entries") && !JS.includes("/api/portfolio") && !JS.includes("/api/agent"));
+test("19 read-only wiring: GET routes only, every action delegates to a legacy button, no broker / Robinhood / model call, index.html carries two marked blocks", () => {
+  assert.ok(!JS.includes('method: "POST"') && !JS.includes("/api/execution/auto") && !/\/api\/execution-safety\/(pause|resume|emergency|clear)/.test(JS) && !JS.includes("pause-new-entries") && !JS.includes("resume-new-entries") && !JS.includes("clear-emergency-stop"));   // the safety action routes are never called by the shell (the words "emergency-stop latch" are wording, not a route)
+  assert.ok(!JS.includes("/api/portfolio") && !JS.includes("/api/agent"));
   const routes = [...JS.matchAll(/["`](\/api\/[a-z0-9_\-\/]+)/g)].map((m) => m[1]);
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
                    "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/"];
   assert.ok(routes.length >= 10 && routes.every((r) => allowed.includes(r)), routes);
-  assert.ok(JS.includes(`'#tv-safety [data-safety="stop"]'`) && JS.includes(`'#tv-bot [data-bot="enable"]'`) && JS.includes(`'#tv-bot [data-bot="disable"]'`));
+  for (const sel of ['#tv-safety [data-safety="stop"]', '#tv-safety [data-safety="pause"]', '#tv-safety [data-safety="resume"]', '#tv-safety [data-safety="clear"]', '#tv-bot [data-bot="enable"]', '#tv-bot [data-bot="disable"]']) assert.ok(JS.includes(sel), sel);
   assert.ok(!JS.includes("data-action") && !JS.includes("Prepare Buy") && !JS.includes("Prepare Sell") && !JS.includes("Add Alert"));   // no fake primary action
   assert.equal(HTML.match(/<!-- >>> Product UI 6\.1\.1/g).length, 2);
   assert.equal(HTML.match(/<!-- <<< Product UI 6\.1\.1 -->/g).length, 2);

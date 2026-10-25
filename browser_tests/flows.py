@@ -2588,9 +2588,14 @@ def forward_validation(c: Ctx):
 PUI_AGENT = {"NONE": "WATCHING", "WATCHING": "WATCHING", "READY": "READY", "ENTERING": "ENTERING", "IN_TRADE": "IN TRADE", "EXITING": "EXITING", "CLOSED": "CLOSED",
              "STOPPED": "NEEDS ATTENTION", "ATTENTION": "NEEDS ATTENTION"}
 PUI_SAFETY = {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New trades paused", "HALTED": "Trading stopped", "UNKNOWN": "Risk status unknown"}
-PUI_STALE = ("never places a trade", "Not available in this version", "no order path", "read-only Trader View", "never places, prepares")
+PUI_STALE = ("never places a trade", "Not available in this version", "no order path", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
 PUI_TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."
 PUI_TECH = ("PPE", "Demand", "Evidence", "Proposal", "Confidence")
+PUI_CONFIRM = {"auto-on": "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
+               "stop": "This immediately blocks all new entries. Existing positions remain monitored and protective exits remain allowed. The emergency stop stays active until cleared manually.",
+               "clear": "This removes the emergency-stop latch. Trading resumes only if all safety checks pass."}
+PUI_POSTS = {"POST /api/execution/auto/enable", "POST /api/execution/auto/disable", "POST /api/execution-safety/pause-new-entries", "POST /api/execution-safety/resume-new-entries",
+             "POST /api/execution-safety/emergency-stop", "POST /api/execution-safety/clear-emergency-stop"}                       # the only writes: the legacy buttons' own routes
 
 
 def _pui_system(exec_, safety):
@@ -2608,25 +2613,38 @@ def _pui_segs(c: Ctx):
     return dict(c.js("[...document.querySelectorAll('#pui-status [data-pui-seg]')].map((e) => [e.dataset.puiSeg, e.textContent.replace(/[\u25b8\u25be]/g, '').trim()])"))
 
 
+def _pui_rows(c: Ctx):
+    return dict(c.js("[...document.querySelectorAll('#pui-cards [data-pui-row]')].map((e) => [e.dataset.puiRow, e.dataset.puiStatus])"))
+
+
+def _pui_buttons(c: Ctx):
+    return c.js("[...document.querySelectorAll('#pui-cards [data-pui-controls] button[data-pui]')].map((b) => [b.dataset.pui, b.innerText.trim()])")
+
+
+def _pui_posts(reqs):
+    return sorted(r.split(" ")[0] + " " + r.split(" ")[1] for r in reqs if r.startswith("POST "))
+
+
 def product_ui(c: Ctx):
-    """Stage 6.1.1 (polished): the four-section product shell (TRADE by default · POSITIONS · ACTIVITY · MORE) over the unchanged legacy page. The header
-    reads PAPER · MARKET · SYSTEM HEALTHY / DEGRADED / STOPPED · AUTO with the detailed reasons one click away and Paper Auto as a header control; TRADE
-    shows three cards (Agent / Setup primary with Why?, Position, Risk headline + one reason + STOP TRADING + Details), a compact chart empty state and
-    one diagnostics line. Everything follows the backend payloads (Paper Bot, Risk Controls, Trader View); STOP TRADING and Paper Auto delegate to the
-    legacy buttons (the first Paper Auto click is the confirmation prompt only). The degraded state is produced with the legacy Pause / Resume buttons
-    (a persisted gate change the risk_controls flow also makes) and undone at once. Read only otherwise: no order intent, no broker write, no mode change,
-    no Robinhood, no model call, no JS error."""
+    """Stage 6.1.1 (trading controls): the four-section product shell over the unchanged legacy page. The header reads PAPER · MARKET · SYSTEM HEALTHY /
+    DEGRADED / STOPPED · AUTO; TRADE shows the Agent / Setup card (primary, Why?), the Position card and the Risk card with the Automation / Trading
+    Controls (Paper Auto ON / OFF, Trading ALLOWED / PAUSED / STOPPED, Emergency Stop ACTIVE / INACTIVE - one relevant button per row). Enable Paper
+    Auto, Emergency Stop and Clear Emergency Stop show an explanation first and only Confirm delegates to the legacy buttons (their POSTs, their
+    two-click semantics); Disable Auto / Pause / Resume delegate directly. The flow drives one full round trip of each control through the shell
+    (the same persisted writes the paper_bot / risk_controls flows make with the legacy buttons) and leaves the state as it found it. No order intent,
+    no broker request, no Robinhood, no model call, no JS error."""
     from api.routes.trader_view import stream
     xsvc = stream().execution
     sim = xsvc.broker.wire()
     intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    positions0 = [(p.position_id, p.state, p.quantity) for p in xsvc.store.positions(open_only=False)]
     c.b.navigate(c.base + "/")
     c.wait("document.readyState === 'complete' && !!window.ProductUI && document.body.classList.contains('pui') && !!window.TraderView && "
            f"{TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "product shell + Trader View on load")
     c.js(INSTR)
     c.js(TV_JS)
     c.wait("!!document.querySelector('#pui-cards [data-pui-card=\"agent\"]') && !!document.querySelector('#pui-status [data-pui-seg=\"system\"]') && "
-           "!!(window.PaperBot && PaperBot.state.data) && !!(window.RiskControls && RiskControls.state.data)", 30, "cards rendered from live data")
+           "!!(window.PaperBot && PaperBot.state.data) && !!(window.RiskControls && RiskControls.state.data) && !!document.querySelector('#pui-cards [data-pui-controls]')", 30, "cards rendered from live data")
     c.js("ProductUI.collapseDetails()")                                              # the default (first-visit) layout
     time.sleep(2.3)                                                                  # one card refresh after the data arrived
     nav = c.js("[...document.querySelectorAll('#pui-nav > button')].map((b) => [b.dataset.puiNav, b.innerText.trim(), b.classList.contains('active')])")
@@ -2639,11 +2657,11 @@ def product_ui(c: Ctx):
     segs = _pui_segs(c)
     market = (exec_.get("scheduler") or {}).get("market") or {}
     bar = c.js("__tvText('#pui-status')") or ""
-    c.r.eq("header: PAPER · MARKET · SYSTEM · AUTO follow the payloads; account / gate words are not repeated in the bar; the policy line is the current one",
+    c.r.eq("header: PAPER · MARKET · SYSTEM · AUTO follow the payloads; account / gate words are not repeated in the bar; the policy line is the current one; no action button in the bar",
            [list(segs), segs.get("paper") in ("PAPER", "SIMULATED PAPER"), segs.get("market"), segs.get("system"), segs.get("auto"), PUI_TAGLINE in bar,
-            "ACCOUNT" in bar or "TRADING ALLOWED" in bar or "NEW TRADES PAUSED" in bar],
+            "ACCOUNT" in bar or "TRADING ALLOWED" in bar or "NEW TRADES PAUSED" in bar, c.js("document.querySelectorAll('#pui-status button[data-pui]:not([data-pui=\"system\"])').length")],
            [["paper", "market", "system", "auto"], True, "MARKET OPEN" if market.get("regular_session") else ("MARKET CLOSED" if market.get("regular_session") is False else "MARKET —"),
-            _pui_system(exec_, safety), "AUTO ON" if exec_["mode"] == "PAPER_AUTO" else "AUTO OFF", True, False])
+            _pui_system(exec_, safety), "AUTO ON" if exec_["mode"] == "PAPER_AUTO" else "AUTO OFF", True, False, 0])
     c.step("__click('#pui-status [data-pui-seg=\"system\"]')", "!!document.querySelector('#pui-status [data-pui-system-details]')", 10)
     det = c.js("__tvText('#pui-status [data-pui-system-details]')") or ""
     c.r.check("SYSTEM expander: the detailed reasons (safety gate, account, cash flow, reconciliation) are one click away", "Safety gate" in det and "Account" in det and "Reconciliation" in det, det[:300])
@@ -2665,13 +2683,15 @@ def product_ui(c: Ctx):
         want_agent = "NEEDS ATTENTION"
     elif key == "NONE":
         want_agent = "READY" if setup == "READY" else "WATCHING"
+    elif key == "ATTENTION" and card.get("state") == "FAILED" and card.get("shares") is None:
+        want_agent = "ENTRY FAILED"
     else:
         want_agent = PUI_AGENT[key]
     agent = c.js("document.querySelector('#pui-cards [data-pui-card=\"agent\"]').dataset.agent")
     front = c.js("__tvText('#pui-cards [data-pui-card=\"agent\"]')") or ""
     sizes = c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => [e.dataset.puiCard, e.classList.contains('primary'), parseFloat(getComputedStyle(e.querySelector('.pui-big')).fontSize), Math.round(e.getBoundingClientRect().width)])")
-    c.r.check("Agent / Setup card is the primary card (first, widest, largest state) with one of the seven states derived from the backend; technical terms are not in front",
-              agent in set(PUI_AGENT.values()) and agent == want_agent and sizes[0][0] == "agent" and sizes[0][1] is True and sizes[0][2] > sizes[2][2] and sizes[0][3] > sizes[2][3]
+    c.r.check("Agent / Setup card is the primary card (first, widest, largest state) with one of the user-facing states derived from the backend; technical terms are not in front",
+              agent in set(PUI_AGENT.values()) | {"ENTRY FAILED"} and agent == want_agent and sizes[0][0] == "agent" and sizes[0][1] is True and sizes[0][2] > sizes[2][2] and sizes[0][3] > sizes[2][3]
               and "Setup" in front and not any(t in front for t in PUI_TECH), [agent, want_agent, sizes, front[:160]])
     c.step("__click('#pui-cards [data-pui=\"fold:why\"]')", "!!document.querySelector('#pui-cards [data-pui-fold=\"why\"][open]')", 10)
     why = c.js("__tvText('#pui-cards [data-pui-fold=\"why\"]')") or ""
@@ -2683,42 +2703,106 @@ def product_ui(c: Ctx):
     c.r.check("Position card: a simple state (No position / Entering / shares, entry, current, P/L, holding day) without broker or reconciliation fields",
               pos_text.startswith("Position") and (("share" in pos_text and "Entry" in pos_text) if live else ("No position" in pos_text or "Entering" in pos_text))
               and not any(w in pos_text.lower() for w in ("broker", "reconciliation", "client_order")), pos_text[:200])
-    risk_front = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
-    stop = c.js("(() => { const b = document.querySelector('#pui-cards [data-pui=\"stop\"]'); const l = document.querySelector('#tv-safety [data-safety=\"stop\"]'); "
-                "return [b ? b.innerText.trim() : null, b ? b.disabled : null, __tvVisible('#pui-cards [data-pui=\"stop\"]'), l ? l.disabled : null]; })()")
-    c.r.check("Risk card: one headline, at most one primary reason, no stacked warnings in front, a visible [ STOP TRADING ] that mirrors the Risk Controls button",
-              PUI_SAFETY[safety["state"]] in risk_front and risk_front.count("⚠") == 0 and risk_front.count("✓") == 0 and (stop[0] == ("TRADING STOPPED" if safety["state"] == "HALTED" else "STOP TRADING"))
-              and stop[2] is True and (stop[1] is True if safety["state"] == "HALTED" else stop[1] == stop[3]), [risk_front[:160], stop])
-    c.step("__click('#pui-cards [data-pui=\"fold:risk\"]')", "!!document.querySelector('#pui-cards [data-pui-fold=\"risk\"][open]')", 10)
-    rdet = c.js("__tvText('#pui-cards [data-pui-fold=\"risk\"]')") or ""
-    c.r.check("Risk Details lists every dependency (account, cash flow, reconciliation) - the critical detail is exposed, not hidden", "Account" in rdet and "Reconciliation" in rdet, rdet[:300])
-    c.step("__click('#pui-cards [data-pui=\"fold:risk\"]')", "!document.querySelector('#pui-cards [data-pui-fold=\"risk\"][open]')", 10)
-    # the degraded state through the legacy Pause / Resume buttons (persisted gate change, undone at once)
-    if safety["state"] == "TRADING_ALLOWED":
-        c.step("__click('#tv-safety [data-safety=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
+    # ---- the Automation / Trading Controls: statuses from the payloads, one relevant button per row ------------------------------------------------
+    rows0, btns0 = _pui_rows(c), _pui_buttons(c)
+    kill0 = bool((safety.get("kill_switch") or {}).get("active"))
+    pause0 = bool((safety.get("no_new_entries") or {}).get("active"))
+    want_trading = {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED", "HALTED": "STOPPED"}.get(safety["state"], "UNKNOWN")
+    c.r.eq("controls: Paper Auto / Trading / Emergency Stop rows read the payloads; the Emergency Stop button reads 'Emergency Stop' and is not implied active; no Reset Trade anywhere",
+           [rows0, [b for b in btns0 if b[0] in ("stop", "clear")], c.js("[...document.querySelectorAll('button')].some((b) => /reset trade/i.test(b.innerText))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')")],
+           [{"auto": "ON" if exec_["mode"] == "PAPER_AUTO" else "OFF", "trading": want_trading, "stop": "ACTIVE" if kill0 else "INACTIVE"}, [["clear", "Clear Emergency Stop"] if kill0 else ["stop", "Emergency Stop"]], False, True])
+    simple = exec_["mode"] == "MONITOR_ONLY" and safety["state"] == "TRADING_ALLOWED" and not kill0 and not pause0
+    if simple:
+        c.r.eq("controls in the normal state: exactly Enable Paper Auto, Pause New Trades and Emergency Stop (no Resume, no Clear, no duplicate)", btns0,
+               [["auto-on", "Enable Paper Auto"], ["pause", "Pause New Trades"], ["stop", "Emergency Stop"]])
+        posts = []
+        # Paper Auto: the first click opens the explanation only (no request, the legacy button is not even armed); Cancel closes it
+        reqs, _, calls = c.step("__click('#pui-cards [data-pui=\"auto-on\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"auto-on\"]')", 10)
+        c.r.eq("Enable Paper Auto: first click shows the confirmation with the exact wording, sends nothing and does not arm the legacy button",
+               [_pui_posts(reqs), calls, c.js("PaperBot.state.confirmEnable"), PUI_CONFIRM["auto-on"] in (c.js("__tvText('#pui-cards [data-pui-confirm=\"auto-on\"]')") or ""),
+                c.js("!!document.querySelector('#pui-cards [data-pui=\"auto-on-confirm\"]') && !!document.querySelector('#pui-cards [data-pui=\"cancel\"]')"), xsvc.mode()["mode"]],
+               [[], [], False, True, True, "MONITOR_ONLY"])
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"cancel\"]')", "!document.querySelector('#pui-cards [data-pui-confirm]')", 10)
+        c.r.eq("Cancel: the panel closes, nothing was sent, Paper Auto stays OFF", [_pui_posts(reqs), xsvc.mode()["mode"], _pui_rows(c)["auto"]], [[], "MONITOR_ONLY", "OFF"])
+        # the real round trip through the shell: Confirm performs the legacy two clicks (one POST), Disable Auto the legacy disable (one POST)
+        before = c.js("[__tvText('#pui-cards [data-pui-card=\"agent\"]'), __tvText('#pui-cards [data-pui-card=\"position\"]')]")
+        c.step("__click('#pui-cards [data-pui=\"auto-on\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"auto-on\"]')", 10)
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"auto-on-confirm\"]')", "PaperBot.state.data && PaperBot.state.data.mode === 'PAPER_AUTO'", 30)
+        posts += _pui_posts(reqs)
         time.sleep(2.3)
-        c.r.eq("degraded state: SYSTEM DEGRADED in the header, 'New trades paused' with one primary reason on the Risk card, STOP TRADING still visible",
-               [_pui_segs(c).get("system"), "New trades paused" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""), c.js("!!document.querySelector('#pui-cards [data-pui-risk-reason]')"),
-                c.js("__tvVisible('#pui-cards [data-pui=\"stop\"]')")], ["SYSTEM DEGRADED", True, True, True])
-        c.shot("product_ui_degraded")
-        c.step("__click('#tv-safety [data-safety=\"resume\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'TRADING_ALLOWED'", 30)
+        c.r.eq("Confirm: enable Paper Auto -> exactly the legacy POST, AUTO ON in the header, 'Automatic paper entries enabled.' and Disable Auto on the row",
+               [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], [b for b in _pui_buttons(c) if b[0].startswith("auto")], "Automatic paper entries enabled." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
+               [["POST /api/execution/auto/enable"], "AUTO ON", "ON", [["auto-off", "Disable Auto"]], True])
+        c.shot("product_ui_auto_on")
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"auto-off\"]')", "PaperBot.state.data && PaperBot.state.data.mode === 'MONITOR_ONLY'", 30)
+        posts += _pui_posts(reqs)
         time.sleep(2.3)
-        c.r.eq("resumed: the header summary follows the gate again", _pui_segs(c).get("system"), _pui_system(c.js("PaperBot.state.data"), c.js("RiskControls.state.data")))
+        after = c.js("[__tvText('#pui-cards [data-pui-card=\"agent\"]'), __tvText('#pui-cards [data-pui-card=\"position\"]')]")
+        c.r.eq("Disable Auto -> exactly the legacy POST, AUTO OFF, 'Existing positions continue to be monitored.'; the Agent / Position cards and the stored positions are unchanged (nothing reset)",
+               [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], "Existing positions continue to be monitored." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or ""), after == before,
+                [(p.position_id, p.state, p.quantity) for p in xsvc.store.positions(open_only=False)] == positions0],
+               [["POST /api/execution/auto/disable"], "AUTO OFF", "OFF", True, True, True])
+        # Pause / Resume: distinct from the stop; Resume lifts the pause only
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
+        c.r.eq("Pause New Trades -> the legacy POST; 'New trades paused' + 'Existing positions continue normally.', Resume offered, Pause gone, the stop row still INACTIVE with Emergency Stop, SYSTEM DEGRADED",
+               [_pui_posts(reqs), "New trades paused" in risk_text and "Existing positions continue normally." in risk_text, _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system")],
+               [["POST /api/execution-safety/pause-new-entries"], True, {"auto": "OFF", "trading": "PAUSED", "stop": "INACTIVE"}, [["resume", "Resume New Trades"], ["stop", "Emergency Stop"]], "SYSTEM DEGRADED"])
+        c.shot("product_ui_paused")
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"resume\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'TRADING_ALLOWED'", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        c.r.eq("Resume New Trades -> the legacy POST; the gate follows the backend, the kill switch untouched (inactive), Pause offered again",
+               [_pui_posts(reqs), _pui_rows(c), c.js("!!RiskControls.state.data.kill_switch.active"), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume")]],
+               [["POST /api/execution-safety/resume-new-entries"], {"auto": "OFF", "trading": "ALLOWED", "stop": "INACTIVE"}, False, [["pause", "Pause New Trades"]]])
+        # Emergency Stop: explanation first (Cancel sends nothing), then Confirm -> the legacy one-click button
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"stop\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"stop\"]')", 10)
+        c.r.eq("Emergency Stop: first click shows the confirmation (protective exits remain allowed; stays active until cleared) and sends nothing",
+               [_pui_posts(reqs), PUI_CONFIRM["stop"] in (c.js("__tvText('#pui-cards [data-pui-confirm=\"stop\"]')") or ""), c.js("RiskControls.state.data.state")], [[], True, "TRADING_ALLOWED"])
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"cancel\"]')", "!document.querySelector('#pui-cards [data-pui-confirm]')", 10)
+        c.r.eq("Cancel: no stop was sent", [_pui_posts(reqs), c.js("RiskControls.state.data.state")], [[], "TRADING_ALLOWED"])
+        c.step("__click('#pui-cards [data-pui=\"stop\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"stop\"]')", 10)
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"stop-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === true", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
+        c.r.eq("Confirm Emergency Stop -> the legacy POST; EMERGENCY STOP ACTIVE / New entries blocked. / Existing positions remain protected.; Clear Emergency Stop offered, no Pause / Resume / Stop, SYSTEM STOPPED",
+               [_pui_posts(reqs), risk_text.startswith("Risk\nEMERGENCY STOP ACTIVE") or "EMERGENCY STOP ACTIVE" in risk_text, "New entries blocked." in risk_text and "Existing positions remain protected." in risk_text,
+                c.js("document.querySelector('#pui-cards [data-pui-card=\"risk\"]').dataset.kill"), _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system"),
+                c.js("__tvVisible('#pui-cards [data-pui=\"clear\"]')")],
+               [["POST /api/execution-safety/emergency-stop"], True, True, "1", {"auto": "OFF", "trading": "STOPPED", "stop": "ACTIVE"}, [["clear", "Clear Emergency Stop"]], "SYSTEM STOPPED", True])
+        c.shot("product_ui_emergency_stop")
+        # an existing position under the active stop and under Paper Auto OFF: the shell's own card renderer with the live payloads and a synthetic MU position
+        mu = ("{ key: 'IN_TRADE', symbol: 'MU', label: 'In trade', line: '4 shares · entry 830.00 · now 835.50 · +22.00', shares: 4, entry: '830.00', current: '835.50', pnl: '+22.00', pnl_pct: '0.66', "
+              "position_id: 'synthetic', state: 'POSITION_OPEN', details: { sessions_held: 1 } }")
+        render = (f"(() => {{ const card = {mu}; const h = ProductUI.cardsHtml({{ exec: Object.assign({{}}, PaperBot.state.data, {{ open_positions: 1, cards: [card] }}), safety: RiskControls.state.data, card, position: null, "
+                  "dom: { setupState: 'NONE', blockers: [] }, symbol: 'MU', limits: { max_hold_sessions: 5 }, avail: {}, confirm: null }); const d = document.createElement('div'); d.innerHTML = h; "
+                  "return [d.querySelector('[data-pui-card=\"agent\"]').dataset.agent, (d.querySelector('[data-pui-position-note]') || {}).textContent || '', d.querySelector('[data-pui-card=\"position\"]').textContent]; })()")
+        shown = c.js(render)
+        c.r.eq("existing position + Emergency Stop ACTIVE (MU, IN TRADE, live gate payload): 'No new entries. Existing position remains protected.' and the position card intact",
+               [shown[0], shown[1], "MU · 4 shares" in shown[2] and "830.00" in shown[2], any(w in (shown[1] + shown[2]).lower() for w in ("reset", "abandon", "delete"))],
+               ["IN TRADE", "No new entries. Existing position remains protected.", True, False])
+        # Clear Emergency Stop: explanation first, Confirm -> the legacy two-click button; the display then follows the backend (never a forced Trading allowed)
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
+        c.r.eq("Clear Emergency Stop: first click shows the confirmation (trading resumes only if all safety checks pass) and sends nothing; the legacy clear is not armed",
+               [_pui_posts(reqs), PUI_CONFIRM["clear"] in (c.js("__tvText('#pui-cards [data-pui-confirm=\"clear\"]')") or ""), c.js("RiskControls.state.confirmClear"), c.js("!!RiskControls.state.data.kill_switch.active")], [[], True, False, True])
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === false", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        exec_now, safety_now = c.js("PaperBot.state.data"), c.js("RiskControls.state.data")
+        risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
+        c.r.eq("Confirm clear -> the legacy POST (two legacy clicks); the Risk headline and the header follow the backend state after the clear, not a forced 'Trading allowed'",
+               [_pui_posts(reqs), risk_text.split("\n")[1] if "\n" in risk_text else risk_text, _pui_segs(c).get("system"), _pui_rows(c)["stop"], _pui_rows(c)["trading"]],
+               [["POST /api/execution-safety/clear-emergency-stop"], PUI_SAFETY[safety_now["state"]], _pui_system(exec_now, safety_now), "INACTIVE",
+                {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED", "HALTED": "STOPPED"}.get(safety_now["state"], "UNKNOWN")])
+        c.r.eq("every write of the controls round trip is a legacy route, nothing else was posted", [sorted(set(posts)) <= sorted(PUI_POSTS), set(posts) == PUI_POSTS], [True, True])
+        off = c.js(render.replace("safety: RiskControls.state.data", "safety: RiskControls.state.data"))
+        c.r.eq("existing position + Paper Auto OFF (MU, IN TRADE): 'New automatic entries are disabled. Existing position monitoring continues.' and the position card intact",
+               [off[0], off[1], "MU · 4 shares" in off[2]], ["IN TRADE", "New automatic entries are disabled. Existing position monitoring continues.", True])
     else:
-        c.r.check("gate not TRADING_ALLOWED in this run: the header shows the degraded / stopped summary as is", _pui_segs(c).get("system") in ("SYSTEM DEGRADED", "SYSTEM STOPPED"))
-    # Paper Auto: a compact header control; the first click only arms the legacy two-click confirmation
-    auto = c.js("[document.querySelector('#pui-status [data-pui-auto]').dataset.puiAuto, __tvVisible('#pui-status [data-pui-auto]')]")
-    c.r.eq("Paper Auto: visible in the header, ON / OFF follows the persisted mode", auto, ["ON" if exec_["mode"] == "PAPER_AUTO" else "OFF", True])
-    if exec_["mode"] == "MONITOR_ONLY":
-        reqs, _, calls = c.step("__click('#pui-status [data-pui=\"auto-on\"]')")
-        time.sleep(0.6)
-        c.r.eq("Paper Auto: the header button delegates to the legacy two-click button - the first click only arms the confirmation (no request, no mode change, label mirrored)",
-               [[r for r in reqs if "POST" in r], calls, c.js("PaperBot.state.confirmEnable"), c.js("__tvText('#tv-bot [data-bot=\"enable\"]')"), c.js("__tvText('#pui-status [data-pui=\"auto-on\"]')"),
-                xsvc.mode()["mode"]],
-               [[], [], True, "Confirm: enable Paper Auto", "Confirm: enable Paper Auto", "MONITOR_ONLY"])
-        c.js("clearTimeout(PaperBot.state.confirmTimer); PaperBot.state.confirmEnable = false; PaperBot.render(); ProductUI.renderStatus()")   # disarm (the 8 s timer would)
-    else:
-        c.r.check("Paper Auto is ON in this run: the header offers Stop New Trades (not clicked here)", c.js("!!document.querySelector('#pui-status [data-pui=\"auto-off\"]')"))
+        c.r.check("controls round trip skipped: the gate or the mode is not in the normal state in this run (shown as is)", True, [exec_["mode"], safety["state"], kill0, pause0])
     # the chart: normal with candles; a compact, intentional empty state when the feed is settled without candles (forced here: the simulator always has candles)
     normal = c.js("[ProductUI.state.chartKind, document.body.classList.contains('pui-chart-empty'), Math.round(document.querySelector('.tv-chart-wrap').getBoundingClientRect().height), __tvVisible('#tv-chart-note')]")
     c.r.check("chart with data: normal layout, no empty-state overlay", normal[0] == "OK" and normal[1] is False and normal[2] >= 400 and normal[3] is False, normal)
@@ -2809,16 +2893,16 @@ def product_ui(c: Ctx):
     c.step("__click('#pui-nav [data-pui-nav=\"trade\"]')", "document.getElementById('tab-trader').classList.contains('active')", 30)
     c.b.viewport(1280, 720)
     time.sleep(0.6)
-    small = [c.js("__overflow()"), c.js("__tvVisible('#pui-cards [data-pui-card=\"agent\"]')"), c.js("__tvInView('#pui-cards [data-pui=\"stop\"]')"), c.js("__tvVisible('#tv-chart')"),
+    small = [c.js("__overflow()"), c.js("__tvVisible('#pui-cards [data-pui-card=\"agent\"]')"), c.js("__tvInView('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')"), c.js("__tvVisible('#tv-chart')"),
              c.js("(() => { const b = document.querySelector('#tv-chart').getBoundingClientRect(); return Math.round(b.width); })()"), c.js("__tvVisible('#tv-ppe')"), c.js("__tvVisible('#pui-status [data-pui-auto]')")]
-    c.r.check("1280x720, default layout: no horizontal overflow, the Agent card, [ STOP TRADING ] and the Paper Auto control in view, the chart >= 600 px wide, the detail column collapsed",
+    c.r.check("1280x720, default layout: no horizontal overflow, the Agent card, the Emergency Stop control and the AUTO status in view, the chart >= 600 px wide, the detail column collapsed",
               small[0] is False and small[1] is True and small[2] is True and small[3] is True and small[4] >= 600 and small[5] is False and small[6] is True, small)
     c.shot("product_ui_trade_1280")
     c.b.viewport(768, 1024)
     time.sleep(0.6)
-    narrow = [c.js("__overflow()"), c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => Math.round(e.getBoundingClientRect().left))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"]')"),
+    narrow = [c.js("__overflow()"), c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => Math.round(e.getBoundingClientRect().left))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')"),
               c.js("__tvVisible('#pui-nav [data-pui-nav=\"more\"]')"), c.js("__tvMinFont()")]
-    c.r.check("768 px wide: no horizontal overflow, the three cards stack vertically, STOP TRADING and the nav stay visible, text >= 11 px",
+    c.r.check("768 px wide: no horizontal overflow, the three cards stack vertically, the Emergency Stop control and the nav stay visible, text >= 11 px",
               narrow[0] is False and len(set(narrow[1])) == 1 and narrow[2] is True and narrow[3] is True and narrow[4] >= 11, narrow)
     c.shot("product_ui_trade_768")
     c.b.viewport(1280, 720)
@@ -2836,8 +2920,9 @@ def product_ui(c: Ctx):
     c.b.viewport(1920, 1080)
     time.sleep(0.4)
     c.no_overflow("product UI, TRADE with details")
-    c.r.eq("read only: no order intent, no broker request, no mode change, no JS error", [len(xsvc.store.intents()) - intents0, sim.post_count() - posts0, xsvc.mode()["mode"] == mode0, len(c.b.js_errors()) - errs0],
-           [0, 0, True, 0])
+    c.r.eq("read only: no order intent, no broker request, the mode and the stored positions as before, no JS error",
+           [len(xsvc.store.intents()) - intents0, sim.post_count() - posts0, xsvc.mode()["mode"] == mode0, [(p.position_id, p.state, p.quantity) for p in xsvc.store.positions(open_only=False)] == positions0, len(c.b.js_errors()) - errs0],
+           [0, 0, True, True, 0])
 
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
