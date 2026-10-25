@@ -2,11 +2,16 @@
 cannot launch anything from the browser: research runs are made here, on purpose, by a person.
 
   validate --strategy ID --dataset FILE [--train-ratio 0.7] [--arms rules,gated,model] [--output run.json] [--persist [--db PATH]] [--neighbors params.json]
-      exit 0  a run completed (any verdict: a FAIL is a valid result)          exit 2  NOT_RUN: no honest historical replay / not implemented
-      exit 1  an input error (dataset, split, arms)
+           [--provenance provenance.json]
+      exit 0  a run completed (any verdict: a FAIL is a valid result); with --persist it was ELIGIBLE and is stored
+      exit 1  an input error (dataset, split, arms, provenance file)          exit 2  NOT_RUN: no honest historical replay / not implemented
+      exit 3  --persist was given but the run was NOT stored: the integrity gate BLOCKED it (or the store refused it); the reasons are printed
   runs [--strategy ID] [--db PATH]     the stored runs, newest first
 
-A run is persisted only with --persist. MODEL is NOT_EVALUATED: Stage 6.2 configures no model decider (no provider, no external call)."""
+A run is persisted only with --persist, and only when the Stage 6.3.1 integrity gate finds it ELIGIBLE (strategy_validation/integrity.py) - a
+blocked --persist is never silently downgraded to an ephemeral run. Without --persist a run is ephemeral (research / debug) and its integrity
+result is printed. --provenance adds the declared dataset provenance (source, retrieved_at, bar_frequency, adjustment, missing_data_policy, ...)
+for a file format that cannot carry it (CSV). MODEL is NOT_EVALUATED: no model decider is configured (no provider, no external call)."""
 from __future__ import annotations
 
 import argparse
@@ -30,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--persist", action="store_true", help="store the run (append-only) so the Strategy Lab shows it")
     v.add_argument("--db", default="", help="database file (default: the app database)")
     v.add_argument("--neighbors", default="", help="JSON list of explicitly supplied neighbouring parameter sets (diagnostic only; never chosen)")
+    v.add_argument("--provenance", default="", help="JSON object of declared dataset provenance (required for persistence when the dataset file has none)")
     r = sub.add_parser("runs", help="list stored validation runs")
     r.add_argument("--strategy", default="")
     r.add_argument("--db", default="")
@@ -40,7 +46,7 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
     """`adapters` is a test seam only (fixture adapters never reach the registry); from the command line it is always None."""
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
-    from strategy_validation.store import StrategyValidationStore
+    from strategy_validation.store import PersistenceBlocked, StoreError, StrategyValidationStore
     if args.cmd == "runs":
         store = StrategyValidationStore(Path(args.db) if args.db else None)
         for row in store.runs(args.strategy.upper() or None):
@@ -66,7 +72,10 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
         print(f"ERROR arms must be among {', '.join(ARMS)}", file=out)
         return 1
     try:
-        dataset = load(args.dataset)
+        prov = json.loads(Path(args.provenance).read_text(encoding="utf-8")) if args.provenance else None
+        if prov is not None and not isinstance(prov, dict):
+            raise ValueError("--provenance must be a JSON object")
+        dataset = load(args.dataset, provenance=prov)
         neighbours = json.loads(Path(args.neighbors).read_text(encoding="utf-8")) if args.neighbors else None
         run = E.run_validation(adapter, dataset, train_ratio=args.train_ratio, arms=arms, gates=(), model=None, neighbours=neighbours,
                                adapter_factory=getattr(adapter, "with_params", None), registry=registry)
@@ -81,9 +90,23 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
         print(f"  {seg}: {s.get('trade_count')} trades, net {s.get('net_pnl')} (gross {s.get('gross_pnl')}), mean R {s.get('expectancy_R')}, t {s.get('mean_R_t_stat')}, "
               f"max drawdown {s.get('max_drawdown')}", file=out)
     print(f"  audit: {run.audit.note}; decision: {v['decision']}", file=out)
+    el = run.eligibility
+    print(f"  integrity: {el['integrity_status']} - persistence {el['status']}; accounting {run.accounting.get('status')}; "
+          f"{run.boundary.get('train_boundary_purged_count', 0)} TRAIN outcome(s) purged at the TRAIN / OOS boundary", file=out)
+    for r in el["reasons"]:
+        print(f"    blocked by {r['code']}: {r['text']}", file=out)
     if args.output:
         Path(args.output).write_text(run.model_dump_json(indent=1), encoding="utf-8")
     if args.persist:
-        StrategyValidationStore(Path(args.db) if args.db else None).insert(run)
+        try:
+            StrategyValidationStore(Path(args.db) if args.db else None).insert(run)
+        except PersistenceBlocked as exc:
+            print(f"  NOT STORED - persistence BLOCKED by the integrity gate ({', '.join(r['code'] for r in exc.eligibility.reasons)})", file=out)
+            return 3
+        except StoreError as exc:
+            print(f"  NOT STORED - {exc}", file=out)
+            return 3
         print(f"  stored run {run.run_id}", file=out)
+    else:
+        print("  ephemeral run (not stored; use --persist to store an ELIGIBLE run)", file=out)
     return 0

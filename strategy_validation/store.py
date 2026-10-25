@@ -3,7 +3,11 @@ additive migrations, append-only rows). A run is written once, complete, in one 
 
 SYNTHETIC runs (test fixtures) are refused unless the process is a test process (STOCK_AGENT_ENV test / browser_test) and are invisible to every read
 outside such a process: a normal preview or app never shows a fixture result. A strategy_version is validated with ONE adapter configuration
-(parameters, entry policy, holding limit, critical features): another configuration under the same version is refused - it is a new version."""
+(parameters, entry policy, holding limit, critical features): another configuration under the same version is refused - it is a new version.
+
+Stage 6.3.1: the store re-evaluates the PERSISTENCE INTEGRITY GATE (strategy_validation/integrity.py) from the run record itself and writes only an
+ELIGIBLE run - a BLOCKED run raises PersistenceBlocked with its reasons (it may still be used ephemerally). The gate's result is stored with the
+run. Stage 6.2 records (validation_v1) stay readable as they are: nothing is back-filled or rewritten."""
 from __future__ import annotations
 
 import json
@@ -13,6 +17,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from database.strategy_validation_migrations import run_strategy_validation_migrations
+from strategy_validation import integrity as IG
 from strategy_validation.models import ValidationRun
 
 TEST_ENVS = ("test", "browser_test")
@@ -20,6 +25,23 @@ TEST_ENVS = ("test", "browser_test")
 
 class StoreError(ValueError):
     pass
+
+
+class PersistenceBlocked(StoreError):
+    """The integrity gate blocked the run: it is not written. `eligibility` carries every check and reason."""
+
+    def __init__(self, eligibility: "IG.PersistenceEligibility"):
+        self.eligibility = eligibility
+        super().__init__("persistence BLOCKED by the integrity gate: " + "; ".join(f"{r['code']}: {r['text']}" for r in eligibility.reasons))
+
+
+STRATEGY_KEYS = ("strategy_id", "strategy_version", "source", "entry_policy", "moc_declared", "signal_basis", "max_hold_bars", "critical_features", "params")
+
+
+def _strategy_config(rec: dict) -> str:
+    """The strategy-defining part of the adapter description (the gate declarations are not strategy rules)."""
+    a = (rec.get("config_snapshot") or {}).get("adapter") or {}
+    return json.dumps({k: a.get(k) for k in STRATEGY_KEYS}, sort_keys=True)
 
 
 def synthetic_allowed() -> bool:
@@ -68,18 +90,22 @@ class StrategyValidationStore:
         if not run.verdict.get("verdict"):
             raise StoreError("only a complete run (with a verdict) is persisted")
         rec = json.loads(run.model_dump_json())
+        eligibility = IG.evaluate(rec)                                          # recomputed here: a run's own `eligibility` field is never trusted
+        if not eligibility.eligible:
+            raise PersistenceBlocked(eligibility)
+        rec["eligibility"] = eligibility.model_dump()
         cands = rec.pop("candidates")
         trades = []
         for a in rec["arms"].values():                                       # the trades get their own rows; the run keeps the count per arm
             ts = a.pop("trades")
             a["trade_count"] = len(ts)
             trades += ts
-        adapter = json.dumps((rec.get("config_snapshot") or {}).get("adapter") or {}, sort_keys=True)
+        adapter = _strategy_config(rec)
         conn = self._rw()
         try:
             conn.execute("BEGIN IMMEDIATE")
             for (prior,) in conn.execute("SELECT run_json FROM strategy_validation_runs WHERE strategy_id = ? AND strategy_version = ?", (run.strategy_id, run.strategy_version)):
-                if json.dumps((json.loads(prior).get("config_snapshot") or {}).get("adapter") or {}, sort_keys=True) != adapter:
+                if _strategy_config(json.loads(prior)) != adapter:
                     raise StoreError(f"{run.strategy_id} v{run.strategy_version} was validated with other parameters / execution assumptions: a change after a "
                                      "validation is a new strategy_version (no OOS contamination)")
             conn.execute("INSERT INTO strategy_validation_runs (run_id, strategy_id, strategy_version, dataset_id, dataset_kind, verdict, validation_version, candidate_count, "

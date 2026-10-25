@@ -747,7 +747,8 @@
                    ["Mean R (net)", "mean_R", 3], ["Mean R (gross)", "average_R_gross", 3], ["Mean R t-stat", "mean_R_t_stat"], ["Expectancy ($ / trade)", "expectancy_usd"],
                    ["Profit factor", "profit_factor"], ["Max drawdown", "max_drawdown"], ["Max drawdown %", "max_drawdown_pct"], ["Sharpe (per trade)", "sharpe_per_trade"],
                    ["Average holding (bars)", "average_holding_bars", 1], ["Ambiguous bars (stop first)", "ambiguous_bars_count", 0], ["Configured risk", "configured_risk_total"],
-                   ["Achieved risk", "achieved_risk_total"], ["Skipped in simulation", "simulation_skipped_count", 0]];
+                   ["Achieved risk", "achieved_risk_total"], ["Skipped in simulation", "simulation_skipped_count", 0],
+                   ["Purged at the TRAIN / OOS boundary", "boundary_purged_count", 0]];
   function validationHtml(v) {
     v = v || {};
     const st = v.validation_status || "NOT_RUN", r = v.run;
@@ -775,6 +776,10 @@
         : `VALIDATION INVALID: the arms did not receive the same candidate set. ${esc((ig.problems || []).join(" · "))}`}</div>`;
     const crit = (ca.automated_checks || []).filter((c) => c.result === "CRITICAL"), warn = (ca.automated_checks || []).filter((c) => c.result === "WARN");
     const ttl = dg.train_vs_oos || {}, sens = dg.sensitivity || {};
+    // Stage 6.3.1: validation integrity is a separate question from the performance verdict; a Stage 6.2 run never recorded it (shown as such)
+    const ig2 = r.integrity_gate || {}, acc = r.accounting || {}, bnd = r.boundary || {};   // r.integrity stays the candidate-set integrity
+    const integrityText = ig2.recorded ? `${ig2.status || "—"} · persistence ${ig2.eligibility || "—"} · accounting ${acc.status || "—"} · ${bnd.train_boundary_purged_count != null ? bnd.train_boundary_purged_count : "—"} purged at the TRAIN / OOS boundary`
+      : "not recorded (a Stage 6.2 run, before the integrity gate)";
     return `<div class="pui-sv" data-pui-sv data-pui-sv-state="${esc(st)}" data-pui-sv-run="${esc(r.run_id)}">${head}` +
       `<div class="pui-sv-verdict" data-pui-sv-verdict="${esc(vd.verdict || st)}"><b>${esc(vd.label || st)}</b> · ${esc(vd.decision || "")}</div>` +
       (vd.reasons || []).map((x) => `<div data-pui-sv-reason="${esc(x.code)}">${esc(x.text)}</div>`).join("") +
@@ -787,10 +792,11 @@
       `<span>Strategy version</span><b>${esc(r.strategy_version)}</b><span>Candidates</span><b>${esc(r.candidate_count)}${r.candidates_skipped ? ` (${esc(r.candidates_skipped)} skipped: missing data)` : ""}</b>` +
       `<span>Friction</span><b>${esc(fr.slippage_bps_per_side)} bps slippage per side · ${esc(fr.commission_per_order)} per order · ${esc(fr.fee_per_share)} per share</b>` +
       `<span>Mechanical audit</span><b data-pui-sv-audit="${esc(au.status)}">${esc(au.note || au.status || "—")}</b>` +
+      `<span>Integrity</span><b data-pui-sv-integrity="${esc(ig2.recorded ? ig2.status : "NOT_RECORDED")}">${esc(integrityText)}</b>` +
       `<span>Train vs OOS</span><b>${esc(ttl.text || "—")}</b><span>Parameter sensitivity</span><b>${esc(sens.label || "—")}${sens.note ? ` · ${esc(sens.note)}` : ""}</b>` +
       `<span>Run</span><b>${esc(r.run_id)} · ${esc(r.created_at)}</b></div>` +
       metrics + `<h4>Arm comparison</h4>` + armTable +
-      `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}</div>` +
+      `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}${ca.manual_review_status ? ` Manual review: ${esc(ca.manual_review_status)}${ca.manual_review_reference ? ` (${esc(ca.manual_review_reference)})` : ""}.` : ""}</div>` +
       `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify({ execution_assumptions: r.execution_assumptions, causality: ca.automated_checks, diagnostics: dg, skips: r.skips, first_audit_violations: au.first_violations, dataset_id: r.dataset_id, validation_version: r.validation_version, git_commit_sha: r.git_commit_sha }, null, 1))}</pre></details>` +
       `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;
   }

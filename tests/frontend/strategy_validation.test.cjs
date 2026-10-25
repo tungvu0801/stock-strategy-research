@@ -118,3 +118,31 @@ test("8 escaping and the read-only wiring: no control, no form, no new route, no
   assert.ok(routes.every((r) => allowed.includes(r)), routes);                                                          // the Stage 6.1.2 GET set, unchanged: the detail read carries the validation
   assert.ok(!/regime|retry/i.test(JS) && !/\b(profitable|winning|guaranteed)\b/i.test(JS));
 });
+
+// ---- Stage 6.3.1: validation integrity is shown next to the performance verdict, never merged with it; a Stage 6.2 run says it was not recorded
+const V2 = (verdict, over) => RUN(verdict, { integrity_gate: { recorded: true, status: "PASS", eligibility: "ELIGIBLE", checks: [], reasons: [], gate_version: "integrity_gate_v1" },
+                                             accounting: { status: "PASS" }, boundary: { policy: "PURGE", train_boundary_purged_count: 1 }, ...(over || {}) });
+
+test("9 integrity (v2 run): status, persistence, accounting and the TRAIN / OOS boundary purge, with the purge as a metric row", () => {
+  const run = V2("PASS");
+  run.arms.RULES.TRAIN = { ...run.arms.RULES.TRAIN, boundary_purged_count: 1 };
+  run.arms.RULES.OOS = { ...run.arms.RULES.OOS, boundary_purged_count: 0 };
+  run.arms.RULES.ALL = { ...run.arms.RULES.ALL, boundary_purged_count: 1 };
+  run.causality = { ...run.causality, manual_review_status: "PENDING", manual_review_reference: "" };
+  const h = PUI.validationHtml(DETAIL(run));
+  assert.ok(h.includes('data-pui-sv-integrity="PASS"') && text(h).includes("Integrity PASS · persistence ELIGIBLE · accounting PASS · 1 purged at the TRAIN / OOS boundary"));
+  assert.ok(text(h).includes("Purged at the TRAIN / OOS boundary 1 0 1") && text(h).includes("Manual review: PENDING."));
+});
+
+test("10 a Stage 6.2 run (no integrity record): 'not recorded', nothing invented", () => {
+  const h = PUI.validationHtml(DETAIL(RUN("PASS", { integrity_gate: { recorded: false, note: "not recorded" } })));
+  assert.ok(h.includes('data-pui-sv-integrity="NOT_RECORDED"') && text(h).includes("Integrity not recorded (a Stage 6.2 run, before the integrity gate)"));
+  assert.ok(text(h).includes("Purged at the TRAIN / OOS boundary — — —") && !/persistence ELIGIBLE|accounting PASS|Manual review:/.test(text(h)));
+});
+
+test("11 performance and integrity are separate: a FAIL verdict with integrity PASS shows both, plainly", () => {
+  const run = V2("FAIL", { verdict: { verdict: "FAIL", label: "FAIL", reasons: [{ code: "OOS_NOT_POSITIVE", text: "OOS expectancy turned negative after friction." }], warnings: [],
+                                      decision: "Not ready for paper", eligible_for_review: false, note: "" } });
+  const h = PUI.validationHtml(DETAIL(run));
+  assert.ok(text(h).includes("FAIL · Not ready for paper") && h.includes('data-pui-sv-integrity="PASS"') && text(h).includes("This strategy should not progress to paper trading."));
+});

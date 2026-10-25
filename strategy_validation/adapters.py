@@ -30,6 +30,14 @@ class StrategyAdapter:
     entry_condition = ""
     invalidation_condition = ""
     exit_condition = ""
+    # Stage 6.3.1 declarations read by the persistence gate (strategy_validation/integrity.py). None = UNDECLARED, which blocks persistence:
+    # a decision that does not apply must still be made explicitly.
+    live_implementation: Optional[str] = None          # the separate live implementation this adapter claims to reproduce (a module path), or None
+    replay_parity_requirement: Optional[str] = None    # EXACT_REQUIRED (a live implementation exists) | NOT_APPLICABLE (research-only strategy)
+    replay_parity_status: Optional[str] = None         # ESTABLISHED (parity tests pass) | NOT_ESTABLISHED
+    replay_parity_reference: Optional[str] = None      # ESTABLISHED must cite its evidence (e.g. the parity test module)
+    provenance_requires: Optional[Tuple[str, ...]] = None   # which of corporate_actions / universe / point_in_time the dataset must declare
+    causality_review: Optional[dict] = None             # {"status": "PENDING" | "COMPLETED", "reference": "..."}: the MANUAL review, declared
 
     def __init__(self, params: Optional[dict] = None):
         self.params = dict(params or {})
@@ -44,7 +52,11 @@ class StrategyAdapter:
     def describe(self) -> dict:
         return {"strategy_id": self.strategy_id, "strategy_version": self.strategy_version, "source": self.source, "entry_policy": self.entry_policy,
                 "moc_declared": self.moc_declared, "signal_basis": self.signal_basis, "max_hold_bars": self.max_hold_bars, "critical_features": list(self.critical_features),
-                "params": dict(self.params), "historical_replay_supported": self.historical_replay_supported}
+                "params": dict(self.params), "historical_replay_supported": self.historical_replay_supported,
+                "declarations": {"live_implementation": self.live_implementation, "replay_parity_requirement": self.replay_parity_requirement,
+                                 "replay_parity_status": self.replay_parity_status, "replay_parity_reference": self.replay_parity_reference,
+                                 "provenance_requires": None if self.provenance_requires is None else list(self.provenance_requires),
+                                 "causality_review": None if self.causality_review is None else dict(self.causality_review)}}
 
 
 DDR_REASON = ("No honest historical replay exists for Downside Dislocation Recovery: READY needs a point-in-time Stage 5.4 evidence packet, and no "
@@ -60,6 +72,11 @@ class DownsideRecoveryAdapter(StrategyAdapter):
     historical_replay_supported = False
     not_supported_reason = DDR_REASON
     max_hold_bars = 5
+    live_implementation = "setups/engine.py"            # the live setup state machine: any replay must reproduce it EXACTLY (DESIGN_63 §11)
+    replay_parity_requirement = "EXACT_REQUIRED"
+    replay_parity_status = "NOT_ESTABLISHED"            # DESIGN_63: faithful replay not established - the engine refuses before the gate is reached
+    provenance_requires = ("corporate_actions", "universe", "point_in_time")
+    causality_review = {"status": "PENDING", "reference": ""}
 
     def candidates(self, dataset) -> Iterable[RawCandidate]:
         raise NotImplementedError(DDR_REASON)

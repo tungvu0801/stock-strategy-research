@@ -1089,8 +1089,14 @@ hypothetical; **PASS only means eligible for human review** - it does not mean t
   **Downside Dislocation Recovery reads "Not yet evaluated"**: it has no honest historical replay (its READY evidence does not exist for past
   sessions), so no backtest is manufactured; its forward evidence is the Stage 6.1 forward paper validation.
 
-Docs: `STRATEGY_VALIDATION_HARNESS.md`, `DESIGN_62_STRATEGY_VALIDATION.md`. Tests: `tests/test_strategy_validation_62.py`,
-`tests/frontend/strategy_validation.test.cjs`, harness flows `strategy_validation*`.
+Hardening (Stage 6.3.1, `validation_v2`): TRAIN candidates whose holding window crosses the TRAIN end are purged
+(`TRAIN_OOS_BOUNDARY_PURGE`, so OOS prices cannot change a TRAIN metric); accepted = simulated + purged + skipped or the run is VALIDATION
+INVALID; and a run is persisted only when the integrity gate finds it ELIGIBLE (provenance, causality, replay parity, audit, accounting) -
+integrity is reported separately from the performance verdict; `--persist` on a blocked run exits 3 and stores nothing.
+
+Docs: `STRATEGY_VALIDATION_HARNESS.md`, `DESIGN_62_STRATEGY_VALIDATION.md`, `DESIGN_631_VALIDATION_HARDENING.md`. Tests:
+`tests/test_strategy_validation_62.py`, `tests/test_validation_integrity_631.py`, `tests/frontend/strategy_validation.test.cjs`, harness flows
+`strategy_validation*`.
 
 ## Continuous integration (Stage 6.0.3, parallel suites)
 

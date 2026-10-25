@@ -3346,6 +3346,7 @@ def strategy_validation(c: Ctx):
               and c.js("document.querySelectorAll('#pui-more-body [data-pui-sv-metrics], #pui-more-body [data-pui-sv-arms], #pui-more-body [data-pui-sv-verdict]').length") == 0
               and not re.search(r"Net P&L|Win rate|t-stat|\bPASS\b|\bFAIL\b", ddr.replace(api["disclaimer"], "")), ddr[:400])   # the disclaimer itself names PASS
     c.shot("strategy_validation_none", "#pui-more-body [data-pui-sv]")
+    c.r.check("Stage 6.3.1: no run -> no integrity line is invented", c.js("document.querySelectorAll('#pui-more-body [data-pui-sv-integrity]').length") == 0)
     r2, mom = _sv_open(c, "MOMENTUM")
     c.r.check("a placeholder: Validation · Not yet evaluated - not implemented, no rules, no candidate", "Not yet evaluated." in mom and "Not implemented" in mom, mom[:300])
     c.r.check("no control, no form and no POST in the lab; viewing changes no lifecycle (RESEARCH / PAPER_CANDIDATE as before)",
@@ -3404,6 +3405,9 @@ def strategy_validation_results(c: Ctx):
                   [a[:3] for a in arms] == [["RULES", "EVALUATED", "100"], ["GATED", "EVALUATED", "100"], ["MODEL", "NOT_EVALUATED", "100"]] and arms[2][3] == "Not evaluated"
                   and "One candidate set for every arm (100 candidates" in good, arms)
         c.shot("strategy_validation_pass", "#pui-more-body [data-pui-sv]")
+        c.r.check("Stage 6.3.1: the stored run shows its integrity (PASS, persisted as ELIGIBLE, accounting reconciled, boundary purges) apart from the verdict",
+                  c.js("(document.querySelector('#pui-more-body [data-pui-sv-integrity]') || {dataset: {}}).dataset.puiSvIntegrity") == "PASS"
+                  and "persistence ELIGIBLE · accounting PASS · 0 purged at the TRAIN / OOS boundary" in good and "Manual review: PENDING." in good, good[-600:])
         r2, small = _sv_open(c, "FIXTURE_TOO_SMALL")
         sm = runs["TOO_SMALL"].arms["RULES"].metrics
         c.r.check("INSUFFICIENT DATA: the real counts, the reasons, no PASS verdict and no invented performance",
