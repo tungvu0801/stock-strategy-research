@@ -986,6 +986,50 @@ size, exit, mode or order changes (`DESIGN_61_FORWARD_PAPER_VALIDATION.md`).
   near-close cutoff, the existing detached Windows runner; the PC must stay awake with network. No forced setups, forced exits, test fault
   files or unadjusted-P&L acceptance in normal operation. Bad trades and failed sessions stay in the data set.
 
+## Product UI (Stage 6.1.1, four sections, display only)
+
+The dashboard opens on **TRADE** and has four primary sections: **TRADE · POSITIONS · ACTIVITY · MORE**. Everything the earlier stages built is
+still there - the thirteen legacy tabs are hidden, not removed, and MORE reaches each of them - but a beginner sees one chart, the state of the
+Agent and the risk status first. The shell is display only: every value is the Paper Bot / Risk Controls payload or a GET route mapped for display,
+and its two actions click the existing Risk Controls / Paper Bot buttons, so nothing about execution, risk or Paper Auto changed.
+
+* **Header status bar** (always visible): `PAPER` (or `SIMULATED PAPER`) · `MARKET OPEN / CLOSED` · `SYSTEM HEALTHY / DEGRADED / STOPPED` (a
+  display summary of the Stage 5.9.1 gate, the Stage 6.0.1 account freshness, the Stage 6.0.2 cash-flow freshness, reconciliation and the bot's
+  attention flag: STOPPED = halted / unknown gate or attention, DEGRADED = anything paused, stale or unavailable, HEALTHY otherwise; click it for
+  every reason) · the Paper Auto control (`AUTO ON / OFF` with the enable / stop button), plus the policy line
+  "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled." A missing value shows a dash; a problem (stale account, unknown gate, attention) is never hidden.
+* **TRADE**: the Trader View chart and watchlist with three cards above them - **Agent / Setup** (the primary card: `WATCHING · READY · ENTERING ·
+  IN TRADE · EXITING · CLOSED · NEEDS ATTENTION`, the Stage 6.0 card keys and the Stage 5.8 setup states renamed for display, a halted or unknown
+  risk gate reads NEEDS ATTENTION unless a paper position is live; one setup line in plain words, the engine's own blocker count when it has one,
+  and **Why?** for PPE stretch, confidence, demand, evidence, the stored setup state and the proposal status), **Position** (`No position`,
+  `Entering · Waiting for broker fill`, or shares / entry / current / P/L / `Day N / max hold`; broker and reconciliation fields stay under POSITIONS)
+  and **Risk** (one headline, one primary reason, `[ STOP TRADING ]`, every dependency and attention reason under **Details**). `[ STOP TRADING ]`
+  is the Stage 5.9.1 emergency stop and the header's Paper Auto button is the Stage 6.0 two-click one (the first click only arms the confirmation).
+  When the feed has no candles the chart shrinks to a compact, centred message (`Market closed` is informational; `Market data unavailable` returns
+  automatically when data reconnects; there is no Retry button because no refresh action exists), and the Stage 5.5 status chips collapse into one
+  diagnostics line with an expander. **View details** (top right) opens the Stage 5.5-6.1 detail column - PPE, Market Demand, Setup, Trade Review,
+  Evidence, Position sources, Risk Controls, Paper Bot, Paper Trade, Forward Paper Validation, the status chips and the disabled Prepare Buy / Sell /
+  Add Alert placeholders; the choice is remembered per browser.
+* **Trading controls** (Risk card, one block): Paper Auto `ON / OFF` with `Enable Paper Auto` / `Disable Auto`, Trading `ALLOWED / PAUSED /
+  STOPPED` with `Pause New Trades` / `Resume New Trades`, Emergency Stop `INACTIVE / ACTIVE` with `Emergency Stop` / `Clear Emergency Stop`. Enable,
+  Emergency Stop and Clear show an explanation first and only Confirm clicks the legacy button (the Stage 6.0 / 5.9.1 two-click flows stay intact);
+  Disable, Pause and Resume delegate directly. Resume never clears the emergency-stop latch, a cleared stop shows whatever the gate says next, and an
+  existing position keeps its monitoring and protective exits whatever the control state - the cards say so in plain words. No Reset Trade exists.
+* **POSITIONS**: one card per open or pending paper position (quantity, entry, current, P/L, holding day); a click shows setup state, demand,
+  evidence, exit monitoring, risk state, broker orders and fills and the recent position events. Closed paper trades sit under a fold.
+* **ACTIVITY**: a "Today" strip (trades, open, closed, paper P/L, issues) and a timeline built only from persisted rows - setup transitions,
+  proposals and their risk-check result, order submissions, fills and rejections, position opened / exit required / closed, attention, the safety-gate
+  events and the Forward Paper Validation events - then a compact **Validation** block (sessions, healthy, duplicates, reconciliation issues, strategy
+  status) linking to `forward_validation.html`. The Stage 5.8 rule / setup alert lists stay under a fold.
+* **MORE**: Research (Strategy Lab and its workspaces, Research Setups, Research History), Tools (AI Agent, Market dashboard, Watchlist editor, Daily
+  Review, Trader Review), System (Forward Validation, Account / execution health, Risk Controls, Portfolio - Robinhood, read only) and Settings
+  ("Advanced configuration": server-side `config.py` / `.env`; no secret is ever shown).
+
+Implementation: `frontend/product_ui.js` + `frontend/product_ui.css`, loaded by two marked, additive blocks of `frontend/index.html`. The legacy
+markup, every legacy script and every backend package are byte-identical to the Stage 6.1 base (`tests/test_product_ui_611.py`,
+`tests/frontend/product_ui.test.cjs`, harness flow `product_ui`). The old disclaimer, the two "not available" placeholders and the Portfolio note
+that predates paper execution are hidden by the shell and replaced by current wording. Design: `DESIGN_611_PRODUCT_UI.md`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

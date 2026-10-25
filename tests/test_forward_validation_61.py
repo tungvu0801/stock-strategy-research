@@ -57,6 +57,9 @@ CI_FILES = {".github/ci/pytest_groups.json", ".github/workflows/tests.yml", "bro
 STRIP_61 = r"(?ms)^[ \t]*# >>> Stage 6\.1\b.*?^[ \t]*# <<< Stage 6\.1[^\n]*\n"
 STRIP_61_HTML = r"(?ms)^<!-- >>> Stage 6\.1\b.*?^<!-- <<< Stage 6\.1 -->\n"
 OPEN_61, CLOSE_61 = "# >>> " + "Stage 6.1", "# <<< " + "Stage 6.1"                   # built, not literal: this file must not read as a marked-block carrier
+STRIP_611 = r"(?ms)^[ \t]*# >>> Stage 6\.1\.1\b.*?^[ \t]*# <<< Stage 6\.1\.1[^\n]*\n"                                                 # Stage 6.1.1: its marked blocks are stripped first
+STRIP_611_HTML = r"(?ms)^<!-- >>> Product UI 6\.1\.1\b.*?^<!-- <<< Product UI 6\.1\.1 -->\n"                                            # Stage 6.1.1: the product shell blocks of index.html
+NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/frontend/product_ui.test.cjs", "DESIGN_611_PRODUCT_UI.md"}   # Stage 6.1.1 files
 
 
 def rig(tmp_path, monkeypatch):
@@ -657,7 +660,7 @@ def test_U02_wiring_the_compact_panel_and_the_separate_page_are_read_only():
     page = now_text("frontend/forward_validation.html")
     assert html.count("<!-- >>> Stage 6.1") == 2 == html.count("<!-- <<< Stage 6.1 -->") and '<script src="forward_validation.js"></script>' in html and 'href="forward_validation.css"' in html
     assert html.index('src="paper_bot.js"') < html.index('src="forward_validation.js"') and html.index('href="trader_view.css"') < html.index('href="forward_validation.css"')
-    assert re.sub(STRIP_61_HTML, "", html) == blob("frontend/index.html")                                     # the page differs from the base by the two marked blocks only
+    assert re.sub(STRIP_61_HTML, "", re.sub(STRIP_611_HTML, "", html)) == blob("frontend/index.html")      # the page differs from the base by the two marked blocks only (Stage 6.1.1 blocks stripped first)
     assert 'method: "POST"' not in js and "/api/execution/auto" not in js and "fetch(" in js and '"/api/forward-validation"' in js
     assert "INSUFFICIENT FOR STRATEGY CONCLUSION" in js and "NEEDS ATTENTION" in js and "tv-panel-bot" in js and "forward_validation.html" in js
     assert 'id="fv-page"' in page and 'src="forward_validation.js"' in page and "<form" not in page and "POST" not in page
@@ -704,9 +707,9 @@ def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_ma
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_FILES, {"unexpected_new": sorted(new - NEW_FILES), "missing_new": sorted(NEW_FILES - new)}
+    assert new == NEW_FILES | NEW_611, {"unexpected_new": sorted(new - NEW_FILES - NEW_611), "missing_new": sorted((NEW_FILES | NEW_611) - new)}   # Stage 6.1.1 files added
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new   # files of the base that differ
-    allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py"} | CI_FILES
+    allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py", "tests/test_forward_validation_61.py"} | CI_FILES   # Stage 6.1.1 reconciles this file in place
     assert changed <= allowed, {"unexpected_changes": sorted(changed - allowed)}
     # production packages of the earlier stages: byte-identical (every file that exists in the base)
     for d in ("setups", "proposals", "safety", "execution", "account_refresh", "cash_flow", "ppe", "demand", "evidence", "paper", "forward", "notifications", "trader_view", "api/routes", "database", "scripts"):
@@ -717,7 +720,7 @@ def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_ma
     for rel in ("frontend/risk_controls.js", "frontend/trader_view.js", "frontend/trader_render.js", "frontend/trade_review.js", "frontend/paper_bot.js", "frontend/setup_alerts.js", "frontend/trader_view.css",
                 "frontend/trader_core.js", "tests/conftest.py", "tests/alpaca_order_fakes.py", "DESIGN_60_AUTONOMOUS_PAPER.md", "DESIGN_601_CONTINUOUS_ACCOUNT_REFRESH.md", "DESIGN_602_ADJUSTED_DAILY_PNL.md"):
         assert now_text(rel) == blob(rel), f"{rel} differs from {BASE}"
-    assert re.sub(STRIP_61_HTML, "", now_text("frontend/index.html")) == blob("frontend/index.html")
+    assert re.sub(STRIP_61_HTML, "", re.sub(STRIP_611_HTML, "", now_text("frontend/index.html"))) == blob("frontend/index.html")   # Stage 6.1.1 blocks stripped first
     assert now_text("config.py").startswith(blob("config.py").rstrip("\n")) and "FORWARD_VALIDATION_ENABLED" in now_text("config.py")                      # config is append-only
     sig_old = "                 execution_service=None, account_refresh_service=None, cash_flow_service=None):"
     sig_new = "                 execution_service=None, account_refresh_service=None, cash_flow_service=None, forward_validation_service=None):"
@@ -730,7 +733,7 @@ def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_ma
         if rel == "trader_view/stream.py":
             assert sig_new in now_lines and sig_new.startswith(sig_old[:-2])
     for rel, n in RECONCILED_TESTS.items():                                                                                                                 # the reconciled pin tests: marked blocks only
-        text = now_text(rel)
+        text = re.sub(STRIP_611, "", now_text(rel))                                                                                                      # Stage 6.1.1 blocks stripped first
         assert text.count(OPEN_61) == n == text.count(CLOSE_61) and len(re.findall(STRIP_61, text)) == n, rel
         assert re.sub(STRIP_61, "", text) == blob(rel), f"{rel} differs from {BASE} outside its Stage 6.1 block(s)"
     old = r'    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n"))'
