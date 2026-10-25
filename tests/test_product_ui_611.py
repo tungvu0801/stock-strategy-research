@@ -22,8 +22,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "ec87dc6f6e8b7fec64e7aedefa77e5af88da5e79"                                          # origin/main with Stage 6.1 merged (PR #17)
 NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/frontend/product_ui.test.cjs", "DESIGN_611_PRODUCT_UI.md"}
+NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "strategy_registry/standard.py", "strategy_registry/registry.py", "strategy_registry/service.py",
+           "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",
+           "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}   # Stage 6.1.2 files (tests/test_product_flow_612.py pins them)
 ALLOWED_CHANGED = {"frontend/index.html", "tests/test_trader_view_561.py", "tests/test_execution_60.py", "tests/test_cash_flow_602.py", "tests/test_forward_validation_61.py",
-                   "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json"}
+                   "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json", "api/server.py"}   # Stage 6.1.2: two additive router lines in api/server.py (checked below)
 BLOCK_TESTS = ("tests/test_trader_view_561.py", "tests/test_execution_60.py", "tests/test_cash_flow_602.py")
 OPEN_611, CLOSE_611 = "# >>> " + "Stage 6.1.1", "# <<< " + "Stage 6.1.1"                   # built, not literal: this file is not a marked-block carrier
 HTML_OPEN = "<!-- >>> " + "Product UI 6.1.1"
@@ -33,7 +36,8 @@ FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"
 TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."
 STALE = ("never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
 GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events",
-              "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/"}
+              "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
+              "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls"}   # Stage 6.1.2: the strategy registry and the frozen controls (GET only)
 # the exact in-place edits of tests/test_forward_validation_61.py (each `old` occurs once in the base; applied in order they produce the current file)
 EDITS_61 = [
     ('OPEN_61, CLOSE_61 = "# >>> " + "Stage 6.1", "# <<< " + "Stage 6.1"                   # built, not literal: this file must not read as a marked-block carrier\n',
@@ -52,6 +56,16 @@ EDITS_61 = [
     ('        text = now_text(rel)\n        assert text.count(OPEN_61) == n == text.count(CLOSE_61) and len(re.findall(STRIP_61, text)) == n, rel\n',
      '        text = re.sub(STRIP_611, "", now_text(rel))                                                                                                      # Stage 6.1.1 blocks stripped first\n'
      '        assert text.count(OPEN_61) == n == text.count(CLOSE_61) and len(re.findall(STRIP_61, text)) == n, rel\n'),
+]
+# Stage 6.1.2 reconciles tests/test_forward_validation_61.py in place too (two exact edits, applied after EDITS_61; tests/test_product_flow_612.py pins them as well)
+EDITS_612_61 = [
+    ('NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/frontend/product_ui.test.cjs", "DESIGN_611_PRODUCT_UI.md"}   # Stage 6.1.1 files\n',
+     'NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/frontend/product_ui.test.cjs", "DESIGN_611_PRODUCT_UI.md"}   # Stage 6.1.1 files\n'
+     'NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "strategy_registry/standard.py", "strategy_registry/registry.py", "strategy_registry/service.py",\n'
+     '           "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",\n'
+     '           "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}   # Stage 6.1.2 files\n'),
+    ('    assert new == NEW_FILES | NEW_611, {"unexpected_new": sorted(new - NEW_FILES - NEW_611), "missing_new": sorted((NEW_FILES | NEW_611) - new)}   # Stage 6.1.1 files added\n',
+     '    assert new == NEW_FILES | NEW_611 | NEW_612, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612) - new)}   # Stage 6.1.1 / 6.1.2 files added\n'),
 ]
 
 
@@ -137,8 +151,8 @@ def test_N01_node_tests_of_the_product_shell():
 def test_H01_harness_carries_the_product_ui_flow_and_opens_the_details_before_every_trader_view_detail_flow():
     src = now_text("browser_tests/flows.py")
     assert "def product_ui(c: Ctx):" in src and "def _tv_details(c: Ctx):" in src
-    assert "cash_flow, forward_validation, product_ui, automation, saved_scans," in src                     # before the clock-moving flows; the last eight stay (tests/test_browser_harness_39.py)
-    assert src.count("c.js(TV_JS)") == 11 and len(re.findall(r"^([ \t]*)c\.js\(TV_JS\)\n\1_tv_details\(c\)\n", src, re.M)) == 9   # every prior flow; product_ui tests the collapsed default first
+    assert "cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans," in src   # Stage 6.1.2 flows follow product_ui; the last eight stay (tests/test_browser_harness_39.py)
+    assert src.count("c.js(TV_JS)") == 12 and len(re.findall(r"^([ \t]*)c\.js\(TV_JS\)\n\1_tv_details\(c\)\n", src, re.M)) == 9   # every prior flow; product_ui tests the collapsed default first; Stage 6.1.2 installs the helpers once more (_pf_boot)
     flow = src[src.index("def product_ui(c: Ctx):"):src.index("\n\nFLOWS = (")]
     assert 'c.http("POST"' not in flow and ".post(" not in flow                                             # the flow writes only through the shell's buttons (the legacy POSTs), never itself
     for shot in ("product_ui_trade", "product_ui_positions", "product_ui_activity", "product_ui_more", "product_ui_trade_1280", "product_ui_trade_768", "product_ui_chart_empty", "product_ui_paused",
@@ -170,11 +184,15 @@ def test_F01_every_tracked_file_of_the_stage_61_base_is_identical_except_the_eig
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_611, {"unexpected_new": sorted(new - NEW_611), "missing_new": sorted(NEW_611 - new)}
+    assert new == NEW_611 | NEW_612, {"unexpected_new": sorted(new - NEW_611 - NEW_612), "missing_new": sorted((NEW_611 | NEW_612) - new)}   # Stage 6.1.2 files added
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
+    # Stage 6.1.2: api/server.py gains exactly two additive lines (the strategy-registry import and its GET-only router), nothing removed
+    base_lines, now_lines = blob("api/server.py").splitlines(), now_text("api/server.py").splitlines()
+    added = [l for l in now_lines if l not in base_lines]
+    assert [l for l in base_lines if l not in now_lines] == [] and len(added) == 2 and all("Stage 6.1.2" in l and "strategy_registry" in l for l in added), added
     # belt and braces for the files a UI stage must never touch (bytes, CRLF-normalised)
-    for rel in ("config.py", "api/server.py", "trader_view/stream.py", "setups/engine.py", "proposals/engine.py", "execution/service.py", "execution/engine.py",
+    for rel in ("config.py", "trader_view/stream.py", "setups/engine.py", "proposals/engine.py", "execution/service.py", "execution/engine.py",
                 "execution/broker.py", "execution/scheduler.py", "safety/engine.py", "forward_validation/metrics.py", "forward_validation/service.py", "forward_validation/store.py", "database/execution_migrations.py",
                 "database/forward_validation_migrations.py", "api/routes/execution.py", "api/routes/execution_safety.py", "api/routes/forward_validation.py", "api/routes/trader_view.py",
                 "frontend/trader_view.js", "frontend/trader_render.js", "frontend/paper_bot.js", "frontend/risk_controls.js", "frontend/trade_review.js", "frontend/forward_validation.js",
@@ -213,7 +231,10 @@ def test_F03_reconciled_prior_stage_tests_differ_from_the_base_only_by_one_marke
     for old, new in EDITS_61:
         assert text.count(old) == 1 and new not in text, old[:70]
         text = text.replace(old, new)
-    assert text == now61, "tests/test_forward_validation_61.py differs from the base by other than the six listed in-place edits"
+    for old, new in EDITS_612_61:                                                                 # Stage 6.1.2: its two in-place edits, applied after the six
+        assert text.count(old) == 1 and new not in text, old[:70]
+        text = text.replace(old, new)
+    assert text == now61, "tests/test_forward_validation_61.py differs from the base by other than the six (6.1.1) + two (6.1.2) listed in-place edits"
     assert OPEN_611 not in now61 and now61.count("# >>> " + "Stage 6.1") == 0                   # the Stage 6.1 test stays a non-carrier (its own carrier scan)
     files = [p for p in tracked() if (ROOT / p).is_file() and not p.endswith((".pyc", ".db", ".png"))]
     py_carriers = sorted(p for p in files if OPEN_611.encode("utf-8") in (ROOT / p).read_bytes())

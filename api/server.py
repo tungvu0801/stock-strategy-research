@@ -40,6 +40,7 @@ from api.routes import execution  # Stage 6.0: autonomous PAPER execution of REA
 from api.routes import account_refresh  # Stage 6.0.1: read-only account refresh status feeding proposals and the Stage 5.9.1 gate
 from api.routes import cash_flow_status  # Stage 6.0.2: cash-flow status (GET only) - the deposits / withdrawals input of the Stage 5.9.1 gate
 from api.routes import forward_validation  # Stage 6.1: forward paper validation (GET only) - the descriptive record of the setups -> proposals -> paper execution funnel and session health
+from api.routes import strategy_registry  # Stage 6.1.2: Strategy Lab registry + Strategy Standard v1 (GET only) - describes the setups -> proposals -> safety -> execution strategy; no order path
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -168,6 +169,7 @@ app.include_router(execution.router)  # Stage 6.0: autonomous PAPER execution lo
 app.include_router(account_refresh.router)  # Stage 6.0.1: account refresh status (GET only) - the read-only source of proposals and the Stage 5.9.1 gate
 app.include_router(cash_flow_status.router)  # Stage 6.0.2: cash-flow status (GET only) - adjusted daily P&L of the Stage 5.9.1 gate
 app.include_router(forward_validation.router)  # Stage 6.1: forward paper validation (GET only) - session health, the setups -> proposals -> execution funnel, closed paper trades, reports, exports
+app.include_router(strategy_registry.router)  # Stage 6.1.2: strategy registry + Strategy Standard v1 (GET only) - the setups -> proposals -> safety gate -> execution strategy described, never executed
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 

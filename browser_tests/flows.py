@@ -37,7 +37,8 @@ INSTR = r"""(() => { if (window.__h) return; window.__h = 1; window.__f = []; wi
 # 6.0 pollers (setup alerts 30 s, Risk Controls 30 s, Paper Bot 10 s) were missing, so "no request" windows failed at random (Stage 6.0.3).
 POLLING = ("/api/health", "/api/ai/usage", "/api/alerts", "/api/market/overview", "/api/watchlist", "/api/ops",
            "GET /api/setups/alerts?limit=30", "GET /api/execution-safety", "GET /api/execution/status",                 # method-qualified: a user's POST is never filtered
-           "GET /api/forward-validation")                                                                                # Stage 6.1: the Forward Paper Validation panel's 60 s poll
+           "GET /api/forward-validation",                                                                                # Stage 6.1: the Forward Paper Validation panel's 60 s poll
+           "GET /api/strategy-registry", "GET /api/forward-validation/frozen-controls")                                 # Stage 6.1.2: the shell's two one-off startup reads (registry, frozen controls)
 FIT = "StrategyFit.state"
 EV = "EvidenceComparison.state"
 TRADE_WORDS = re.compile(r"(?i)\b(buy|sell|enter now|trade now|recommend\w*|you should)\b")
@@ -2902,8 +2903,8 @@ def product_ui(c: Ctx):
     kinds = c.js("[...document.querySelectorAll('#pui-activity [data-pui-timeline] li[data-pui-kind]')].map((e) => e.dataset.puiKind)")
     intents = c.http("GET", "/api/execution/intents?limit=100")["intents"]
     tl_text = c.js("__tvText('#pui-activity [data-pui-timeline]')") or ""
-    c.r.check("ACTIVITY: the Today strip and a timeline of persisted events only (setups, proposals, orders, fills, positions, safety gate, reconciliation, validation)",
-              today == ["Trades", "Open", "Closed", "Paper P/L", "Issues"] and set(kinds) <= {"setup", "proposal", "order", "fill", "position", "exit", "attention", "safety", "reconciliation", "validation"}
+    c.r.check("ACTIVITY: the Today strip (Stage 6.1.2: the Daily Review counts) and a timeline of persisted events only (setups, proposals, orders, fills, positions, safety gate, reconciliation, validation)",
+              today == ["System", "Market", "Setup changes", "READY setups", "Entries", "Exits", "Blocked", "Safety blocks", "Paper P/L", "Attention"] and set(kinds) <= {"setup", "proposal", "order", "fill", "position", "exit", "attention", "safety", "reconciliation", "validation"}
               and (("submitted" in tl_text) if any(i.get("submitted_at") for i in intents) else True) and c.js("!!document.querySelector('#pui-activity [data-pui-alerts-fold] #pui-legacy-alerts')"),
               [today, sorted(set(kinds)), len(intents)])
     fv = c.http("GET", "/api/forward-validation")
@@ -2915,12 +2916,12 @@ def product_ui(c: Ctx):
     c.shot("product_ui_activity")
     texts.append(c.js("document.body.innerText") or "")
     # MORE -> Strategy Lab, back, AI Agent
-    c.step("__click('#pui-nav [data-pui-nav=\"more\"]')", "document.getElementById('tab-settings').classList.contains('active') && document.querySelectorAll('#pui-more [data-pui-group]').length === 4", 30)
+    c.step("__click('#pui-nav [data-pui-nav=\"more\"]')", "document.getElementById('tab-settings').classList.contains('active') && document.querySelectorAll('#pui-more [data-pui-group]').length === 3", 30)
     groups = c.js("[...document.querySelectorAll('#pui-more [data-pui-group]')].map((e) => e.dataset.puiGroup)")
     items = c.js("[...document.querySelectorAll('#pui-more [data-pui-more]')].map((e) => e.dataset.puiMore)")
-    c.r.check("MORE: Research / Tools / System / Settings groups reach every legacy workspace; the Settings placeholder is hidden until asked for",
-              groups == ["Research", "Tools", "System", "Settings"] and {"tab:strategy", "tab:setups", "tab:history", "tab:agent", "tab:overview", "tab:watchlist", "tab:daily", "tab:review", "tab:portfolio",
-                                                                              "forward_validation.html", "action:health", "action:risk", "action:settings"} <= set(items)
+    c.r.check("MORE (Stage 6.1.2): Research / System / Settings groups reach every legacy workspace (the tools under System › Diagnostics); the Settings placeholder is hidden until asked for",
+              groups == ["Research", "System", "Settings"] and {"action:lab", "tab:strategy", "tab:setups", "tab:history", "tab:agent", "tab:overview", "tab:watchlist", "tab:daily", "tab:review", "tab:portfolio",
+                                                                "forward_validation.html", "action:health", "action:data", "action:logs", "action:risk", "action:automation", "action:notifications", "action:settings"} <= set(items)
               and c.js("__tvVisible('#tab-settings .unavailable-panel')") is False, [groups, items])
     c.shot("product_ui_more")
     texts.append(c.js("document.body.innerText") or "")
@@ -2970,7 +2971,331 @@ def product_ui(c: Ctx):
            [0, 0, True, True, 0])
 
 
+# >>> Product Flow 6.1.2: the unified product flow + Strategy Lab foundation (tests/test_product_flow_612.py pins this block; flows run after product_ui, before the clock-moving flows)
+PF_NAV = [["trade", "TRADE"], ["positions", "POSITIONS"], ["activity", "ACTIVITY"], ["more", "MORE"]]
+PF_TODAY = ["System", "Market", "Setup changes", "READY setups", "Entries", "Exits", "Blocked", "Safety blocks", "Paper P/L", "Attention"]
+PF_SECTIONS = ["overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log"]
+PF_PLACEHOLDERS = ["VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"]
+PF_READY_NOTE = "READY means the setup is eligible. Execution eligibility is decided separately by the safety gate and the entry controls."
+PF_VISIBLE = "((sel) => [...document.querySelectorAll(sel)].filter((e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && !!e.offsetParent; }).length)"
+PF_SHOWN = "((sel) => [...document.querySelectorAll(sel)].filter((e) => !e.closest('details:not([open])')).length)"   # items a user can see: not inside a collapsed fold (Chromium keeps closed-details boxes measurable)
+
+
+def _pf_boot(c: Ctx, path="/"):
+    """Load the product shell at a path (a legacy deep link or /), install the page helpers, wait for the live cards; the default collapsed layout."""
+    c.b.navigate(c.base + path)
+    c.wait("document.readyState === 'complete' && !!window.ProductUI && document.body.classList.contains('pui') && !!window.TraderView && "
+           f"{TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "product shell loaded")
+    c.js(INSTR)
+    c.js(TV_JS)
+    c.wait("!!(window.PaperBot && PaperBot.state.data) && !!(window.RiskControls && RiskControls.state.data)", 30, "live payloads")
+    time.sleep(0.5)
+
+
+def _pf_trade(c: Ctx):
+    c.step("__click('#pui-nav [data-pui-nav=\"trade\"]')", "document.getElementById('tab-trader').classList.contains('active') && !!document.querySelector('#pui-cards [data-pui-card=\"agent\"]')", 30)
+    c.js("ProductUI.collapseDetails()")
+    c.wait("!!ProductUI.state.registry && !!document.querySelector('#pui-cards [data-pui-focus]')", 20, "registry + focus strip")
+    time.sleep(2.3)
+
+
+def _pf_focus(c: Ctx):
+    return c.js("(() => { const f = document.querySelector('#pui-cards [data-pui-focus]'); return f ? [f.dataset.puiFocus, f.innerText.replace(/\\s+/g, ' ').trim()] : null; })()")
+
+
+def _pf_readonly(c: Ctx, xsvc, sim, intents0, posts0, mode0, errs0, what):
+    c.r.eq(f"{what}: read only - no order intent, no broker request, the mode as before, no JS error",
+           [len(xsvc.store.intents()) - intents0, sim.post_count() - posts0, xsvc.mode()["mode"] == mode0, len(c.b.js_errors()) - errs0], [0, 0, True, 0])
+
+
+def product_flow(c: Ctx):
+    """Stage 6.1.2 (A, normal): TRADE -> POSITIONS -> ACTIVITY -> MORE. Exactly four primary sections, the legacy bar hidden; TRADE shows the focus strip and the
+    strategy line from the registry; POSITIONS the lifecycle view; ACTIVITY the Daily Review strip, the filters and one timeline; MORE three collapsed groups
+    that open on demand. Read only; no JS error."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    _pf_boot(c)
+    _pf_trade(c)
+    nav = c.js("[...document.querySelectorAll('#pui-nav > button')].map((b) => [b.dataset.puiNav, b.innerText.trim()])")
+    legacy = c.js("[...document.querySelectorAll('nav.tabs .tab-btn')].map((b) => b.innerText.trim())")
+    c.r.eq("exactly four primary sections, the thirteen legacy tabs present in the markup but hidden (never peer navigation)",
+           [nav, len(legacy), c.js("__tvVisible('nav.tabs')"), c.js(f"{PF_VISIBLE}('nav.tabs .tab-btn')")], [PF_NAV, 13, False, 0])
+    focus = _pf_focus(c)
+    strat = c.js("__tvText('#pui-cards [data-pui-strategy]')") or ""
+    reg = c.http("GET", "/api/strategy-registry")
+    live = [s for s in reg["strategies"] if s["implemented"] and s["active"]]
+    c.r.check("TRADE: the focus strip is the first element above the cards, the strategy line names the one active registry strategy, placeholders never appear",
+              focus is not None and focus[0] in ("ATTENTION", "EXIT", "POSITION_ATTENTION", "DEGRADED", "IN_TRADE", "REVIEWABLE", "READY", "WATCHING", "MARKET")
+              and ("Best setup ·" in strat or "Best strategy ·" in strat) and live and live[0]["display_name"] in strat and not any(p in strat for p in ("Momentum", "Breakout", "Mean Reversion", "Value + Quality"))
+              and c.js("document.querySelector('#pui-cards').firstElementChild.hasAttribute('data-pui-focus')"), [focus, strat, [s["strategy_id"] for s in live]])
+    c.r.eq("TRADE: the agent card still carries its state and the Risk card the three control rows + the trading-session line",
+           [c.js("!!document.querySelector('#pui-cards [data-pui-card=\"agent\"][data-agent]')"), sorted(_pui_rows(c)), c.js("!!document.querySelector('#pui-cards [data-pui-session]')")],
+           [True, ["auto", "stop", "trading"], True])
+    c.shot("product_flow_trade")
+    # POSITIONS: the lifecycle view (cards or the explicit empty line) and the closed-trades fold
+    c.step("__click('#pui-nav [data-pui-nav=\"positions\"]')", "document.getElementById('tab-paper').classList.contains('active') && (!!document.querySelector('#pui-positions [data-pui-empty]') || !!document.querySelector('#pui-positions [data-pui-pos]'))", 30)
+    stages = c.js("[...document.querySelectorAll('#pui-positions [data-pui-pos]')].map((e) => e.dataset.puiStage)")
+    closed_fold = c.js("(document.querySelector('#pui-positions [data-pui-closed-fold]') || {}).textContent") or ""    # textContent: the fold is collapsed, innerText would hide its rows
+    c.r.check("POSITIONS: one lifecycle card per live position (IN TRADE / EXIT REQUIRED / EXITING / NEEDS ATTENTION / ENTERING) or the explicit empty line; closed trades under a fold with realized P/L",
+              set(stages) <= {"IN TRADE", "EXIT REQUIRED", "EXITING", "NEEDS ATTENTION", "ENTERING"} and c.js("!!document.querySelector('#pui-positions [data-pui-closed-fold]')")
+              and ("Realized paper P/L" in closed_fold or "No closed paper trade yet" in closed_fold), [stages, closed_fold[:120]])
+    c.shot("product_flow_positions")
+    # ACTIVITY: the Daily Review strip, the filters, one timeline
+    c.step("__click('#pui-nav [data-pui-nav=\"activity\"]')", "document.getElementById('tab-alerts').classList.contains('active') && !!document.querySelector('#pui-activity [data-pui-filters]')", 30)
+    today = c.js("[...document.querySelectorAll('#pui-activity [data-pui-today] h4')].map((e) => e.textContent.trim())")
+    chips = c.js("[...document.querySelectorAll('#pui-activity [data-pui-filter]')].map((b) => b.dataset.puiFilter)")
+    c.r.eq("ACTIVITY: the Daily Review strip (only metrics the persisted rows support), five filters, one timeline, one Validation block",
+           [today, chips, c.js("document.querySelectorAll('#pui-activity [data-pui-timeline]').length"), c.js("document.querySelectorAll('#pui-activity [data-pui-validation]').length")],
+           [PF_TODAY, ["all", "trades", "safety", "system", "research"], 1, 1])
+    c.step("__click('#pui-activity [data-pui-filter=\"safety\"]')", "!!document.querySelector('#pui-activity [data-pui-filter=\"safety\"].active')", 10)
+    groups = c.js("[...document.querySelectorAll('#pui-activity [data-pui-timeline] li[data-pui-group]')].map((e) => e.dataset.puiGroup)")
+    c.r.check("ACTIVITY: the Safety filter keeps only safety rows (no duplicate timeline)", all(g == "safety" for g in groups), groups[:5])
+    c.step("__click('#pui-activity [data-pui-filter=\"all\"]')", "!!document.querySelector('#pui-activity [data-pui-filter=\"all\"].active')", 10)
+    c.shot("product_flow_activity")
+    # MORE: three collapsed groups; a group opens on click; nothing else is rendered open
+    c.step("__click('#pui-nav [data-pui-nav=\"more\"]')", "document.getElementById('tab-settings').classList.contains('active') && document.querySelectorAll('#pui-more [data-pui-group]').length === 3", 30)
+    groups_m = c.js("[...document.querySelectorAll('#pui-more [data-pui-group]')].map((e) => [e.dataset.puiGroup, e.open])")
+    c.r.eq("MORE: exactly Research / System / Settings, all collapsed on arrival (progressive disclosure), no item shown yet",
+           [groups_m, c.js(f"{PF_SHOWN}('#pui-more [data-pui-more]')"), c.js("document.querySelectorAll('#pui-more [data-pui-more]').length") >= 15], [[["Research", False], ["System", False], ["Settings", False]], 0, True])
+    c.step("__click('#pui-more details[data-pui-group=\"Research\"] > summary')", "!!document.querySelector('#pui-more details[data-pui-group=\"Research\"][open]')", 10)
+    c.r.check("MORE: opening Research shows its four items only (Strategy Lab, Backtests, Research History, Research Setups)",
+              c.js("[...document.querySelectorAll('#pui-more details[data-pui-group=\"Research\"] [data-pui-more]')].map((e) => e.dataset.puiMore)") == ["action:lab", "tab:strategy", "tab:history", "tab:setups"]
+              and c.js(f"{PF_SHOWN}('#pui-more [data-pui-more]')") == 4 and c.js(f"{PF_VISIBLE}('#pui-more details[data-pui-group=\"Research\"] > button')") == 4, c.js(f"{PF_SHOWN}('#pui-more [data-pui-more]')"))
+    c.no_overflow("product flow, MORE")
+    c.shot("product_flow_more")
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "product flow")
+
+
+def product_flow_degraded(c: Ctx):
+    """Stage 6.1.2 (B, system degraded): when the gate pauses or stops, the first thing on TRADE is the system issue (focus DEGRADED / NEEDS ATTENTION), not the WATCHING
+    stock; the agent card keeps the stock's own state underneath. Driven through the shell's own controls (the legacy POSTs); the state is restored."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    _pf_boot(c)
+    _pf_trade(c)
+    before = _pf_focus(c)
+    safety0 = c.js("RiskControls.state.data")
+    if safety0["state"] != "TRADING_ALLOWED" or (safety0.get("kill_switch") or {}).get("active"):
+        c.r.check("degraded flow skipped: the gate is not in the normal state in this run (shown as is)", True, safety0["state"])
+        return
+    posts = []
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    focus = _pf_focus(c)
+    c.r.eq("paused gate: the focus strip reads SYSTEM DEGRADED first (the WATCHING stock is not the most important thing), the header SYSTEM DEGRADED, the agent card keeps the stock state",
+           [focus[0] if focus else None, "SYSTEM DEGRADED" in (focus[1] if focus else ""), _pui_segs(c).get("system"), c.js("document.querySelector('#pui-cards [data-pui-focus]').nextElementSibling.dataset.puiCard"),
+            c.js("!!document.querySelector('#pui-cards [data-pui-card=\"agent\"][data-agent]')")],
+           ["DEGRADED", True, "SYSTEM DEGRADED", "agent", True])
+    c.shot("product_flow_degraded")
+    c.step("__click('#pui-cards [data-pui=\"stop\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"stop\"]')", 10)
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"stop-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === true", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    focus = _pf_focus(c)
+    c.r.eq("emergency stop: the focus strip reads NEEDS ATTENTION (SYSTEM STOPPED) first; the Risk card headline EMERGENCY STOP ACTIVE", [focus[0] if focus else None, _pui_segs(c).get("system"), "EMERGENCY STOP ACTIVE" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or "")],
+           ["ATTENTION", "SYSTEM STOPPED", True])
+    c.shot("product_flow_stopped")
+    c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === false", 30)
+    posts += _pui_posts(reqs)
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"resume\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'TRADING_ALLOWED'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    after = _pf_focus(c)
+    c.r.eq("restored: the gate allows again, the focus strip is back to the stock / market (the system item gone); only the legacy safety routes were posted",
+           [after[0] if after else None, after[0] == before[0] if after and before else False, sorted(set(posts))],
+           [before[0] if before else None, True, ["POST /api/execution-safety/clear-emergency-stop", "POST /api/execution-safety/emergency-stop", "POST /api/execution-safety/pause-new-entries", "POST /api/execution-safety/resume-new-entries"]])
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "degraded flow")
+
+
+def product_flow_lab(c: Ctx):
+    """Stage 6.1.2 (C, Strategy Lab): MORE -> Research -> Strategy Lab shows the registry: the real Downside Dislocation Recovery entry with its derived lifecycle status, the
+    four placeholders marked placeholder · not active, QuantConnect as a supported source with nothing registered; the detail view shows the thirteen sections with
+    Not yet evaluated where nothing exists. No execution control anywhere in the lab; GET only."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    _pf_boot(c)
+    c.step("__click('#pui-nav [data-pui-nav=\"more\"]')", "document.getElementById('tab-settings').classList.contains('active') && document.querySelectorAll('#pui-more [data-pui-group]').length === 3", 30)
+    c.step("__click('#pui-more details[data-pui-group=\"Research\"] > summary')", "!!document.querySelector('#pui-more details[data-pui-group=\"Research\"][open]')", 10)
+    reqs, _, _ = c.step("__click('#pui-more [data-pui-more=\"action:lab\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
+    reg = c.http("GET", "/api/strategy-registry")
+    rows = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-strategy-row]')].map((e) => [e.dataset.puiStrategyRow, e.dataset.puiImplemented, e.dataset.puiActive, e.innerText.replace(/\\s+/g, ' ').trim()])")
+    ddr = next((s for s in reg["strategies"] if s["strategy_id"] == "DOWNSIDE_DISLOCATION_RECOVERY"), None)
+    c.r.check("registry: the five entries in the API's order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the four placeholders not implemented, not active, marked",
+              [r[0] for r in rows] == [s["strategy_id"] for s in reg["strategies"]] and rows[0][:3] == ["DOWNSIDE_DISLOCATION_RECOVERY", "1", "1"] and ddr is not None and ddr["status_label"] in rows[0][3]
+              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 4
+              and ddr["status"] in ("PAPER_CANDIDATE", "PAPER_ACTIVE"), rows)
+    lab_text = c.js("__tvText('#pui-more-body [data-pui-lab-panel]')") or ""
+    c.r.check("registry: QuantConnect is a supported source with nothing registered and not integrated; the pipeline Strategy -> … -> Broker is stated; MORE stays the section",
+              "QUANTCONNECT · 0" in lab_text and "not integrated" in lab_text and "Strategy → Opportunity / Proposal → Portfolio → Risk / Safety → Execution → Broker" in lab_text
+              and c.js("document.body.dataset.puiSection") == "more" and _pui_posts(reqs) == [], lab_text[:300])
+    c.shot("product_flow_lab")
+    reqs, _, _ = c.step("__click('#pui-more-body [data-pui-lab=\"DOWNSIDE_DISLOCATION_RECOVERY\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"DOWNSIDE_DISLOCATION_RECOVERY\"]')", 30)
+    secs = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-section]')].map((e) => [e.dataset.puiSection, e.dataset.puiSectionState])")
+    det = c.js("__tvText('#pui-more-body [data-pui-lab-detail]')") or ""
+    api_det = c.http("GET", "/api/strategy-registry/DOWNSIDE_DISLOCATION_RECOVERY")
+    c.r.check("detail (real strategy): thirteen sections in order; rules / entry / exit documented from the frozen controls; backtest, out-of-sample and decision log read Not yet evaluated; paper results live from the validation summary",
+              [s[0] for s in secs] == PF_SECTIONS and dict(secs)["rules"] == "DOCUMENTED" and dict(secs)["backtest"] == "NOT_EVALUATED" and dict(secs)["out_of_sample"] == "NOT_EVALUATED" and dict(secs)["decision_log"] == "NOT_EVALUATED"
+              and dict(secs)["paper_results"] == "LIVE" and "Not yet evaluated" in det and "-40" in " ".join(api_det["sections"][2]["items"]) and api_det["lifecycle"]["decided"] is False, secs)
+    c.r.check("detail: no execution control, no form, no submit anywhere in the lab; nothing was posted",
+              c.js("document.querySelectorAll('#pui-more-body button[data-pui], #pui-more-body form, #pui-more-body input').length") == 0 and not any(w in det for w in ("Enable Paper Auto", "Emergency Stop", "Execute", "Place order")) and _pui_posts(reqs) == [], det[:200])
+    c.shot("product_flow_lab_detail")
+    c.step("__click('#pui-more-body [data-pui-lab=\"back\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
+    c.step("__click('#pui-more-body [data-pui-lab=\"MOMENTUM\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"MOMENTUM\"]')", 30)
+    ph = c.js("__tvText('#pui-more-body [data-pui-lab-detail]')") or ""
+    ph_secs = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-section]')].map((e) => e.dataset.puiSectionState)")
+    c.r.check("detail (placeholder): marked placeholder · not active, every section but the overview reads Not yet evaluated; it never appears as an active signal",
+              "placeholder · not active" in ph and ph_secs[0] == "DOCUMENTED" and all(s == "NOT_EVALUATED" for s in ph_secs[1:]) and len(ph_secs) == 13 and "Research" in ph, ph_secs)
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "lab flow")
+
+
+def product_flow_links(c: Ctx):
+    """Stage 6.1.2 (D, legacy deep links): the old bookmarks land in the new sections - #portfolio -> POSITIONS, #paper -> ACTIVITY · Trades, #trader -> TRADE,
+    #strategy -> MORE › Research › Strategy Lab; #daily-brief is left to its legacy consumer; the hash follows the nav afterwards. Read only."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    _pf_boot(c, "/#portfolio")
+    c.wait("document.body.dataset.puiSection === 'positions'", 20, "#portfolio routed")
+    c.r.eq("#portfolio (old Portfolio) -> POSITIONS", [c.js("document.body.dataset.puiSection"), c.js("document.getElementById('tab-paper').classList.contains('active')"), c.js("location.hash")], ["positions", True, "#positions"])
+    c.shot("product_flow_link_portfolio")
+    _pf_boot(c, "/#paper")
+    c.wait("document.body.dataset.puiSection === 'activity'", 20, "#paper routed")
+    c.r.eq("#paper (old Paper Trades) -> ACTIVITY with the Trades filter", [c.js("document.body.dataset.puiSection"), c.js("ProductUI.state.filter"), c.js("!!document.querySelector('#pui-activity [data-pui-filter=\"trades\"].active')")], ["activity", "trades", True])
+    _pf_boot(c, "/#trader")
+    c.wait("document.body.dataset.puiSection === 'trade'", 20, "#trader routed")
+    c.r.eq("#trader (old Trader View) -> TRADE", [c.js("document.body.dataset.puiSection"), c.js("document.getElementById('tab-trader').classList.contains('active')")], ["trade", True])
+    _pf_boot(c, "/#strategy")
+    c.wait("document.body.dataset.puiSection === 'more' && !!document.querySelector('#pui-more-body [data-pui-registry]')", 30, "#strategy routed to the Strategy Lab")
+    c.r.eq("#strategy (old Strategy Lab) -> MORE › Research (open) › Strategy Lab registry", [c.js("document.body.dataset.puiSection"), c.js("!!document.querySelector('#pui-more details[data-pui-group=\"Research\"][open]')"),
+           c.js("document.querySelectorAll('#pui-more-body [data-pui-strategy-row]').length")], ["more", True, 5])
+    _pf_boot(c, "/#daily-brief")
+    time.sleep(1.0)
+    c.r.eq("#daily-brief stays with its legacy consumer: the shell never rewrites a foreign hash and does not route it", [c.js("location.hash"), c.js("document.body.dataset.puiSection") in ("more", "trade")], ["#daily-brief", True])
+    c.step("__click('#pui-nav [data-pui-nav=\"trade\"]')", "document.body.dataset.puiSection === 'trade'", 30)
+    c.r.eq("the hash follows the nav (bookmarkable sections)", c.js("location.hash"), "#trade")
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "legacy links flow")
+
+
+def product_flow_ready(c: Ctx):
+    """Stage 6.1.2 (E, READY): a READY MSFT setup (forced through the REAL setup service, which generates the Stage 5.9 review proposal) renders READY as setup
+    eligibility with a separate execution line (Automatic entry off under Monitor only), Why? explains it in the seven sections, View Proposal opens the review panel
+    (NOT SUBMITTED). No strategy executes anything: no intent, no broker request, Paper Auto stays OFF."""
+    from api.routes.trader_view import stream
+    from setups.models import SetupInputs
+    st = stream()
+    svc, xsvc = st.setups, st.execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    _pf_boot(c)
+    _pf_trade(c)
+    c.js("TraderView.switchTo('MSFT')")                                                          # MSFT is a simulator symbol, not a watchlist row; subscribe first (it evaluates the setup once)
+    c.wait(_tv_settled("MSFT") + " && __tvState('#tv-setup')[1] === 'MSFT'", 30, "MSFT settled")
+    for _ in range(3):                                                                           # whatever an earlier run left: a faded stretch closes the episode
+        if svc.current("MSFT").state == "NONE":
+            break
+        svc.evaluate_symbol("MSFT", trigger="TEST", inputs=SetupInputs(symbol="MSFT", evaluated_at="x", **{**SETUP_FIXTURE, **dict(stretch=-10.0, confidence=58, demand=72)}))
+        time.sleep(1.1)
+    for over in (SETUP_STEPS[0][2], SETUP_STEPS[1][2]):                                           # WATCH, then READY FOR REVIEW - through the real setup service
+        svc.evaluate_symbol("MSFT", trigger="TEST", inputs=SetupInputs(symbol="MSFT", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+        time.sleep(1.1)
+    c.wait(_tv_settled("MSFT") + " && __tvState('#tv-setup')[0] === 'READY' && __tvState('#tv-proposal')[0] === 'REVIEWABLE'", 30, "MSFT READY with a reviewable proposal")
+    time.sleep(2.3)
+    # the execution line follows the shell's blocker precedence for the live payloads: the market (the wall clock) or the account may block before "Automatic entry off"
+    exec_, safety = c.js("PaperBot.state.data"), c.js("RiskControls.state.data")
+    market, acct = (exec_.get("scheduler") or {}).get("market") or {}, exec_.get("account_data") or {}
+    et = re.match(r"^(\d{2}):(\d{2})$", str(market.get("et_time") or ""))
+    mtc = 16 * 60 - (int(et.group(1)) * 60 + int(et.group(2))) if et else None
+    if safety["state"] != "TRADING_ALLOWED" or exec_.get("reconciliation_healthy") is False:
+        want = ("blocked", None)
+    elif acct.get("status") and acct["status"] != "FRESH":
+        want = ("blocked", f"ACCOUNT_{acct['status']}")
+    elif market.get("regular_session") is False:
+        want = ("blocked", "MARKET_CLOSED")
+    elif market.get("regular_session") and mtc is not None and mtc <= 15:
+        want = ("blocked", "NEAR_CLOSE")
+    else:
+        want = ("off", "MONITOR_ONLY")
+    want_title = "Cannot enter" if want[0] == "blocked" else "Automatic entry off"
+    agent = c.js("document.querySelector('#pui-cards [data-pui-card=\"agent\"]').dataset.agent")
+    exe = c.js("(() => { const e = document.querySelector('#pui-cards [data-pui-exec]'); return e ? [e.dataset.puiExec, e.dataset.puiBlocker, e.innerText.replace(/\\s+/g, ' ').trim()] : null; })()")
+    focus = _pf_focus(c)
+    btns = c.js("[...document.querySelectorAll('#pui-cards [data-pui-card=\"agent\"] .pui-actions button')].map((b) => [b.dataset.pui, b.innerText.trim()])")
+    c.r.eq("READY card: READY (setup eligible) with a separate execution line that follows the blocker precedence (never 'allowed' while Paper Auto is OFF), the REVIEWABLE focus, Why? and View Proposal; no 'will execute' wording",
+           [agent, exe[0] if exe else None, (exe[1] if exe else None) if want[1] else want[1], (exe[2] if exe else "").startswith(want_title), focus[0] if focus else None, btns,
+            "will" in (c.js("__tvText('#pui-cards [data-pui-card=\"agent\"]')") or "").lower(), exe[0] == "ok" if exe else None],
+           ["READY", want[0], want[1], True, "REVIEWABLE", [["fold:why", "Why?"], ["proposal", "View Proposal"]], False, False])
+    reqs, _, _ = c.step("__click('#pui-cards .pui-actions [data-pui=\"fold:why\"]')", "!!document.querySelector('#pui-cards [data-pui-fold=\"why\"][open]') && !!ProductUI.state.terminal['MSFT']", 20)
+    time.sleep(0.5)
+    why = c.js("__tvText('#pui-cards [data-pui-fold=\"why\"]')") or ""
+    c.r.check("Why?: the question, the seven sections, the READY note and the execution line from deterministic backend state (the terminal state read once, GET)",
+              all(k in why for k in ("Why is it READY?", "Signal", "Strategy", "Supporting evidence", "Against / risks", "Portfolio", "Safety", "Decision", PF_READY_NOTE, f"Execution: {want_title}"))
+              and all(r.startswith("GET ") for r in reqs) and any("/api/terminal/state/MSFT" in r for r in reqs), [why[:300], reqs])
+    c.shot("product_flow_ready")
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"proposal\"]')", "!document.body.classList.contains('pui-collapsed')", 10)
+    time.sleep(0.5)
+    prop = c.js("__tvText('#tv-proposal')") or ""
+    c.r.eq("View Proposal opens the Stage 5.9 review panel: REVIEWABLE PROPOSAL, NOT SUBMITTED; nothing posted, no intent, Paper Auto still OFF",
+           [c.js("__tvVisible('#tv-proposal')"), "REVIEWABLE PROPOSAL" in prop, "NOT SUBMITTED" in prop, _pui_posts(reqs), len(xsvc.store.intents()) - intents0, xsvc.mode()["mode"]],
+           [True, True, True, [], 0, "MONITOR_ONLY"])
+    c.js("ProductUI.collapseDetails()")
+    svc.evaluate_symbol("MSFT", trigger="TEST", inputs=SetupInputs(symbol="MSFT", evaluated_at="x", **{**SETUP_FIXTURE, **dict(stretch=-10.0, confidence=58, demand=72)}))   # the episode fades: nothing left armed
+    time.sleep(0.5)
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "READY flow")
+
+
+def product_flow_session(c: Ctx):
+    """Stage 6.1.2 (F, Paper Auto / safety): the combinations are named on the Risk card - AUTO ON · TRADING PAUSED, AUTO ON · TRADING ALLOWED, AUTO OFF · TRADING ALLOWED -
+    through the shell's own controls (the legacy POSTs). Paper Auto ON is never shown as trading allowed. The state is restored (AUTO OFF, gate allowing)."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, errs0 = len(xsvc.store.intents()), sim.post_count(), len(c.b.js_errors())
+    _pf_boot(c)
+    _pf_trade(c)
+    exec0, safety0 = c.js("PaperBot.state.data"), c.js("RiskControls.state.data")
+    if exec0["mode"] != "MONITOR_ONLY" or safety0["state"] != "TRADING_ALLOWED" or (safety0.get("kill_switch") or {}).get("active"):
+        c.r.check("session flow skipped: the mode or the gate is not in the normal state in this run (shown as is)", True, [exec0["mode"], safety0["state"]])
+        return
+    sess = lambda: c.js("(document.querySelector('#pui-cards [data-pui-session]') || {}).dataset ? document.querySelector('#pui-cards [data-pui-session]').dataset.puiSession : null")  # noqa: E731
+    c.r.eq("start: AUTO OFF · TRADING ALLOWED", sess(), "AUTO OFF · TRADING ALLOWED")
+    posts = []
+    c.step("__click('#pui-cards [data-pui=\"auto-on\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"auto-on\"]')", 10)
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"auto-on-confirm\"]')", "PaperBot.state.data && PaperBot.state.data.mode === 'PAPER_AUTO'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    c.r.eq("Paper Auto ON with the gate allowing: AUTO ON · TRADING ALLOWED", [sess(), _pui_segs(c).get("auto"), _pui_rows(c)["trading"]], ["AUTO ON · TRADING ALLOWED", "AUTO ON", "ALLOWED"])
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    row = c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or ""
+    c.r.eq("AUTO ON + PAUSED renders correctly: AUTO ON · TRADING PAUSED, the auto row still ON with the armed-but-blocked note, the trading row PAUSED, SYSTEM DEGRADED",
+           [sess(), _pui_rows(c), "safety currently blocks new entries" in row, _pui_segs(c).get("system"), _pui_segs(c).get("auto")],
+           ["AUTO ON · TRADING PAUSED", {"auto": "ON", "trading": "PAUSED", "stop": "INACTIVE"}, True, "SYSTEM DEGRADED", "AUTO ON"])
+    c.shot("product_flow_session")
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"resume\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'TRADING_ALLOWED'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    c.r.eq("resume: AUTO ON · TRADING ALLOWED again", sess(), "AUTO ON · TRADING ALLOWED")
+    reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"auto-off\"]')", "PaperBot.state.data && PaperBot.state.data.mode === 'MONITOR_ONLY'", 30)
+    posts += _pui_posts(reqs)
+    time.sleep(2.3)
+    c.r.eq("Disable Auto: AUTO OFF · TRADING ALLOWED; only the legacy routes were posted; the mode is MONITOR_ONLY again",
+           [sess(), sorted(set(posts)), c.http("GET", "/api/execution/status")["mode"]],
+           ["AUTO OFF · TRADING ALLOWED", ["POST /api/execution-safety/pause-new-entries", "POST /api/execution-safety/resume-new-entries", "POST /api/execution/auto/disable", "POST /api/execution/auto/enable"], "MONITOR_ONLY"])
+    c.r.eq("session flow: no order intent, no broker request, no JS error", [len(xsvc.store.intents()) - intents0, sim.post_count() - posts0, len(c.b.js_errors()) - errs0], [0, 0, 0])
+# <<< Product Flow 6.1.2
+
+
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, automation, saved_scans, daily_brief, brief_delivery, notification_click,
-         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows
+         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows; Stage 6.1.2: the product flows follow product_ui
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

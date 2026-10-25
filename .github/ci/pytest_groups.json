@@ -33,6 +33,7 @@
         "test_ops_27g1.py",
         "test_polish_28e.py",
         "test_ppe_56.py",
+        "test_product_flow_612.py",
         "test_product_ui_611.py",
         "test_regression_27e.py",
         "test_regression_isolation.py",

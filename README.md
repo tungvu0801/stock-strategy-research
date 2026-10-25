@@ -1033,6 +1033,43 @@ markup, every legacy script and every backend package are byte-identical to the 
 `tests/frontend/product_ui.test.cjs`, harness flow `product_ui`). The old disclaimer, the two "not available" placeholders and the Portfolio note
 that predates paper execution are hidden by the shell and replaced by current wording. Design: `DESIGN_611_PRODUCT_UI.md`.
 
+## Unified product flow + Strategy Lab foundation (Stage 6.1.2)
+
+One product flow (`TRADE -> Opportunity -> READY -> Proposal / Auto Entry -> IN TRADE -> POSITIONS -> EXIT -> ACTIVITY`) and one research flow
+(`MORE -> Strategy Lab -> Research -> Backtest -> Review -> Paper Candidate -> Paper Active -> Approved / Rejected`). Exactly four sections remain;
+the thirteen legacy tabs are mapped into them (old Portfolio -> POSITIONS, old Paper Trades -> ACTIVITY · Trades, old Trader View -> TRADE, old
+Strategy Lab -> MORE › Research › Strategy Lab, the AI Agent a tool under MORE › System, Robinhood only there) and the old bookmarks (`#portfolio`,
+`#paper`, `#trader`, `#strategy`, …) land in the new sections. Navigation, presentation and information architecture only: strategy logic, risk /
+safety, the Alpaca execution semantics, the exactly-once order behaviour and reconciliation are unchanged (`tests/test_product_flow_612.py`).
+
+* **TRADE**: a focus strip orders what matters (a critical system problem or reconciliation issue first, then exits, positions needing attention, a
+  degraded system, open positions, a reviewable proposal, READY, WATCHING, the market summary - so a degraded system always outranks a WATCHING stock);
+  the Agent card names the strategy from the registry (`Best setup · Downside Dislocation Recovery`; "No other strategy
+  evaluated.", "No opportunity score …" - nothing invented); READY means the setup is eligible and shows a separate execution line (`Automatic entry
+  off`, `Cannot enter · <reason>` or `Entry allowed when every check passes`); **Why?** explains WATCHING / READY / blocked / held / exited in seven
+  sections from deterministic backend state (Signal · Strategy · Supporting evidence · Against / risks · Portfolio · Safety · Decision, raw values under
+  Technical details); the Risk card names the Paper Auto / gate combination (`AUTO ON · TRADING PAUSED`). One blocker surface everywhere: `Cannot enter`
+  + one sentence (trading safety paused / stopped, reconciliation required, account equity unavailable, maximum open positions, near-close cutoff, the
+  proposal's own blocker).
+* **POSITIONS**: the lifecycle (`ENTERING · IN TRADE · EXIT REQUIRED · EXITING · CLOSED · NEEDS ATTENTION`) with strategy, entry reason, risk /
+  invalidation, holding duration, "Why still holding?", the exit reason and the broker order status, and the closed trades with realized paper P/L.
+* **ACTIVITY**: the Daily Review strip (system, market, setup changes, READY setups, entries, exits, blocked, safety blocks, paper P/L, attention - only
+  what the persisted rows support), filters `All · Trades · Safety · System · Research`, one de-duplicated timeline, the compact Validation block.
+* **MORE**: three collapsed groups - Research (Strategy Lab, Backtests, Research History, Research Setups), System (Broker Connection, Data Sources,
+  Forward Validation, Diagnostics with the legacy tools, Logs), Settings (Risk, Automation, Notifications, Advanced configuration); all read only.
+* **Strategy Lab** (`strategy_registry/`, `GET /api/strategy-registry`): the registry - the one implemented strategy (Downside Dislocation Recovery,
+  lifecycle derived from the forward paper validation and Paper Auto) and four placeholders (Value + Quality, Momentum, Mean Reversion, Breakout:
+  RESEARCH, `placeholder · not active`, never a signal), QuantConnect as a supported source with nothing registered - and a detail view with thirteen
+  sections (Overview … Decision log) built only from the frozen controls and the design documents; what does not exist reads **Not yet evaluated**.
+  The **Strategy Standard v1** (`STRATEGY_STANDARD_V1.md`) defines the normalized signal every future strategy must produce (score is not a
+  probability unless calibrated; no execution field; a placeholder never emits). Strategies produce evidence and signals; they never execute:
+  `Strategy -> Opportunity / Proposal -> Portfolio -> Risk / Safety -> Execution -> Broker`. QuantConnect / LEAN is architecture only
+  (`DESIGN_612_QUANTCONNECT_ADAPTER.md`).
+
+Implementation: `frontend/product_ui.js` + `frontend/product_ui.css` (the shell evolves in place; `frontend/index.html` unchanged), `strategy_registry/`,
+`api/routes/strategy_registry.py` and two additive lines in `api/server.py`. Tests: `tests/test_product_flow_612.py`,
+`tests/frontend/product_flow.test.cjs`, harness flows `product_flow*`. Design: `DESIGN_612_UNIFIED_PRODUCT_FLOW.md`, `DESIGN_612_STRATEGY_REGISTRY.md`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted
