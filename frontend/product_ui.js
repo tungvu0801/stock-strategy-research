@@ -52,6 +52,10 @@
   const STOP_ACTIVE_NOTE = "Existing positions remain protected.";
   const STOP_POSITION = "No new entries. Existing position remains protected.";
   const PAUSED_NOTE = "Existing positions continue normally.";
+  const AUTO_PENDING_TEXT = "Checking Paper Auto status…";
+  const AUTO_UNKNOWN_TEXT = "Paper Auto status unavailable";
+  const AUTO_ARMED_NOTE = "Auto is armed, but safety currently blocks new entries.";
+  const AUTO_TIMEOUT_MS = 20000;                                               // a pending Paper Auto action without a status answer becomes "unavailable"
   const CONFIRM = {
     "auto-on": { title: "Enable Paper Auto?", text: "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
                  ok: "Confirm: enable Paper Auto", cls: "go" },
@@ -68,7 +72,8 @@
     { title: "Settings", items: [{ action: "settings", label: "Advanced configuration" }] },
   ];
   const state = { section: null, legacyTab: null, timer: null, fetchTimer: null, posDetails: null, posData: null, actData: null, limits: null, booted: false, error: null,
-                  whyOpen: false, riskOpen: false, posOpen: false, sysOpen: false, diagOpen: false, pendingSince: null, chartForced: null, chartKind: null, confirm: null, confirmTimer: null };
+                  whyOpen: false, riskOpen: false, posOpen: false, sysOpen: false, diagOpen: false, pendingSince: null, chartForced: null, chartKind: null, confirm: null, confirmTimer: null,
+                  autoPending: null, autoError: null, autoWatch: null, botObserver: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -114,6 +119,29 @@
     return "";
   }
 
+  // Paper Auto for the header segment AND the control row: ON only when the authoritative status says PAPER_AUTO, OFF when it says MONITOR_ONLY, a
+  // pending state while a confirmed action is being re-read, unavailable when no status is loaded; a failed action keeps OFF and shows the backend text
+  function autoFailureText(err) {
+    const s = String(err || "").trim();
+    if (!s) return "";
+    let m = /^Enable Paper Auto failed \((.*)\)\.?$/s.exec(s);
+    if (m) return `Could not enable Paper Auto. ${m[1]}`;
+    m = /^Stop New Trades failed \((.*)\)\.?$/s.exec(s);
+    if (m) return `Could not disable Paper Auto. ${m[1]}`;
+    m = /^Paper bot status unavailable \((.*)\)\.?$/s.exec(s);
+    if (m) return `${AUTO_UNKNOWN_TEXT} (${m[1]})`;
+    return s;
+  }
+  function autoModel(exec, safety, pending, error) {
+    const mode = exec && exec.mode;
+    const st = (safety && safety.state) || (exec && exec.safety_state) || null;
+    const failure = autoFailureText(error);
+    if (pending) return { key: "PENDING", label: "…", header: "AUTO …", cls: "", text: AUTO_PENDING_TEXT, action: null, actionLabel: "", failure: "" };
+    if (!mode) return { key: "UNKNOWN", label: "—", header: "AUTO —", cls: "", text: failure || AUTO_UNKNOWN_TEXT, action: null, actionLabel: "", failure: "" };
+    if (mode === "PAPER_AUTO") return { key: "ON", label: "ON", header: "AUTO ON", cls: "ok", text: `${AUTO_ON_TEXT}${st && st !== "TRADING_ALLOWED" ? ` ${AUTO_ARMED_NOTE}` : ""}`, action: "auto-off", actionLabel: "Disable Auto", failure };
+    return { key: "OFF", label: "OFF", header: "AUTO OFF", cls: "", text: `${AUTO_OFF_TEXT} ${AUTO_OFF_NOTE}`, action: "auto-on", actionLabel: "Enable Paper Auto", failure };
+  }
+
   // SYSTEM HEALTHY / DEGRADED / STOPPED: a display summary of the existing dependencies, in precedence order; every item stays listed in the detail
   function systemModel(exec, safety) {
     const st = (safety && safety.state) || (exec && exec.safety_state) || null;
@@ -132,7 +160,8 @@
     return { level, loaded, text: loaded ? `SYSTEM ${level}` : "SYSTEM —", cls: SYSTEM_CLS[level], items, primary: primary ? (primary.reason || primary.text) : "" };
   }
 
-  function statusModel(exec, safety) {
+  function statusModel(exec, safety, opts) {
+    const o = opts || {};
     const env = (exec && exec.environment) || {};
     const market = (exec && exec.scheduler && exec.scheduler.market) || {};
     const mode = exec && exec.mode;
@@ -140,7 +169,8 @@
     const paper = { key: "paper", text: env.simulated ? "SIMULATED PAPER" : "PAPER", cls: "ok" };
     const mk = market.regular_session == null ? { key: "market", text: "MARKET —", cls: "" } : { key: "market", text: market.regular_session ? "MARKET OPEN" : "MARKET CLOSED", cls: market.regular_session ? "ok" : "" };
     const system = { key: "system", text: sys.text, cls: sys.cls, level: sys.level };
-    const auto = { key: "auto", text: mode === "PAPER_AUTO" ? "AUTO ON" : mode ? "AUTO OFF" : "AUTO —", cls: mode === "PAPER_AUTO" ? "ok" : "" };
+    const am = autoModel(exec, safety, o.autoPending, o.autoError);
+    const auto = { key: "auto", text: am.header, cls: am.cls, state: am.key };
     return [paper, mk, system, auto];
   }
 
@@ -167,16 +197,17 @@
   }
 
   // the Automation / Trading Controls rows: statuses from the payloads, exactly one relevant action per row, mirroring the legacy buttons' availability
-  function controlsModel(exec, safety, avail) {
+  function controlsModel(exec, safety, avail, opts) {
     const a = avail || {};
+    const o = opts || {};
     const mode = exec && exec.mode;
     const on = mode === "PAPER_AUTO";
     const st = (safety && safety.state) || (exec && exec.safety_state) || null;
     const k = (safety && safety.kill_switch) || {};
     const p = (safety && safety.no_new_entries) || {};
     const d = (safety && safety.daily_loss) || {};
-    const auto = { label: !mode ? "—" : on ? "ON" : "OFF", text: !mode ? "Paper Auto status not loaded." : on ? AUTO_ON_TEXT : `${AUTO_OFF_TEXT} ${AUTO_OFF_NOTE}`,
-                   action: !mode ? null : on ? "auto-off" : "auto-on", actionLabel: on ? "Disable Auto" : "Enable Paper Auto", enabled: a.auto !== false };
+    const am = autoModel(exec, safety, o.autoPending, o.autoError);
+    const auto = { label: am.label, key: am.key, text: am.text, action: am.action, actionLabel: am.actionLabel, enabled: a.auto !== false && !o.autoPending, failure: am.failure };
     let tLabel = "UNKNOWN", tText = "Risk status unknown";
     if (st === "TRADING_ALLOWED") { tLabel = "ALLOWED"; tText = "New entries allowed when every check passes."; }
     else if (st === "NO_NEW_ENTRIES") { tLabel = "PAUSED"; tText = p.active ? PAUSED_NOTE : ((safety && safety.reason_text) || "Paused by a safety check."); }
@@ -186,7 +217,7 @@
                       enabled: tradingAction === "resume" ? a.resume !== false : a.pause !== false };
     const stop = { label: !st ? "—" : k.active ? "ACTIVE" : "INACTIVE", text: !st ? "" : k.active ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : "Blocks all new entries at once; existing positions stay protected.",
                    action: !st ? null : k.active ? "clear" : "stop", actionLabel: k.active ? "Clear Emergency Stop" : "Emergency Stop", enabled: k.active ? a.clear !== false : a.stop !== false };
-    return { auto, trading, stop, killActive: !!k.active, paused: !!p.active };
+    return { auto, trading, stop, killActive: !!k.active, paused: !!p.active, pending: !!o.autoPending };
   }
 
   function positionModel(card, position, limits) {
@@ -315,14 +346,12 @@
   const lvl = (l) => (l === "ok" ? "pui-ok" : l === "warn" ? "pui-warn" : l === "bad" ? "pui-bad" : "pui-dim");
   function statusHtml(exec, safety, opts) {
     const o = opts || {};
-    const segs = statusModel(exec, safety);
+    const segs = statusModel(exec, safety, o);
     const sys = systemModel(exec, safety);
-    const mode = exec && exec.mode;
-    const autoOn = mode === "PAPER_AUTO";
     const seg = (s) => s.key === "system"
       ? `<button type="button" class="pui-seg ${esc(s.cls)}" data-pui-seg="system" data-pui="system" aria-expanded="${o.sysOpen ? "true" : "false"}" title="System status: click for the details">${esc(s.text)} <span class="pui-caret">${o.sysOpen ? "▾" : "▸"}</span></button>`
       : `<span class="pui-seg ${esc(s.cls)}" data-pui-seg="${esc(s.key)}">${esc(s.text)}</span>`;
-    const auto = `<span class="pui-auto" data-pui-auto="${autoOn ? "ON" : mode ? "OFF" : "—"}" title="Paper Auto: the controls are on the Risk card"><span class="pui-seg ${autoOn ? "ok" : ""}" data-pui-seg="auto">${esc(segs[3].text)}</span></span>`;
+    const auto = `<span class="pui-auto" data-pui-auto="${esc(segs[3].state)}" title="Paper Auto: the controls are on the Risk card"><span class="pui-seg ${esc(segs[3].cls)}" data-pui-seg="auto">${esc(segs[3].text)}</span></span>`;
     const details = o.sysOpen ? `<div class="pui-system-details" data-pui-system-details>` + (sys.items.length ? sys.items.map((i) => `<div class="${lvl(i.level)}">${i.level === "ok" ? "✓" : "⚠"} ${esc(i.text)}${i.reason ? ` <span class="pui-sub">· ${esc(i.reason)}</span>` : ""}</div>`).join("")
       : `<div class="pui-dim">System status not loaded yet.</div>`) + `</div>` : "";
     return segs.slice(0, 3).map(seg).join("") + auto + `<span class="pui-tagline" data-pui-tagline>${esc(TAGLINE)}</span>` + details;
@@ -335,12 +364,13 @@
       `<div class="pui-row"><button type="button" class="pui-btn ${esc(c.cls)}" data-pui="${esc(kind)}-confirm">${esc(c.ok)}</button><button type="button" class="pui-btn" data-pui="cancel">Cancel</button></div></div>`;
   }
 
-  function controlsHtml(exec, safety, avail, confirm) {
-    const m = controlsModel(exec, safety, avail);
+  function controlsHtml(exec, safety, avail, confirm, opts) {
+    const m = controlsModel(exec, safety, avail, opts);
     const row = (key, title, r) => `<div class="pui-ctl-row" data-pui-row="${key}" data-pui-status="${esc(r.label)}"><span class="pui-ctl-name">${esc(title)}</span><b class="pui-ctl-status ${key === "stop" ? (r.label === "ACTIVE" ? "pui-bad" : "pui-dim") : r.label === "ON" || r.label === "ALLOWED" ? "pui-ok" : r.label === "PAUSED" ? "pui-warn" : r.label === "STOPPED" || r.label === "UNKNOWN" ? "pui-bad" : "pui-dim"}">${esc(r.label)}</b>` +
       `<span class="pui-ctl-action">${r.action ? `<button type="button" class="pui-btn ${r.action === "auto-on" ? "go" : r.action === "stop" ? "stop" : r.action === "clear" || r.action === "auto-off" ? "danger" : ""}" data-pui="${esc(r.action)}"${r.enabled ? "" : " disabled"}>${esc(r.actionLabel)}</button>` : ""}</span>` +
-      `<span class="pui-ctl-text">${esc(r.text)}</span></div>` + (confirm && ((confirm === "auto-on" && key === "auto") || ((confirm === "stop" || confirm === "clear") && key === "stop")) ? confirmHtml(confirm) : "");
-    return `<div class="pui-ctl" data-pui-controls><h5>Automation / Trading Controls</h5>` + row("auto", "Paper Auto", m.auto) + row("trading", "Trading", m.trading) + row("stop", "Emergency Stop", m.stop) + `</div>`;
+      `<span class="pui-ctl-text">${esc(r.text)}</span></div>` + (r.failure ? `<div class="pui-ctl-fail pui-bad" data-pui-auto-error>${esc(r.failure)}</div>` : "") +
+      (confirm && ((confirm === "auto-on" && key === "auto") || ((confirm === "stop" || confirm === "clear") && key === "stop")) ? confirmHtml(confirm) : "");
+    return `<div class="pui-ctl" data-pui-controls data-pui-auto-state="${esc(m.auto.key)}"><h5>Automation / Trading Controls</h5>` + row("auto", "Paper Auto", m.auto) + row("trading", "Trading", m.trading) + row("stop", "Emergency Stop", m.stop) + `</div>`;
   }
 
   function cardsHtml(ctx) {
@@ -366,7 +396,7 @@
     const riskDetails = fold("risk", !!ctx.riskOpen, "Details", r.lines.slice(1).map((l) => `<div class="${lvl(l.level)}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") || `<div class="pui-dim">No further detail.</div>`);
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}" data-kill="${r.killActive ? "1" : "0"}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
       (r.primary ? `<div class="pui-sub ${r.critical ? "pui-bad" : ""}" data-pui-risk-reason>${esc(r.primary)}</div>` : "") +
-      controlsHtml(ctx.exec, ctx.safety, ctx.avail, ctx.confirm) + riskDetails + `</div>`;
+      controlsHtml(ctx.exec, ctx.safety, ctx.avail, ctx.confirm, { autoPending: ctx.autoPending, autoError: ctx.autoError }) + riskDetails + `</div>`;
     return agent + pos + risk;
   }
 
@@ -448,7 +478,7 @@
   const collapsed = () => { try { return localStorage.getItem("pui.details") !== "open"; } catch (e) { return true; } };
   function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } }
 
-  function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen }); }
+  function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen, autoPending: state.autoPending, autoError: state.autoError }); }
   function renderCards() {
     const host = $("pui-cards");
     if (!host) return;
@@ -457,7 +487,7 @@
     let position = null;
     if (card && card.position_id && state.posData) position = (state.posData.positions || []).find((p) => p.position_id === card.position_id) || null;
     host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
-                                 whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen });
+                                 whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError });
   }
   function renderChart(forced) {
     if (forced !== undefined) state.chartForced = forced;                     // harness / tests: force one empty state (null restores the live one)
@@ -502,6 +532,42 @@
     renderCards();
   }
   function closeConfirm() { state.confirm = null; clearTimeout(state.confirmTimer); state.confirmTimer = null; }
+  function legacyBotError() { const e = q("#tv-bot [data-bot-error]"); return (e && e.textContent.trim()) || (window.PaperBot && window.PaperBot.state && window.PaperBot.state.error) || ""; }
+  function observeBot() {
+    // the legacy panel renders its failure text only until its own refresh succeeds (tens of ms): a MutationObserver catches it the moment it appears
+    const bot = $("tv-bot");
+    if (!bot || state.botObserver) return;
+    state.botObserver = new MutationObserver(() => { const err = legacyBotError(); if (err && state.autoPending) state.autoPending.error = err; });
+    state.botObserver.observe(bot, { childList: true, subtree: true });
+  }
+  function runAutoAction(kind, clicks) {
+    // kind: "enable" | "disable". The legacy button does the POST; the shell only waits for it and then re-reads the authoritative status (never assumes success)
+    observeBot();
+    const pb = window.PaperBot;
+    if (!pb || !clickLegacy(kind === "enable" ? "auto-on" : "auto-off", clicks)) return;
+    state.autoError = null;
+    state.autoPending = { kind, since: Date.now(), error: "" };
+    clearInterval(state.autoWatch);
+    renderStatus(); renderCards();
+    state.autoWatch = setInterval(async () => {
+      const p = state.autoPending;
+      if (!p) { clearInterval(state.autoWatch); return; }
+      const err = legacyBotError();
+      if (err) p.error = err;
+      if (pb.state.busy && Date.now() - p.since < AUTO_TIMEOUT_MS) return;             // the legacy POST is still in flight
+      clearInterval(state.autoWatch); state.autoWatch = null;
+      let data = null;
+      try { data = await pb.refresh(); } catch (e) { data = null; }                    // the one authoritative read: GET /api/execution/status
+      if (state.autoPending !== p) return;
+      state.autoPending = null;
+      const mode = data && data.mode;
+      if (!mode) state.autoError = pb.state.error || `Paper bot status unavailable (no status after ${kind})`;
+      else if (kind === "enable" && mode !== "PAPER_AUTO") state.autoError = p.error || "Enable Paper Auto failed (the mode did not change)";
+      else if (kind === "disable" && mode !== "MONITOR_ONLY") state.autoError = p.error || "Stop New Trades failed (the mode did not change)";
+      else state.autoError = null;
+      renderStatus(); renderCards();
+    }, 150);
+  }
   function refreshSoon() { setTimeout(() => { renderStatus(); renderCards(); }, 50); setTimeout(() => { renderStatus(); renderCards(); }, 400); setTimeout(() => { renderStatus(); renderCards(); }, 1500); }
   function onAction(e) {
     const b = e.target.closest("[data-pui]");
@@ -511,13 +577,14 @@
     if (k === "diag") { e.preventDefault(); state.diagOpen = !state.diagOpen; renderDiag(); return; }
     if (k === "system") { state.sysOpen = !state.sysOpen; renderStatus(); return; }
     // explanations first: Enable Paper Auto, Emergency Stop and Clear Emergency Stop open a confirmation panel; nothing is clicked or posted yet
-    if (k === "auto-on" || k === "stop" || k === "clear") { openConfirm(k); return; }
+    if (k === "auto-on" || k === "stop" || k === "clear") { if (k === "auto-on") state.autoError = null; openConfirm(k); return; }
     if (k === "cancel") { closeConfirm(); renderCards(); return; }
     // the confirmed actions delegate to the existing Risk Controls / Paper Bot buttons: identical POSTs, identical persisted semantics
-    if (k === "auto-on-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY["auto-on"]) || {}).textContent || "").trim()); clickLegacy("auto-on", armed ? 1 : 2); refreshSoon(); return; }
+    if (k === "auto-on-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY["auto-on"]) || {}).textContent || "").trim()); runAutoAction("enable", armed ? 1 : 2); return; }
     if (k === "stop-confirm") { closeConfirm(); clickLegacy("stop", 1); refreshSoon(); return; }
     if (k === "clear-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY.clear) || {}).textContent || "").trim()); clickLegacy("clear", armed ? 1 : 2); refreshSoon(); return; }
-    if (k === "auto-off" || k === "pause" || k === "resume") { closeConfirm(); clickLegacy(k, 1); refreshSoon(); }
+    if (k === "auto-off") { closeConfirm(); runAutoAction("disable", 1); return; }
+    if (k === "pause" || k === "resume") { closeConfirm(); clickLegacy(k, 1); refreshSoon(); }
   }
 
   async function getJson(path) { const r = await fetch(path); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || `HTTP ${r.status}`); return j; }
@@ -616,6 +683,7 @@
   }
 
   function tick() {
+    observeBot();
     renderStatus();
     if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } }
   }
@@ -663,7 +731,7 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
-  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
+  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,
            activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart, renderDiag, renderPositions, renderActivity, renderMore, state,
            expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed };

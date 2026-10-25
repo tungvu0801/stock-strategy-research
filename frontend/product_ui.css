@@ -85,6 +85,8 @@ body[data-pui-section="trade"] .pui-nav .pui-tools { display: inline-flex; }
 .pui-confirm .pui-row { margin-top: 0; }
 .pui-card.risk[data-kill="1"] .pui-big { color: var(--red); }
 .pui-note-line { color: #ffe6b0; }
+.pui-ctl-fail { font-size: 12px; padding: 2px 0 4px; }
+.pui-ctl-fail { font-size: 12px; padding: 2px 0 4px; }
 /* level 3: the technical detail behind "Why?" / "Details" */
 details.pui-fold summary { cursor: pointer; color: var(--text-dim); font-size: 12px; margin: 6px 0; list-style: none; }
 details.pui-fold summary::-webkit-details-marker { display: none; }

@@ -119,7 +119,7 @@ def test_W03_wording_current_and_the_legacy_notes_hidden_not_deleted():
     assert "NEEDS ATTENTION" in js and "Risk status unknown" in js and "Validation status unavailable." in js   # problems and gaps are shown, never hidden
     for msg in ("No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Critical issue requires attention", "Waiting for broker fill",
                 "EMERGENCY STOP ACTIVE", "Existing positions remain protected.", "Existing positions continue normally.", "Existing positions continue to be monitored.", "Pause New Trades", "Resume New Trades",
-                "Clear Emergency Stop", "Disable Auto", "No automatic replacement order."):
+                "Clear Emergency Stop", "Disable Auto", "No automatic replacement order.", "Checking Paper Auto status…", "Paper Auto status unavailable", "Could not enable Paper Auto. "):
         assert msg in js, msg                                                                           # standard messages; critical states stay in plain words
     assert "body.pui.pui-collapsed #tv-status-line { display: none; }" in css and "body.pui:not(.pui-collapsed) #pui-diag { display: none; }" in css   # one diagnostics line in the simple view; the chips return with View details
     assert "body.pui.pui-chart-empty .tv-chart-wrap { flex: 0 0 auto; height: 250px; min-height: 250px; }" in css      # compact chart empty state
@@ -129,7 +129,7 @@ def test_W03_wording_current_and_the_legacy_notes_hidden_not_deleted():
 
 def test_N01_node_tests_of_the_product_shell():
     r = subprocess.run(["node", "--test", str(ROOT / "tests" / "frontend" / "product_ui.test.cjs")], capture_output=True, text=True, cwd=ROOT)
-    assert r.returncode == 0 and re.search(r"pass 19\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
+    assert r.returncode == 0 and re.search(r"pass 20\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
 
 
 # ================================================================ H harness =======================================================================
@@ -138,11 +138,11 @@ def test_H01_harness_carries_the_product_ui_flow_and_opens_the_details_before_ev
     src = now_text("browser_tests/flows.py")
     assert "def product_ui(c: Ctx):" in src and "def _tv_details(c: Ctx):" in src
     assert "cash_flow, forward_validation, product_ui, automation, saved_scans," in src                     # before the clock-moving flows; the last eight stay (tests/test_browser_harness_39.py)
-    assert src.count("c.js(TV_JS)") == 10 and len(re.findall(r"^([ \t]*)c\.js\(TV_JS\)\n\1_tv_details\(c\)\n", src, re.M)) == 9   # every prior flow; product_ui tests the collapsed default first
+    assert src.count("c.js(TV_JS)") == 11 and len(re.findall(r"^([ \t]*)c\.js\(TV_JS\)\n\1_tv_details\(c\)\n", src, re.M)) == 9   # every prior flow; product_ui tests the collapsed default first
     flow = src[src.index("def product_ui(c: Ctx):"):src.index("\n\nFLOWS = (")]
     assert 'c.http("POST"' not in flow and ".post(" not in flow                                             # the flow writes only through the shell's buttons (the legacy POSTs), never itself
     for shot in ("product_ui_trade", "product_ui_positions", "product_ui_activity", "product_ui_more", "product_ui_trade_1280", "product_ui_trade_768", "product_ui_chart_empty", "product_ui_paused",
-                 "product_ui_emergency_stop", "product_ui_auto_on"):
+                 "product_ui_emergency_stop", "product_ui_auto_on", "product_ui_auto_on_reload"):
         assert f'c.shot("{shot}"' in flow, shot
     assert "c.b.viewport(1280, 720)" in flow and "__tvInView('#tv-ppe [data-ppe=\\\"stretch\\\"]')" in flow and "__tvActions()" in flow
     import browser_tests.flows as F

@@ -1015,6 +1015,9 @@ and its two actions click the existing Risk Controls / Paper Bot buttons, so not
   Emergency Stop and Clear show an explanation first and only Confirm clicks the legacy button (the Stage 6.0 / 5.9.1 two-click flows stay intact);
   Disable, Pause and Resume delegate directly. Resume never clears the emergency-stop latch, a cleared stop shows whatever the gate says next, and an
   existing position keeps its monitoring and protective exits whatever the control state - the cards say so in plain words. No Reset Trade exists.
+  After Confirm / Disable the row reads `Checking Paper Auto status…` until the authoritative `GET /api/execution/status` has been re-read; `AUTO ON` appears
+  only when that status says `PAPER_AUTO`, a refused enable shows `Could not enable Paper Auto. <backend message>` and stays OFF, and a browser
+  refresh re-reads the persisted mode.
 * **POSITIONS**: one card per open or pending paper position (quantity, entry, current, P/L, holding day); a click shows setup state, demand,
   evidence, exit monitoring, risk state, broker orders and fills and the recent position events. Closed paper trades sit under a fold.
 * **ACTIVITY**: a "Today" strip (trades, open, closed, paper P/L, issues) and a timeline built only from persisted rows - setup transitions,

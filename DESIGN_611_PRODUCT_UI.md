@@ -185,3 +185,24 @@ delegates to the legacy Risk Controls / Paper Bot button (same POST, same persis
   continues. Exit conditions monitored."; CLOSED: the backend's "Trade completed · P/L · reason" line. The next setup episode returns the symbol to
   WATCHING through the backend's own card key.
 * **Header.** `AUTO ON / OFF` stays a status segment; the buttons live only on the Risk card (no duplicate control).
+
+## 11. Paper Auto state sync (2026-10-25, same PR)
+
+Reproduced on the loops-off preview (port 8002): `POST /api/execution/auto/enable` answered **409 `PAPER_ENVIRONMENT_UNPROVEN` "Paper environment not
+confirmed (CONNECTION)"** in 28 ms and the mode stayed `MONITOR_ONLY` (the broker environment proof cannot connect from that process); the legacy
+Paper Bot panel wrote "Enable Paper Auto failed (…)" into the hidden detail column and wiped it again on its own next refresh, and the shell simply
+re-rendered OFF. So the backend was right and the shell gave no feedback and no pending state.
+
+* **Source of truth**: `GET /api/execution/status` → `mode` (`MONITOR_ONLY` = OFF, `PAPER_AUTO` = ON), the persisted execution mode the Paper Bot
+  panel already polls (`PaperBot.state.data`). One `autoModel(exec, safety, pending, error)` feeds both the header segment (`AUTO ON / OFF / … / —`)
+  and the control row; there is no second state and no click counts as success.
+* **After Confirm / Disable**: the shell clicks the legacy button as before, then shows **Checking Paper Auto status…** (`AUTO …`), waits for the legacy
+  POST to settle (`PaperBot.state.busy`), performs the one authoritative re-read through `PaperBot.refresh()` and renders the mode it returns: `ON` +
+  "Automatic paper entries enabled." + `Disable Auto`, or `OFF` + the failure text **Could not enable Paper Auto. <backend message>** (captured from
+  the legacy panel's failure render by a MutationObserver, since that render is gone after its own refresh), or **Paper Auto status unavailable** when
+  no status comes back (20 s). A new Enable attempt clears the previous failure text. No automatic retry of the mutation ever happens.
+* **Reload**: the page reads the persisted mode on load (the Paper Bot refresh), so `AUTO ON` survives a browser refresh while the backend says
+  `PAPER_AUTO`, and `AUTO OFF` after a Disable.
+* **Safety and the stop**: `AUTO ON` and `Trading PAUSED / STOPPED` coexist on their own rows; the Paper Auto row adds "Auto is armed, but safety
+  currently blocks new entries." whenever the gate is not `TRADING_ALLOWED`. An emergency stop does not touch the execution mode (safety/ never writes
+  execution state), so the display keeps `AUTO ON` + `TRADING STOPPED` while the backend reports that, and a Clear never enables Paper Auto.
