@@ -2625,6 +2625,20 @@ def _pui_posts(reqs):
     return sorted(r.split(" ")[0] + " " + r.split(" ")[1] for r in reqs if r.startswith("POST "))
 
 
+def _pui_reload(c: Ctx):
+    """A browser refresh of the product shell: the page must re-read the persisted execution mode (no transient state survives)."""
+    c.b.navigate(c.base + "/")
+    c.wait("document.readyState === 'complete' && !!window.ProductUI && document.body.classList.contains('pui') && !!window.TraderView && "
+           f"{TV}.candles > 0 && {TV}.conn === 'CONNECTED'", 60, "product shell reloaded")
+    c.js(INSTR)
+    c.js(TV_JS)
+    c.wait("!!document.querySelector('#pui-cards [data-pui-controls]') && !!(window.PaperBot && PaperBot.state.data) && !!(window.RiskControls && RiskControls.state.data)", 30, "cards after reload")
+    c.js("ProductUI.collapseDetails()")
+    c.js("__click('#tv-watchlist li[data-sym=\"NVDA\"]')")
+    c.wait(_tv_settled("NVDA"), 30, "NVDA settled after reload")
+    time.sleep(2.3)
+
+
 def product_ui(c: Ctx):
     """Stage 6.1.1 (trading controls): the four-section product shell over the unchanged legacy page. The header reads PAPER · MARKET · SYSTEM HEALTHY /
     DEGRADED / STOPPED · AUTO; TRADE shows the Agent / Setup card (primary, Why?), the Position card and the Risk card with the Automation / Trading
@@ -2734,6 +2748,30 @@ def product_ui(c: Ctx):
                [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], [b for b in _pui_buttons(c) if b[0].startswith("auto")], "Automatic paper entries enabled." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
                [["POST /api/execution/auto/enable"], "AUTO ON", "ON", [["auto-off", "Disable Auto"]], True])
         c.shot("product_ui_auto_on")
+        c.r.eq("authoritative GET /api/execution/status says PAPER_AUTO; the header segment and the control row both read ON from it",
+               [c.http("GET", "/api/execution/status")["mode"], c.js("document.querySelector('#pui-status [data-pui-auto]').dataset.puiAuto"), c.js("document.querySelector('#pui-cards [data-pui-controls]').dataset.puiAutoState")],
+               ["PAPER_AUTO", "ON", "ON"])
+        _pui_reload(c)
+        c.r.eq("reload: the page re-reads the persisted mode - still AUTO ON, Disable Auto offered",
+               [_pui_segs(c).get("auto"), _pui_rows(c)["auto"], [b for b in _pui_buttons(c) if b[0].startswith("auto")], c.http("GET", "/api/execution/status")["mode"]],
+               ["AUTO ON", "ON", [["auto-off", "Disable Auto"]], "PAPER_AUTO"])
+        c.shot("product_ui_auto_on_reload")
+        # an emergency stop while Paper Auto is ON: the AUTO display follows the backend mode (whatever the backend does with it), the gate row separately
+        c.step("__click('#pui-cards [data-pui=\"stop\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"stop\"]')", 10)
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"stop-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === true", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        mode_now = c.http("GET", "/api/execution/status")["mode"]
+        c.r.eq("Emergency Stop with Paper Auto ON: AUTO reads the backend mode (the stop is a safety action, not a mode change), Trading STOPPED, and the armed-but-blocked note when still ON",
+               [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["trading"], _pui_rows(c)["stop"], "safety currently blocks new entries" in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
+               [["POST /api/execution-safety/emergency-stop"], "AUTO ON" if mode_now == "PAPER_AUTO" else "AUTO OFF", "STOPPED", "ACTIVE", mode_now == "PAPER_AUTO"])
+        c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
+        reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === false", 30)
+        posts += _pui_posts(reqs)
+        time.sleep(2.3)
+        mode_after = c.http("GET", "/api/execution/status")["mode"]
+        c.r.eq("Clear Emergency Stop never enables or disables Paper Auto: the mode is what the backend reports before and after",
+               [_pui_posts(reqs), mode_after, _pui_segs(c).get("auto")], [["POST /api/execution-safety/clear-emergency-stop"], mode_now, "AUTO ON" if mode_after == "PAPER_AUTO" else "AUTO OFF"])
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"auto-off\"]')", "PaperBot.state.data && PaperBot.state.data.mode === 'MONITOR_ONLY'", 30)
         posts += _pui_posts(reqs)
         time.sleep(2.3)
@@ -2742,6 +2780,13 @@ def product_ui(c: Ctx):
                [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], "Existing positions continue to be monitored." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or ""), after == before,
                 [(p.position_id, p.state, p.quantity) for p in xsvc.store.positions(open_only=False)] == positions0],
                [["POST /api/execution/auto/disable"], "AUTO OFF", "OFF", True, True, True])
+        c.r.eq("authoritative GET says MONITOR_ONLY after Disable; the header reads OFF from it",
+               [c.http("GET", "/api/execution/status")["mode"], c.js("document.querySelector('#pui-status [data-pui-auto]').dataset.puiAuto")], ["MONITOR_ONLY", "OFF"])
+        _pui_reload(c)
+        c.r.eq("reload after Disable: AUTO OFF from the persisted mode, Enable Paper Auto offered again, 'Existing positions continue to be monitored.' intact",
+               [_pui_segs(c).get("auto"), _pui_rows(c)["auto"], [b for b in _pui_buttons(c) if b[0].startswith("auto")], c.http("GET", "/api/execution/status")["mode"],
+                "Existing positions continue to be monitored." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
+               ["AUTO OFF", "OFF", [["auto-on", "Enable Paper Auto"]], "MONITOR_ONLY", True])
         # Pause / Resume: distinct from the stop; Resume lifts the pause only
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
         posts += _pui_posts(reqs)

@@ -246,7 +246,7 @@ test("11 confirmations: Enable Paper Auto, Emergency Stop and Clear Emergency St
   assert.ok(c.includes('data-pui-confirm="clear"') && text(c).includes(PUI.CONFIRM.clear.text) && c.includes('data-pui="clear-confirm">Confirm: clear Emergency Stop</button>'));
   assert.ok(a.includes('role="alertdialog"') && !PUI.confirmHtml("nope"));
   // the confirm buttons delegate to the legacy buttons: the two-click ones get their two clicks, nothing in the shell posts
-  assert.ok(JS.includes('clickLegacy("auto-on", armed ? 1 : 2)') && JS.includes('clickLegacy("clear", armed ? 1 : 2)') && JS.includes('clickLegacy("stop", 1)') && !JS.includes('method: "POST"'));
+  assert.ok(JS.includes('runAutoAction("enable", armed ? 1 : 2)') && JS.includes('runAutoAction("disable", 1)') && JS.includes('clickLegacy("clear", armed ? 1 : 2)') && JS.includes('clickLegacy("stop", 1)') && !JS.includes('method: "POST"'));
   assert.deepEqual(PUI.LEGACY, { "auto-on": '#tv-bot [data-bot="enable"]', "auto-off": '#tv-bot [data-bot="disable"]', pause: '#tv-safety [data-safety="pause"]', resume: '#tv-safety [data-safety="resume"]',
                                  stop: '#tv-safety [data-safety="stop"]', clear: '#tv-safety [data-safety="clear"]' });
 });
@@ -366,11 +366,12 @@ test("17 ACTIVITY and POSITIONS views: the Today strip, the timeline, the Valida
 });
 
 test("18 wording: standard empty / error messages, no stale sentences, the policy line, the control vocabulary, no raw exception names in the front", () => {
-  for (const stale of ["never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Stop New Trades"])
+  for (const stale of ["never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING"])
     assert.ok(!JS.includes(stale) && !CSS.includes(stale), stale);
   for (const msg of ["No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Waiting for broker fill", "Monitoring only. No new automatic entries.",
                      "Automatic paper entries enabled.", "Existing positions continue to be monitored.", "Existing positions continue normally.", "EMERGENCY STOP ACTIVE", "New entries blocked.",
-                     "Existing positions remain protected.", "Disable Auto", "Pause New Trades", "Resume New Trades", "Clear Emergency Stop", "Emergency Stop"]) assert.ok(JS.includes(msg), msg);
+                     "Existing positions remain protected.", "Disable Auto", "Pause New Trades", "Resume New Trades", "Clear Emergency Stop", "Emergency Stop",
+                     "Checking Paper Auto status…", "Paper Auto status unavailable", "Could not enable Paper Auto. "]) assert.ok(JS.includes(msg), msg);
   assert.ok(JS.includes(PUI.TAGLINE) && JS.includes("Robinhood holdings are read only") && JS.includes("Paper orders go to the Alpaca PAPER account only"));
   assert.match(CSS, /body\.pui #tab-portfolio \.pf-readonly-note \{ display: none; \}/);
   assert.ok(!/Error\(|Exception|Traceback/.test(text(PUI.cardsHtml(CTX)) + text(PUI.statusHtml(EXEC, SAFE, {}))));
@@ -391,4 +392,40 @@ test("19 read-only wiring: GET routes only, every action delegates to a legacy b
   assert.ok(HTML.includes('<link rel="stylesheet" href="product_ui.css" />') && HTML.includes('<script src="product_ui.js"></script>'));
   assert.ok(HTML.lastIndexOf("<script") === HTML.indexOf('<script src="product_ui.js">'));
   assert.ok(typeof PUI.expandDetails === "function" && typeof PUI.collapseDetails === "function" && typeof PUI.go === "function" && typeof PUI.renderChart === "function");
+});
+
+test("20 Paper Auto state sync: ON only from the authoritative mode, pending while a confirmed action is re-read, the backend failure text, header and row from one model", () => {
+  const am = (e, s, p, err) => { const m = PUI.autoModel(e, s, p, err); return [m.key, m.label, m.header, m.action, m.actionLabel, m.text, m.failure]; };
+  assert.deepEqual(am(EXEC, SAFE), ["OFF", "OFF", "AUTO OFF", "auto-on", "Enable Paper Auto", "Monitoring only. No new automatic entries. Existing positions continue to be monitored.", ""]);
+  assert.deepEqual(am(AUTO, SAFE), ["ON", "ON", "AUTO ON", "auto-off", "Disable Auto", "Automatic paper entries enabled.", ""]);
+  assert.deepEqual(am(AUTO, PAUSED).slice(0, 3), ["ON", "ON", "AUTO ON"]);
+  assert.ok(am(AUTO, PAUSED)[5] === "Automatic paper entries enabled. Auto is armed, but safety currently blocks new entries.");     // safety PAUSED coexists with AUTO ON
+  assert.deepEqual(am(AUTO, KILLED).slice(0, 3), ["ON", "ON", "AUTO ON"]);                                                        // the stop does not rewrite the mode: the backend does
+  assert.deepEqual(am(EXEC, KILLED).slice(0, 3), ["OFF", "OFF", "AUTO OFF"]);
+  assert.deepEqual(am(EXEC, SAFE, { kind: "enable", since: 0 }), ["PENDING", "…", "AUTO …", null, "", "Checking Paper Auto status…", ""]);
+  assert.deepEqual(am(AUTO, SAFE, { kind: "disable", since: 0 }).slice(0, 3), ["PENDING", "…", "AUTO …"]);                        // never ON or OFF on a click alone
+  assert.deepEqual(am(null, null), ["UNKNOWN", "—", "AUTO —", null, "", "Paper Auto status unavailable", ""]);
+  assert.deepEqual(am({ ...EXEC, mode: null }, SAFE, null, "Paper bot status unavailable (HTTP 502)").slice(0, 3).concat([am({ ...EXEC, mode: null }, SAFE, null, "Paper bot status unavailable (HTTP 502)")[5]]), ["UNKNOWN", "—", "AUTO —", "Paper Auto status unavailable (HTTP 502)"]);
+  const failed = am(EXEC, SAFE, null, "Enable Paper Auto failed (Paper environment not confirmed (CONNECTION))");
+  assert.deepEqual([failed[0], failed[2], failed[3], failed[6]], ["OFF", "AUTO OFF", "auto-on", "Could not enable Paper Auto. Paper environment not confirmed (CONNECTION)"]);   // a failed enable stays OFF with the backend text
+  assert.equal(PUI.autoFailureText("Stop New Trades failed (HTTP 500)"), "Could not disable Paper Auto. HTTP 500");
+  assert.equal(PUI.autoFailureText("Enable Paper Auto failed (the mode did not change)"), "Could not enable Paper Auto. the mode did not change");
+  assert.equal(PUI.autoFailureText(""), "");
+  for (const [e, s, p, err] of [[EXEC, SAFE, null, null], [AUTO, SAFE, null, null], [AUTO, PAUSED, null, null], [EXEC, SAFE, { kind: "enable" }, null], [null, null, null, null], [EXEC, SAFE, null, "Enable Paper Auto failed (x)"]]) {
+    const m = PUI.autoModel(e, s, p, err);
+    const seg = PUI.statusModel(e, s, { autoPending: p, autoError: err })[3];
+    const row = PUI.controlsModel(e, s, AVAIL, { autoPending: p, autoError: err }).auto;
+    assert.deepEqual([seg.text, seg.state, row.label, row.action, row.failure], [m.header, m.key, m.label, m.action, m.failure]);   // header and control row: one model, one source
+  }
+  const h = PUI.cardsHtml({ ...CTX, autoError: "Enable Paper Auto failed (Paper environment not confirmed (CONNECTION))" });
+  assert.ok(h.includes('data-pui-auto-error>Could not enable Paper Auto. Paper environment not confirmed (CONNECTION)</div>') && rows(h).auto === "OFF" && buttons(h).some((b) => b[0] === "auto-on"));
+  const pending = PUI.cardsHtml({ ...CTX, autoPending: { kind: "enable", since: 0 } });
+  assert.ok(pending.includes('data-pui-auto-state="PENDING"') && text(pending).includes("Checking Paper Auto status…") && !buttons(pending).some((b) => b[0].startsWith("auto-")));
+  const bar = PUI.statusHtml(EXEC, SAFE, { autoPending: { kind: "enable", since: 0 } });
+  assert.ok(bar.includes('data-pui-auto="PENDING"') && bar.includes("AUTO …") && !bar.includes("AUTO ON"));
+  assert.ok(PUI.statusHtml(AUTO, SAFE, {}).includes('data-pui-auto="ON"') && PUI.statusHtml(EXEC, SAFE, {}).includes('data-pui-auto="OFF"') && PUI.statusHtml(null, null, {}).includes('data-pui-auto="UNKNOWN"'));
+  // the re-read is the legacy Paper Bot refresh (GET /api/execution/status), awaited after the legacy POST settles; no second poll, no retry of the mutation
+  assert.ok(JS.includes("await pb.refresh()") && !JS.includes('fetch("/api/execution/status"') && !/set(Timeout|Interval)\([^;]*clickLegacy/.test(JS));
+  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 5);                                                                     // the definition + runAutoAction + stop / clear / pause-resume, nothing else
+  assert.equal((JS.match(/runAutoAction\(/g) || []).length, 3);                                                                   // the definition + the enable confirm + the disable
 });
