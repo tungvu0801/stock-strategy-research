@@ -77,8 +77,14 @@ def _row(entry: StrategyEntry, facts: Optional[Dict[str, Any]]) -> Dict[str, Any
             "source_label": SOURCE_LABELS[entry.source], "active": bool(entry.implemented and lc["status"] in ACTIVE_STATUSES)}
 
 
-def registry_view(facts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    rows = [_row(e, facts) for e in R.entries()]
+def _validation_summary(entry: StrategyEntry, validations: Optional[Dict[str, dict]]) -> dict:
+    """Stage 6.2: the validation fields of a registry row (the latest stored run, or NOT_RUN and why). Display only: never a lifecycle input."""
+    from strategy_validation import service as SV
+    return (validations or {}).get(entry.strategy_id) or SV.summary(None, entry.strategy_id, entry)
+
+
+def registry_view(facts: Optional[Dict[str, Any]] = None, validations: Optional[Dict[str, dict]] = None) -> Dict[str, Any]:
+    rows = [{**_row(e, facts), **_validation_summary(e, validations)} for e in R.entries()]
     sources = [{"source": s, "label": SOURCE_LABELS[s], "count": sum(1 for r in rows if r["source"] == s),
                 "note": QUANTCONNECT_NOTE if s == "QUANTCONNECT" else "Deterministic Python rules inside this repository."} for s in SOURCES]
     return {"version": VERSION, "standard_version": STANDARD_VERSION, "strategies": rows, "sources": sources, "lifecycle": [{"status": s, "label": STATUS_LABELS[s]} for s in STATUSES],
@@ -95,7 +101,7 @@ def placeholder_sections(entry: StrategyEntry) -> List[Section]:
     return out
 
 
-def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None, validation: Optional[dict] = None) -> Optional[Dict[str, Any]]:
     entry = R.get(strategy_id)
     if entry is None:
         return None
@@ -109,4 +115,10 @@ def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None) -> Opt
     d = detail.model_dump()
     d["entry"] = _row(entry, facts)
     d["version"], d["standard_version"] = VERSION, STANDARD_VERSION
+    if validation is None:                                                     # Stage 6.2: the Validation section (latest stored run, or "Not yet evaluated")
+        from strategy_validation import service as SV
+        validation = SV.detail(None, entry.strategy_id, entry)
+    d["validation"] = validation
+    d["entry"].update({k: validation.get(k) for k in ("validation_status", "validation_label", "not_run_reason", "latest_validation_run_id", "validation_verdict",
+                                                      "train_trade_count", "oos_trade_count", "mechanical_audit_status", "last_validated_at", "validation_synthetic")})
     return d

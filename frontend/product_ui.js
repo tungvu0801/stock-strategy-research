@@ -725,11 +725,74 @@
       `<div class="pui-pipeline" data-pui-pipeline>${((reg && reg.pipeline) || []).map(esc).join(" → ")}</div>` +
       `<div class="pui-sources">${((reg && reg.sources) || []).map((s) => `<span class="pui-badge" data-pui-source="${esc(s.source)}" title="${esc(s.note || "")}">${esc(s.source)} · ${s.count}</span>`).join("")}` +
       (qc && !qc.integrated ? `<span class="pui-sub">QuantConnect: source supported, ${qc.registered} registered, not integrated (adapter architecture only).</span>` : "") + `</div>` +
-      `<table class="pui-registry" data-pui-registry><thead><tr><th>Strategy</th><th>Source</th><th>Lifecycle</th><th>Horizon</th><th>Direction</th><th>Version</th><th>Updated</th></tr></thead><tbody>` +
+      `<table class="pui-registry" data-pui-registry><thead><tr><th>Strategy</th><th>Source</th><th>Lifecycle</th><th>Validation</th><th>Horizon</th><th>Direction</th><th>Version</th><th>Updated</th></tr></thead><tbody>` +
       rows.map((s) => `<tr data-pui-strategy-row="${esc(s.strategy_id)}" data-pui-implemented="${s.implemented ? "1" : "0"}" data-pui-active="${s.active ? "1" : "0"}"><td><button type="button" class="pui-link" data-pui-lab="${esc(s.strategy_id)}">${esc(s.display_name)}</button><div class="pui-sub">${esc(s.strategy_id)}</div></td>` +
-        `<td>${esc(s.source)}</td><td>${badge(s)}</td><td>${esc(words(s.time_horizon))}</td><td>${esc(words(s.direction_capability))}</td><td>${esc(s.version)}</td><td>${esc(s.updated_at)}</td></tr>`).join("") + `</tbody></table>` +
+        `<td>${esc(s.source)}</td><td>${badge(s)}</td><td>${svBadge(s)}</td><td>${esc(words(s.time_horizon))}</td><td>${esc(words(s.direction_capability))}</td><td>${esc(s.version)}</td><td>${esc(s.updated_at)}</td></tr>`).join("") + `</tbody></table>` +
       (error ? `<div class="pui-bad">${esc(error)}</div>` : "") +
       `<details class="pui-fold" data-pui-lab-tools><summary>Legacy research workspaces (${views.length})</summary><div class="pui-more-group pui-tools">${views.map((v) => `<button type="button" data-pui-more="tab:strategy:${esc(v.view)}">${esc(v.label)}</button>`).join("") || `<span class="pui-sub">Open MORE › Research › Backtests once to load them.</span>`}</div></details></div>`;
+  }
+
+  // Stage 6.2: the historical validation of a strategy (GET /api/strategy-registry/{id} carries it). No run -> "Not yet evaluated" and why; a run -> its verdict, the
+  // TRAIN / OOS metrics of the RULES arm after friction, the arm comparison on the one candidate set, causality, the mechanical audit. Display only: a verdict never
+  // changes the lifecycle, and nothing here starts a run (runs are made with the research CLI).
+  const SV_CLS = { PASS: "ok", FAIL: "bad", INVALID: "bad", MIXED: "", INSUFFICIENT_DATA: "dim" };
+  function svBadge(s) {
+    const st = (s && s.validation_status) || "NOT_RUN";
+    return `<span class="pui-badge ${st === "NOT_RUN" ? "dim" : SV_CLS[st] || ""}" data-pui-sv-status="${esc(st)}">${esc(st === "NOT_RUN" ? "Not yet evaluated" : (s.validation_label || words(st)))}</span>` +
+      (s && s.validation_synthetic ? ` <span class="pui-badge dim" data-pui-sv-synthetic>synthetic test data</span>` : "");
+  }
+  const svNum = (x, d) => (x == null || x === "" ? "—" : typeof x === "number" ? x.toFixed(d == null ? 2 : d) : String(x));
+  const svPct = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
+  const SV_ROWS = [["Trades", "trade_count", 0], ["Win rate", "win_rate", "pct"], ["Gross P&L", "gross_pnl"], ["Slippage", "slippage_cost"], ["Fees", "fees"], ["Net P&L", "net_pnl"],
+                   ["Mean R (net)", "mean_R", 3], ["Mean R (gross)", "average_R_gross", 3], ["Mean R t-stat", "mean_R_t_stat"], ["Expectancy ($ / trade)", "expectancy_usd"],
+                   ["Profit factor", "profit_factor"], ["Max drawdown", "max_drawdown"], ["Max drawdown %", "max_drawdown_pct"], ["Sharpe (per trade)", "sharpe_per_trade"],
+                   ["Average holding (bars)", "average_holding_bars", 1], ["Ambiguous bars (stop first)", "ambiguous_bars_count", 0], ["Configured risk", "configured_risk_total"],
+                   ["Achieved risk", "achieved_risk_total"], ["Skipped in simulation", "simulation_skipped_count", 0]];
+  function validationHtml(v) {
+    v = v || {};
+    const st = v.validation_status || "NOT_RUN", r = v.run;
+    const head = `<h4>Validation ${svBadge(v)}</h4>`;
+    if (!r) {
+      const pol = v.policy || {};
+      return `<div class="pui-sv" data-pui-sv data-pui-sv-state="${esc(st)}">${head}<div>Not yet evaluated.</div>` + (v.not_run_reason ? `<div class="pui-sub" data-pui-sv-reason>${esc(v.not_run_reason)}</div>` : "") +
+        (pol.min_trades ? `<div class="pui-sub">A verdict needs at least ${esc(pol.min_trades)} trades, ${esc(pol.min_oos_trades)} out-of-sample trades and ${esc(pol.min_oos_sessions)} out-of-sample sessions; below that it reads INSUFFICIENT DATA.</div>` : "") +
+        `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;
+    }
+    const vd = r.verdict || {}, arms = r.arms || {}, rules = arms.RULES || {}, au = r.audit || {}, ca = r.causality || {}, ig = r.integrity || {}, fr = r.friction_model || {}, dg = r.diagnostics || {};
+    const cell = (m, row) => { const x = m ? m[row[1]] : null; return row[2] === "pct" ? svPct(x) : svNum(x, row[2]); };
+    const metrics = `<div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-metrics><thead><tr><th>RULES arm</th><th>TRAIN</th><th>OOS</th><th>All</th></tr></thead><tbody>` +
+      SV_ROWS.map((row) => `<tr><td>${esc(row[0])}</td><td>${cell(rules.TRAIN, row)}</td><td>${cell(rules.OOS, row)}</td><td>${cell(rules.ALL, row)}</td></tr>`).join("") + `</tbody></table></div>`;
+    const armRow = (name) => {
+      const a = arms[name] || { status: "NOT_RUN", label: "Not run" }, o = a.OOS || {}, all = a.ALL || {}, evald = a.status === "EVALUATED";
+      return `<tr data-pui-sv-arm="${esc(name)}" data-pui-sv-arm-status="${esc(a.status)}"><td>${esc(name)}</td><td>${esc(a.candidate_count != null ? a.candidate_count : "—")}</td>` +
+        `<td>${evald ? esc(svNum(all.accepted_count, 0)) : "—"}</td><td>${evald ? esc(svNum(all.stand_aside_count, 0)) : "—"}</td><td>${evald ? esc(svNum(o.trade_count, 0)) : "—"}</td>` +
+        `<td>${evald ? esc(svNum(o.net_pnl)) : "—"}</td><td>${evald ? esc(svNum(o.mean_R, 3)) : "—"}</td><td>${esc(a.status === "NOT_EVALUATED" ? "Not evaluated" : a.label || words(a.status))}</td></tr>` +
+        (a.note ? `<tr class="pui-sv-note"><td></td><td colspan="7" class="pui-sub">${esc(a.note)}</td></tr>` : "");
+    };
+    const armTable = `<div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-arms><thead><tr><th>Arm</th><th>Candidates</th><th>Accepted</th><th>Stand aside</th><th>OOS trades</th><th>OOS net P&L</th><th>OOS mean R</th><th>Verdict</th></tr></thead><tbody>` +
+      ["RULES", "GATED", "MODEL"].map(armRow).join("") + `</tbody></table></div>` +
+      `<div class="pui-sub" data-pui-sv-same="${ig.same_candidate_set ? "1" : "0"}">${ig.same_candidate_set ? `One candidate set for every arm (${esc(r.candidate_count)} candidates, set ${esc(String(ig.candidate_set_hash || r.candidate_set_hash || "").slice(0, 12))}).`
+        : `VALIDATION INVALID: the arms did not receive the same candidate set. ${esc((ig.problems || []).join(" · "))}`}</div>`;
+    const crit = (ca.automated_checks || []).filter((c) => c.result === "CRITICAL"), warn = (ca.automated_checks || []).filter((c) => c.result === "WARN");
+    const ttl = dg.train_vs_oos || {}, sens = dg.sensitivity || {};
+    return `<div class="pui-sv" data-pui-sv data-pui-sv-state="${esc(st)}" data-pui-sv-run="${esc(r.run_id)}">${head}` +
+      `<div class="pui-sv-verdict" data-pui-sv-verdict="${esc(vd.verdict || st)}"><b>${esc(vd.label || st)}</b> · ${esc(vd.decision || "")}</div>` +
+      (vd.reasons || []).map((x) => `<div data-pui-sv-reason="${esc(x.code)}">${esc(x.text)}</div>`).join("") +
+      (vd.verdict === "FAIL" || vd.verdict === "INVALID" ? `<div class="pui-sv-fail">This strategy should not progress to paper trading.</div>` : "") +
+      (vd.note && !/should not progress/.test(vd.note) ? `<div class="pui-sub">${esc(vd.note)}</div>` : "") +
+      ((vd.warnings || []).length ? `<div class="pui-sub" data-pui-sv-warnings>Warnings: ${esc(vd.warnings.map((w) => w.text || w.code || w).join(" · "))}</div>` : "") +
+      `<div class="pui-sub">Lifecycle: unchanged by validation. A lifecycle change is an explicit human decision.</div>` +
+      `<div class="pui-kv"><span>Dataset</span><b>${esc(r.dataset_kind === "SYNTHETIC" ? "Synthetic test data" : "Historical")} · ${esc(r.dataset_start)} – ${esc(r.dataset_end)}</b>` +
+      `<span>TRAIN</span><b>${esc(r.train_start)} – ${esc(r.train_end)}</b><span>Out of sample</span><b>${r.oos_start ? `${esc(r.oos_start)} – ${esc(r.oos_end)} (${esc(r.oos_sessions)} sessions)` : "none"}</b>` +
+      `<span>Strategy version</span><b>${esc(r.strategy_version)}</b><span>Candidates</span><b>${esc(r.candidate_count)}${r.candidates_skipped ? ` (${esc(r.candidates_skipped)} skipped: missing data)` : ""}</b>` +
+      `<span>Friction</span><b>${esc(fr.slippage_bps_per_side)} bps slippage per side · ${esc(fr.commission_per_order)} per order · ${esc(fr.fee_per_share)} per share</b>` +
+      `<span>Mechanical audit</span><b data-pui-sv-audit="${esc(au.status)}">${esc(au.note || au.status || "—")}</b>` +
+      `<span>Train vs OOS</span><b>${esc(ttl.text || "—")}</b><span>Parameter sensitivity</span><b>${esc(sens.label || "—")}${sens.note ? ` · ${esc(sens.note)}` : ""}</b>` +
+      `<span>Run</span><b>${esc(r.run_id)} · ${esc(r.created_at)}</b></div>` +
+      metrics + `<h4>Arm comparison</h4>` + armTable +
+      `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}</div>` +
+      `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify({ execution_assumptions: r.execution_assumptions, causality: ca.automated_checks, diagnostics: dg, skips: r.skips, first_audit_violations: au.first_violations, dataset_id: r.dataset_id, validation_version: r.validation_version, git_commit_sha: r.git_commit_sha }, null, 1))}</pre></details>` +
+      `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;
   }
 
   // one strategy's detail: the thirteen sections as documented / live / "Not yet evaluated" / unavailable; raw facts and sources behind Technical details
@@ -747,7 +810,7 @@
       `<span>Horizon</span><b>${esc(words(e.time_horizon))}</b><span>Version</span><b>${esc(e.version)}</b><span>Created</span><b>${esc(e.created_at)}</b><span>Updated</span><b>${esc(e.updated_at)}</b>` +
       `<span>Lifecycle</span><b>${esc(lc.label || e.status)}${lc.declared && lc.declared !== lc.status ? ` (declared ${esc(words(lc.declared))})` : ""}</b></div>` +
       ((lc.basis || []).length ? `<div class="pui-sub">${esc(lc.basis.join(" · "))}</div>` : "") + (lc.decision ? `<div class="pui-sub">${esc(lc.decision)}</div>` : "") +
-      (det.sections || []).map((s, i) => sec(s, i === 0)).join("") +
+      validationHtml(det.validation) + (det.sections || []).map((s, i) => sec(s, i === 0)).join("") +
       `<div class="pui-row">${det.links && det.links.validation ? `<a class="pui-btn" href="${esc(det.links.validation)}" target="_blank" rel="noopener">Paper validation</a>` : ""}<button type="button" class="pui-btn" data-pui-go="trade">Open TRADE</button></div>` +
       `<div class="pui-sub">${esc(det.disclaimer || "")}</div></div>`;
   }
@@ -1159,5 +1222,7 @@
            expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed,
            // Stage 6.1.2
            LEGACY_LINKS, FILTERS, PRIORITY, READY_NOTE, NO_SCORE, NO_SUPPORT, routeFor, minutesToClose, moreTabs, strategyModel, blockerModel, priorityModel, sessionModel, whyModel, holdingLines, positionLifecycle,
-           dedupe, activityItems, filterItems, dailyReview, focusHtml, whyHtml, closedHtml, registryHtml, strategyDetailHtml, openRoute, openMore, renderLab };
+           dedupe, activityItems, filterItems, dailyReview, focusHtml, whyHtml, closedHtml, registryHtml, strategyDetailHtml, openRoute, openMore, renderLab,
+           // Stage 6.2
+           svBadge, validationHtml };
 });

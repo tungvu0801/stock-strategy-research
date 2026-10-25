@@ -1,0 +1,89 @@
+"""strategy_validation/cli.py — the research CLI (python -m strategy_validation ...). It never imports a broker, an order writer or the executor, and it
+cannot launch anything from the browser: research runs are made here, on purpose, by a person.
+
+  validate --strategy ID --dataset FILE [--train-ratio 0.7] [--arms rules,gated,model] [--output run.json] [--persist [--db PATH]] [--neighbors params.json]
+      exit 0  a run completed (any verdict: a FAIL is a valid result)          exit 2  NOT_RUN: no honest historical replay / not implemented
+      exit 1  an input error (dataset, split, arms)
+  runs [--strategy ID] [--db PATH]     the stored runs, newest first
+
+A run is persisted only with --persist. MODEL is NOT_EVALUATED: Stage 6.2 configures no model decider (no provider, no external call)."""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from strategy_validation import ARMS, DEFAULT_TRAIN_RATIO
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="python -m strategy_validation", description="Stage 6.2 strategy validation harness (research only; never orders)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    v = sub.add_parser("validate", help="validate one registered strategy on a dataset file")
+    v.add_argument("--strategy", required=True)
+    v.add_argument("--dataset", required=True, help="CSV (symbol,date,open,high,low,close[,volume]) or JSON {kind, bars} of completed daily sessions")
+    v.add_argument("--train-ratio", type=float, default=DEFAULT_TRAIN_RATIO, help="chronological development share (the rest is the untouched OOS slice)")
+    v.add_argument("--arms", default="rules,gated,model")
+    v.add_argument("--output", default="", help="write the full run record as JSON")
+    v.add_argument("--persist", action="store_true", help="store the run (append-only) so the Strategy Lab shows it")
+    v.add_argument("--db", default="", help="database file (default: the app database)")
+    v.add_argument("--neighbors", default="", help="JSON list of explicitly supplied neighbouring parameter sets (diagnostic only; never chosen)")
+    r = sub.add_parser("runs", help="list stored validation runs")
+    r.add_argument("--strategy", default="")
+    r.add_argument("--db", default="")
+    return p
+
+
+def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]] = None, out=None) -> int:
+    """`adapters` is a test seam only (fixture adapters never reach the registry); from the command line it is always None."""
+    out = out or sys.stdout
+    args = build_parser().parse_args(argv)
+    from strategy_validation.store import StrategyValidationStore
+    if args.cmd == "runs":
+        store = StrategyValidationStore(Path(args.db) if args.db else None)
+        for row in store.runs(args.strategy.upper() or None):
+            print(f"{row['created_at']}  {row['run_id']}  {row['strategy_id']} v{row['strategy_version']}  {row['verdict']}  {row['dataset_kind']}  {row['candidate_count']} candidates", file=out)
+        return 0
+    from strategy_registry import registry as R
+    from strategy_validation import engine as E
+    from strategy_validation.adapters import adapter_for
+    from strategy_validation.dataset import DatasetError, load
+    sid = args.strategy.upper()
+    adapter = (adapters or {}).get(sid)
+    registry = None if adapter is not None else R.by_id()                       # a test-seam fixture is not a registered strategy
+    if adapter is None:
+        entry = R.get(sid)
+        adapter, reason = adapter_for(sid, entry)
+        if adapter is None:
+            print(f"NOT_RUN {sid}: {reason or 'unknown strategy'}", file=out)
+            if args.output:
+                Path(args.output).write_text(json.dumps({"strategy_id": sid, "status": "NOT_RUN", "reason": reason}, indent=1), encoding="utf-8")
+            return 2
+    arms = [a.strip().upper() for a in args.arms.split(",") if a.strip()]
+    if any(a not in ARMS for a in arms):
+        print(f"ERROR arms must be among {', '.join(ARMS)}", file=out)
+        return 1
+    try:
+        dataset = load(args.dataset)
+        neighbours = json.loads(Path(args.neighbors).read_text(encoding="utf-8")) if args.neighbors else None
+        run = E.run_validation(adapter, dataset, train_ratio=args.train_ratio, arms=arms, gates=(), model=None, neighbours=neighbours,
+                               adapter_factory=getattr(adapter, "with_params", None), registry=registry)
+    except (DatasetError, E.ValidationError, ValueError, OSError) as exc:
+        print(f"ERROR {type(exc).__name__}: {exc}", file=out)
+        return 1
+    v = run.verdict
+    m = run.arms["RULES"].metrics or {}
+    print(f"{run.strategy_id} v{run.strategy_version}: {v['label']} - {'; '.join(r['text'] for r in v['reasons'])}", file=out)
+    for seg in ("TRAIN", "OOS"):
+        s = m.get(seg) or {}
+        print(f"  {seg}: {s.get('trade_count')} trades, net {s.get('net_pnl')} (gross {s.get('gross_pnl')}), mean R {s.get('expectancy_R')}, t {s.get('mean_R_t_stat')}, "
+              f"max drawdown {s.get('max_drawdown')}", file=out)
+    print(f"  audit: {run.audit.note}; decision: {v['decision']}", file=out)
+    if args.output:
+        Path(args.output).write_text(run.model_dump_json(indent=1), encoding="utf-8")
+    if args.persist:
+        StrategyValidationStore(Path(args.db) if args.db else None).insert(run)
+        print(f"  stored run {run.run_id}", file=out)
+    return 0
