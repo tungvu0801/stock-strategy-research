@@ -32,7 +32,8 @@ NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "stra
            "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",
            "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}
 ALLOWED_CHANGED = {"api/server.py", "frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/test_forward_validation_61.py",
-                   "tests/frontend/product_ui.test.cjs", "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json"}
+                   "tests/frontend/product_ui.test.cjs", "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json", "database/database.py"}   # + the WAL bootstrap fix
+from test_db_bootstrap_busy import EDITS_61_FIX, EDITS_611_FIX, GROUPS_EDIT_FIX, NEW_FIX  # noqa: E402 - the WAL bootstrap fix pins (tests/test_db_bootstrap_busy.py)
 FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"             # the Stage 6.1 frozen controls: unchanged
 MARK_OPEN, MARK_CLOSE = "# >>> " + "Product Flow 6.1.2", "# <<< " + "Product Flow 6.1.2"    # built, not literal: this file is not a marked-block carrier
 STRIP_PF = r"(?ms)^# >>> Product Flow 6\.1\.2\b.*?^# <<< Product Flow 6\.1\.2[^\n]*\n\n\n"
@@ -453,12 +454,12 @@ def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_r
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_612, {"unexpected_new": sorted(new - NEW_612), "missing_new": sorted(NEW_612 - new)}
+    assert new == NEW_612 | NEW_FIX, {"unexpected_new": sorted(new - NEW_612 - NEW_FIX), "missing_new": sorted((NEW_612 | NEW_FIX) - new)}   # + the WAL bootstrap fix test
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
     for d in ("setups", "proposals", "safety", "execution", "account_refresh", "cash_flow", "ppe", "demand", "evidence", "paper", "forward", "forward_validation", "notifications", "trader_view", "database", "scripts", "api/routes"):
         for rel in sorted(p for p in in_base if p.startswith(d + "/") and p.endswith((".py", ".ps1"))):
-            assert now_text(rel) == blob(rel), f"{rel} differs from {BASE}"
+            assert rel == "database/database.py" or now_text(rel) == blob(rel), f"{rel} differs from {BASE}"   # database.py: the WAL bootstrap fix, pinned by tests/test_db_bootstrap_busy.py
     for rel in ("config.py", "frontend/index.html", "frontend/app.js", "frontend/style.css", "frontend/trader_view.js", "frontend/trader_render.js", "frontend/paper_bot.js", "frontend/risk_controls.js",
                 "frontend/trade_review.js", "frontend/forward_validation.js", "frontend/forward_validation.html", "frontend/strategy_lab.js", ".github/workflows/tests.yml", "requirements.txt", "requirements-dev.txt",
                 "tests/conftest.py", "tests/test_browser_harness_39.py", "tests/test_trader_view_55.py", "tests/test_trader_view_561.py", "tests/test_execution_60.py", "tests/test_cash_flow_602.py", "tests/test_account_refresh_601.py",
@@ -476,13 +477,13 @@ def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_r
 
 
 def test_F02_reconciled_files_differ_from_the_base_only_by_the_listed_exact_edits_and_one_marked_harness_block():
-    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611) == now_text("tests/test_product_ui_611.py"), "tests/test_product_ui_611.py: other than the listed in-place edits"
-    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_612_61) == now_text("tests/test_forward_validation_61.py"), "tests/test_forward_validation_61.py: other than the two listed edits"
+    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611 + EDITS_611_FIX) == now_text("tests/test_product_ui_611.py"), "tests/test_product_ui_611.py: other than the listed in-place edits"
+    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_612_61 + EDITS_61_FIX) == now_text("tests/test_forward_validation_61.py"), "tests/test_forward_validation_61.py: other than the listed edits"
     assert replay(blob("tests/frontend/product_ui.test.cjs"), EDITS_CJS) == now_text("tests/frontend/product_ui.test.cjs"), "tests/frontend/product_ui.test.cjs: other than the four listed edits"
     flows = now_text("browser_tests/flows.py")
     assert len(re.findall(STRIP_PF, flows)) == 1 and replay(blob("browser_tests/flows.py"), EDITS_FLOWS) == re.sub(STRIP_PF, "", flows), "browser_tests/flows.py: other than the Product Flow block and the listed edits"
     old, new = GROUPS_EDIT
-    assert blob(".github/ci/pytest_groups.json").count(old) == 1 and blob(".github/ci/pytest_groups.json").replace(old, new) == now_text(".github/ci/pytest_groups.json")
+    assert blob(".github/ci/pytest_groups.json").count(old) == 1 and blob(".github/ci/pytest_groups.json").replace(old, new).replace(*GROUPS_EDIT_FIX) == now_text(".github/ci/pytest_groups.json")
     readme = now_text("README.md")
     section = re.findall(r"(?ms)^## Unified product flow \+ Strategy Lab foundation \(Stage 6\.1\.2\)\n.*?(?=^## Continuous integration \(Stage 6\.0\.3)", readme)
     assert len(section) == 1 and readme.replace(section[0], "") == blob("README.md"), "README.md: other than the inserted Stage 6.1.2 section"

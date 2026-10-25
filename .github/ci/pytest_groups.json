@@ -117,6 +117,7 @@
       "about": "Windows-only: the background runner (real offline processes), the standalone AAPL paper smoke (simulated), desktop notifications",
       "files": [
         "test_aapl_smoke_60.py",
+        "test_db_bootstrap_busy.py",
         "test_notifications_44.py",
         "test_windows_runner_60.py"
       ]
