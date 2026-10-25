@@ -65,8 +65,10 @@ candidate is simulated once and is identical in every arm that accepted it.
   the strategy version, the full configuration snapshot, the dataset content hash, the split and the git commit, so a result can always be
   traced to the exact code and data that produced it. The store **enforces** it: a run of a `strategy_version` already validated with another
   adapter configuration (parameters, entry policy, holding limit, critical features) is refused.
-* TRAIN trades whose exit falls after the TRAIN end are counted (`diagnostics.boundary`); they stay TRAIN (signal-dated) - nothing is fitted
-  on them by the harness.
+* **Boundary PURGE** (Stage 6.3.1, `validation_v2`): a TRAIN candidate whose holding window (the next `max_hold_bars` sessions after its
+  signal) reaches past the TRAIN end is purged (`TRAIN_OOS_BOUNDARY_PURGE`) whatever its outcome - it stays a TRAIN candidate and counts in
+  no TRAIN or OOS metric; every other TRAIN candidate is simulated on the bars up to the TRAIN end only. OOS prices cannot change a TRAIN
+  metric (DESIGN_631_VALIDATION_HARDENING.md).
 
 ## 5. Friction and execution assumptions
 
@@ -154,12 +156,16 @@ patterns only.
 * **Store** (`strategy_validation/store.py`, `database/strategy_validation_migrations.py`): three append-only tables on the app database
   (runs, candidate sets, simulated trades; UPDATE / DELETE abort). A run is written once, complete, in one transaction. **SYNTHETIC** (fixture)
   runs are refused outside a test process (`STOCK_AGENT_ENV` test / browser_test) and invisible to every read outside one: a normal app or
-  preview never shows a fixture result.
+  preview never shows a fixture result. **Persistence integrity gate** (Stage 6.3.1): the store re-evaluates `PersistenceEligibility`
+  (`strategy_validation/integrity.py`: provenance, strategy version, candidate set, causality incl. the declared manual review, replay parity,
+  mechanical audit, accounting, boundary) and writes only an ELIGIBLE run. Integrity is separate from the performance verdict: integrity PASS
+  with a FAIL or INSUFFICIENT DATA verdict is persisted; integrity FAIL never is.
 * **API** (GET only; `api/routes/strategy_validation.py`, under the registry prefix): `/api/strategy-registry/{strategy_id}/validation`,
   `/api/strategy-registry/validation/runs/{run_id}`, `…/simulations[?arm=]`, `…/audit`. No endpoint launches a backtest.
 * **CLI** (never a broker writer): `python -m strategy_validation validate --strategy ID --dataset FILE [--train-ratio 0.7] [--arms
-  rules,gated,model] [--output run.json] [--persist [--db PATH]] [--neighbors params.json]` → exit 0 (a completed run, any verdict), 2 (NOT_RUN),
-  1 (input error); `python -m strategy_validation runs [--strategy ID]`. A dataset is a CSV (`symbol,date,open,high,low,close[,volume]`) or JSON
+  rules,gated,model] [--output run.json] [--persist [--db PATH]] [--neighbors params.json] [--provenance prov.json]` → exit 0 (a completed run,
+  any verdict; with `--persist` stored), 2 (NOT_RUN), 1 (input error), 3 (`--persist` given but BLOCKED by the integrity gate: not stored);
+  `python -m strategy_validation runs [--strategy ID]`. A dataset is a CSV (`symbol,date,open,high,low,close[,volume]`) or JSON
   file of completed daily sessions; its content hash is the `dataset_id`.
 * **Registry**: every row carries `validation_status` (NOT_RUN or the latest verdict), `latest_validation_run_id`, `validation_verdict`,
   `train_trade_count`, `oos_trade_count`, `mechanical_audit_status`, `last_validated_at`. **No lifecycle mutation**: a verdict is displayed next to
@@ -178,7 +184,8 @@ patterns only.
 * Survivorship and data quality are the dataset's responsibility; the harness validates OHLC consistency only. A missing session in a symbol's
   bars makes the next available bar the "next bar". The dataset kind (HISTORICAL / SYNTHETIC) of a JSON file is self-declared; the run records the
   content hash and the source file name.
-* TRAIN trades may exit inside the OOS window (no purge / embargo); they are counted (`diagnostics.boundary`) and nothing is fitted on them.
+* The boundary purge removes the TRAIN candidates nearest the TRAIN end from the TRAIN sample (reported, never hidden); there is no separate
+  embargo before the OOS window.
 * Parameter-sensitivity neighbours are evaluated on the whole dataset (TRAIN + OOS): a diagnostic label only, never a selection.
 * The causality checks are pattern-based; a manual review is always required.
 * No real historical dataset ships with the repository, and no registered strategy has an honest historical replay yet: today every registered

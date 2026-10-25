@@ -9,7 +9,8 @@ is drawn). PASS means "eligible for human review for lifecycle advancement" - ne
 hypothetical. Nothing in this package places, previews or cancels an order, enables Paper Auto, touches a broker, calls a model or the network,
 or changes any strategy, risk, safety or execution setting; it imports no execution, broker, paper-order or proposal code.
 """
-VERSION = "validation_v1"                       # the methodology version: any policy change below is a new validation_version
+VERSION = "validation_v2"                       # the methodology version: any policy change below is a new validation_version
+                                                # v2 (Stage 6.3.1): the TRAIN / OOS boundary PURGE, the accounting invariant, the persistence integrity gate
 
 VERDICTS = ("INSUFFICIENT_DATA", "FAIL", "MIXED", "PASS", "INVALID")
 VERDICT_LABELS = {"INSUFFICIENT_DATA": "INSUFFICIENT DATA", "FAIL": "FAIL", "MIXED": "MIXED", "PASS": "PASS", "INVALID": "VALIDATION INVALID"}
@@ -45,7 +46,20 @@ EXIT_REASONS = ("STOP", "STOP_GAP", "TARGET", "TIME_EXIT", "DATA_END")
 DEFAULT_FRICTION = {"slippage_bps_per_side": 5.0, "commission_per_order": 0.0, "fee_per_share": 0.0}
 DEFAULT_SIZING = {"equity": 100000.0, "risk_fraction": 0.005, "max_position_pct": 10.0}   # the Stage 5.9 conventions (research simulation only)
 SKIP_REASONS = ("MISSING_CRITICAL_FEATURE", "STANDARD_V1_INVALID", "UNSUPPORTED_DIRECTION", "DUPLICATE_CANDIDATE", "SIGNAL_BAR_NOT_IN_DATASET",
-                "NO_ENTRY_BAR", "INVALID_STOP", "ENTRY_GAP_THROUGH_STOP", "ENTRY_GAP_THROUGH_TARGET")
+                "NO_ENTRY_BAR", "INVALID_STOP", "ENTRY_GAP_THROUGH_STOP", "ENTRY_GAP_THROUGH_TARGET", "TRAIN_OOS_BOUNDARY_PURGE")
+
+# ---- Stage 6.3.1: the TRAIN / OOS boundary and the persistence integrity gate (strategy_validation/integrity.py) ---------------------------
+BOUNDARY_POLICY = "PURGE"                       # a TRAIN candidate whose outcome needs a bar after the TRAIN end is excluded from TRAIN and OOS
+PURGE_REASON = "TRAIN_OOS_BOUNDARY_PURGE"
+INTEGRITY_STATUSES = ("PASS", "FAIL")          # validation integrity - a different question from the performance verdict
+ELIGIBILITY_STATUSES = ("ELIGIBLE", "BLOCKED")  # may this run be persisted?
+PARITY_REQUIREMENTS = ("EXACT_REQUIRED", "NOT_APPLICABLE")   # EXACT_REQUIRED: the adapter claims to reproduce a separate live implementation
+PARITY_STATUSES = ("ESTABLISHED", "NOT_ESTABLISHED")
+REVIEW_STATUSES = ("PENDING", "COMPLETED")      # the adapter's declared MANUAL causality review (never inferred from the automated checks)
+PROVENANCE_REQUIRED = ("source", "retrieved_at", "bar_frequency", "adjustment", "missing_data_policy")   # declared by the dataset
+PROVENANCE_DERIVED = ("dataset_id", "start", "end", "symbols", "sessions")                               # computed from the bars
+PROVENANCE_CONDITIONAL = ("corporate_actions", "universe", "point_in_time")                              # required when the adapter declares them
+BAR_FREQUENCY = "1Day"                          # the simulator works on completed daily sessions only
 
 DISCLAIMER = ("Backtest results are hypothetical. PASS means eligible for human review for lifecycle advancement; it does not mean profitable in "
               "the future and it never promotes a strategy. A failed validation is a valid research result.")

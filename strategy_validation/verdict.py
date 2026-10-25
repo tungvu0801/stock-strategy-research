@@ -1,7 +1,8 @@
 """strategy_validation/verdict.py — the deterministic verdict of one arm (the run's verdict is the RULES arm's: the strategy as defined).
 
   INVALID            an integrity failure: the arms did not receive the same candidate set, a CRITICAL causality finding, a mechanical-audit
-                     violation or an arm that broke its contract. No conclusion is drawn.
+                     violation, an arm that broke its contract or an accounting mismatch (accepted != simulated + purged + skipped). No conclusion
+                     is drawn. (Stage 6.3.1: whether a run may be PERSISTED is a separate question - strategy_validation/integrity.py.)
   INSUFFICIENT_DATA  fewer than MIN_TRADES trades, fewer than MIN_OOS_TRADES OOS trades, or an OOS window shorter than MIN_OOS_SESSIONS.
   FAIL               gross positive but net not positive (friction-killed); OOS expectancy not positive after friction; total net not positive.
   MIXED              OOS positive but: TRAIN not positive, OOS degraded vs TRAIN, |t| < T_STAT_WEAK (weak statistical evidence), severe period
@@ -28,10 +29,11 @@ def _out(verdict: str, reasons: List[dict], warnings: List[dict]) -> dict:
 
 
 def decide(m: dict, *, oos_sessions: int, integrity_ok: bool, integrity_problems: List[str], causality_critical: bool, audit_ok: bool,
-           diagnostics: dict, sensitivity_label: Optional[str] = None) -> dict:
+           diagnostics: dict, sensitivity_label: Optional[str] = None, accounting_problems: Optional[List[str]] = None) -> dict:
     warnings: List[dict] = []
-    if not integrity_ok or causality_critical or not audit_ok:
+    if not integrity_ok or causality_critical or not audit_ok or accounting_problems:
         reasons = [{"code": "CANDIDATE_SET_MISMATCH", "text": p} for p in integrity_problems]
+        reasons += [{"code": "ACCOUNTING_MISMATCH", "text": p} for p in accounting_problems or []]
         if causality_critical:
             reasons.append({"code": "CAUSALITY_VIOLATION", "text": "A critical look-ahead / causality check failed."})
         if not audit_ok:

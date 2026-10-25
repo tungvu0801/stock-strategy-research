@@ -24,6 +24,8 @@ from strategy_validation.models import RawCandidate  # noqa: E402
 
 START = date(2019, 1, 2)
 WINDOW = 7
+PROVENANCE = {"source": "synthetic fixture (tests/strategy_validation_fixtures.py)", "retrieved_at": "2026-10-25T00:00:00+00:00", "bar_frequency": "1Day",
+              "adjustment": "none (synthetic prices, no corporate action)", "missing_data_policy": "no gap: every session of every window exists; a missing bar is a gap, never filled"}
 
 
 def business_days(start: date, n: int) -> List[str]:
@@ -68,6 +70,9 @@ class FixtureAdapter(StrategyAdapter):
     invalidation_condition = "price at or below 95"
     exit_condition = "target 110, stop 95 or 5 sessions"
     risk_class = "MODERATE"
+    replay_parity_requirement = "NOT_APPLICABLE"                                # a research-only test strategy: no separate live implementation
+    provenance_requires = ()                                                     # explicit: no corporate action, universe or point-in-time field applies
+    causality_review = {"status": "PENDING", "reference": ""}                    # declared: no human review of a fixture (never counted as reviewed)
 
     def __init__(self, plan: List[Tuple[str, str]], params=None, future_features: bool = False, strategy_id: str = None, missing: Tuple[int, ...] = ()):
         super().__init__(params)
@@ -80,7 +85,10 @@ class FixtureAdapter(StrategyAdapter):
 
     def candidates(self, dataset):
         keep = self.params.get("keep")                                          # sensitivity fixtures: an explicit neighbouring selection rule
-        if isinstance(keep, str):                                               # a JSON-friendly rule for the CLI: "mod:5:0,1,2" keeps i % 5 in {0, 1, 2}
+        if isinstance(keep, str) and keep.startswith("except:"):               # "except:69" keeps every candidate but the listed indices
+            dropped = {int(x) for x in keep.split(":", 1)[1].split(",")}
+            keep = (lambda i, d=dropped: i not in d)
+        elif isinstance(keep, str):                                             # a JSON-friendly rule for the CLI: "mod:5:0,1,2" keeps i % 5 in {0, 1, 2}
             _, m, rest = keep.split(":")
             allowed = {int(x) for x in rest.split(",")}
             keep = (lambda i, m=int(m), a=allowed: i % m in a)
@@ -122,7 +130,7 @@ def build(outcomes: List[str], start: date = START, kind: str = "SYNTHETIC") -> 
         w = days[WINDOW * i: WINDOW * (i + 1)]
         bars[sym] = window(w, o)
         plan.append((sym, w[0]))
-    return Dataset(bars, kind=kind, source="synthetic fixture"), plan
+    return Dataset(bars, kind=kind, source="synthetic fixture", provenance=PROVENANCE), plan
 
 
 def pattern(n: int, train: str, oos: str = None, train_ratio: float = 0.7) -> List[str]:

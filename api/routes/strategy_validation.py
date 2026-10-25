@@ -72,4 +72,7 @@ def get_validation_audit(run_id: str) -> JSONResponse:
     if run is None:
         return _missing(run_id)
     return JSONResponse({"run_id": run_id, "audit": run.get("audit"), "integrity": run.get("integrity"), "causality": run.get("causality"),
-                         "candidates": store.candidates(run_id), "candidates_skipped": run.get("candidates_skipped")})
+                         "candidates": store.candidates(run_id), "candidates_skipped": run.get("candidates_skipped"),
+                         # Stage 6.3.1 (absent -> null on a Stage 6.2 run: never back-filled)
+                         "eligibility": run.get("eligibility") or None, "accounting": run.get("accounting") or None, "boundary": run.get("boundary") or None,
+                         "provenance": run.get("provenance") or None, "replay_parity": run.get("replay_parity") or None})

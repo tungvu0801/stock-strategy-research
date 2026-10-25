@@ -144,15 +144,16 @@ carries **survivorship bias** and validates a **fixed, known symbol set** only -
 
 Chosen policy: **PURGE**. A TRAIN trade whose holding window can reach past the TRAIN end (signal date + `max_hold` sessions > TRAIN end)
 is removed from TRAIN and is not counted in OOS; the purge is reported (count and candidate ids). Labelling such trades TRAIN while
-their outcome uses OOS prices is not allowed. The Stage 6.2 harness today only **counts** them (`diagnostics.boundary`); the purge
-must be implemented in the harness before any Downside Dislocation Recovery run.
+their outcome uses OOS prices is not allowed. The Stage 6.2 harness only **counted** them (`diagnostics.boundary`); **implemented in Stage
+6.3.1** (DESIGN_631_VALIDATION_HARDENING.md).
 
 ## 10. Persistence gate (required before any run)
 
 A replay run may be **persisted** only when: provenance (§5, §6) is complete; every causality check passes (incl. the point-in-time
 truncation check); replay parity is acceptable (every entry condition EXACT, §3); the mechanical audit passes. Anything else is an
-ephemeral research / debug run and is never written. The Stage 6.2 store today persists any complete run with a verdict; this gate must be
-added before a DDR run is stored.
+ephemeral research / debug run and is never written. The Stage 6.2 store persisted any complete run with a verdict; **the gate is implemented
+in Stage 6.3.1** (`strategy_validation/integrity.py`, DESIGN_631_VALIDATION_HARDENING.md). Downside Dislocation Recovery still declares replay
+parity NOT_ESTABLISHED and stays NOT_RUN.
 
 ## 11. Candidate parity (how a future adapter must be built)
 

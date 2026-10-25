@@ -63,7 +63,8 @@ NEW_62_OWN = {"DESIGN_62_STRATEGY_VALIDATION.md", "STRATEGY_VALIDATION_HARNESS.m
           "strategy_validation/store.py", "strategy_validation/verdict.py", "tests/frontend/strategy_validation.test.cjs", "tests/strategy_validation_fixtures.py",
           "tests/test_strategy_validation_62.py"}   # Stage 6.2 files
 NEW_63 = {"DESIGN_63_DDR_REPLAY_READINESS.md"}                                                # Stage 6.3: the Downside Dislocation Recovery replay-readiness document
-NEW_62 = NEW_62_OWN | NEW_63   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_631 = {"strategy_validation/integrity.py", "tests/test_validation_integrity_631.py", "DESIGN_631_VALIDATION_HARDENING.md"}   # Stage 6.3.1: validation integrity
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py"}
 MARK_62 = "# >>> " + "Strategy Validation 6.2"                                                  # built, not literal: only browser_tests/flows.py carries it
@@ -100,6 +101,9 @@ EDITS_62_JS = [                                                                 
 EDITS_62_FLOWS = [                                                                                 # browser_tests/flows.py outside its marked block: the two flows after scanner
     ('         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,\n',
      '         ai_evidence, history, scanner, strategy_validation, strategy_validation_results, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,\n'),
+]
+GROUPS_EDITS_631 = [                                                                               # Stage 6.3.1: its test file in the research group (undone first)
+    ('        "test_strategy_validation_62.py"\n      ]', '        "test_strategy_validation_62.py",\n        "test_validation_integrity_631.py"\n      ]'),
 ]
 GROUPS_EDITS_62 = [                                                                                # .github/ci/pytest_groups.json: this file in the research group
     ('      "about": "signal research, rotation diagnostics / engine / handoff / store / API, research workflow, portfolio backtest",\n',
@@ -150,7 +154,7 @@ EDITS_62_FIX = [                                                                
      '    assert groups.count(GROUPS_EDIT_FIX[0]) == 1 and groups.replace(*GROUPS_EDIT_FIX) == undo_62(".github/ci/pytest_groups.json", now_text(".github/ci/pytest_groups.json"))   # Stage 6.2 undone first\n'),
 ]
 UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR, "api/routes/strategy_registry.py": EDITS_62_ROUTE, "frontend/product_ui.js": EDITS_62_JS, "browser_tests/flows.py": EDITS_62_FLOWS,
-           ".github/ci/pytest_groups.json": GROUPS_EDITS_62, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
+           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
            "tests/test_product_flow_612.py": EDITS_62_612, "tests/test_db_bootstrap_busy.py": EDITS_62_FIX}
 
 
@@ -187,7 +191,7 @@ def test_S01_candidates_are_generated_once_with_a_content_identity_and_are_immut
     ad.candidates = lambda d: (calls.append(d.end), list(orig(d)))[1]
     r = E.run_validation(ad, ds, created_at=AT)
     assert calls[0] == ds.end and calls.count(ds.end) == 1                                       # the candidate set: generated ONCE, whatever the number of arms
-    assert len(calls) == 6 and all(c < ds.end for c in calls[1:])                                # the other calls: the point-in-time causality cuts (never fed to an arm)
+    assert len(calls) == 7 and all(c < ds.end for c in calls[1:])                                # the point-in-time causality cuts: 5 sampled + the TRAIN end (never fed to an arm)
     c = r.candidates[0]
     assert c.candidate_id == CD.candidate_identity(c.strategy_id, c.strategy_version, c.symbol, c.direction, c.signal_date, c.entry_reference, c.invalidation_reference,
                                                    c.feature_snapshot_hash)
@@ -357,7 +361,7 @@ def test_M02b_an_entry_opening_at_or_above_the_target_is_skipped_never_a_target_
     cands, _ = CD.normalize(F.FixtureAdapter(plan), F.FixtureAdapter(plan).candidates(gap), gap)
     t, skip = SIM.simulate(cands[0], gap, arm="RULES", segment="TRAIN", entry_policy="NEXT_BAR_OPEN", friction=DEFAULT_FRICTION, sizing=DEFAULT_SIZING)
     assert t is None and skip.reason == "ENTRY_GAP_THROUGH_TARGET"
-    r = E.run_validation(F.FixtureAdapter(plan), gap, created_at=AT)
+    r = E.run_validation(F.FixtureAdapter(plan), gap, created_at=AT, train_ratio=0.9)                   # the holding window inside TRAIN (Stage 6.3.1 purges a crossing one)
     assert r.arms["RULES"].trades == [] and [s.reason for s in r.arms["RULES"].simulation_skips] == ["ENTRY_GAP_THROUGH_TARGET"] and r.audit.status == "PASS"
     assert r.arms["RULES"].metrics["ALL"]["simulation_skipped_count"] == 1
 
@@ -446,10 +450,11 @@ def test_D03_period_concentration_by_year_quarter_month_without_regime_labels():
     assert not re.search(r"(?i)\b(bull|bear|risk-on|risk-off)\b", src)
 
 
-def test_D04_the_train_oos_boundary_is_reported():
-    r, _, _ = run("GOOD")
+def test_D04_the_train_oos_boundary_is_purged_not_merely_reported():
+    r, _, _ = run("GOOD")                                                                        # Stage 6.3.1: PURGE (tests/test_validation_integrity_631.py)
     b = r.diagnostics["boundary"]
-    assert set(b) == {"train_trades_exiting_in_oos", "text"} and b["train_trades_exiting_in_oos"] >= 0
+    assert set(b) == {"policy", "train_boundary_purged_count", "text"} and b["policy"] == "PURGE" and b["train_boundary_purged_count"] == 0
+    assert all(t.exit_date <= r.train_end for a in r.arms.values() for t in a.trades if t.segment == "TRAIN")   # no TRAIN trade uses an OOS bar
 
 
 # ================================================================ U mechanical audit ===========================================================
@@ -863,7 +868,7 @@ def test_B02_a_validation_run_cannot_reach_a_broker_even_with_credentials_in_the
 
 def test_N01_node_tests_of_the_validation_block():
     r = subprocess.run(["node", "--test", str(ROOT / "tests" / "frontend" / "strategy_validation.test.cjs")], capture_output=True, text=True, cwd=ROOT)
-    assert r.returncode == 0 and re.search(r"pass 8\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
+    assert r.returncode == 0 and re.search(r"pass 11\b", r.stdout) and re.search(r"fail 0\b", r.stdout), r.stdout[-3000:] + r.stderr[-2000:]
 
 
 def test_N02_the_real_service_payloads_render_without_invented_numbers(tmp_path):
@@ -916,6 +921,7 @@ def test_F01_main_plus_only_the_stage_62_files_and_exact_edits():
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     assert new == NEW_62, {"unexpected_new": sorted(new - NEW_62), "missing_new": sorted(NEW_62 - new)}
     assert all(p.endswith(".md") for p in NEW_63)                                                 # Stage 6.3 adds documentation only (no replay implementation)
+    assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "strategy_registry/")) for p in NEW_631)   # Stage 6.3.1: the harness only
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed == CHANGED_62, {"unexpected_changes": sorted(changed - CHANGED_62), "missing_changes": sorted(CHANGED_62 - changed)}
     for rel in sorted(CHANGED_62):                                                              # each changed file: the base + its delimited block + its listed exact edits

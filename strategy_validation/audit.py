@@ -7,8 +7,10 @@ fill (next-bar open, or the signal close for a declared market-on-close strategy
 entry; the exit reason is allowed and consistent with the bar; the exit is the FIRST bar the documented rules exit on (re-derived bar by bar here,
 stop first inside an ambiguous bar); the holding period is within the limit; dates are ordered; the TRAIN / OOS label follows the signal date and the
 split; no candidate is executed twice in one arm; the arm accepted (TAKE) the candidate, and every accepted candidate has a trade or a recorded
-simulation skip (nothing silently dropped); the risk-based size re-derives; gross, friction, net and R arithmetic add up. Result: N / N trades
-validated, plus every violation."""
+simulation skip (nothing silently dropped); the risk-based size re-derives; gross, friction, net and R arithmetic add up. Stage 6.3.1: no TRAIN
+trade exits after the TRAIN end, and the PURGE is exact both ways - re-derived here from the bar dates: a TRAIN candidate is purged if and only
+if its holding window (the next max_hold_bars sessions after the signal) reaches past the TRAIN end (a purge can never hide a trade, and no
+crossing trade is kept). Result: N / N trades validated, plus every violation."""
 from __future__ import annotations
 
 import hashlib
@@ -17,6 +19,7 @@ import math
 from typing import Dict, List
 
 ALLOWED_EXITS = {"STOP", "STOP_GAP", "TARGET", "TIME_EXIT", "DATA_END"}
+PURGE = "TRAIN_OOS_BOUNDARY_PURGE"                                              # spelled out: this module imports nothing from the package
 TOL = 1e-6
 
 
@@ -47,6 +50,23 @@ def _first_exit(rows: List[dict], si: int, policy: str, stop: float, target, lim
     return (seq[-1]["date"], "DATA_END", len(seq), False) if seq else None
 
 
+def _crosses(c: dict, rows: List[dict], idx: Dict[str, int], train_end: str) -> bool:
+    """Does the candidate's holding window (the next max_hold_bars sessions of its symbol after the signal) reach past the TRAIN end?"""
+    si = idx.get(c["signal_date"])
+    return si is not None and any(r["date"] > train_end for r in rows[si + 1: si + 1 + int(c["max_hold_bars"])])
+
+
+def _purge_problem(c: dict, rows: List[dict], idx: Dict[str, int], train_end: str):
+    """Why a boundary purge of candidate `c` is NOT justified, or None when it is (dates only, never a price)."""
+    if c["signal_date"] > train_end:
+        return "an OOS candidate cannot be boundary-purged"
+    if idx.get(c["signal_date"]) is None:
+        return "the signal session is not in the dataset"
+    if not _crosses(c, rows, idx, train_end):
+        return "its holding window ends on or before the TRAIN end: nothing crosses the boundary"
+    return None
+
+
 def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str, List[dict]]) -> dict:
     """run: the stored run (strategy_id, strategy_version, execution_assumptions, friction_model); bars: {symbol: [{date, open, high, low, close}]}."""
     viol: List[dict] = []
@@ -65,11 +85,22 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
     arms = run.get("arms") or {}
     takes = {a: {d["candidate_id"] for d in (r.get("decisions") or []) if d.get("decision") == "TAKE"} for a, r in arms.items()}
     sizing = (run.get("config_snapshot") or {}).get("sizing")
-    for a, r in arms.items():                                                   # completeness: an accepted candidate never disappears silently
+    simulated = (run.get("integrity") or {}).get("same_candidate_set", True)   # a mismatched candidate set is never simulated (by design)
+    for a, r in (arms.items() if simulated else ()):                            # completeness: an accepted candidate never disappears silently
         traded = {t["candidate_id"] for t in trades if t["arm"] == a}
         skipped = {s.get("candidate_id") for s in (r.get("simulation_skips") or [])}
         for cid in sorted(takes[a] - traded - skipped):
             viol.append({"candidate_id": cid, "arm": a, "check": "MISSING_TRADE", "detail": f"{a} accepted the candidate but it has neither a trade nor a recorded skip"})
+    train_end = str(run.get("train_end") or "")
+    idx_all = {s: {b["date"]: i for i, b in enumerate(rows)} for s, rows in bars.items()}
+    for a, r in arms.items():                                                   # every boundary purge must be justified by the TRAIN bars alone
+        for s in r.get("simulation_skips") or []:
+            if s.get("reason") != PURGE:
+                continue
+            c = by_id.get(s.get("candidate_id"))
+            why = "the purged candidate does not exist" if c is None else _purge_problem(c, bars.get(c["symbol"]) or [], idx_all.get(c["symbol"]) or {}, train_end)
+            if why:
+                viol.append({"candidate_id": s.get("candidate_id"), "arm": a, "check": "UNJUSTIFIED_PURGE", "detail": why})
     seen = set()
     ok = 0
     for t in trades:
@@ -148,6 +179,10 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
         risk = t["qty"] * (t["entry_fill"] - t["stop"])
         if risk <= 0 or abs(t["achieved_risk"] - risk) > 1e-4 * max(1, t["qty"]) or abs(t["r_net"] - t["net_pnl"] / risk) > 1e-4:
             bad.append(("R_MULTIPLE", "R is not net P/L / (quantity x (entry fill - stop))"))
+        if run.get("train_end") and t.get("segment") == "TRAIN" and t["exit_date"] > run["train_end"]:
+            bad.append(("TRAIN_USES_OOS", f"a TRAIN trade exits {t['exit_date']}, after the TRAIN end {run['train_end']}: its outcome used OOS bars"))
+        if run.get("train_end") and c["signal_date"] <= run["train_end"] and _crosses(c, rows, pos, run["train_end"]):
+            bad.append(("BOUNDARY_NOT_PURGED", f"its holding window reaches past the TRAIN end {run['train_end']}: it must be purged, not traded"))
         if run.get("train_end") and t.get("segment") != ("TRAIN" if c["signal_date"] <= run["train_end"] else "OOS"):
             bad.append(("SEGMENT", f"labelled {t.get('segment')} but the signal {c['signal_date']} is {'on or before' if c['signal_date'] <= run['train_end'] else 'after'} the TRAIN end {run['train_end']}"))
         if si is not None and t["stop"] < t["entry_raw"]:

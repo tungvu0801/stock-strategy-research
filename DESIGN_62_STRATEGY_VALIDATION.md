@@ -18,13 +18,15 @@ Immutable Candidate Set           content identity per candidate; candidate_set_
    ↓
 RULES / GATED / MODEL             the SAME set; GATED may only veto, MODEL may only TAKE / STAND_ASIDE (NOT_EVALUATED by default)
    ↓                              mismatch → VALIDATION INVALID, nothing simulated
-Simulation                        next-bar-open fills, STOP_FIRST, gross / slippage / fees / net, risk-based sizing
+Simulation                        next-bar-open fills, STOP_FIRST, gross / slippage / fees / net, risk-based sizing; boundary-safe (6.3.1 PURGE)
    ↓
 TRAIN / OOS                       chronological split (70 / 30 default), OOS reported on its own
    ↓
 Metrics                           per arm × segment; mean_R_t_stat as evidence
    ↓
 Mechanical Audit                  independent re-derivation from stored records + raw bars: N / N trades validated
+   ↓
+Integrity gate (6.3.1)            accounting invariant + PersistenceEligibility: only an ELIGIBLE run is persisted
    ↓
 Verdict                           INSUFFICIENT DATA · FAIL · MIXED · PASS · VALIDATION INVALID
    ↓
@@ -101,7 +103,7 @@ fake or unsupported results, mechanical-audit independence, lifecycle auto-promo
 | 4 | MEDIUM | OOS contamination | "A change after OOS is a new strategy_version" was documented, not enforced. | Fixed: the store refuses another adapter configuration under a validated version. Test R03b. |
 | 5 | MEDIUM | audit | The exit was checked for consistency with its bar, not for being the FIRST qualifying bar; sizing, segment labels, gross and R arithmetic were not re-derived. | Fixed: `EXIT_FIRST_TOUCH`, `SIZE`, `SEGMENT`, `GROSS`, `R_MULTIPLE` checks. Test U02 / U03. |
 | 6 | LOW | API | `/validation` named the declared registry status `lifecycle_status`. | Fixed: `declared_status`. |
-| 7 | LOW | OOS | TRAIN trades can exit inside the OOS window (no purge / embargo). | Deferred, reported: `diagnostics.boundary` counts them; nothing is fitted by the harness. |
+| 7 | LOW | OOS | TRAIN trades can exit inside the OOS window (no purge / embargo). | Deferred in 6.2; **fixed in Stage 6.3.1** (the PURGE, DESIGN_631_VALIDATION_HARDENING.md). |
 | 8 | LOW | OOS | Sensitivity neighbours run on TRAIN + OOS. | Deferred: a diagnostic label only, never a selection (documented). |
 | 9 | LOW | fake results | A JSON dataset's kind is self-declared. | Deferred: the content hash and source are recorded; no registered strategy can run today (all NOT_RUN). |
 | 10 | LOW | arms | A failing gate aborts the run while an invalid model answer marks MODEL INVALID. | Deferred: both fail loudly, neither silently. |

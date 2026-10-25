@@ -44,7 +44,8 @@ def max_drawdown(trades: List[SimulatedTrade], equity: float) -> dict:
     return {"max_drawdown": _r(dd), "max_drawdown_pct": _r(dd_pct * 100, 4), "basis": "net P/L in exit order on a fixed hypothetical equity"}
 
 
-def compute(trades: List[SimulatedTrade], *, candidate_count: int, accepted_count: int, stand_aside_count: int, equity: float) -> dict:
+def compute(trades: List[SimulatedTrade], *, candidate_count: int, accepted_count: int, stand_aside_count: int, equity: float,
+            boundary_purged_count: int = 0, skipped_count: Optional[int] = None) -> dict:
     n = len(trades)
     R = [t.r_net for t in trades]
     net = [t.net_pnl for t in trades]
@@ -58,7 +59,8 @@ def compute(trades: List[SimulatedTrade], *, candidate_count: int, accepted_coun
     worst = min(trades, key=lambda t: t.net_pnl) if trades else None
     out = {
         "trade_count": n, "candidate_count": candidate_count, "accepted_count": accepted_count, "stand_aside_count": stand_aside_count,
-        "simulation_skipped_count": max(0, accepted_count - n),
+        "simulated_trade_count": n, "boundary_purged_count": boundary_purged_count,     # accepted = simulated + boundary_purged + skipped
+        "simulation_skipped_count": skipped_count if skipped_count is not None else max(0, accepted_count - n - boundary_purged_count),
         "win_rate": _r(len(wins) / n) if n else None,
         "gross_pnl": _r(gross), "slippage_cost": _r(slippage), "fees": _r(fees), "friction_total": _r(slippage + fees), "net_pnl": _r(sum(net)),
         "average_trade_return": _r(mean(rets)), "average_R": _r(mean(R)), "sum_R": _r(sum(R)), "expectancy_R": _r(mean(R)), "expectancy_usd": _r(mean(net)),

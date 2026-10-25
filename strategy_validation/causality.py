@@ -68,12 +68,13 @@ def runtime_checks(adapter, candidates: Iterable[StrategyCandidate]) -> List[dic
     ]
 
 
-def truncation_check(regenerate: Callable, dataset, candidates: List[StrategyCandidate], samples: int = 5) -> dict:
-    """regenerate(dataset) -> the normalized candidates of that dataset. Cuts at up to `samples` candidates' own signal dates, spread over the set."""
+def truncation_check(regenerate: Callable, dataset, candidates: List[StrategyCandidate], samples: int = 5, extra_cuts: Iterable[str] = ()) -> dict:
+    """regenerate(dataset) -> the normalized candidates of that dataset. Cuts at up to `samples` candidates' own signal dates, spread over the set,
+    plus `extra_cuts` (Stage 6.3.1: the TRAIN end - no TRAIN candidate may depend on an OOS bar)."""
     n = len(candidates)
     if not n:
         return {"check": "RUNTIME_TRUNCATION_INVARIANCE", "result": "PASS", "count": 0, "kind": "AUTOMATED", "detail": "no candidate to cut at"}
-    cuts = sorted({candidates[i].signal_date for i in sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})[:samples]})
+    cuts = sorted({candidates[i].signal_date for i in sorted({0, n // 4, n // 2, (3 * n) // 4, n - 1})[:samples]} | {c for c in extra_cuts if c})
     diffs = []
     for cut in cuts:
         want = {c.candidate_id for c in candidates if c.signal_date <= cut}
@@ -85,9 +86,9 @@ def truncation_check(regenerate: Callable, dataset, candidates: List[StrategyCan
             else f"identical candidates at {len(cuts)} point-in-time cuts ({', '.join(cuts)})"}
 
 
-def report(adapter, candidates: Iterable[StrategyCandidate], dataset=None, regenerate: Optional[Callable] = None) -> CausalityReport:
+def report(adapter, candidates: Iterable[StrategyCandidate], dataset=None, regenerate: Optional[Callable] = None, extra_cuts: Iterable[str] = ()) -> CausalityReport:
     candidates = list(candidates)
     checks = static_scan(adapter_source(adapter)) + runtime_checks(adapter, candidates)
     if dataset is not None and regenerate is not None:
-        checks.append(truncation_check(regenerate, dataset, candidates))
+        checks.append(truncation_check(regenerate, dataset, candidates, extra_cuts=extra_cuts))
     return CausalityReport(automated_checks=checks, critical=any(c["result"] == "CRITICAL" for c in checks), manual_review_required=True)

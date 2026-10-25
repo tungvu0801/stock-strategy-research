@@ -1,7 +1,11 @@
 """strategy_validation/dataset.py — the bar dataset a validation runs on (completed daily sessions per symbol), its content hash (dataset_id) and the
 CHRONOLOGICAL train / OOS split. There is no random split: market time series are split by date, the earlier share for development (TRAIN), the
 later share untouched (OOS). A dataset too short for an adequate OOS window yields an empty or short OOS slice, which the verdict reports as
-INSUFFICIENT_DATA."""
+INSUFFICIENT_DATA.
+
+Provenance (Stage 6.3.1): the dataset DECLARES source, retrieved_at, bar_frequency, adjustment and missing_data_policy (plus corporate_actions,
+universe and point_in_time when the adapter requires them); dataset_id, start, end, symbols and sessions are DERIVED from the bars. A run
+without complete provenance may execute ephemerally but is never persisted (strategy_validation/integrity.py)."""
 from __future__ import annotations
 
 import csv
@@ -26,7 +30,8 @@ def _canonical_rows(bars: Dict[str, List[Bar]]) -> str:
 
 
 class Dataset:
-    def __init__(self, bars: Dict[str, Iterable], *, kind: str = "HISTORICAL", source: str = "", dataset_id: Optional[str] = None):
+    def __init__(self, bars: Dict[str, Iterable], *, kind: str = "HISTORICAL", source: str = "", dataset_id: Optional[str] = None,
+                 provenance: Optional[dict] = None):
         if kind not in ("HISTORICAL", "SYNTHETIC"):
             raise DatasetError("dataset kind must be HISTORICAL or SYNTHETIC")
         clean: Dict[str, List[Bar]] = {}
@@ -49,6 +54,7 @@ class Dataset:
         self.bars = clean
         self.kind = kind
         self.source = source
+        self.declared = {k: v for k, v in dict(provenance or {}).items() if v not in (None, "")}
         self.sessions: List[str] = sorted({b.date for rows in clean.values() for b in rows})
         self.dataset_id = dataset_id or ("sha256:" + hashlib.sha256(_canonical_rows(clean).encode("utf-8")).hexdigest()[:24])
         self._index = {s: {b.date: i for i, b in enumerate(rows)} for s, rows in clean.items()}
@@ -75,11 +81,21 @@ class Dataset:
         return after[0] if after else None
 
     def until(self, date: str) -> "Dataset":
-        """The point-in-time view at the close of `date`: every bar after it removed (the truncation-invariance causality check)."""
-        return Dataset({s: [b for b in rows if b.date <= date] for s, rows in self.bars.items()}, kind=self.kind, source=self.source)
+        """The point-in-time view at the close of `date`: every bar after it removed (the truncation-invariance causality check and the
+        boundary-safe TRAIN simulation)."""
+        return Dataset({s: [b for b in rows if b.date <= date] for s, rows in self.bars.items()}, kind=self.kind, source=self.source, provenance=self.declared)
+
+    def has_bar_after(self, symbol: str, date: str) -> bool:
+        rows = self.bars.get(symbol) or []
+        return bool(rows) and rows[-1].date > date
+
+    def provenance_record(self) -> dict:
+        """What the run stores: the declared fields as given, the derived fields computed here (never taken from the declaration)."""
+        return {**self.declared, "dataset_id": self.dataset_id, "kind": self.kind, "start": self.start, "end": self.end, "symbols": sorted(self.bars),
+                "sessions": len(self.sessions), "source_file": self.source}
 
 
-def load(path: str) -> Dataset:
+def load(path: str, provenance: Optional[dict] = None) -> Dataset:
     """A CSV (symbol,date,open,high,low,close[,volume]) or JSON ({"bars": {symbol: [{date, open, high, low, close, volume}]}}) file of completed
     daily sessions. The dataset_id is the content hash, so the same file always reproduces the same run."""
     p = Path(path)
@@ -88,20 +104,23 @@ def load(path: str) -> Dataset:
     text = p.read_text(encoding="utf-8")
     bars: Dict[str, list] = {}
     kind = "HISTORICAL"
+    declared: dict = {}
     if p.suffix.lower() == ".json":
         obj = json.loads(text)
         kind = obj.get("kind", "HISTORICAL")                                    # a fixture file declares itself SYNTHETIC (the store refuses it outside tests)
+        declared = dict(obj.get("provenance") or {})
         for sym, rows in (obj.get("bars") or {}).items():
             bars[sym] = [Bar(**r) for r in rows]
     else:
         for r in csv.DictReader(io.StringIO(text)):
             bars.setdefault(r["symbol"].strip().upper(), []).append(Bar(date=r["date"].strip(), open=float(r["open"]), high=float(r["high"]), low=float(r["low"]),
                                                                          close=float(r["close"]), volume=float(r.get("volume") or 0)))
-    return Dataset(bars, kind=kind, source=str(p.name))
+    return Dataset(bars, kind=kind, source=str(p.name), provenance={**declared, **dict(provenance or {})})   # an explicit --provenance file wins
 
 
 def dump(dataset: Dataset, path: str) -> None:
-    Path(path).write_text(json.dumps({"kind": dataset.kind, "bars": {s: [b.model_dump() for b in rows] for s, rows in dataset.bars.items()}}), encoding="utf-8")
+    Path(path).write_text(json.dumps({"kind": dataset.kind, "provenance": dataset.declared,
+                                      "bars": {s: [b.model_dump() for b in rows] for s, rows in dataset.bars.items()}}), encoding="utf-8")
 
 
 def split(dataset: Dataset, train_ratio: float = DEFAULT_TRAIN_RATIO) -> dict:

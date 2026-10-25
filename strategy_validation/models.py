@@ -129,6 +129,8 @@ class CausalityReport(_M):
     critical: bool = False
     manual_review_required: bool = True        # static and runtime checks cannot prove causality; a human review is always required
     manual_review_note: str = "MANUAL_CAUSALITY_REVIEW_REQUIRED: automated checks catch known patterns only; a reviewer must confirm every feature uses information available at the signal close."
+    manual_review_status: str = "UNDECLARED"   # Stage 6.3.1: the adapter's DECLARED review (PENDING | COMPLETED); never inferred from the automated checks
+    manual_review_reference: str = ""          # where a COMPLETED review is recorded (required for COMPLETED)
 
 
 class AuditResult(_M):
@@ -171,3 +173,9 @@ class ValidationRun(_M):
     verdict: Dict[str, Any] = Field(default_factory=dict)
     candidates: List[StrategyCandidate] = Field(default_factory=list)
     disclaimer: str = ""
+    # Stage 6.3.1 (validation_v2): absent on Stage 6.2 records, which stay readable and are never back-filled
+    provenance: Dict[str, Any] = Field(default_factory=dict)        # the dataset's declared + derived provenance
+    boundary: Dict[str, Any] = Field(default_factory=dict)          # the TRAIN / OOS boundary PURGE: policy, train_end, purged candidate ids per arm
+    accounting: Dict[str, Any] = Field(default_factory=dict)        # accepted = simulated + boundary_purged + explicit skips, per arm and segment
+    replay_parity: Dict[str, Any] = Field(default_factory=dict)     # the adapter's declared parity requirement / status
+    eligibility: Dict[str, Any] = Field(default_factory=dict)       # PersistenceEligibility (integrity status, checks, reasons) - recomputed by the store
