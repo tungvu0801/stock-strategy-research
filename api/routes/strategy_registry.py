@@ -31,9 +31,21 @@ def _facts() -> dict:
     return SR.runtime_facts(stream)
 
 
+def _validation_store():
+    """Stage 6.2: the stored validation runs (read only); None when the database cannot be opened (the rows then read NOT_RUN)."""
+    try:
+        from strategy_validation.store import StrategyValidationStore
+        return StrategyValidationStore()
+    except Exception:  # noqa: BLE001 - display only
+        return None
+
+
 @router.get("")
 def get_registry() -> JSONResponse:
-    return JSONResponse(SR.registry_view(_facts()))
+    from strategy_registry import registry as R
+    from strategy_validation import service as SV
+    store = _validation_store()
+    return JSONResponse(SR.registry_view(_facts(), SV.registry_summaries(store, R.entries()) if store is not None else None))
 
 
 @router.get("/standard")
@@ -45,7 +57,17 @@ def get_standard() -> JSONResponse:
 def get_strategy(strategy_id: str) -> JSONResponse:
     if not _ID.match(strategy_id or ""):
         return JSONResponse({"status": "INVALID", "message": "strategy_id must be UPPER_SNAKE_CASE"}, status_code=400)
-    d = SR.detail_view(strategy_id.upper(), _facts())
+    from strategy_registry import registry as R
+    from strategy_validation import service as SV
+    entry, store = R.get(strategy_id), _validation_store()
+    validation = SV.detail(store.latest(entry.strategy_id) if (entry and store) else None, strategy_id.upper(), entry) if entry else None
+    d = SR.detail_view(strategy_id.upper(), _facts(), validation)
     if d is None:
         return JSONResponse({"status": "NOT_FOUND", "message": f"no strategy {strategy_id.upper()} in the registry"}, status_code=404)
     return JSONResponse(d)
+
+
+# Stage 6.2: the validation views (GET only) live under this prefix: /{strategy_id}/validation and /validation/runs/{run_id}[/simulations | /audit]
+from api.routes import strategy_validation as _validation_routes  # noqa: E402
+
+router.include_router(_validation_routes.router)

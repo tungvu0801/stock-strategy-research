@@ -64,6 +64,7 @@ NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "stra
            "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",
            "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}   # Stage 6.1.2 files
 NEW_FIX = {"tests/test_db_bootstrap_busy.py"}   # the WAL bootstrap fix (tests/test_db_bootstrap_busy.py pins database/database.py)
+from test_strategy_validation_62 import NEW_62  # noqa: E402 - Stage 6.2: the strategy validation harness files (tests/test_strategy_validation_62.py pins them)
 
 
 def rig(tmp_path, monkeypatch):
@@ -711,7 +712,7 @@ def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_ma
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_FILES | NEW_611 | NEW_612 | NEW_FIX, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612 - NEW_FIX), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612 | NEW_FIX) - new)}   # Stage 6.1.1 / 6.1.2 files + the WAL bootstrap fix
+    assert new == NEW_FILES | NEW_611 | NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612 | NEW_FIX | NEW_62) - new)}   # Stage 6.1.1 / 6.1.2 files + the WAL bootstrap fix + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new   # files of the base that differ
     allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py", "tests/test_forward_validation_61.py", "database/database.py"} | CI_FILES   # Stage 6.1.1 reconciles this file in place; the WAL bootstrap fix
     assert changed <= allowed, {"unexpected_changes": sorted(changed - allowed)}

@@ -3295,7 +3295,137 @@ def product_flow_session(c: Ctx):
 # <<< Product Flow 6.1.2
 
 
+# >>> Strategy Validation 6.2: the Strategy Lab Validation section (tests/test_strategy_validation_62.py pins this block; flows run after scanner, before small_screens)
+SV_FIXTURES = (("GOOD", "FIXTURE_GOOD", "RESEARCH"), ("TOO_SMALL", "FIXTURE_TOO_SMALL", "RESEARCH"), ("OVERFIT", "FIXTURE_OVERFIT", "PAPER_CANDIDATE"))
+SV_ROWS = ("[...document.querySelectorAll('#pui-more-body [data-pui-strategy-row]')].map((e) => { const b = e.querySelector('[data-pui-sv-status]'); "
+           "return [e.dataset.puiStrategyRow, b ? b.dataset.puiSvStatus : null, b ? b.innerText.trim() : null, !!e.querySelector('[data-pui-sv-synthetic]')]; })")
+SV_ARMS = ("[...document.querySelectorAll('#pui-more-body [data-pui-sv-arm]')].map((e) => [e.dataset.puiSvArm, e.dataset.puiSvArmStatus, e.children[1].innerText.trim(), "
+           "e.lastElementChild.innerText.trim()])")
+
+
+def _sv_lab(c: Ctx):
+    """MORE -> Research -> Strategy Lab: the registry with its Validation column."""
+    c.step("__click('#pui-nav [data-pui-nav=\"more\"]')", "document.getElementById('tab-settings').classList.contains('active') && document.querySelectorAll('#pui-more [data-pui-group]').length === 3", 30)
+    c.step("__click('#pui-more details[data-pui-group=\"Research\"] > summary')", "!!document.querySelector('#pui-more details[data-pui-group=\"Research\"][open]')", 10)
+    reqs, _, _ = c.step("__click('#pui-more [data-pui-more=\"action:lab\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
+    return reqs
+
+
+def _sv_open(c: Ctx, sid):
+    """Open one strategy's detail; return (its requests, the Validation block's text)."""
+    if not c.js("!!document.querySelector('#pui-more-body [data-pui-registry]')"):
+        c.step("__click('#pui-more-body [data-pui-lab=\"back\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
+    reqs, _, _ = c.step(f"__click('#pui-more-body [data-pui-lab=\"{sid}\"]')", f"!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"{sid}\"] [data-pui-sv]')", 30)
+    return reqs, (c.js("__tvText('#pui-more-body [data-pui-sv]')") or "")
+
+
+def _sv_lifecycles(c: Ctx):
+    return {s["strategy_id"]: s["status"] for s in c.http("GET", "/api/strategy-registry")["strategies"]}
+
+
+def strategy_validation(c: Ctx):
+    """Stage 6.2 (A, F: no validation): MORE -> Research -> Strategy Lab. Every registered strategy reads Validation · Not yet evaluated; Downside Dislocation
+    Recovery says why (no honest historical replay) and shows no metric, no arm table, nothing estimated; a placeholder says it is not implemented. Viewing
+    changes no lifecycle; GET only; no JS error."""
+    from api.routes.trader_view import stream
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    lc0 = _sv_lifecycles(c)
+    _pf_boot(c)
+    reqs = _sv_lab(c)
+    rows = c.js(SV_ROWS)
+    head = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-registry] th')].map((e) => e.innerText.trim().toLowerCase())")
+    c.r.check("registry: a Validation column after Lifecycle; every strategy reads Not yet evaluated (no run exists); nothing is marked synthetic",
+              head[2:4] == ["lifecycle", "validation"] and len(rows) == 5 and all(r[1] == "NOT_RUN" and r[2] == "Not yet evaluated" and r[3] is False for r in rows), [head, rows])
+    c.shot("strategy_validation_registry")
+    r1, ddr = _sv_open(c, "DOWNSIDE_DISLOCATION_RECOVERY")
+    api = c.http("GET", "/api/strategy-registry/DOWNSIDE_DISLOCATION_RECOVERY/validation")
+    c.r.check("Downside Dislocation Recovery: Validation · Not yet evaluated with the reason (no honest historical replay); no metric table, no arm table, no verdict",
+              "Not yet evaluated." in ddr and "No honest historical replay" in ddr and api["run"] is None and api["validation_status"] == "NOT_RUN"
+              and c.js("document.querySelectorAll('#pui-more-body [data-pui-sv-metrics], #pui-more-body [data-pui-sv-arms], #pui-more-body [data-pui-sv-verdict]').length") == 0
+              and not re.search(r"Net P&L|Win rate|t-stat|\bPASS\b|\bFAIL\b", ddr.replace(api["disclaimer"], "")), ddr[:400])   # the disclaimer itself names PASS
+    c.shot("strategy_validation_none", "#pui-more-body [data-pui-sv]")
+    r2, mom = _sv_open(c, "MOMENTUM")
+    c.r.check("a placeholder: Validation · Not yet evaluated - not implemented, no rules, no candidate", "Not yet evaluated." in mom and "Not implemented" in mom, mom[:300])
+    c.r.check("no control, no form and no POST in the lab; viewing changes no lifecycle (RESEARCH / PAPER_CANDIDATE as before)",
+              c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0 and _pui_posts(reqs + r1 + r2) == []
+              and _sv_lifecycles(c) == lc0 and lc0["DOWNSIDE_DISLOCATION_RECOVERY"] in ("PAPER_CANDIDATE", "PAPER_ACTIVE"), [lc0, _pui_posts(reqs + r1 + r2)])
+    _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "validation flow")
+
+
+def strategy_validation_results(c: Ctx):
+    """Stage 6.2 (B-F, results): three SYNTHETIC test-only registry entries with stored fixture runs, injected in this harness process only (STOCK_AGENT_ENV =
+    browser_test; removed afterwards; never in a preview). PASS shows TRAIN / OOS metrics and the audit; INSUFFICIENT DATA shows the real counts without
+    invented performance; FAIL states its reason and "should not progress"; the arm comparison shows RULES / GATED / MODEL on one candidate count with MODEL
+    Not evaluated; viewing changes no lifecycle; GET only; no JS error."""
+    import importlib.util
+    import os
+    from pathlib import Path
+    from api.routes.trader_view import stream
+    from strategy_registry import registry as R
+    from strategy_registry.models import StrategyEntry
+    from strategy_validation import engine as E
+    from strategy_validation.store import StrategyValidationStore
+    if not c.r.check("the harness process is a browser test process (synthetic runs are refused anywhere else)", os.environ.get("STOCK_AGENT_ENV") == "browser_test", os.environ.get("STOCK_AGENT_ENV")):
+        return
+    spec = importlib.util.spec_from_file_location("sv_fixtures_harness", Path(__file__).resolve().parents[1] / "tests" / "strategy_validation_fixtures.py")
+    FX = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(FX)
+    xsvc = stream().execution
+    sim = xsvc.broker.wire()
+    intents0, posts0, mode0, errs0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"], len(c.b.js_errors())
+    ddr = R.get(R.DDR_ID)
+    added = [StrategyEntry(**{**ddr.model_dump(), "strategy_id": sid, "display_name": f"Test fixture {name.lower().replace('_', ' ')}", "status": st, "setup_type": None,
+                              "description": "SYNTHETIC test fixture (browser harness only; never registered)."}) for name, sid, st in SV_FIXTURES]
+    R.ENTRIES.extend(added)
+    try:
+        runs = {}
+        for name, sid, _ in SV_FIXTURES:
+            ds, ad = FX.fixture(name)
+            runs[name] = E.run_validation(ad, ds, gates=[FX.SymbolGate()] if name == "GOOD" else ())
+            StrategyValidationStore().insert(runs[name])
+        lc0 = _sv_lifecycles(c)
+        _pf_boot(c)
+        reqs = _sv_lab(c)
+        rows = {r[0]: r for r in c.js(SV_ROWS)}
+        c.r.check("registry: PASS / INSUFFICIENT DATA / FAIL in the Validation column, each marked synthetic test data; the real strategy still Not yet evaluated",
+                  [rows[s][1:] for s in ("FIXTURE_GOOD", "FIXTURE_TOO_SMALL", "FIXTURE_OVERFIT")] == [["PASS", "PASS", True], ["INSUFFICIENT_DATA", "INSUFFICIENT DATA", True], ["FAIL", "FAIL", True]]
+                  and rows["DOWNSIDE_DISLOCATION_RECOVERY"][1:] == ["NOT_RUN", "Not yet evaluated", False], rows)
+        c.shot("strategy_validation_registry_results")
+        g = runs["GOOD"]
+        r1, good = _sv_open(c, "FIXTURE_GOOD")
+        tr, oo = g.arms["RULES"].metrics["TRAIN"], g.arms["RULES"].metrics["OOS"]
+        c.r.check("PASS: verdict + Eligible for review, the TRAIN / OOS / All metrics after friction, the audit line, lifecycle unchanged by validation",
+                  "PASS · Eligible for review" in good and re.search(r"(?i)RULES ARM\s+TRAIN\s+OOS\s+ALL", good) is not None and re.search(rf"Trades\s+{tr['trade_count']}\s+{oo['trade_count']}\s+100\b", good) is not None
+                  and g.audit.note in good and "Lifecycle: unchanged by validation." in good and "Synthetic test data" in good and "should not progress" not in good, good[:600])
+        arms = c.js(SV_ARMS)
+        c.r.check("arm comparison: RULES / GATED / MODEL on the same candidate count; GATED vetoed by the test gate; MODEL Not evaluated with no numbers",
+                  [a[:3] for a in arms] == [["RULES", "EVALUATED", "100"], ["GATED", "EVALUATED", "100"], ["MODEL", "NOT_EVALUATED", "100"]] and arms[2][3] == "Not evaluated"
+                  and "One candidate set for every arm (100 candidates" in good, arms)
+        c.shot("strategy_validation_pass", "#pui-more-body [data-pui-sv]")
+        r2, small = _sv_open(c, "FIXTURE_TOO_SMALL")
+        sm = runs["TOO_SMALL"].arms["RULES"].metrics
+        c.r.check("INSUFFICIENT DATA: the real counts, the reasons, no PASS verdict and no invented performance",
+                  "INSUFFICIENT DATA · Not ready for paper" in small and re.search(rf"Trades\s+{sm['TRAIN']['trade_count']}\s+{sm['OOS']['trade_count']}\s+{sm['ALL']['trade_count']}\b", small) is not None
+                  and "at least 30 are required" in small and "Eligible for review" not in small, small[:500])
+        c.shot("strategy_validation_insufficient", "#pui-more-body [data-pui-sv]")
+        r3, fail = _sv_open(c, "FIXTURE_OVERFIT")
+        reason = runs["OVERFIT"].verdict["reasons"][0]["text"]
+        c.r.check("FAIL: stated plainly with its reason and 'This strategy should not progress to paper trading.' once",
+                  "FAIL · Not ready for paper" in fail and reason in fail and fail.count("This strategy should not progress to paper trading.") == 1, fail[:500])
+        c.shot("strategy_validation_fail", "#pui-more-body [data-pui-sv]")
+        c.r.check("viewing validation changes no lifecycle (RESEARCH stays RESEARCH, PAPER_CANDIDATE stays PAPER_CANDIDATE); no control, no form, no POST",
+                  _sv_lifecycles(c) == lc0 and lc0["FIXTURE_GOOD"] == "RESEARCH" and lc0["FIXTURE_OVERFIT"] == "PAPER_CANDIDATE" and [e.status for e in R.ENTRIES if e in added] == [x[2] for x in SV_FIXTURES]
+                  and c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0 and _pui_posts(reqs + r1 + r2 + r3) == [], lc0)
+        _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "validation results flow")
+    finally:
+        for e in added:
+            R.ENTRIES.remove(e)
+# <<< Strategy Validation 6.2
+
+
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, strategy_validation, strategy_validation_results, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows; Stage 6.1.2: the product flows follow product_ui
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

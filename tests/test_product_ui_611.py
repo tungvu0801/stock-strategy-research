@@ -26,6 +26,7 @@ NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "stra
            "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",
            "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}   # Stage 6.1.2 files (tests/test_product_flow_612.py pins them)
 from test_db_bootstrap_busy import EDITS_61_FIX, NEW_FIX  # noqa: E402 - the WAL bootstrap fix: its new test file and its in-place edits of the Stage 6.1 test
+from test_strategy_validation_62 import EDITS_62_61, NEW_62  # noqa: E402 - Stage 6.2: its new files and its in-place edits of the Stage 6.1 test
 ALLOWED_CHANGED = {"frontend/index.html", "tests/test_trader_view_561.py", "tests/test_execution_60.py", "tests/test_cash_flow_602.py", "tests/test_forward_validation_61.py",
                    "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json", "api/server.py", "database/database.py"}   # Stage 6.1.2: two additive router lines in api/server.py (checked below); the WAL bootstrap fix
 BLOCK_TESTS = ("tests/test_trader_view_561.py", "tests/test_execution_60.py", "tests/test_cash_flow_602.py")
@@ -185,7 +186,7 @@ def test_F01_every_tracked_file_of_the_stage_61_base_is_identical_except_the_eig
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_611 | NEW_612 | NEW_FIX, {"unexpected_new": sorted(new - NEW_611 - NEW_612 - NEW_FIX), "missing_new": sorted((NEW_611 | NEW_612 | NEW_FIX) - new)}   # Stage 6.1.2 files + the WAL bootstrap fix
+    assert new == NEW_611 | NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_611 - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_611 | NEW_612 | NEW_FIX | NEW_62) - new)}   # Stage 6.1.2 files + the WAL bootstrap fix + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
     # Stage 6.1.2: api/server.py gains exactly two additive lines (the strategy-registry import and its GET-only router), nothing removed
@@ -236,6 +237,9 @@ def test_F03_reconciled_prior_stage_tests_differ_from_the_base_only_by_one_marke
         assert text.count(old) == 1 and new not in text, old[:70]
         text = text.replace(old, new)
     for old, new in EDITS_61_FIX:                                                                 # the WAL bootstrap fix: its in-place edits, applied after Stage 6.1.2's
+        assert text.count(old) == 1 and new not in text, old[:70]
+        text = text.replace(old, new)
+    for old, new in EDITS_62_61:                                                                  # Stage 6.2: its in-place edits, applied after the fix's
         assert text.count(old) == 1 and new not in text, old[:70]
         text = text.replace(old, new)
     assert text == now61, "tests/test_forward_validation_61.py differs from the base by other than the six (6.1.1) + two (6.1.2) listed in-place edits"

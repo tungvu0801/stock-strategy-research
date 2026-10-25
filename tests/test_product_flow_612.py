@@ -34,6 +34,7 @@ NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "stra
 ALLOWED_CHANGED = {"api/server.py", "frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/test_forward_validation_61.py",
                    "tests/frontend/product_ui.test.cjs", "browser_tests/flows.py", "README.md", ".github/ci/pytest_groups.json", "database/database.py"}   # + the WAL bootstrap fix
 from test_db_bootstrap_busy import EDITS_61_FIX, EDITS_611_FIX, GROUPS_EDIT_FIX, NEW_FIX  # noqa: E402 - the WAL bootstrap fix pins (tests/test_db_bootstrap_busy.py)
+from test_strategy_validation_62 import EDITS_62_61, EDITS_62_611, NEW_62, undo_62  # noqa: E402 - the Stage 6.2 pins (tests/test_strategy_validation_62.py)
 FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"             # the Stage 6.1 frozen controls: unchanged
 MARK_OPEN, MARK_CLOSE = "# >>> " + "Product Flow 6.1.2", "# <<< " + "Product Flow 6.1.2"    # built, not literal: this file is not a marked-block carrier
 STRIP_PF = r"(?ms)^# >>> Product Flow 6\.1\.2\b.*?^# <<< Product Flow 6\.1\.2[^\n]*\n\n\n"
@@ -255,7 +256,9 @@ def stack(tmp_path, monkeypatch):
 def test_A01_registry_api_is_get_only_with_the_documented_shapes_and_derives_the_lifecycle_from_persisted_facts(stack):
     api = stack.api
     mine = {p: set(o) for p, o in stack.app.openapi()["paths"].items() if p.startswith("/api/strategy-registry")}
-    assert mine == {"/api/strategy-registry": {"get"}, "/api/strategy-registry/standard": {"get"}, "/api/strategy-registry/{strategy_id}": {"get"}}
+    assert mine == {"/api/strategy-registry": {"get"}, "/api/strategy-registry/standard": {"get"}, "/api/strategy-registry/{strategy_id}": {"get"},
+                    "/api/strategy-registry/{strategy_id}/validation": {"get"}, "/api/strategy-registry/validation/runs/{run_id}": {"get"},   # Stage 6.2: the validation views (GET only)
+                    "/api/strategy-registry/validation/runs/{run_id}/simulations": {"get"}, "/api/strategy-registry/validation/runs/{run_id}/audit": {"get"}}
     for p in mine:
         assert not re.search(r"(?i)order|execute|broker|place|cancel|submit|buy|sell|preview|trade|alpaca|robinhood|paper|tune|optimi", p), p
     j = api.get("/api/strategy-registry").json()
@@ -454,7 +457,7 @@ def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_r
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_612 | NEW_FIX, {"unexpected_new": sorted(new - NEW_612 - NEW_FIX), "missing_new": sorted((NEW_612 | NEW_FIX) - new)}   # + the WAL bootstrap fix test
+    assert new == NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_612 | NEW_FIX | NEW_62) - new)}   # + the WAL bootstrap fix test + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
     for d in ("setups", "proposals", "safety", "execution", "account_refresh", "cash_flow", "ppe", "demand", "evidence", "paper", "forward", "forward_validation", "notifications", "trader_view", "database", "scripts", "api/routes"):
@@ -477,14 +480,14 @@ def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_r
 
 
 def test_F02_reconciled_files_differ_from_the_base_only_by_the_listed_exact_edits_and_one_marked_harness_block():
-    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611 + EDITS_611_FIX) == now_text("tests/test_product_ui_611.py"), "tests/test_product_ui_611.py: other than the listed in-place edits"
-    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_612_61 + EDITS_61_FIX) == now_text("tests/test_forward_validation_61.py"), "tests/test_forward_validation_61.py: other than the listed edits"
+    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611 + EDITS_611_FIX + EDITS_62_611) == now_text("tests/test_product_ui_611.py"), "tests/test_product_ui_611.py: other than the listed in-place edits"
+    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_612_61 + EDITS_61_FIX + EDITS_62_61) == now_text("tests/test_forward_validation_61.py"), "tests/test_forward_validation_61.py: other than the listed edits"
     assert replay(blob("tests/frontend/product_ui.test.cjs"), EDITS_CJS) == now_text("tests/frontend/product_ui.test.cjs"), "tests/frontend/product_ui.test.cjs: other than the four listed edits"
-    flows = now_text("browser_tests/flows.py")
+    flows = undo_62("browser_tests/flows.py", now_text("browser_tests/flows.py"))                 # Stage 6.2: its marked block and its FLOWS edit undone first
     assert len(re.findall(STRIP_PF, flows)) == 1 and replay(blob("browser_tests/flows.py"), EDITS_FLOWS) == re.sub(STRIP_PF, "", flows), "browser_tests/flows.py: other than the Product Flow block and the listed edits"
     old, new = GROUPS_EDIT
-    assert blob(".github/ci/pytest_groups.json").count(old) == 1 and blob(".github/ci/pytest_groups.json").replace(old, new).replace(*GROUPS_EDIT_FIX) == now_text(".github/ci/pytest_groups.json")
-    readme = now_text("README.md")
+    assert blob(".github/ci/pytest_groups.json").count(old) == 1 and blob(".github/ci/pytest_groups.json").replace(old, new).replace(*GROUPS_EDIT_FIX) == undo_62(".github/ci/pytest_groups.json", now_text(".github/ci/pytest_groups.json"))
+    readme = undo_62("README.md", now_text("README.md"))                                          # Stage 6.2: its README section removed first
     section = re.findall(r"(?ms)^## Unified product flow \+ Strategy Lab foundation \(Stage 6\.1\.2\)\n.*?(?=^## Continuous integration \(Stage 6\.0\.3)", readme)
     assert len(section) == 1 and readme.replace(section[0], "") == blob("README.md"), "README.md: other than the inserted Stage 6.1.2 section"
     files = [p for p in tracked() if (ROOT / p).is_file() and not p.endswith((".pyc", ".db", ".png"))]

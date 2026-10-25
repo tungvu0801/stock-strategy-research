@@ -1070,6 +1070,28 @@ Implementation: `frontend/product_ui.js` + `frontend/product_ui.css` (the shell 
 `api/routes/strategy_registry.py` and two additive lines in `api/server.py`. Tests: `tests/test_product_flow_612.py`,
 `tests/frontend/product_flow.test.cjs`, harness flows `product_flow*`. Design: `DESIGN_612_UNIFIED_PRODUCT_FLOW.md`, `DESIGN_612_STRATEGY_REGISTRY.md`.
 
+## Strategy validation harness (Stage 6.2, research only)
+
+`strategy_validation/` tries to **disprove** a registered strategy before paper trading: candidates are generated once (immutable, content
+identity, Strategy Standard v1, missing data skipped and counted - never zero), the same candidate set feeds the RULES / GATED / MODEL arms (a
+mismatch is **VALIDATION INVALID**; with no gate GATED equals RULES, with no model decider MODEL is "Not evaluated"), every accepted candidate is
+simulated with causal fills (next-bar open), STOP_FIRST for ambiguous bars and explicit friction (gross, slippage, fees and net always shown), the
+split is chronological (TRAIN 70 % / untouched OOS 30 %, OOS reported on its own), and an independent mechanical audit re-derives every trade
+from the stored records and raw bars (`N / N trades validated`). The verdict is `INSUFFICIENT DATA` (fewer than 30 trades, 20 OOS trades or 60 OOS
+sessions), `FAIL` ("This strategy should not progress to paper trading."), `MIXED`, `PASS` or `VALIDATION INVALID`. Backtest results are
+hypothetical; **PASS only means eligible for human review** - it does not mean the strategy will make money and it never changes a lifecycle.
+
+* Run: `python -m strategy_validation validate --strategy ID --dataset bars.csv [--train-ratio 0.7] [--arms rules,gated,model] [--output run.json]
+  [--persist]` (research CLI; never a broker writer; no browser endpoint launches a backtest).
+* Read (GET only): `/api/strategy-registry/{id}/validation`, `/api/strategy-registry/validation/runs/{run_id}[/simulations | /audit]`; the
+  registry rows carry `validation_status`, the latest run id, TRAIN / OOS trade counts and the audit status.
+* Strategy Lab: a Validation column in the registry and a Validation block in the strategy detail (metrics, arm comparison, audit, causality).
+  **Downside Dislocation Recovery reads "Not yet evaluated"**: it has no honest historical replay (its READY evidence does not exist for past
+  sessions), so no backtest is manufactured; its forward evidence is the Stage 6.1 forward paper validation.
+
+Docs: `STRATEGY_VALIDATION_HARNESS.md`, `DESIGN_62_STRATEGY_VALIDATION.md`. Tests: `tests/test_strategy_validation_62.py`,
+`tests/frontend/strategy_validation.test.cjs`, harness flows `strategy_validation*`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

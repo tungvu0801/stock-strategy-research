@@ -85,7 +85,7 @@
     },
     "research": {
       "job": "Pytest Research",
-      "about": "signal research, rotation diagnostics / engine / handoff / store / API, research workflow, portfolio backtest",
+      "about": "signal research, rotation diagnostics / engine / handoff / store / API, research workflow, portfolio backtest, strategy validation harness",
       "files": [
         "test_portfolio_backtest_48.py",
         "test_research_flow_47.py",
@@ -95,7 +95,8 @@
         "test_rotation_engine_47.py",
         "test_rotation_handoff_47.py",
         "test_rotation_store_47.py",
-        "test_signal_research_52.py"
+        "test_signal_research_52.py",
+        "test_strategy_validation_62.py"
       ]
     },
     "campaign": {

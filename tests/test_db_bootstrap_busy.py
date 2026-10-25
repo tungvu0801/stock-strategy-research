@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import database.database as DB  # noqa: E402
+from test_strategy_validation_62 import CHANGED_62, EDITS_62_61, EDITS_62_611, EDITS_62_612, NEW_62, undo_62  # noqa: E402 - the Stage 6.2 pins (tests/test_strategy_validation_62.py)
 
 BASE = "7961cfe1f91fb2a64d3b3dc3a7d5e8067e389937"                                          # origin/main with Stage 6.1.2 merged (PR #20), CI red on test_X02
 NEW_FIX = {"tests/test_db_bootstrap_busy.py"}
@@ -218,13 +219,13 @@ def test_F01_only_the_bootstrap_and_its_listed_reconciliations_changed():
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
-    assert new == NEW_FIX, {"unexpected_new": sorted(new - NEW_FIX), "missing_new": sorted(NEW_FIX - new)}
-    assert changed == CHANGED_FIX, {"unexpected_changes": sorted(changed - CHANGED_FIX), "missing_changes": sorted(CHANGED_FIX - changed)}
+    assert new == NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_FIX - NEW_62), "missing_new": sorted((NEW_FIX | NEW_62) - new)}   # + Stage 6.2
+    assert changed == CHANGED_FIX | (CHANGED_62 - NEW_FIX), {"unexpected_changes": sorted(changed - CHANGED_FIX - CHANGED_62), "missing_changes": sorted((CHANGED_FIX | (CHANGED_62 - NEW_FIX)) - changed)}
     assert replay(blob("database/database.py"), DB_EDITS) == now_text("database/database.py"), "database/database.py: other than the listed bootstrap edits"
-    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_61_FIX) == now_text("tests/test_forward_validation_61.py")
-    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611_FIX) == now_text("tests/test_product_ui_611.py")
-    assert replay(blob("tests/test_product_flow_612.py"), EDITS_612_FIX) == now_text("tests/test_product_flow_612.py")
+    assert replay(blob("tests/test_forward_validation_61.py"), EDITS_61_FIX + EDITS_62_61) == now_text("tests/test_forward_validation_61.py")   # + Stage 6.2's edits
+    assert replay(blob("tests/test_product_ui_611.py"), EDITS_611_FIX + EDITS_62_611) == now_text("tests/test_product_ui_611.py")
+    assert replay(blob("tests/test_product_flow_612.py"), EDITS_612_FIX + EDITS_62_612) == now_text("tests/test_product_flow_612.py")
     groups = blob(".github/ci/pytest_groups.json")
-    assert groups.count(GROUPS_EDIT_FIX[0]) == 1 and groups.replace(*GROUPS_EDIT_FIX) == now_text(".github/ci/pytest_groups.json")
+    assert groups.count(GROUPS_EDIT_FIX[0]) == 1 and groups.replace(*GROUPS_EDIT_FIX) == undo_62(".github/ci/pytest_groups.json", now_text(".github/ci/pytest_groups.json"))   # Stage 6.2 undone first
     for rel in ("scripts/run_aapl_paper_smoke.py", "execution/service.py", "execution/store.py", "execution/scheduler.py", "execution/broker.py", "safety/service.py", "config.py"):
         assert now_text(rel) == blob(rel), f"{rel} must not change: the lease, the OS lock and every exactly-once guard stay as they are"
