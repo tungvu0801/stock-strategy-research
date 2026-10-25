@@ -63,6 +63,7 @@ NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_prod
 NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "strategy_registry/standard.py", "strategy_registry/registry.py", "strategy_registry/service.py",
            "strategy_registry/downside_recovery.py", "api/routes/strategy_registry.py", "tests/test_product_flow_612.py", "tests/frontend/product_flow.test.cjs",
            "DESIGN_612_UNIFIED_PRODUCT_FLOW.md", "DESIGN_612_STRATEGY_REGISTRY.md", "DESIGN_612_QUANTCONNECT_ADAPTER.md", "STRATEGY_STANDARD_V1.md"}   # Stage 6.1.2 files
+NEW_FIX = {"tests/test_db_bootstrap_busy.py"}   # the WAL bootstrap fix (tests/test_db_bootstrap_busy.py pins database/database.py)
 
 
 def rig(tmp_path, monkeypatch):
@@ -710,14 +711,14 @@ def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_ma
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
-    assert new == NEW_FILES | NEW_611 | NEW_612, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612) - new)}   # Stage 6.1.1 / 6.1.2 files added
+    assert new == NEW_FILES | NEW_611 | NEW_612 | NEW_FIX, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612 - NEW_FIX), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612 | NEW_FIX) - new)}   # Stage 6.1.1 / 6.1.2 files + the WAL bootstrap fix
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new   # files of the base that differ
-    allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py", "tests/test_forward_validation_61.py"} | CI_FILES   # Stage 6.1.1 reconciles this file in place
+    allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py", "tests/test_forward_validation_61.py", "database/database.py"} | CI_FILES   # Stage 6.1.1 reconciles this file in place; the WAL bootstrap fix
     assert changed <= allowed, {"unexpected_changes": sorted(changed - allowed)}
     # production packages of the earlier stages: byte-identical (every file that exists in the base)
     for d in ("setups", "proposals", "safety", "execution", "account_refresh", "cash_flow", "ppe", "demand", "evidence", "paper", "forward", "notifications", "trader_view", "api/routes", "database", "scripts"):
         for rel in sorted(p for p in in_base if p.startswith(d + "/") and p.endswith((".py", ".ps1"))):
-            if rel in ADDITIVE or rel in NEW_FILES:
+            if rel in ADDITIVE or rel in NEW_FILES or rel == "database/database.py":   # database.py: the bounded WAL bootstrap, pinned line by line by tests/test_db_bootstrap_busy.py
                 continue
             assert now_text(rel) == blob(rel), f"{rel} differs from {BASE}"
     for rel in ("frontend/risk_controls.js", "frontend/trader_view.js", "frontend/trader_render.js", "frontend/trade_review.js", "frontend/paper_bot.js", "frontend/setup_alerts.js", "frontend/trader_view.css",

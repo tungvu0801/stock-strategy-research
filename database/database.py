@@ -11,9 +11,18 @@ connection must never be shared across threads. Each method opens its own
 short-lived connection (opening a local SQLite file is sub-millisecond) —
 simpler and safer than a shared connection + lock for a local single-user
 app. WAL mode lets reads and the writer proceed without blocking each other.
+
+Bootstrap race (two processes creating the same NEW file at once): switching a
+rollback-journal database to WAL needs an exclusive lock, and SQLite answers
+SQLITE_BUSY ("database is locked") for that switch without waiting on the busy
+handler. WAL is persistent, so _enable_wal() only switches when the file is not
+in WAL yet, and retries the switch a bounded number of times
+(WAL_SWITCH_ATTEMPTS, backoff WAL_SWITCH_BACKOFF_S, at most ~5 s of sleep);
+after the last attempt the original OperationalError is raised unchanged.
 """
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +88,30 @@ def _int_to_bool(value) -> Optional[bool]:
     return None if value is None else bool(value)
 
 
+WAL_SWITCH_ATTEMPTS = 8
+WAL_SWITCH_BACKOFF_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6, 2.0)      # between the attempts: 5.15 s at most, then the original error
+
+
+def _is_busy(exc: sqlite3.OperationalError) -> bool:
+    msg = str(exc).lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+def _enable_wal(conn: sqlite3.Connection, sleep=time.sleep) -> None:
+    """Put the database in WAL mode. Reading the mode needs no exclusive lock; only a file not yet in WAL is switched, and
+    that switch (SQLITE_BUSY without the busy handler during a concurrent bootstrap) is retried a bounded number of times."""
+    for attempt in range(WAL_SWITCH_ATTEMPTS):
+        try:
+            if str(conn.execute("PRAGMA journal_mode;").fetchone()[0]).lower() == "wal":
+                return
+            conn.execute("PRAGMA journal_mode=WAL;")
+            return
+        except sqlite3.OperationalError as exc:
+            if not _is_busy(exc) or attempt == WAL_SWITCH_ATTEMPTS - 1:
+                raise
+            sleep(WAL_SWITCH_BACKOFF_S[attempt])
+
+
 class ResearchDatabase:
     """Repository for research_snapshots / research_outcomes. See module docstring."""
 
@@ -93,8 +126,12 @@ class ResearchDatabase:
     def _connect(self):
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
+        try:
+            _enable_wal(conn)
+        except BaseException:
+            conn.close()
+            raise
         conn.execute("PRAGMA foreign_keys=ON;")
         try:
             yield conn
