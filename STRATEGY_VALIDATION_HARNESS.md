@@ -239,6 +239,8 @@ Design and policy: `DESIGN_641_CROSS_SECTIONAL_VALIDATION.md`. Code: `strategy_v
   `performance_verdict`.
 * **Control-parity audit** (8 checks) and the integrity check `SELECTION_CONTROL`: the recorded edge and the overall verdict must equal the policy
   re-applied to the record's own statistics; a failed parity audit is persistable only with an INVALID edge.
+* **Strategy diagnostics** (Stage 6.5): an adapter's `strategy_diagnostics` run after the v3 block, so they can describe its period table
+  (calendar, market months, friction share, concentration); they remain research output - never a gate.
 * **Storage**: a v3 run records `evaluation_mode`, `performance_verdict`, `selection_edge` and `cross_sectional`. An older run is assessed by a
   methodology evaluation in `strategy_validation_evaluations` (append-only, re-checked by the store; the run row is never touched), created with
   `python -m strategy_validation evaluate --run RUN_ID --dataset FILE [--persist]`. The Strategy Lab shows the overall verdict, the absolute

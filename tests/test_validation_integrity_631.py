@@ -429,7 +429,7 @@ def test_D01_downside_recovery_stays_not_run():
     from strategy_validation.adapters import ADAPTERS, DownsideRecoveryAdapter, adapter_for
     a = DownsideRecoveryAdapter()
     assert a.historical_replay_supported is False and (a.replay_parity_requirement, a.replay_parity_status) == ("EXACT_REQUIRED", "NOT_ESTABLISHED")
-    assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY"))[0] is None and sorted(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]
+    assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY"))[0] is None and sorted(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY", "MOMENTUM", "VALUE_QUALITY"]
     with pytest.raises(E.ValidationError):
         E.run_validation(a, F.fixture("GOOD")[0])
     v = SR.detail_view("DOWNSIDE_DISLOCATION_RECOVERY")["validation"]

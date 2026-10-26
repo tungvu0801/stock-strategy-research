@@ -1141,6 +1141,25 @@ rebalance period**, with a t-statistic over periods. SPY is shown as the **marke
 Docs: `DESIGN_641_CROSS_SECTIONAL_VALIDATION.md`, `STRATEGY_VALIDATION_HARNESS.md` section 14. Tests: `tests/test_cross_sectional_641.py`,
 `tests/frontend/cross_sectional.test.cjs`.
 
+## Momentum strategy (Stage 6.5, research only)
+
+`momentum/` is Strategy #3: long only, monthly, deterministic, no model. At the first session of each month the shared core
+(`momentum/core.py`) ranks the same fixed research universe as Value + Quality by **12-1 momentum** - the adjusted return from the close 252
+sessions back to the close 21 sessions back (the most recent month never enters the signal) - and holds the top 20 at equal weight, re-examined
+monthly (ENTER / HOLD / EXIT, no stop). Eligibility: raw close >= 5 USD, 20-session median dollar volume >= 1M USD, a full lookback with both
+endpoint bars (never shortened, padded or substituted), one listing per issuer. Rules frozen in a commit before the OOS run.
+
+* **Universe**: today's large caps -> **`SURVIVORSHIP_BIAS_PRESENT`**, shown with the verdict. For a price ranking the bias is not neutral between
+  the strategy and the control (persistent winners are in, collapsed winners are out): it likely flatters the selection edge.
+* **Validate** (validation_v3, cross-sectional): `python -m strategy_validation validate --strategy MOMENTUM --dataset runtime/vq/vq_bundle.json
+  --persist`. The selection edge is the excess over the equal-weight eligible universe, one observation per rebalance period; SPY is the market
+  benchmark only. An independent audit re-derives the eligible set, the momentum and the top 20 at every rebalance.
+* **Result** (2021-08 to 2026-10): absolute performance PASS; OOS strategy +79.0 % vs selection control +48.5 % over 22 periods, but the
+  period-excess t is 0.87 (one month carries 64 % of the excess; the portfolio ran at 2.4x the control's volatility) -> selection edge
+  **NOT_ESTABLISHED**, overall FAIL. The lifecycle stays **Research**.
+
+Docs: `DESIGN_65_MOMENTUM.md`. Tests: `tests/test_momentum_65.py`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

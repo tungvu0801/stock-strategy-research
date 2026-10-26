@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from strategy_registry.models import StrategyEntry
 
 DDR_ID = "DOWNSIDE_DISLOCATION_RECOVERY"
-PLACEHOLDER_IDS = ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT")       # Stage 6.4: VALUE_QUALITY is implemented (research only)
+PLACEHOLDER_IDS = ("MEAN_REVERSION", "BREAKOUT")                  # Stage 6.4: VALUE_QUALITY, Stage 6.5: MOMENTUM are implemented (research only)
 PLACEHOLDER_NOTE = "Registry placeholder only: not implemented. No rules, no data requirements, no backtest, no out-of-sample result, no paper result and no signal exist."
 REGISTRY_DATE = "2026-10-25"                                       # the day the registry (Stage 6.1.2) was created: the placeholders' created_at / updated_at
 
@@ -30,9 +30,12 @@ ENTRIES: List[StrategyEntry] = [
                                "cash-flow yield) and quality (return on assets, cash flow on assets, equity ratio), from point-in-time SEC fundamentals "
                                "(Stage 6.4, value_quality/). Research only: it is validated historically and never produces a trading signal."),
                   created_at=REGISTRY_DATE, updated_at="2026-10-25", implemented=True),
-    StrategyEntry(strategy_id="MOMENTUM", display_name="Momentum", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="SWING",
-                  status="RESEARCH", version="0.0", description="Future internal strategy (price momentum). " + PLACEHOLDER_NOTE,
-                  created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),
+    StrategyEntry(strategy_id="MOMENTUM", display_name="Momentum", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="POSITION",
+                  status="RESEARCH", version="1.0",
+                  description=("Long-only monthly rebalance of the 20 stocks with the strongest 12-1 price momentum (the adjusted return from about 12 months "
+                               "to about 1 month before the rebalance), equal weight, from daily bars (Stage 6.5, momentum/). Research only: it is "
+                               "validated historically against its eligible universe and never produces a trading signal."),
+                  created_at=REGISTRY_DATE, updated_at="2026-10-26", implemented=True),
     StrategyEntry(strategy_id="MEAN_REVERSION", display_name="Mean Reversion", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="SWING",
                   status="RESEARCH", version="0.0", description="Future internal strategy (reversion to a reference level). " + PLACEHOLDER_NOTE,
                   created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),
