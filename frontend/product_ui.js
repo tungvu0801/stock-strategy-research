@@ -102,7 +102,9 @@
                   registry: null, registryBusy: false, registryFailedAt: null, frozen: null, frozenBusy: false, frozenFailedAt: null, terminal: {}, terminalBusy: false, techOpen: false, filter: "all", moreOpen: {}, moreAction: null,
                   labDetail: null, labError: null,
                   // Stage 6.8: the account's positions (POSITIONS) and the Bot Activity read (TRADE): the payload, this page's connection, the open folds
-                  acctPos: null, acctPosError: null, botAct: null, botConn: null, botBusy: false, botReadAt: null, botOpen: {} };
+                  acctPos: null, acctPosError: null, botAct: null, botConn: null, botBusy: false, botReadAt: null, botOpen: {},
+                  // Stage 6.9: the unified portfolio (Alpaca PAPER + Robinhood READ ONLY)
+                  unified: null, unifiedError: null, unifiedBusy: false, unifiedReadAt: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -618,8 +620,8 @@
       `<div class="pui-sub">Broker orders, fills and reconciliation live under POSITIONS.</div>`) : "";
     const pos = p.open ? `<div class="pui-card position" data-pui-card="position" data-open="1"><h4>Position</h4><div class="pui-big">${esc(p.symbol)} · ${esc(p.shares)} share${Number(p.shares) === 1 ? "" : "s"}</div>` +
       `<div class="pui-kv"><span>Entry</span><b>${esc(p.entry)}</b><span>Current</span><b>${esc(p.current)}</b><span>P/L</span><b>${esc(p.pnl)}</b></div><div class="pui-line">${esc(p.holding)} · ${esc(p.status)}</div>` +
-      (p.reason ? `<div class="pui-sub">${esc(p.reason)}</div>` : "") + posDetails + `</div>`
-      : (accountCardHtml(p.entering ? null : ctx.account, ctx.symbol) ||                                // Stage 6.8: an account holding the bot does not manage is named, never hidden
+      (p.reason ? `<div class="pui-sub">${esc(p.reason)}</div>` : "") + (exposureLines(ctx.unified, p.symbol) || "") + posDetails + `</div>`   // Stage 6.9: other accounts named, never merged
+      : (exposureCardHtml(p.entering ? null : ctx.unified, ctx.symbol) || accountCardHtml(p.entering ? null : ctx.account, ctx.symbol) ||   // Stage 6.9 / 6.8: holdings the bot does not manage are named, never hidden
          `<div class="pui-card position" data-pui-card="position" data-open="0"><h4>Position</h4><div class="pui-big">${esc(p.entering ? "Entering" : "No position")}</div><div class="pui-sub">${esc(p.entering ? "Order submitted. Waiting for broker fill." : a.key === "ENTRY_FAILED" ? "The entry did not fill. No automatic replacement order." : "")}</div></div>`);
     const riskDetails = fold("risk", !!ctx.riskOpen, "Details", r.lines.slice(1).map((l) => `<div class="${lvl(l.level)}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") || `<div class="pui-dim">No further detail.</div>`);
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}" data-kill="${r.killActive ? "1" : "0"}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
@@ -977,6 +979,73 @@
       `${c.needs_review ? ` · ${esc(c.needs_review)} need a look` : ""}.</div></section>`;
   }
 
+
+  // ---------------------------------------------------------------- Stage 6.9: Robinhood READ ONLY + unified exposure (pure; GET /api/unified-portfolio) ----------
+  // PAPER (Alpaca) and REAL (Robinhood) are never mixed up: every block names its account type, Robinhood rows are USER MANAGED (the bot never
+  // trades, exits or resizes them), and a source without data is "unknown", never zero holdings.
+  const RH_STATE = { NOT_CONFIGURED: "Not configured", AUTH_REQUIRED: "Login required", NOT_LOADED: "Not loaded yet", LOADED: "Loaded", STALE: "Stale", ERROR: "Read failed" };
+  const UNI_STATE = { COMPLETE: ["Complete", "ok"], STALE_SOURCE: ["A source is stale", "warn"], PARTIAL: ["Partial", "warn"], UNAVAILABLE: ["Unavailable", "bad"] };
+  const OWN_CLS = { BOT_MANAGED: "ok", EXTERNAL: "warn", USER_MANAGED: "info", NEEDS_REVIEW: "bad" };
+  const OWN_TXT = { BOT_MANAGED: "bot", EXTERNAL: "external", USER_MANAGED: "user managed", NEEDS_REVIEW: "needs review" };
+  const usd = (x) => { const n = num(x); return n == null ? "—" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; };
+  function realSource(u) { return u ? (u.sources || []).find((s) => s.account_type !== "PAPER") || null : null; }
+  const isReal = (s) => !!s && s.account_type === "REAL";
+  function robinhoodHtml(u, error) {
+    const s = realSource(u);
+    const head = s && s.account_type === "SYNTHETIC" ? `<div class="pui-group-label" data-pui-group="REAL">SYNTHETIC — ROBINHOOD FIXTURE · not a real account · read only</div>`
+      : `<div class="pui-group-label" data-pui-group="REAL">REAL — ROBINHOOD · user managed · read only</div>`;
+    if (!s) return head + `<section class="pui-acct pui-real" data-pui-rh="UNAVAILABLE"><div class="pui-bad">Robinhood holdings unavailable${error ? ` (${esc(error)})` : ""}: unknown, not zero.</div></section>`;
+    const rows = (u.rows || []).filter((r) => r.account_type !== "PAPER");
+    const meta = `<div class="pui-sub" data-pui-rh-state="${esc(s.state)}">${esc(s.label)} · ${esc(RH_STATE[s.state] || s.state)}${s.refreshed_at ? ` · read at ${esc(day(s.refreshed_at))} ${esc(hms(s.refreshed_at))} UTC` : ""}</div>`;
+    const body = s.state !== "LOADED" && s.state !== "STALE"
+      ? `<div class="pui-empty" data-pui-rh-empty="${esc(s.state)}"><b>${esc(RH_STATE[s.state] || s.state)}.</b> ${esc(s.message || "")}</div>`
+      : (s.state === "STALE" ? `<div class="pui-line pui-warn" data-pui-rh-stale>${esc(s.message || "Stale")}</div>` : "") +
+        (rows.length ? `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Current</th><th>Market value</th><th>Unrealized P/L</th><th>Ownership</th></tr></thead><tbody>` +
+          rows.map((r) => `<tr data-pui-rh-row="${esc(r.symbol)}"><td><b>${esc(r.symbol)}</b></td><td>${esc(r.quantity)}</td><td>${esc(r.average_entry_price || "—")}</td><td>${esc(r.current_price || "—")}</td>` +
+            `<td>${esc(r.market_value || "—")}</td><td>${esc(money(r.unrealized_pl))}</td><td><span class="pui-badge info" title="${esc(r.notes || "")}">${esc(r.ownership_label)}</span></td></tr>`).join("") + `</tbody></table>`
+          : `<div class="pui-empty">No holdings in the Robinhood account.</div>`);
+    return head + `<section class="pui-acct pui-real" data-pui-rh="${esc(s.state)}"><h3>${esc(s.label)}</h3>${meta}${body}` +
+      `<div class="pui-sub">${isReal(s) ? "Real money, read only" : "Synthetic data, not a real account"}: the bot never trades, exits or resizes these holdings. Robinhood is not an execution broker.</div></section>`;
+  }
+  function unifiedHtml(u, error) {
+    if (!u) return `<section class="pui-acct pui-unified" data-pui-unified="UNAVAILABLE"><h3>Unified exposure</h3><div class="pui-bad">Unavailable${error ? ` (${esc(error)})` : ""}.</div></section>`;
+    const st = UNI_STATE[u.state] || [u.state, "dim"], ex = u.exposure || {}, eq = u.equity || {};
+    const disc = (u.disclosure || []).length ? `<ul class="pui-sub" data-pui-unified-disclosure>${u.disclosure.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : "";
+    const by = (o) => Object.entries(o || {}).map(([k, v]) => `${esc(OWN_TXT[k] || k)} ${esc(usd(v))}`).join(" · ") || "—";
+    const sym = (ex.by_symbol || []).map((s) => `<tr data-pui-uni-row="${esc(s.symbol)}"${s.duplicate ? ' data-duplicate="1"' : ""}><td><b>${esc(s.symbol)}</b></td><td>${esc(s.gross_quantity || s.quantity)}</td><td>${esc(usd(s.gross_market_value || s.market_value))}${s.fully_valued ? "" : " (part unvalued)"}</td>` +
+      `<td>${s.weight_pct == null ? "—" : `${esc(s.weight_pct)}%`}</td><td>${s.accounts.map((a) => `${esc(a.account_type)} ${esc(a.quantity)} (${esc(OWN_TXT[a.ownership] || a.ownership)})`).join(" + ")}</td></tr>`).join("");
+    const warn = (u.warnings || []).length ? `<ul class="pui-bot-list" data-pui-unified-warnings>${u.warnings.map((w) => `<li class="${esc(w.level)}" data-code="${esc(w.code)}">${esc(w.text)}</li>`).join("")}</ul>` : `<div class="pui-sub">No exposure warning.</div>`;
+    const real = eq.real_external, rs = realSource(u);
+    return `<section class="pui-acct pui-unified" data-pui-unified="${esc(u.state)}"><h3>Unified exposure <span class="pui-badge ${st[1]}">${esc(st[0])}</span></h3>${disc}` +
+      `<div class="pui-kv pui-bot-kv"><span>Known invested value (PAPER + ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}, gross)</span><b data-pui-uni-total>${esc(usd(ex.total_market_value))}${ex.basis === "KNOWN_SOURCES_ONLY" ? " (known sources only)" : ""}</b>` +
+      `<span>By account type</span><b data-pui-uni-types>${by(ex.by_account_type)}</b><span>By ownership</span><b>${by(ex.by_ownership)}</b>` +
+      `<span>Largest</span><b>${ex.largest ? `${esc(ex.largest.symbol)} ${esc(ex.largest.weight_pct)}%` : "—"}</b><span>Top 5</span><b>${ex.top5_pct == null ? "—" : `${esc(ex.top5_pct)}%`}</b>` +
+      `<span>Equity · PAPER</span><b>${esc(usd(eq.paper && eq.paper.equity))}</b><span>Equity · ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}</span><b>${real ? esc(usd(real.equity)) : "unknown (Robinhood not loaded)"}</b></div>` +
+      `<div class="pui-sub">${esc(eq.note || "")}</div>` +
+      (sym ? `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Shares (all accounts, gross)</th><th>Value (gross)</th><th>Weight</th><th>Per account</th></tr></thead><tbody>${sym}</tbody></table>` : `<div class="pui-empty">No known position in any account.</div>`) +
+      `<div class="pui-sub">Warnings (informational):</div>${warn}<div class="pui-sub">${esc(u.current_entry_policy || "")}</div></section>`;
+  }
+  // TRADE › Position card: the bot's position, the Alpaca account and Robinhood stay three different things; unified exposure adds them up
+  function exposureLines(u, sym) {
+    if (!u || !sym) return null;
+    const rows = (u.rows || []).filter((r) => r.symbol === sym);
+    const rh = realSource(u), ps = (u.sources || []).find((s) => s.account_type === "PAPER") || null;
+    const rhRows = rows.filter((r) => r.account_type !== "PAPER"), paper = rows.filter((r) => r.account_type === "PAPER" && r.ownership !== "BOT_MANAGED");
+    if (!rhRows.length && !paper.length) return null;
+    const known = (s) => !!s && (s.state === "LOADED" || s.state === "STALE");
+    const line = (t, cls, attr) => `<div class="pui-line ${cls || ""}" ${attr || ""}>${t}</div>`;
+    const tot = (u.exposure && (u.exposure.by_symbol || []).find((s) => s.symbol === sym)) || null;
+    const partial = u.exposure && (u.exposure.missing_sources || []).length ? " (known sources only)" : "";
+    const rhName = rh && rh.account_type === "SYNTHETIC" ? "Robinhood · SYNTHETIC fixture" : "Robinhood · REAL";
+    return line(`Alpaca PAPER account: ${paper.length ? paper.map((r) => `${esc(r.quantity)} ${esc(sym)} · ${esc(r.ownership_label)}${r.ownership === "EXTERNAL" ? ` · blocks a bot entry in ${esc(sym)}` : ""}`).join("; ")
+                                         : known(ps) ? "no non-bot holding" : `unknown (${esc(RH_STATE[(ps || {}).state] || "not loaded")})`}`, "", 'data-pui-x="paper"') +
+      line(`${rhName}: ${rhRows.length ? rhRows.map((r) => `${esc(r.quantity)} shares · ${esc(r.ownership_label)}`).join("; ") : rh && !known(rh) ? `unknown (${esc(RH_STATE[rh.state] || rh.state)})` : "none"}`, rhRows.length ? "pui-warn" : "", 'data-pui-x="real"') +
+      (tot ? line(`Unified exposure${partial}: ${esc(tot.gross_quantity || tot.quantity)} shares · ${esc(usd(tot.gross_market_value || tot.market_value))}`, "", 'data-pui-x="unified"') : "");
+  }
+  function exposureCardHtml(u, sym) {
+    const lines = exposureLines(u, sym);
+    return lines ? `<div class="pui-card position" data-pui-card="position" data-open="0" data-pui-exposure="${esc(sym)}"><h4>Position</h4><div class="pui-big">No bot position</div>${lines}</div>` : null;
+  }
   // TRADE › Position card when the bot holds nothing in the symbol: the account's own holding (external, unmanaged) or "not loaded" - null keeps the plain card
   function accountCardHtml(v, sym) {
     if (!v || !sym) return null;
@@ -1123,7 +1192,8 @@
     host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
                                  whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError,
                                  registry: state.registry, terminal: (state.terminal[sym] || {}).data || null, frozen: state.frozen, techOpen: state.techOpen,
-                                 account: (state.botAct && state.botAct.positions && state.botAct.positions.account) || state.acctPos || null });   // Stage 6.8
+                                 account: (state.botAct && state.botAct.positions && state.botAct.positions.account) || state.acctPos || null,   // Stage 6.8
+                                 unified: state.unified });                                                                                    // Stage 6.9
   }
   // Stage 6.1.2 read-only loaders: the registry and the frozen controls once per page, the terminal state of the active ticker only while Why? is open
   // a failed read is read again at most once a minute (never a 2 s poll)
@@ -1254,6 +1324,7 @@
     catch (e) { state.acctPos = null; state.acctPosError = e.message; }
     loadRegistry(); loadFrozen();
     renderPositions();
+    loadUnified(true).then(() => renderPositions());                                                    // Stage 6.9: Robinhood READ ONLY + unified exposure, never delaying PAPER
   }
   function renderPositions() {
     const host = $("pui-positions");
@@ -1261,7 +1332,8 @@
     const positions = (state.posData && state.posData.positions) || [];
     const rows = positionCards(exec(), positions, state.posData && state.posData.events, strategyName());
     const closed = positions.filter((p) => p.state === "CLOSED").length;
-    host.innerHTML = `<h2>Positions</h2>` + (state.error ? `<div class="pui-bad">${esc(state.error)}</div>` : "") + positionsHtml(rows) + accountPositionsHtml(state.acctPos, state.acctPosError) + `<div id="pui-pos-detail"></div>` +
+    host.innerHTML = `<h2>Positions</h2>` + (state.error ? `<div class="pui-bad">${esc(state.error)}</div>` : "") + positionsHtml(rows) + `<div class="pui-group-label" data-pui-group="PAPER">PAPER — ALPACA</div>` + accountPositionsHtml(state.acctPos, state.acctPosError) +
+      robinhoodHtml(state.unified, state.unifiedError) + unifiedHtml(state.unified, state.unifiedError) + `<div id="pui-pos-detail"></div>` +
       `<details class="pui-fold" data-pui-closed-fold><summary>Closed paper trades (${closed})</summary>${closedHtml(positions, strategyName(), state.limits)}</details>`;
     if (state.posDetails) renderPositionDetails(state.posDetails);
   }
@@ -1428,7 +1500,15 @@
   function tick() {
     observeBot();
     renderStatus();
-    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); }
+    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); loadUnified(); }
+  }
+  // Stage 6.9: GET /api/unified-portfolio (Robinhood is read at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS on the server) - every 30 s on TRADE, on demand on POSITIONS
+  async function loadUnified(force) {
+    if (state.unifiedBusy || (!force && state.unifiedReadAt && Date.now() - state.unifiedReadAt < 30000)) return;
+    state.unifiedBusy = true; state.unifiedReadAt = Date.now();
+    try { state.unified = await getJson("/api/unified-portfolio"); state.unifiedError = null; }
+    catch (e) { state.unified = null; state.unifiedError = e.message; }                                // a failed read never keeps an old "Loaded" on screen
+    finally { state.unifiedBusy = false; }
   }
   // Stage 6.8 TRADE › Bot Activity: GET /api/execution/activity every 10 s (every 2 s while the worker reports a cycle in progress); never a broker call
   function ensureBotActivity() {
@@ -1529,5 +1609,7 @@
            // Stage 6.2
            svBadge, validationHtml,
            // Stage 6.8
-           accountPositionsHtml, accountCardHtml, botActivityModel, botActivityHtml, renderBotActivity, loadBotActivity };
+           accountPositionsHtml, accountCardHtml, botActivityModel, botActivityHtml, renderBotActivity, loadBotActivity,
+           // Stage 6.9
+           robinhoodHtml, unifiedHtml, exposureLines, exposureCardHtml, loadUnified };
 });

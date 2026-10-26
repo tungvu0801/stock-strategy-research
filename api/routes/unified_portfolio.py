@@ -1,0 +1,53 @@
+"""
+api/routes/unified_portfolio.py - Stage 6.9 UNIFIED PORTFOLIO (GET ONLY: there is no POST / PUT / PATCH / DELETE route here).
+
+GET /api/unified-portfolio            UnifiedPortfolioState: Alpaca PAPER rows (bot-managed / external) + Robinhood REAL rows (user-managed),
+                                      exposure, concentration, PAPER vs REAL equity kept apart, informational warnings, advisory entry policy
+GET /api/unified-portfolio/robinhood  the Robinhood READ-ONLY source: state, freshness, user-managed holdings
+
+Robinhood is read through the loopback rh_gateway (two GETs, at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS); Alpaca PAPER positions come
+from the account-refresh snapshot (0 broker calls). Nothing here places, changes, cancels or closes an order or a position. Only normalized
+portfolio data is returned: no credential, token, cookie, session id or full account number.
+"""
+from typing import Optional
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+
+router = APIRouter(prefix="/api/unified-portfolio", tags=["unified-portfolio"])
+
+
+def _alpaca(s) -> tuple:
+    from execution.account_positions import view as account_view
+    av = account_view(s.account_refresh, s.execution.store)
+    snap = s.account_refresh.store.snapshot() if s.account_refresh.enabled() else None
+    acct = (snap or {}).get("account") or {}
+    return av, ({"equity": acct.get("equity"), "cash": acct.get("cash")} if snap else None)
+
+
+def _ready(s) -> list:
+    try:
+        return [e.symbol for e in s.setups.store.open_episodes() if e.state == "READY"]
+    except Exception:  # noqa: BLE001 - the advisory policy is display only
+        return []
+
+
+def unified_payload(refresh: bool = True, stream_obj: Optional[object] = None) -> dict:
+    from api.routes.trader_view import stream
+    from portfolio.sectors import default_resolver
+    from unified_portfolio.robinhood import get_source
+    from unified_portfolio.state import build
+    s = stream_obj or stream()
+    av, acct = _alpaca(s)
+    return build(av, get_source().view(refresh=refresh), alpaca_account=acct, sector_fn=default_resolver.sector_for, ready_symbols=_ready(s))
+
+
+@router.get("")
+def get_unified() -> JSONResponse:
+    return JSONResponse(unified_payload(refresh=True))
+
+
+@router.get("/robinhood")
+def get_robinhood() -> JSONResponse:
+    from unified_portfolio.robinhood import get_source
+    return JSONResponse(get_source().view(refresh=True))

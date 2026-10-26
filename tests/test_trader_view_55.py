@@ -24,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view as ledger_view  # noqa: E402 - Stage 6.8 / 6.9: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -797,7 +798,7 @@ def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
     for rel in PINNED:
         assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
     base = blob("api/server.py").decode("utf-8").splitlines()
-    now = (ROOT / "api" / "server.py").read_text(encoding="utf-8").splitlines()
+    now = ledger_view("api/server.py", (ROOT / "api" / "server.py").read_text(encoding="utf-8").replace("\r\n", "\n")).splitlines()   # Stage 6.9: its two lines are pinned by test_robinhood_portfolio_69
     assert [l for l in base if l not in now] == []
     added = [l for l in now if l not in base]
     assert added[0] == "from api.routes import trader_view" and any(l.startswith("app.include_router(trader_view.router)  # Stage 5.5") for l in added)

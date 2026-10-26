@@ -587,7 +587,9 @@ def build_stream(mode: Optional[str] = None) -> TerminalStream:
     from trader_view.research import EvidenceResearchAdapter
     from execution.account_positions import view as account_view
     holder: Dict[str, TerminalStream] = {}
-    s = TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(account_view=lambda: account_view(holder["s"].account_refresh, holder["s"].execution.store)),
+    from unified_portfolio.robinhood import get_source as robinhood_source
+    s = TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(account_view=lambda: account_view(holder["s"].account_refresh, holder["s"].execution.store),
+                                                                             robinhood_snapshot=lambda: robinhood_source().view(refresh=False)),   # Stage 6.9: cached, read only
                        EvidenceResearchAdapter(), allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval, safety_eval) in the harness process only
     holder["s"] = s                                                                          # the account positions come from THIS stream's refresher and executor
     return s

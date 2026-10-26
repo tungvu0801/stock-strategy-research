@@ -193,7 +193,7 @@ def test_A08_the_outdated_navigation_is_gone_and_the_new_one_exists():
 
 def test_A09_build_stream_wires_the_account_view_of_its_own_stream():
     src = (ROOT / "trader_view" / "stream.py").read_text(encoding="utf-8")
-    assert 'StockAgentPositionAdapter(account_view=lambda: account_view(holder["s"].account_refresh, holder["s"].execution.store))' in src
+    assert 'StockAgentPositionAdapter(account_view=lambda: account_view(holder["s"].account_refresh, holder["s"].execution.store),' in src   # + Stage 6.9's Robinhood snapshot
 
 
 # ================================================================ P Paper Auto ordering =========================================================
@@ -517,7 +517,7 @@ def test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry():
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=ROOT, capture_output=True, text=True).stdout.split())
     new = {p for p in changed if p not in in_base}
-    assert new == FL.NEW_68, {"unexpected_new": sorted(new - FL.NEW_68), "missing_new": sorted(FL.NEW_68 - new)}
+    assert new == FL.NEW_68 | FL.NEW_69, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69), "missing_new": sorted((FL.NEW_68 | FL.NEW_69) - new)}   # + Stage 6.9
     assert changed - new == set(FL.LEDGER), {"unregistered": sorted(changed - new - set(FL.LEDGER)), "unchanged_but_registered": sorted(set(FL.LEDGER) - (changed - new))}
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel                      # the ledger restores main exactly (and the hash pins today's file)

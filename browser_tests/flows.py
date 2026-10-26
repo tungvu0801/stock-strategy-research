@@ -2894,6 +2894,14 @@ def product_ui(c: Ctx):
         c.step(f"__click('#pui-positions [data-pui-pos=\"{pos_cards[0]}\"]')", "!!document.querySelector('#pui-positions [data-pui-pos-details]')", 30)
         det = c.js("__tvText('#pui-positions [data-pui-pos-details]')") or ""
         c.r.check("POSITIONS: a card opens setup, demand, evidence, exit monitoring, risk, broker orders / fills and events", all(k in det for k in ("Setup state", "Demand", "Evidence", "Exit monitoring", "Risk", "Broker orders and fills", "Recent events")), det[:300])
+    # Stage 6.9: POSITIONS groups PAPER — ALPACA and REAL — ROBINHOOD (read only, user managed) + the unified exposure; Robinhood is off in the harness,
+    # so its holdings are "unknown, not zero" and the unified view is never COMPLETE (the overflow check below covers the new sections)
+    c.wait("!!document.querySelector('#pui-positions [data-pui-unified]') && !!document.querySelector('#pui-positions [data-pui-rh]')", 30, "Stage 6.9 sections rendered")
+    uni = [c.js("[...document.querySelectorAll('#pui-positions [data-pui-group]')].map((e) => e.dataset.puiGroup)"), c.js("document.querySelector('#pui-positions [data-pui-rh]').dataset.puiRh"),
+           "unknown, not zero" in (c.js("__tvText('#pui-positions [data-pui-rh]')") or ""), c.js("document.querySelector('#pui-positions [data-pui-unified]').dataset.puiUnified"),
+           c.js("!!document.querySelector('#pui-positions [data-pui-rh-row]')")]
+    c.r.check("POSITIONS: PAPER — ALPACA and REAL — ROBINHOOD groups, Robinhood not configured (unknown, not zero, no row), unified exposure never COMPLETE without it",
+              uni[0] == ["PAPER", "REAL"] and uni[1] == "NOT_CONFIGURED" and uni[2] is True and uni[3] in ("PARTIAL", "UNAVAILABLE") and uni[4] is False, uni)
     c.no_overflow("product UI, POSITIONS")
     c.shot("product_ui_positions")
     texts.append(c.js("document.body.innerText") or "")
