@@ -8,12 +8,15 @@ tables; every earlier table is untouched and PRAGMA user_version is left alone (
   * strategy_validation_trades       the simulated (hypothetical) trades per arm
   * strategy_validation_evaluations  Stage 6.4.1: METHODOLOGY EVALUATIONS (validation_v3) of a stored run - a separate record that references
                                      the run; the run itself is never rewritten or reinterpreted
+  * strategy_validation_universe_assessments  Stage 6.5.1: UNIVERSE-INTEGRITY assessments of a stored run (universe_integrity_v1): the
+                                     declared universe, its integrity and the capped (final) selection edge - the run and its evaluation are untouched
 Rows are append-only: never updated, never deleted (triggers). A run is written once, complete. Nothing here stores a credential, an order or a
 recommendation; every trade row is a research simulation.
 """
 import sqlite3
 
-TABLES = ("strategy_validation_runs", "strategy_validation_candidates", "strategy_validation_trades", "strategy_validation_evaluations")
+TABLES = ("strategy_validation_runs", "strategy_validation_candidates", "strategy_validation_trades", "strategy_validation_evaluations",
+          "strategy_validation_universe_assessments")
 
 DDL = (
     """
@@ -66,6 +69,24 @@ DDL = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS strategy_validation_evaluations_by_run ON strategy_validation_evaluations (run_id, created_at)",
+    """
+    CREATE TABLE IF NOT EXISTS strategy_validation_universe_assessments (
+        assessment_id          TEXT PRIMARY KEY CHECK (length(assessment_id) = 32),
+        run_id                 TEXT NOT NULL,
+        evaluation_id          TEXT,
+        strategy_id            TEXT NOT NULL,
+        strategy_version       TEXT NOT NULL,
+        policy_version         TEXT NOT NULL,
+        universe_method        TEXT NOT NULL CHECK (universe_method IN ('POINT_IN_TIME', 'HISTORICAL_SNAPSHOT', 'FIXED_CURRENT_UNIVERSE', 'UNKNOWN')),
+        integrity_status       TEXT NOT NULL CHECK (integrity_status IN ('TRUSTED', 'LIMITED', 'UNTRUSTED')),
+        raw_edge_status        TEXT NOT NULL,
+        final_edge_status      TEXT NOT NULL,
+        verdict                TEXT NOT NULL CHECK (verdict IN ('INSUFFICIENT_DATA', 'FAIL', 'MIXED', 'PASS', 'INVALID')),
+        created_at             TEXT NOT NULL,
+        assessment_json        TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS strategy_validation_universe_assessments_by_run ON strategy_validation_universe_assessments (run_id, created_at)",
 )
 for _t in TABLES:
     DDL += (f"CREATE TRIGGER IF NOT EXISTS {_t}_no_update BEFORE UPDATE ON {_t} BEGIN SELECT RAISE(ABORT, '{_t} rows are immutable'); END",

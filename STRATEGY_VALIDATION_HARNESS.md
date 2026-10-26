@@ -245,3 +245,23 @@ Design and policy: `DESIGN_641_CROSS_SECTIONAL_VALIDATION.md`. Code: `strategy_v
   methodology evaluation in `strategy_validation_evaluations` (append-only, re-checked by the store; the run row is never touched), created with
   `python -m strategy_validation evaluate --run RUN_ID --dataset FILE [--persist]`. The Strategy Lab shows the overall verdict, the absolute
   performance, the control comparison and the selection edge as separate, labelled parts.
+
+## 15. Universe integrity (Stage 6.5.1, universe_integrity_v1)
+
+Design and policy: `DESIGN_651_UNIVERSE_INTEGRITY.md`. Code: `strategy_validation/universe.py`.
+
+* **Declaration**: a `CROSS_SECTIONAL_PORTFOLIO` adapter declares `universe_declaration` (`universe_method` POINT_IN_TIME / HISTORICAL_SNAPSHOT /
+  FIXED_CURRENT_UNIVERSE / UNKNOWN, source, as-of semantics, completeness flags, survivorship bias, coverage); unknown values are `None`. A
+  point-in-time or snapshot adapter also supplies `universe_membership`, and every eligible / selected symbol at each rebalance must be a member
+  as of that rebalance.
+* **Run record**: `universe_integrity` (method, status TRUSTED / LIMITED / UNTRUSTED / NOT_APPLICABLE, cap, reasons, declaration, membership
+  summary and check). `cross_sectional.selection_edge` keeps the RAW v3 edge; `selection_edge` is the FINAL edge after the cap (`raw_status`,
+  `capped`, reason `UNIVERSE_INTEGRITY_CAP`); the overall verdict follows the final edge. Event-driven runs read NOT_APPLICABLE.
+* **Integrity check `UNIVERSE_INTEGRITY`**: re-derives the allowed status from the recorded declaration and the cap from the policy; fails on a
+  missing or invalid declaration (the run is BLOCKED) or on a recorded status / final edge that does not follow the policy. It is about
+  selection-edge trust, not replay correctness: a valid replay on a fixed current universe persists, with its edge capped.
+* **Older runs**: `python -m strategy_validation assess-universe --run RUN_ID [--persist]` appends a row to
+  `strategy_validation_universe_assessments` (append-only, re-checked by the store); the run and its methodology evaluation are never touched.
+  The read view prefers the newest assessment (only when it references the newest evaluation), then a 6.5.1 run's own block; a cross-sectional
+  record no assessment covers reads UNKNOWN -> UNTRUSTED, capped on read (never stored).
+* The validation methodology version stays `validation_v3`; no v3 threshold, friction assumption or control definition changed.

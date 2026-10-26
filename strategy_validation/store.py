@@ -95,6 +95,12 @@ class StrategyValidationStore:
         eligibility = IG.evaluate(rec)                                          # recomputed here: a run's own `eligibility` field is never trusted
         if not eligibility.eligible:
             raise PersistenceBlocked(eligibility)
+        if rec.get("evaluation_mode") == "CROSS_SECTIONAL_PORTFOLIO":            # Stage 6.5.1: a registered strategy declares its universe in its adapter
+            from strategy_registry import registry as R
+            from strategy_validation.adapters import adapter_for
+            reg, _ = adapter_for(rec["strategy_id"], R.get(rec["strategy_id"]))
+            if reg is not None and (rec.get("universe_integrity") or {}).get("declaration") != getattr(reg, "universe_declaration", None):
+                raise StoreError(f"{rec['strategy_id']}: the run's universe declaration is not the registered strategy's own")
         rec["eligibility"] = eligibility.model_dump()
         cands = rec.pop("candidates")
         trades = []
@@ -169,6 +175,72 @@ class StrategyValidationStore:
             conn.close()
         return ev["evaluation_id"]
 
+    def insert_universe_assessment(self, a: dict) -> str:
+        """Append a Stage 6.5.1 universe-integrity assessment of a stored run. Re-checked here: the run (and the evaluation the raw edge came from)
+        exist and match; the declaration is the registered strategy's own; the integrity, the final edge and the verdict follow the policy."""
+        from strategy_registry import registry as R
+        from strategy_validation import UNIVERSE_POLICY_VERSION
+        from strategy_validation import cross_sectional as CS
+        from strategy_validation import universe as UNI
+        from strategy_validation.adapters import adapter_for
+        run = self.run(a.get("run_id") or "")
+        problems = []
+        if run is None:
+            raise StoreError("universe assessment refused: no visible stored run with this run_id")
+        for k in ("strategy_id", "strategy_version", "dataset_id"):
+            if a.get(k) != run.get(k):
+                problems.append(f"{k} differs from the run's")
+        if run.get("universe_integrity"):
+            problems.append("the run already carries its own universe integrity")
+        evs = self.evaluations(run["run_id"])
+        ev = evs[0] if evs else None
+        if a.get("evaluation_id") != (ev or {}).get("evaluation_id"):
+            problems.append("an assessment must reference the run's newest methodology evaluation (or none, when the run has none)")
+        src = ev or run
+        if a.get("raw_selection_edge") != src.get("selection_edge"):
+            problems.append("the raw selection edge is not the recorded one")
+        if a.get("performance_verdict") != (src.get("performance_verdict") or run.get("verdict")):
+            problems.append("the performance verdict is not the recorded one")
+        adapter, _ = adapter_for(run["strategy_id"], R.get(run["strategy_id"]))
+        decl = ((a.get("universe_integrity") or {}).get("declaration"))
+        if adapter is None or decl != getattr(adapter, "universe_declaration", None):
+            problems.append("the declaration is not the registered strategy's own universe declaration")
+        want = UNI.classify(decl, None, None, run.get("dataset_start"), run.get("dataset_end"))
+        if (a.get("universe_integrity") or {}).get("status") != want.get("status") or want.get("status") is None:
+            problems.append(f"the integrity {(a.get('universe_integrity') or {}).get('status')} does not follow the policy ({want.get('status')})")
+        elif a.get("universe_integrity") != want:
+            problems.append("the integrity block is not the policy's own (every field is re-derived)")
+        final = UNI.cap_edge(a.get("raw_selection_edge") or {}, want)
+        if a.get("selection_edge") != final or a.get("verdict") != CS.overall_verdict(a.get("performance_verdict") or {}, final["status"]):
+            problems.append("the final selection edge / verdict do not follow the cap")
+        if a.get("policy_version") != UNIVERSE_POLICY_VERSION:
+            problems.append("not the current universe policy")
+        if not isinstance(a.get("created_at"), str) or a["created_at"] > datetime.now(timezone.utc).isoformat(timespec="seconds"):
+            problems.append("created_at is missing or in the future")
+        if problems:
+            raise StoreError("universe assessment refused: " + "; ".join(problems))
+        conn = self._rw()
+        try:
+            conn.execute("INSERT INTO strategy_validation_universe_assessments (assessment_id, run_id, evaluation_id, strategy_id, strategy_version, policy_version, "
+                         "universe_method, integrity_status, raw_edge_status, final_edge_status, verdict, created_at, assessment_json) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (a["assessment_id"], a["run_id"], a.get("evaluation_id"), a["strategy_id"], a["strategy_version"], a["policy_version"],
+                          want["method"], want["status"], a["raw_selection_edge"]["status"], final["status"], a["verdict"]["verdict"], a["created_at"],
+                          json.dumps(a, sort_keys=True)))
+        finally:
+            conn.close()
+        return a["assessment_id"]
+
+    def universe_assessments(self, run_id: str) -> List[dict]:
+        if self.run(run_id) is None:
+            return []
+        return [json.loads(r["assessment_json"]) for r in self._read("SELECT assessment_json FROM strategy_validation_universe_assessments WHERE run_id = ? "
+                                                                      "ORDER BY rowid DESC", (run_id,))]
+
+    def latest_universe_assessment(self, run_id: str) -> Optional[dict]:
+        xs = self.universe_assessments(run_id)
+        return xs[0] if xs else None
+
     def evaluations(self, run_id: str) -> List[dict]:
         if self.run(run_id) is None:
             return []
@@ -198,12 +270,14 @@ class StrategyValidationStore:
 
     def latest(self, strategy_id: str) -> Optional[dict]:
         """The latest stored run as a READ VIEW: its record as stored, plus `methodology_evaluation` - its latest validation_v3 methodology
-        evaluation (Stage 6.4.1) or None. The stored run JSON itself is never modified."""
+        evaluation (Stage 6.4.1) or None - and `universe_assessment` - its latest universe-integrity assessment (Stage 6.5.1) or None. The stored
+        run JSON itself is never modified."""
         rows = self.runs(strategy_id, limit=20)
         if not rows:
             return None
         run = self.run(rows[0]["run_id"])
-        return None if run is None else {**run, "methodology_evaluation": self.latest_evaluation(run["run_id"])}
+        return None if run is None else {**run, "methodology_evaluation": self.latest_evaluation(run["run_id"]),
+                                         "universe_assessment": self.latest_universe_assessment(run["run_id"])}   # Stage 6.5.1
 
     def candidates(self, run_id: str) -> List[dict]:
         if self.run(run_id) is None:

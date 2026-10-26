@@ -3447,6 +3447,18 @@ def strategy_validation_results(c: Ctx):
                   "SELECTION CONTROL Equal-weight eligible universe" in cst and "MARKET BENCHMARK SPY" in cst and "NOT SELECTION-EDGE EVIDENCE" in cst
                   and f"Absolute performance: {pv}" in cst and f"{ov['label']} · {ov['decision']}" in cst and "Eligible for review" not in cst
                   and "beating it is not evidence of selection" in cst and "control parity: 8 / 8 checks pass" in cst, cst[:700])
+        lab = lambda x: x.replace("_", " ").lower().capitalize()                                       # noqa: E731 - the page's cap(words(x))
+        ue = (csr.cross_sectional["selection_edge"]["status"], csr.selection_edge["status"])
+        uorder = c.js("['edge', 'universe'].map((k) => { const e = document.querySelector('#pui-more-body [data-pui-sv-section=\"' + k + '\"]'); "
+                      "return e ? [...document.querySelectorAll('#pui-more-body *')].indexOf(e) : -1; })")
+        ut = re.sub(r"\s+", " ", c.js("(document.querySelector('#pui-more-body [data-pui-sv-universe]') || {}).innerText") or "").lower()   # labels are styled upper case
+        c.r.check("Stage 6.5.1: a Universe integrity section after the selection edge - fixed current universe, UNTRUSTED, survivorship bias present, "
+                  "the raw -> final edge, one 'Universe untrusted' badge, and a fair control does not remove survivorship bias",
+                  uorder[0] >= 0 and uorder[1] > uorder[0] and csr.universe_integrity["status"] == "UNTRUSTED"
+                  and c.js("(document.querySelector('#pui-more-body [data-pui-sv-universe]') || {dataset: {}}).dataset.puiSvUniverse") == "UNTRUSTED"
+                  and c.js("document.querySelectorAll('#pui-more-body [data-pui-sv] [data-pui-sv-universe-badge]').length") == 1
+                  and "universe method fixed current universe" in ut and "survivorship bias (declared) present" in ut and "delisted securities included no" in ut
+                  and f"raw {lab(ue[0])} → final {lab(ue[1])}".lower() in ut and "does not remove survivorship bias" in cst, [uorder, ue, ut])
         c.shot("strategy_validation_cross_sectional", "#pui-more-body [data-pui-sv]")
         c.r.check("viewing validation changes no lifecycle (RESEARCH stays RESEARCH, PAPER_CANDIDATE stays PAPER_CANDIDATE); no control, no form, no POST",
                   _sv_lifecycles(c) == lc0 and lc0["FIXTURE_GOOD"] == "RESEARCH" and lc0["FIXTURE_OVERFIT"] == "PAPER_CANDIDATE" and [e.status for e in R.ENTRIES if e in added] == [x[2] for x in SV_FIXTURES]

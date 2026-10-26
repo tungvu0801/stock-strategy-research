@@ -100,7 +100,8 @@
         "test_validation_integrity_631.py",
         "test_value_quality_64.py",
         "test_cross_sectional_641.py",
-        "test_momentum_65.py"
+        "test_momentum_65.py",
+        "test_universe_integrity_651.py"
       ]
     },
     "campaign": {

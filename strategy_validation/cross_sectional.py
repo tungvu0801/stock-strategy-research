@@ -357,7 +357,8 @@ def _t(x: Optional[float]) -> str:
 OVERALL = {"WEAK": ("MIXED", "SELECTION_EDGE_WEAK", "The selection edge over the control is weak."),
            "NOT_ESTABLISHED": ("FAIL", "SELECTION_EDGE_NOT_ESTABLISHED", "No evidence that the selection beats its control."),
            "INSUFFICIENT_DATA": ("INSUFFICIENT_DATA", "SELECTION_EDGE_INSUFFICIENT_DATA", "Too few rebalance periods to assess the selection edge."),
-           "INVALID": ("MIXED", "SELECTION_CONTROL_INVALID", "The selection edge could not be assessed: the control comparison is not fair.")}
+           "INVALID": ("MIXED", "SELECTION_CONTROL_INVALID", "The selection edge could not be assessed (an unfair control comparison or no valid universe "
+                                                             "declaration).")}
 
 
 def overall_verdict(performance: dict, edge_status: str) -> dict:
@@ -375,7 +376,8 @@ def overall_verdict(performance: dict, edge_status: str) -> dict:
 STRATEGY_SIDE_TOL = 1e-9
 
 
-def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optional[List[dict]] = None, candidates: Optional[List[dict]] = None) -> List[str]:
+def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optional[List[dict]] = None, candidates: Optional[List[dict]] = None,
+           universe: Optional[dict] = None) -> List[str]:
     """Problems with a recorded cross-sectional block: the parity status must follow its own checks; the segment statistics, the selection edge and
     the overall verdict are recomputed from the recorded PERIOD TABLE; with the run's trades / candidates, every included period's strategy side is
     recomputed from the immutable trades and every control's membership size from the hash-pinned candidate feature. [] = consistent."""
@@ -407,6 +409,11 @@ def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optio
         if bool((s.get("concentration") or {}).get("concentrated")) != bool((r.get("concentration") or {}).get("concentrated")):
             problems.append(f"{k}: the recorded concentration does not follow the period table")
     want = selection_edge(segs, {"status": "FAIL" if "FAIL" in checks.values() else "PASS", "failed": [k for k, v in checks.items() if v == "FAIL"]})
+    if (cs.get("selection_edge") or {}).get("status") != want["status"]:
+        problems.append(f"the recorded raw selection edge {(cs.get('selection_edge') or {}).get('status')} does not follow the policy ({want['status']})")
+    if universe:                                                                  # Stage 6.5.1: the final edge is the raw edge under the universe cap
+        from strategy_validation import universe as UNI
+        want = UNI.cap_edge(want, universe)
     want_overall = overall_verdict(performance or {}, want["status"]).get("verdict")
     if (edge or {}).get("status") != want["status"] or (overall or {}).get("verdict") != want_overall:
         problems.append(f"the recorded selection edge {(edge or {}).get('status')} / verdict {(overall or {}).get('verdict')} do not follow the policy "

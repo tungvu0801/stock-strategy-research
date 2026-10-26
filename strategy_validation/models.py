@@ -186,6 +186,9 @@ class ValidationRun(_M):
     performance_verdict: Dict[str, Any] = Field(default_factory=dict)   # the absolute performance verdict (the v2 policy on the legs / trades)
     selection_edge: Dict[str, Any] = Field(default_factory=dict)    # NOT_APPLICABLE | INVALID | INSUFFICIENT_DATA | NOT_ESTABLISHED | WEAK | ESTABLISHED
     cross_sectional: Dict[str, Any] = Field(default_factory=dict)   # the period table, segments, control, market benchmark and control-parity audit
+    # Stage 6.5.1 (universe_integrity_v1): the declared universe, its integrity and the cap on the selection edge (selection_edge is then the FINAL
+    # edge; the raw v3 edge stays in cross_sectional.selection_edge)
+    universe_integrity: Dict[str, Any] = Field(default_factory=dict)
     # Stage 6.3.1 (validation_v2): absent on Stage 6.2 records, which stay readable and are never back-filled
     provenance: Dict[str, Any] = Field(default_factory=dict)        # the dataset's declared + derived provenance
     boundary: Dict[str, Any] = Field(default_factory=dict)          # the TRAIN / OOS boundary PURGE: policy, train_end, purged candidate ids per arm

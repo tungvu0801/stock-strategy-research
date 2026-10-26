@@ -71,7 +71,9 @@ NEW_641 = {"strategy_validation/cross_sectional.py", "DESIGN_641_CROSS_SECTIONAL
            "tests/frontend/cross_sectional.test.cjs"}   # Stage 6.4.1: cross-sectional validation (validation_v3)
 NEW_65 = {"momentum/__init__.py", "momentum/adapter.py", "momentum/audit.py", "momentum/core.py", "momentum/data.py", "momentum/diagnostics.py",
           "strategy_registry/momentum.py", "DESIGN_65_MOMENTUM.md", "tests/test_momentum_65.py", "tests/momentum_fixtures.py"}   # Stage 6.5: the Momentum strategy
-NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_651 = {"strategy_validation/universe.py", "DESIGN_651_UNIVERSE_INTEGRITY.md", "tests/test_universe_integrity_651.py",
+           "tests/frontend/universe_integrity.test.cjs"}                                          # Stage 6.5.1: the universe integrity gate
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py",
               "strategy_registry/registry.py"}   # + Stage 6.4 (VALUE_QUALITY implemented)
@@ -231,6 +233,10 @@ GROUPS_EDITS_65 = [                                                             
     ('        "test_cross_sectional_641.py"\n      ]',
      '        "test_cross_sectional_641.py",\n        "test_momentum_65.py"\n      ]'),
 ]
+GROUPS_EDITS_651 = [                                                                               # .github/ci/pytest_groups.json: tests/test_universe_integrity_651.py in the research group
+    ('        "test_momentum_65.py"\n      ]',
+     '        "test_momentum_65.py",\n        "test_universe_integrity_651.py"\n      ]'),
+]
 EDITS_65_612 = [                                                                                   # tests/test_product_flow_612.py: MOMENTUM implemented (research), two placeholders
     ('    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        assert rows[pid]["implemented"] is False and rows[pid]["active"] is False and rows[pid]["status"] == "RESEARCH" and rows[pid]["setup_type"] is None and "not implemented" in rows[pid]["placeholder_note"]\n',
      '    mo = rows["MOMENTUM"]                                                                         # Stage 6.5: implemented as a RESEARCH strategy - never active, no setup type\n    assert mo["implemented"] is True and mo["active"] is False and mo["status"] == mo["declared_status"] == "RESEARCH" and mo["setup_type"] is None and mo["placeholder_note"] is None\n    for pid in ("MEAN_REVERSION", "BREAKOUT"):\n        assert rows[pid]["implemented"] is False and rows[pid]["active"] is False and rows[pid]["status"] == "RESEARCH" and rows[pid]["setup_type"] is None and "not implemented" in rows[pid]["placeholder_note"]\n'),
@@ -252,7 +258,7 @@ EDITS_65_612 = [                                                                
 EDITS_62_612 = EDITS_62_612_OWN + EDITS_64_612 + EDITS_65_612   # applied in this order (the WAL bootstrap fix test replays it)
 UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR + EDITS_64_SR + EDITS_65_SR, "api/routes/strategy_registry.py": EDITS_62_ROUTE, "frontend/product_ui.js": EDITS_62_JS,
            "browser_tests/flows.py": EDITS_62_FLOWS + EDITS_64_FLOWS + EDITS_65_FLOWS, "strategy_registry/registry.py": EDITS_64_REG + EDITS_65_REG,
-           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631 + GROUPS_EDITS_64 + GROUPS_EDITS_641 + GROUPS_EDITS_65, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
+           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631 + GROUPS_EDITS_64 + GROUPS_EDITS_641 + GROUPS_EDITS_65 + GROUPS_EDITS_651, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
            "tests/test_product_flow_612.py": EDITS_62_612, "tests/test_db_bootstrap_busy.py": EDITS_62_FIX}
 
 

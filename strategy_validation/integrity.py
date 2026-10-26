@@ -216,7 +216,8 @@ def selection_control(rec: dict) -> GateCheck:
     if (adapter_mode := ((rec.get("config_snapshot") or {}).get("adapter") or {}).get("evaluation_mode")) not in (None, mode):
         return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail=f"the record says {mode}, its adapter declared {adapter_mode}")
     trades = [t for a in (rec.get("arms") or {}).values() for t in a.get("trades") or []] if any("trades" in a for a in (rec.get("arms") or {}).values()) else None
-    problems = CS.verify(cs, edge, perf, rec.get("verdict") or {}, trades=trades, candidates=rec.get("candidates"))
+    problems = CS.verify(cs, edge, perf, rec.get("verdict") or {}, trades=trades, candidates=rec.get("candidates"),
+                         universe=rec.get("universe_integrity") or None)
     if problems:                                                               # re-derived from the period table, the trades and the candidate set
         return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail="; ".join(problems[:3]))
     want = edge.get("status")
@@ -224,6 +225,36 @@ def selection_control(rec: dict) -> GateCheck:
         return GateCheck(check="SELECTION_CONTROL", status="PASS", detail=f"control parity FAILED ({', '.join(par.get('failed') or [])}): selection edge INVALID, "
                                                                           "no selection claim; the absolute research result stands")
     return GateCheck(check="SELECTION_CONTROL", status="PASS", detail=f"{ctl.get('label') or ctl.get('control_id')}: {par.get('note')}; selection edge {want}")
+
+
+def universe_integrity(rec: dict) -> GateCheck:
+    """Stage 6.5.1: a cross-sectional run must carry a valid universe declaration, the integrity the policy derives from it and the matching cap. A
+    declared biased universe (FIXED_CURRENT_UNIVERSE) is a valid replay - its selection edge is capped, the run is not blocked."""
+    from strategy_validation import UNIVERSE_EDGE_CAP
+    from strategy_validation import cross_sectional as CS
+    from strategy_validation import universe as UNI
+    if "evaluation_mode" not in rec:
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="NOT_APPLICABLE", detail="an older record: assessed by a separate universe-integrity assessment")
+    ui = rec.get("universe_integrity") or {}
+    if rec.get("evaluation_mode") != CS.CROSS_SECTIONAL:
+        ok = not ui or ui.get("status") == "NOT_APPLICABLE"
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="NOT_APPLICABLE" if ok else "FAIL",
+                         detail="event-driven: no universe ranking" if ok else "an event-driven record with a universe claim")
+    if not ui:
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="FAIL", detail="a cross-sectional run must carry its universe integrity (Stage 6.5.1)")
+    periods = [p.get("rebalance") for p in (rec.get("cross_sectional") or {}).get("periods") or []]
+    want = UNI.reclassify(ui, rec.get("dataset_start"), rec.get("dataset_end"), periods)
+    if want is None:
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="FAIL", detail="no valid universe declaration: " + "; ".join(ui.get("reasons") or ["missing"]))
+    if ui.get("declaration") != ((rec.get("config_snapshot") or {}).get("adapter") or {}).get("universe_declaration"):
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="FAIL", detail="the recorded universe declaration is not the adapter's own (config snapshot)")
+    if ui.get("status") not in want or ui.get("cap") != UNIVERSE_EDGE_CAP.get(ui.get("status")):
+        return GateCheck(check="UNIVERSE_INTEGRITY", status="FAIL", detail=f"the recorded integrity {ui.get('status')} / cap {ui.get('cap')} does not follow the policy "
+                                                                          f"({' or '.join(want)})")
+    final, raw = (rec.get("selection_edge") or {}).get("status"), ((rec.get("cross_sectional") or {}).get("selection_edge") or {}).get("status")
+    return GateCheck(check="UNIVERSE_INTEGRITY", status="PASS",
+                     detail=f"{ui.get('method')}: {ui.get('status')} - raw selection edge {raw}, final {final}" + (
+                         " (UNIVERSE_INTEGRITY_CAP; the replay itself is valid)" if final != raw else ""))
 
 
 def evaluate(rec: dict) -> PersistenceEligibility:
@@ -279,6 +310,7 @@ def evaluate(rec: dict) -> PersistenceEligibility:
                             detail=(f"policy {bnd.get('policy') or 'missing'}; {len(leaks)} TRAIN trade(s) use bars after the TRAIN end") if bnd_bad
                             else f"PURGE: {bnd.get('train_boundary_purged_count', 0)} TRAIN outcome(s) purged; no TRAIN trade uses an OOS bar"))
     checks.append(selection_control(rec))
+    checks.append(universe_integrity(rec))
     verdict = (rec.get("verdict") or {}).get("verdict")
     checks.append(GateCheck(check="PERFORMANCE_VERDICT", status="PASS" if verdict in PERFORMANCE_VERDICTS else "FAIL",
                             detail=f"{verdict} (a performance result; integrity is judged separately)" if verdict in PERFORMANCE_VERDICTS

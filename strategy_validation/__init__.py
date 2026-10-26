@@ -86,5 +86,18 @@ CS_TRAIN_CONTRADICTION_T = -2.0                 # TRAIN mean excess < 0 with t <
 CS_CONCENTRATION_SHARE = 0.50                   # one period carrying > 50 % of the summed excess, or the excess vanishing without its best
                                                 # period: concentrated (a warning; no ESTABLISHED)
 
+# ---- Stage 6.5.1: UNIVERSE INTEGRITY (strategy_validation/universe.py, DESIGN_651_UNIVERSE_INTEGRITY.md) - fixed before it was applied to any
+# stored result. It extends validation_v3 (whose statistical thresholds above are unchanged) with a cap on the selection edge; it is versioned on
+# its own so that a v3 record WITHOUT a universe assessment is never silently reinterpreted.
+UNIVERSE_POLICY_VERSION = "universe_integrity_v1"
+UNIVERSE_METHODS = ("POINT_IN_TIME", "HISTORICAL_SNAPSHOT", "FIXED_CURRENT_UNIVERSE", "UNKNOWN")   # declared by the adapter - never inferred
+UNIVERSE_INTEGRITY_STATUSES = ("TRUSTED", "LIMITED", "UNTRUSTED", "NOT_APPLICABLE")
+UNIVERSE_EDGE_CAP = {"TRUSTED": None, "LIMITED": "WEAK", "UNTRUSTED": "NOT_ESTABLISHED", "NOT_APPLICABLE": None}   # the highest final selection edge
+EDGE_LADDER = ("NOT_ESTABLISHED", "WEAK", "ESTABLISHED")       # a cap lowers along it; INSUFFICIENT_DATA / INVALID are never raised or lowered
+SNAPSHOT_MAX_STALENESS_DAYS = 31                # HISTORICAL_SNAPSHOT: a rebalance more than 31 days after its latest snapshot is a coverage gap
+UNIVERSE_DECLARATION_FIELDS = ("universe_method", "universe_source", "membership_as_of_semantics", "includes_delisted", "includes_acquired",
+                               "includes_bankrupt", "historical_additions_supported", "historical_removals_supported", "survivorship_bias",
+                               "coverage_start", "coverage_end", "notes")   # unknown values are None - never filled in
+
 DISCLAIMER = ("Backtest results are hypothetical. PASS means eligible for human review for lifecycle advancement; it does not mean profitable in "
               "the future and it never promotes a strategy. A failed validation is a valid research result.")
