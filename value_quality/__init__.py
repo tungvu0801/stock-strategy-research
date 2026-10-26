@@ -38,8 +38,8 @@ PREPROCESSING = "cross-sectional percentile rank per factor (average rank for ti
 # ---- portfolio ---------------------------------------------------------------------------------------------------------------------------------
 TOP_N = 20                                       # long-only, equal weight, no leverage, no short book
 POSITION_PCT = 100.0 / TOP_N                     # 5 % of a fixed hypothetical equity per position (the harness sizing)
-REBALANCE = "MONTHLY"                            # signal at the close of the last session of each month; entry at the next session's open
-EXIT_FILL = "TIME_EXIT at the close of the first session after the exit rebalance (strictly after the decision)"
+REBALANCE = "MONTHLY"                            # signal at the close of the FIRST session of each month; entry at the next session's open
+EXIT_FILL = "TIME_EXIT at the open of the first session after the exit rebalance (strictly after the decision; where the next leg would begin)"
 
 # ---- the explicit, pre-declared sensitivity neighbourhood (diagnostic only; never chosen) -------------------------------------------------------
 SENSITIVITY = ({"top_n": 15}, {"top_n": 25}, {"value_weight": 0.4}, {"value_weight": 0.6})

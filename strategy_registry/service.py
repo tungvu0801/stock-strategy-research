@@ -109,6 +109,9 @@ def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None, valida
     if entry.implemented and entry.strategy_id == R.DDR_ID:
         from strategy_registry import downside_recovery as DR
         sections, links = DR.sections(facts), DR.LINKS
+    elif entry.implemented and entry.strategy_id == "VALUE_QUALITY":                # Stage 6.4: research strategy #2 (documented from its frozen rules)
+        from strategy_registry import value_quality as VQS
+        sections, links = VQS.sections(), VQS.LINKS
     else:
         sections, links = placeholder_sections(entry), {}
     detail = StrategyDetail(entry=entry, lifecycle=lc, sections=sections, links=dict(links), disclaimer=DISCLAIMER)

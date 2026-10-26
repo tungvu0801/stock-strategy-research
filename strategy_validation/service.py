@@ -32,10 +32,13 @@ def _m(metrics: Optional[dict], seg: str) -> Optional[dict]:
 def integrity_fields(run: Optional[dict]) -> dict:
     """The Stage 6.3.1 integrity metadata of a stored run, or None everywhere (no run, or a Stage 6.2 record that never had them)."""
     el = (run or {}).get("eligibility") or {}
+    flags = list((run or {}).get("research_flags") or [])                       # Stage 6.4: research limitations shown with the verdict
     if not el:
-        return {"integrity_recorded": False, "integrity_status": None, "persistence_eligibility": None, "boundary_purged_count": None, "accounting_status": None}
+        return {"integrity_recorded": False, "integrity_status": None, "persistence_eligibility": None, "boundary_purged_count": None, "accounting_status": None,
+                "research_flags": flags}
     return {"integrity_recorded": True, "integrity_status": el.get("integrity_status"), "persistence_eligibility": el.get("status"),
-            "boundary_purged_count": ((run.get("boundary") or {}).get("train_boundary_purged_count")), "accounting_status": (run.get("accounting") or {}).get("status")}
+            "boundary_purged_count": ((run.get("boundary") or {}).get("train_boundary_purged_count")), "accounting_status": (run.get("accounting") or {}).get("status"),
+            "research_flags": flags}
 
 
 def summary(run: Optional[dict], strategy_id: str, entry=None) -> dict:

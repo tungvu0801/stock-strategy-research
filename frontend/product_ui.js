@@ -749,6 +749,22 @@
                    ["Average holding (bars)", "average_holding_bars", 1], ["Ambiguous bars (stop first)", "ambiguous_bars_count", 0], ["Configured risk", "configured_risk_total"],
                    ["Achieved risk", "achieved_risk_total"], ["Skipped in simulation", "simulation_skipped_count", 0],
                    ["Purged at the TRAIN / OOS boundary", "boundary_purged_count", 0]];
+  // Stage 6.4: the portfolio research view of a cross-sectional strategy (never a gate): strategy vs SPY vs the equal-weight universe control, and
+  // the excess over the control tested per rebalance period (the independent unit); absent for strategies without it - nothing is invented
+  function svPortfolio(s) {
+    const p = s && s.portfolio;
+    if (!p) return "";
+    const segs = ["TRAIN", "OOS", "ALL"], pct = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
+    const row = (label, f) => `<tr><td>${esc(label)}</td>${segs.map((k) => `<td>${esc(f(p[k] || {}))}</td>`).join("")}</tr>`;
+    return `<h4>Portfolio (research diagnostics)</h4><div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-portfolio><thead><tr><th>Equal-weight portfolio</th><th>TRAIN</th><th>OOS</th><th>All</th></tr></thead><tbody>` +
+      row("Strategy total return", (x) => pct((x.strategy || {}).total_return)) + row("SPY total return", (x) => pct((x.benchmark || {}).total_return)) +
+      row("Universe (equal weight) total return", (x) => pct((x.universe_equal_weight || {}).total_return)) + row("Excess vs SPY", (x) => pct(x.excess_total_return)) +
+      row("Excess vs universe", (x) => pct(x.excess_vs_universe)) +
+      row("Excess vs universe: t per rebalance period", (x) => svNum((x.excess_vs_universe_per_period || {}).t_stat)) +
+      row("Sharpe (strategy / SPY)", (x) => `${svNum((x.strategy || {}).sharpe)} / ${svNum((x.benchmark || {}).sharpe)}`) +
+      row("Max drawdown (strategy / SPY)", (x) => `${pct((x.strategy || {}).max_drawdown)} / ${pct((x.benchmark || {}).max_drawdown)}`) +
+      `</tbody></table></div><div class="pui-sub">${esc(s.note || "")}. The universe control shares the universe's survivorship bias; the excess over it is what the selection added.</div>`;
+  }
   function validationHtml(v) {
     v = v || {};
     const st = v.validation_status || "NOT_RUN", r = v.run;
@@ -787,6 +803,7 @@
       (vd.note && !/should not progress/.test(vd.note) ? `<div class="pui-sub">${esc(vd.note)}</div>` : "") +
       ((vd.warnings || []).length ? `<div class="pui-sub" data-pui-sv-warnings>Warnings: ${esc(vd.warnings.map((w) => w.text || w.code || w).join(" · "))}</div>` : "") +
       `<div class="pui-sub">Lifecycle: unchanged by validation. A lifecycle change is an explicit human decision.</div>` +
+      ((v.research_flags || []).length ? `<div class="pui-row" data-pui-sv-flags>${v.research_flags.map((f) => `<span class="pui-badge bad" data-pui-sv-flag="${esc(f)}">${esc(f)}</span>`).join("")}</div>` : "") +
       `<div class="pui-kv"><span>Dataset</span><b>${esc(r.dataset_kind === "SYNTHETIC" ? "Synthetic test data" : "Historical")} · ${esc(r.dataset_start)} – ${esc(r.dataset_end)}</b>` +
       `<span>TRAIN</span><b>${esc(r.train_start)} – ${esc(r.train_end)}</b><span>Out of sample</span><b>${r.oos_start ? `${esc(r.oos_start)} – ${esc(r.oos_end)} (${esc(r.oos_sessions)} sessions)` : "none"}</b>` +
       `<span>Strategy version</span><b>${esc(r.strategy_version)}</b><span>Candidates</span><b>${esc(r.candidate_count)}${r.candidates_skipped ? ` (${esc(r.candidates_skipped)} skipped: missing data)` : ""}</b>` +
@@ -795,7 +812,7 @@
       `<span>Integrity</span><b data-pui-sv-integrity="${esc(ig2.recorded ? ig2.status : "NOT_RECORDED")}">${esc(integrityText)}</b>` +
       `<span>Train vs OOS</span><b>${esc(ttl.text || "—")}</b><span>Parameter sensitivity</span><b>${esc(sens.label || "—")}${sens.note ? ` · ${esc(sens.note)}` : ""}</b>` +
       `<span>Run</span><b>${esc(r.run_id)} · ${esc(r.created_at)}</b></div>` +
-      metrics + `<h4>Arm comparison</h4>` + armTable +
+      metrics + svPortfolio(dg.strategy) + `<h4>Arm comparison</h4>` + armTable +
       `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}${ca.manual_review_status ? ` Manual review: ${esc(ca.manual_review_status)}${ca.manual_review_reference ? ` (${esc(ca.manual_review_reference)})` : ""}.` : ""}</div>` +
       `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify({ execution_assumptions: r.execution_assumptions, causality: ca.automated_checks, diagnostics: dg, skips: r.skips, first_audit_violations: au.first_violations, dataset_id: r.dataset_id, validation_version: r.validation_version, git_commit_sha: r.git_commit_sha }, null, 1))}</pre></details>` +
       `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;

@@ -48,7 +48,7 @@ class ValueQualityAdapter(StrategyAdapter):
     risk_class = "MODERATE"
     entry_condition = "ranked in the top N of the Value + Quality composite at a monthly rebalance (signal at the close of the month's first session)"
     invalidation_condition = "no price stop: the position is re-examined at every monthly rebalance"
-    exit_condition = "leaves the top N or becomes ineligible at a later rebalance: exit at the close of the following session"
+    exit_condition = "leaves the top N or becomes ineligible at a later rebalance: exit at the open of the following session"
     stop_policy = "NONE"
     time_exit_fill = "OPEN"                               # a leg ends at the open after the next rebalance (where the next leg begins)
     live_implementation = None                            # no separate live implementation exists: replay parity is not applicable
