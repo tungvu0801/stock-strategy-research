@@ -11,6 +11,10 @@ cannot launch anything from the browser: research runs are made here, on purpose
       Stage 6.4.1: a validation_v3 METHODOLOGY EVALUATION of a stored cross-sectional run - the selection edge against the declared control, per
       rebalance period. The run is never rewritten; the snapshots are re-derived from the same dataset and must reproduce its candidate set.
       exit 0 evaluated (with --persist: stored) · 1 input error / cannot be evaluated honestly · 3 --persist refused by the store
+  assess-universe --run RUN_ID [--db PATH] [--persist] [--output assessment.json]
+      Stage 6.5.1: a universe-integrity assessment of a stored cross-sectional run (universe_integrity_v1): the registered strategy's universe
+      declaration, its integrity and the capped (final) selection edge, from the RECORDED raw edge (the run's, or its latest methodology
+      evaluation's). Nothing is recomputed; the run and its evaluation are never rewritten. Exit codes as for evaluate.
 
 A run is persisted only with --persist, and only when the Stage 6.3.1 integrity gate finds it ELIGIBLE (strategy_validation/integrity.py) - a
 blocked --persist is never silently downgraded to an ephemeral run. Without --persist a run is ephemeral (research / debug) and its integrity
@@ -49,7 +53,48 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--db", default="")
     e.add_argument("--persist", action="store_true", help="store the evaluation (append-only) so the Strategy Lab shows it")
     e.add_argument("--output", default="", help="write the evaluation record as JSON")
+    u = sub.add_parser("assess-universe", help="Stage 6.5.1 universe-integrity assessment of a stored cross-sectional run (the run is never rewritten)")
+    u.add_argument("--run", required=True)
+    u.add_argument("--db", default="")
+    u.add_argument("--persist", action="store_true")
+    u.add_argument("--output", default="")
     return p
+
+
+def _assess_universe(args, out) -> int:
+    from strategy_registry import registry as R
+    from strategy_validation import engine as E
+    from strategy_validation import universe as UNI
+    from strategy_validation.adapters import adapter_for
+    from strategy_validation.store import StoreError, StrategyValidationStore
+    store = StrategyValidationStore(Path(args.db) if args.db else None)
+    run = store.run(args.run)
+    if run is None:
+        print(f"ERROR no visible stored run {args.run}", file=out)
+        return 1
+    adapter, reason = adapter_for(run["strategy_id"], R.get(run["strategy_id"]))
+    if adapter is None:
+        print(f"ERROR {run['strategy_id']}: {reason}", file=out)
+        return 1
+    try:
+        a = UNI.assess_stored_run(run, getattr(adapter, "universe_declaration", None), store.latest_evaluation(args.run), git_sha=E.git_commit_sha())
+    except UNI.UniverseError as exc:
+        print(f"ERROR {type(exc).__name__}: {exc}", file=out)
+        return 1
+    ui = a["universe_integrity"]
+    print(f"{a['strategy_id']} v{a['strategy_version']} run {a['run_id']}: universe {ui.get('method')} -> {ui.get('status')}; raw selection edge "
+          f"{a['raw_selection_edge']['status']} -> final {a['selection_edge']['status']}; overall {a['verdict']['label']} (absolute performance "
+          f"{a['performance_verdict'].get('label')})", file=out)
+    if args.output:
+        Path(args.output).write_text(json.dumps(a, indent=1), encoding="utf-8")
+    if args.persist:
+        try:
+            store.insert_universe_assessment(a)
+        except StoreError as exc:
+            print(f"  NOT STORED - {exc}", file=out)
+            return 3
+        print(f"  stored universe assessment {a['assessment_id']} (run {a['run_id']} unchanged)", file=out)
+    return 0
 
 
 def _evaluate(args, out) -> int:
@@ -101,6 +146,8 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
     from strategy_validation.store import PersistenceBlocked, StoreError, StrategyValidationStore
     if args.cmd == "evaluate":
         return _evaluate(args, out)
+    if args.cmd == "assess-universe":
+        return _assess_universe(args, out)
     if args.cmd == "runs":
         store = StrategyValidationStore(Path(args.db) if args.db else None)
         for row in store.runs(args.strategy.upper() or None):
@@ -148,6 +195,9 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
         o = (run.cross_sectional.get("segments") or {}).get("OOS") or {}
         print(f"  selection edge (vs {run.cross_sectional.get('control', {}).get('label')}): {run.selection_edge.get('status')} - OOS {o.get('period_count')} periods, "
               f"mean excess {o.get('mean_excess_period_return')}, t {o.get('excess_t_stat')}; absolute performance {run.performance_verdict.get('label')}", file=out)
+        ui = run.universe_integrity or {}
+        print(f"  universe: {ui.get('method')} -> {ui.get('status')}; raw selection edge {(run.cross_sectional.get('selection_edge') or {}).get('status')}, "
+              f"final {run.selection_edge.get('status')}", file=out)
     el = run.eligibility
     print(f"  integrity: {el['integrity_status']} - persistence {el['status']}; accounting {run.accounting.get('status')}; "
           f"{run.boundary.get('train_boundary_purged_count', 0)} TRAIN outcome(s) purged at the TRAIN / OOS boundary", file=out)

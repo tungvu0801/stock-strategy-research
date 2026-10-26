@@ -1160,6 +1160,28 @@ endpoint bars (never shortened, padded or substituted), one listing per issuer. 
 
 Docs: `DESIGN_65_MOMENTUM.md`. Tests: `tests/test_momentum_65.py`.
 
+## Universe integrity (Stage 6.5.1)
+
+A cross-sectional result is selection-edge evidence only if the universe it ranked was knowable at each rebalance. Every
+`CROSS_SECTIONAL_PORTFOLIO` strategy now declares its universe (`universe_declaration`: method, source, as-of semantics, whether delisted /
+acquired / bankrupt securities and historical additions / removals are represented, survivorship bias, coverage); nothing defaults to trusted,
+and a cross-sectional run without a declaration cannot be persisted.
+
+* **Integrity** (policy `universe_integrity_v1`): `POINT_IN_TIME` is TRUSTED only with a supplied membership history that covers the dataset, is
+  complete, and is the membership the strategy actually ranked; `HISTORICAL_SNAPSHOT` is TRUSTED or LIMITED by snapshot staleness and
+  completeness; `FIXED_CURRENT_UNIVERSE` and `UNKNOWN` are **UNTRUSTED**.
+* **Cap**: the raw validation_v3 selection edge is kept; the final edge is at most WEAK on a LIMITED universe and at most NOT_ESTABLISHED on an
+  UNTRUSTED one (reason `UNIVERSE_INTEGRITY_CAP`), so a strategy on a fixed current universe can never reach PASS. Absolute performance and the
+  control comparison are unchanged. A fair same-universe control does not remove survivorship bias.
+* **Existing results** are never rewritten: `python -m strategy_validation assess-universe --run RUN_ID [--persist]` appends a separate
+  assessment that references the run. Until then a cross-sectional record reads as an UNKNOWN universe (UNTRUSTED, capped).
+* **Value + Quality and Momentum** both rank today's large caps: `FIXED_CURRENT_UNIVERSE` -> UNTRUSTED. Their raw edges were already
+  NOT_ESTABLISHED, so the final edge (NOT_ESTABLISHED) and the overall verdict (FAIL) are unchanged; both remain Research. The Strategy Lab shows
+  a "Universe integrity" section and a "Universe untrusted" badge.
+* **Data**: neither SEC EDGAR nor Alpaca supplies a point-in-time universe; the design lists what one needs and possible future sources.
+
+Docs: `DESIGN_651_UNIVERSE_INTEGRITY.md`. Tests: `tests/test_universe_integrity_651.py`, `tests/frontend/universe_integrity.test.cjs`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

@@ -66,6 +66,14 @@ class ValueQualityAdapter(StrategyAdapter):
                           "membership_size_feature": "eligible_count",     # each leg records the eligible count: the control's size is checked against it
                           "omits": "the Value + Quality ranking (it holds every eligible stock)"}
     market_benchmark = "SPY"
+    # Stage 6.5.1: the universe declaration (declarations only - the rules, candidates and legs are unchanged)
+    universe_declaration = {"universe_method": "FIXED_CURRENT_UNIVERSE", "universe_source": "value_quality.RESEARCH_UNIVERSE: the 81 stocks of the Stage 3.2 research store (today's large caps)",
+                            "membership_as_of_semantics": "one fixed list, known today, applied to every historical rebalance: no as-of membership",
+                            "includes_delisted": False, "includes_acquired": False, "includes_bankrupt": False,
+                            "historical_additions_supported": False, "historical_removals_supported": False, "survivorship_bias": "PRESENT",
+                            "coverage_start": None, "coverage_end": None,                  # a fixed list has no historical coverage: unknown, not filled in
+                            "notes": ("stocks that were delisted, acquired, went bankrupt or shrank since 2020 are absent; a stock listed later (SNDK) appears only from its "
+                                      "listing; the eligible-universe control is built from the same list")}
 
     def __init__(self, params=None):
         super().__init__(params)

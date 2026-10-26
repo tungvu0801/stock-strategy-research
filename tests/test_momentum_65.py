@@ -435,8 +435,11 @@ def test_G06_the_rules_are_the_frozen_ones_and_the_universe_is_value_qualitys():
     for k in ("STRATEGY_VERSION", "RESEARCH_UNIVERSE", "MIN_PRICE", "MIN_MEDIAN_DOLLAR_VOLUME", "DOLLAR_VOLUME_SESSIONS", "LOOKBACK_SESSIONS", "SKIP_SESSIONS",
               "TOP_N", "POSITION_PCT", "REBALANCE", "FRICTION_BPS_PER_SIDE", "SENSITIVITY"):
         assert frozen[k] == getattr(M, k), k                                                       # nothing tuned after the OOS result
-    for f in ("momentum/core.py", "momentum/data.py", "momentum/adapter.py"):
+    for f in ("momentum/core.py", "momentum/data.py"):
         assert subprocess.run(["git", "diff", "--quiet", FREEZE, "--", f], cwd=ROOT).returncode == 0, f   # the rule code is byte-identical
+    frozen_adapter = subprocess.run(["git", "show", f"{FREEZE}:momentum/adapter.py"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout.replace("\r\n", "\n")
+    decl = re.findall(r"(?ms)^    # Stage 6\.5\.1: the universe declaration.*?\n(?=\n    def __init__)", now_text("momentum/adapter.py"))
+    assert len(decl) == 1 and now_text("momentum/adapter.py").replace(decl[0], "") == frozen_adapter   # + only the Stage 6.5.1 universe declaration
 
 
 def test_G07_documents_state_the_hypothesis_the_result_and_the_limits():

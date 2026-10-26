@@ -53,6 +53,14 @@ class MomentumAdapter(StrategyAdapter):
                           "friction": "RUN_FRICTION_MODEL", "capital": "EQUAL_CAPITAL_BUY_AND_HOLD",
                           "membership_size_feature": "eligible_count", "omits": "the momentum ranking (it holds every eligible stock)"}
     market_benchmark = "SPY"
+    # Stage 6.5.1: the universe declaration (declarations only - the rules, candidates and legs are unchanged)
+    universe_declaration = {"universe_method": "FIXED_CURRENT_UNIVERSE", "universe_source": "momentum.RESEARCH_UNIVERSE = value_quality.RESEARCH_UNIVERSE: the 81 stocks of the Stage 3.2 research store (today's large caps)",
+                            "membership_as_of_semantics": "one fixed list, known today, applied to every historical rebalance: no as-of membership",
+                            "includes_delisted": False, "includes_acquired": False, "includes_bankrupt": False,
+                            "historical_additions_supported": False, "historical_removals_supported": False, "survivorship_bias": "PRESENT",
+                            "coverage_start": None, "coverage_end": None,                  # a fixed list has no historical coverage: unknown, not filled in
+                            "notes": ("for a price ranking the bias is not neutral: stocks whose momentum persisted (e.g. CLS, SNDK) are in, momentum winners that later "
+                                      "collapsed are out; the eligible-universe control is built from the same list")}
 
     def __init__(self, params=None):
         super().__init__(params)

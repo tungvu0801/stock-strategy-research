@@ -29,6 +29,7 @@ from strategy_validation import audit as AU
 from strategy_validation import candidates as CD
 from strategy_validation import causality as CA
 from strategy_validation import cross_sectional as CS
+from strategy_validation import universe as UNI
 from strategy_validation import diagnostics as DG
 from strategy_validation import metrics as MX
 from strategy_validation import simulator as SIM
@@ -236,11 +237,21 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
         rec = json.loads(run.model_dump_json())
         run.cross_sectional = CS.evaluate(rec, rec["arms"]["RULES"]["trades"], rec["candidates"], dataset, adapter.selection_snapshots(dataset),
                                           adapter.control_definition, getattr(adapter, "market_benchmark", None) or "SPY")
-        run.selection_edge = run.cross_sectional["selection_edge"]
+        raw = run.cross_sectional["selection_edge"]
     elif mode == CS.CROSS_SECTIONAL:
-        run.selection_edge = CS._edge("INVALID", [{"code": "NO_SIMULATION", "text": "The RULES arm was not simulated (an integrity failure): no selection assessment."}])
+        raw = CS._edge("INVALID", [{"code": "NO_SIMULATION", "text": "The RULES arm was not simulated (an integrity failure): no selection assessment."}])
     else:
-        run.selection_edge = CS.not_applicable()
+        raw = CS.not_applicable()
+    # Stage 6.5.1 (universe_integrity_v1): the declared universe caps the selection edge; the raw v3 edge stays in cross_sectional.selection_edge
+    if mode == CS.CROSS_SECTIONAL:
+        rebalances = [p["rebalance"] for p in (run.cross_sectional or {}).get("periods") or []]
+        membership = getattr(adapter, "universe_membership", None)
+        run.universe_integrity = UNI.classify(getattr(adapter, "universe_declaration", None), membership, rebalances, dataset.start, dataset.end,
+                                              adapter.selection_snapshots(dataset) if membership is not None else None)
+        run.selection_edge = UNI.cap_edge(raw, run.universe_integrity)
+    else:
+        run.universe_integrity = UNI.not_applicable()
+        run.selection_edge = raw
     run.verdict = CS.overall_verdict(run.performance_verdict, run.selection_edge["status"])
     run.research_flags = list(adapter.research_flags(dataset)) if hasattr(adapter, "research_flags") else []
     sdiag = getattr(adapter, "strategy_diagnostics", None)                      # Stage 6.4: research diagnostics (never a gate); Stage 6.5: after the

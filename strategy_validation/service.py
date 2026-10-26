@@ -44,19 +44,48 @@ def integrity_fields(run: Optional[dict]) -> dict:
             "research_flags": flags}
 
 
+def universe_view(run: dict) -> dict:
+    """Stage 6.5.1: the universe integrity, the raw / final selection edge and the overall verdict a stored record reads with: the newest universe
+    assessment (only when it references the newest methodology evaluation) > the run's own (a 6.5.1 run) > NOT ASSESSED: the universe is treated
+    as UNKNOWN (UNTRUSTED), so the final edge is capped - a cross-sectional record is never read uncapped. Nothing is stored."""
+    from strategy_validation import cross_sectional as CS
+    from strategy_validation import universe as UNI
+    ev, ua = run.get("methodology_evaluation"), run.get("universe_assessment")
+    src = ev or run
+    if src.get("evaluation_mode") != CS.CROSS_SECTIONAL:
+        return {"ui": run.get("universe_integrity") or None, "final": src.get("selection_edge"), "raw": (src.get("selection_edge") or {}).get("status"),
+                "verdict": src.get("verdict") or run.get("verdict"), "source": "run", "assessment": None}
+    if ua and ua.get("evaluation_id") == (ev or {}).get("evaluation_id"):
+        return {"ui": ua.get("universe_integrity"), "final": ua.get("selection_edge"), "raw": (ua.get("raw_selection_edge") or {}).get("status"),
+                "verdict": ua.get("verdict"), "source": "assessment", "assessment": ua}
+    if run.get("universe_integrity") and ev is None:
+        return {"ui": run["universe_integrity"], "final": run.get("selection_edge"), "verdict": run.get("verdict"), "source": "run", "assessment": None,
+                "raw": ((run.get("cross_sectional") or {}).get("selection_edge") or run.get("selection_edge") or {}).get("status")}
+    raw, ui = dict(src.get("selection_edge") or {}), UNI.not_assessed()
+    if not raw.get("status"):
+        return {"ui": ui, "final": src.get("selection_edge"), "raw": None, "verdict": src.get("verdict") or run.get("verdict"), "source": "not_assessed", "assessment": None}
+    final = UNI.cap_edge(raw, ui)
+    return {"ui": ui, "final": final, "raw": raw["status"], "verdict": CS.overall_verdict(src.get("performance_verdict") or run.get("verdict") or {}, final["status"]),
+            "source": "not_assessed", "assessment": None}
+
+
 def methodology_fields(run: Optional[dict]) -> dict:
     """Stage 6.4.1: the overall / performance verdicts and the selection edge of a stored run, from the run (validation_v3) or its latest
     methodology evaluation; an older run without an evaluation reads its own verdict and "not assessed" - never back-filled."""
     if not run:
         return {"evaluation_mode": None, "performance_verdict": None, "selection_edge_status": None, "selection_edge_label": None, "methodology_version": None,
-                "methodology_evaluation_id": None}
+                "methodology_evaluation_id": None, "raw_selection_edge_status": None, "universe_integrity_status": None, "universe_method": None,
+                "universe_assessment_id": None}
     ev = run.get("methodology_evaluation")
     src = ev or run
     perf = (src.get("performance_verdict") or run.get("verdict") or {}).get("verdict")
-    edge = (src.get("selection_edge") or {}).get("status")
+    uv = universe_view(run)                                                      # Stage 6.5.1: the FINAL edge (capped by the universe integrity)
+    edge, ui, raw = (uv["final"] or {}).get("status"), uv["ui"] or {}, uv["raw"]
     return {"evaluation_mode": src.get("evaluation_mode"), "performance_verdict": perf, "selection_edge_status": edge,
             "selection_edge_label": EDGE_LABELS.get(edge) if edge else "Not assessed", "methodology_version": (ev or {}).get("methodology_version") or run.get("validation_version"),
-            "methodology_evaluation_id": (ev or {}).get("evaluation_id")}
+            "methodology_evaluation_id": (ev or {}).get("evaluation_id"), "raw_selection_edge_status": raw if edge else None,
+            "universe_integrity_status": ui.get("status") if ui else None, "universe_method": ui.get("method") if ui else None,
+            "universe_assessment_id": (uv["assessment"] or {}).get("assessment_id")}
 
 
 def summary(run: Optional[dict], strategy_id: str, entry=None) -> dict:
@@ -68,8 +97,7 @@ def summary(run: Optional[dict], strategy_id: str, entry=None) -> dict:
                 **integrity_fields(None), **methodology_fields(None)}
     rules = (run.get("arms") or {}).get("RULES") or {}
     m = rules.get("metrics") or {}
-    ev = run.get("methodology_evaluation")
-    v = ((ev or run).get("verdict") or {}).get("verdict")                      # the overall verdict (a v3 evaluation's, when one exists)
+    v = (universe_view(run)["verdict"] or {}).get("verdict")                    # the overall verdict (universe assessment > v3 evaluation > run; capped)
     return {"validation_status": v, "validation_label": VERDICT_LABELS.get(v, v), "not_run_reason": "", "latest_validation_run_id": run["run_id"], "validation_verdict": v,
             "train_trade_count": (m.get("TRAIN") or {}).get("trade_count"), "oos_trade_count": (m.get("OOS") or {}).get("trade_count"),
             "mechanical_audit_status": (run.get("audit") or {}).get("status"), "last_validated_at": run.get("created_at"), "validation_synthetic": run.get("dataset_kind") == "SYNTHETIC",
@@ -116,8 +144,15 @@ def _methodology_detail(run: dict) -> dict:
     ev = run.get("methodology_evaluation")
     src = ev or run
     cs = src.get("cross_sectional") or {}
-    return {"overall_verdict": (src.get("verdict") or run.get("verdict")), "absolute_verdict": src.get("performance_verdict") or run.get("verdict"),
-            "selection_edge": src.get("selection_edge") or None, "cross_sectional": cs or None,
+    uv = universe_view(run)
+    ui, ua = uv["ui"] or {}, uv["assessment"]
+    return {"overall_verdict": uv["verdict"], "absolute_verdict": src.get("performance_verdict") or run.get("verdict"),
+            "selection_edge": uv["final"] or None, "cross_sectional": cs or None,
+            "universe_integrity": ({**{k: ui.get(k) for k in ("policy_version", "method", "status", "cap", "point_in_time", "survivorship_bias", "includes_delisted",
+                                                               "reasons", "consequence", "declaration")},
+                                    "raw_edge_status": uv["raw"], "final_edge_status": (uv["final"] or {}).get("status"), "source": uv["source"],
+                                    "assessment": ({"assessment_id": ua["assessment_id"], "created_at": ua["created_at"], "policy_version": ua["policy_version"],
+                                                    "note": ua.get("note")} if ua else None)} if ui else None),
             "methodology_evaluation": ({"evaluation_id": ev["evaluation_id"], "created_at": ev["created_at"], "methodology_version": ev["methodology_version"],
                                         "run_id": ev["run_id"], "evaluated_run_validation_version": ev.get("evaluated_run_validation_version"),
                                         "candidate_set_reproduced": ev.get("candidate_set_reproduced"), "git_commit_sha": ev.get("git_commit_sha"), "note": ev.get("note")}

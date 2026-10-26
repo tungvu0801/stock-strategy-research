@@ -483,7 +483,9 @@ def test_O01_the_integrity_gate_blocks_a_claim_that_does_not_follow_the_policy()
     assert IG.evaluate(mism).status == "BLOCKED"                                                   # a FAIL status that its own checks do not support
     mism["cross_sectional"]["parity"]["checks"] = [{**c, "status": "FAIL"} if c["check"] == "SAME_FRICTION" else c for c in mism["cross_sectional"]["parity"]["checks"]]
     assert IG.evaluate(mism).status == "BLOCKED"                                                   # a failed parity audit with an edge claim
-    mism["selection_edge"] = CS.selection_edge(mism["cross_sectional"]["segments"], mism["cross_sectional"]["parity"])
+    mism["cross_sectional"]["selection_edge"] = CS.selection_edge(mism["cross_sectional"]["segments"], mism["cross_sectional"]["parity"])   # the raw edge
+    from strategy_validation import universe as UNI
+    mism["selection_edge"] = UNI.cap_edge(mism["cross_sectional"]["selection_edge"], mism["universe_integrity"])   # Stage 6.5.1: the final edge
     mism["verdict"] = CS.overall_verdict(mism["performance_verdict"], "INVALID")
     el2 = IG.evaluate(mism)
     assert el2.status == "ELIGIBLE" and "absolute research result stands" in {c.check: c.detail for c in el2.checks}["SELECTION_CONTROL"]
