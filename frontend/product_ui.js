@@ -795,6 +795,30 @@
       (u.assessment ? `<div class="pui-sub" data-pui-sv-universe-assessment="${esc(u.assessment.assessment_id)}">${esc(u.assessment.policy_version)} assessment (${esc(u.assessment.created_at)}) of a ` +
         `stored run: the run is unchanged.</div>` : "");
   }
+  // Stage 6.6: a cross-sectional strategy's research diagnostics in brief (turnover, friction, concentration, the selected losers' next week, the
+  // market's up / down periods) - descriptive, never a gate and never selection-edge evidence; a field the diagnostics lack is not shown
+  function svResearch(s) {
+    if (!s || !(s.construction || s.friction || s.concentration)) return "";
+    const c = s.construction || {}, f = s.friction || {}, cc = s.concentration || {}, ec = cc.excess_contribution || {}, k = s.falling_knife || {};
+    const mk = s.market_weeks || s.market_months || {}, up = (mk.ALL || {}).benchmark_up, dn = (mk.ALL || {}).benchmark_down;
+    const share = (x) => (!x ? "—" : x.share_of_gross_excess_consumed != null ? svPct(x.share_of_gross_excess_consumed) : "no positive gross excess");
+    const grp = ((cc.sic_major_group || {}).most_frequent_top_groups || [])[0];
+    const kv = [
+      c.average_one_way_turnover != null && ["One-way turnover", `${svPct(c.average_one_way_turnover)} per period · ${svNum(c.annualized_one_way_turnover, 1)}× a year`],
+      f.ALL && ["Gross excess consumed by friction", `TRAIN ${share(f.TRAIN)} · OOS ${share(f.OOS)} · All ${share(f.ALL)}`],
+      f.ALL && f.ALL.strategy_friction_per_year != null && ["Strategy friction", `${svPct(f.ALL.strategy_friction_per_year)} a year`],
+      ec.top_five_share_of_summed_excess != null && ["Top five names' share of the summed excess", svPct(ec.top_five_share_of_summed_excess)],
+      (ec.top || []).length && ["Largest contributors", ec.top.map((x) => `${x[0]} ${svPct2(x[1])}`).join(" · ")],
+      (cc.most_held_names || []).length && ["Most held", cc.most_held_names.slice(0, 5).map((x) => `${x[0]} ${svPct(x[1])}`).join(" · ")],
+      grp && ["Most frequent top sector", `${grp[0]} (${grp[1]} rebalances)`],
+      k.legs && ["Selected losers, next week", `${svPct(k.share_rebounding)} rebounded · ${svPct(k.share_falling_further)} fell further · ${svPct(k.share_beating_control)} beat the control`],
+      up && dn && ["Mean excess when SPY rose / fell", `${svPct2(up.mean_excess)} (${svNum(up.periods, 0)}) / ${svPct2(dn.mean_excess)} (${svNum(dn.periods, 0)})`],
+    ].filter(Boolean);
+    if (!kv.length) return "";
+    return `<h4 data-pui-sv-section="research">Turnover, friction and concentration</h4><div class="pui-kv" data-pui-sv-research>` +
+      kv.map(([a, b]) => `<span>${esc(a)}</span><b>${esc(b)}</b>`).join("") + `</div>` +
+      `<div class="pui-sub">Research diagnostics: descriptive, never a gate and not selection-edge evidence (the selection edge above is).</div>`;
+  }
   function svEdge(edge, cs, ev) {
     const oo = ((cs || {}).segments || {}).OOS || {}, conc = oo.concentration || {}, pol = edge.policy || {};
     return `<div class="pui-sv-edge" data-pui-sv-edge-block="${esc(edge.status)}">${svEdgeBadge(edge.status, edge.label)}</div>` +
@@ -884,7 +908,7 @@
       (cs ? `<h4 data-pui-sv-section="absolute">Absolute performance</h4><div class="pui-sub">${esc(absV.label || "—")} on the legs (the validation_v2 policy). A trade-level ` +
         `description: the legs of one rebalance are correlated, so neither these figures nor beating the market benchmark is evidence of selection.</div>` + metrics +
         `<h4 data-pui-sv-section="control">Control comparison</h4>` + svControl(cs) + `<h4 data-pui-sv-section="edge">Selection edge</h4>` +
-        svEdge(v.selection_edge || {}, cs, v.methodology_evaluation) + `<h4 data-pui-sv-section="universe">Universe integrity</h4>` + svUniverse(v.universe_integrity)
+        svEdge(v.selection_edge || {}, cs, v.methodology_evaluation) + `<h4 data-pui-sv-section="universe">Universe integrity</h4>` + svUniverse(v.universe_integrity) + svResearch(dg.strategy)
         : metrics + svPortfolio(dg.strategy)) + `<h4>Arm comparison</h4>` + armTable +
       `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}${ca.manual_review_status ? ` Manual review: ${esc(ca.manual_review_status)}${ca.manual_review_reference ? ` (${esc(ca.manual_review_reference)})` : ""}.` : ""}</div>` +
       `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify({ execution_assumptions: r.execution_assumptions, causality: ca.automated_checks, diagnostics: dg, skips: r.skips, first_audit_violations: au.first_violations, dataset_id: r.dataset_id, validation_version: r.validation_version, git_commit_sha: r.git_commit_sha }, null, 1))}</pre></details>` +

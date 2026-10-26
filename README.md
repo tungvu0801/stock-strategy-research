@@ -1182,6 +1182,27 @@ and a cross-sectional run without a declaration cannot be persisted.
 
 Docs: `DESIGN_651_UNIVERSE_INTEGRITY.md`. Tests: `tests/test_universe_integrity_651.py`, `tests/frontend/universe_integrity.test.cjs`.
 
+## Mean Reversion strategy (Stage 6.6, research only)
+
+`mean_reversion/` is Strategy #4: long only, weekly, deterministic, no model. At the close of the first session of each ISO week the shared
+core (`mean_reversion/core.py`) ranks the same fixed research universe by its **5-session adjusted return, the most negative first** (short-term
+cross-sectional reversal) and holds the 20 worst recent performers at equal weight for one week (next-open entry, exit at the open after the next
+weekly rebalance, no stop). Eligibility: raw close >= 5 USD, 20-session median dollar volume >= 1M USD, both endpoint bars (never filled), one
+listing per issuer, and a consistent signal window: a provider ratio artifact, an unabsorbed split or an adjusted loss the raw price did not have
+excludes the stock (`DATA_INCONSISTENT`, flagged, never clipped). Rules frozen in a commit before the OOS run.
+
+* **Universe**: `FIXED_CURRENT_UNIVERSE` -> **`SURVIVORSHIP_BIAS_PRESENT`**, universe integrity **UNTRUSTED**: the final selection edge is capped
+  at NOT_ESTABLISHED whatever the raw statistics say; the raw edge is shown beside it.
+* **Validate** (validation_v3 + universe_integrity_v1): `python -m strategy_validation validate --strategy MEAN_REVERSION --dataset
+  runtime/vq/vq_bundle.json --persist`. One week is one observation; the selection edge is the weekly excess over the equal-weight eligible
+  universe; SPY is the market benchmark only. An independent audit re-derives the calendar, the returns, the eligible set, the 20 most negative,
+  the next-open entries, the exits and the weights.
+* **Result** (2020-08 to 2026-10, 321 weeks): absolute performance PASS on the legs, but OOS the losers returned +26.2 % vs +47.8 % for the
+  selection control over 98 weeks (mean excess −0.14 % a week, t −0.64; TRAIN −0.12 %, t −1.47), negative before friction too, and worst in
+  the weeks SPY fell -> raw and final selection edge **NOT_ESTABLISHED**, overall FAIL. The lifecycle stays **Research**.
+
+Docs: `DESIGN_66_MEAN_REVERSION.md`. Tests: `tests/test_mean_reversion_66.py`, `tests/frontend/mean_reversion.test.cjs`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted
