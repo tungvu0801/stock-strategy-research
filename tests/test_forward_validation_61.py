@@ -29,6 +29,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -708,12 +709,14 @@ def test_Z01_the_strategy_controls_are_frozen_and_hashed():
 
 
 def test_Z02_prior_stage_files_are_identical_to_the_stage_61_base_outside_the_marked_blocks_and_the_additive_wiring():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     tracked = set(subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     assert new == NEW_FILES | NEW_611 | NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_FILES - NEW_611 - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_FILES | NEW_611 | NEW_612 | NEW_FIX | NEW_62) - new)}   # Stage 6.1.1 / 6.1.2 files + the WAL bootstrap fix + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new   # files of the base that differ
+    changed -= ledger_unchanged(changed, blob)                                                  # Stage 6.8: registered files equal to this base on main
     allowed = ADDITIVE | set(RECONCILED_TESTS) | {"tests/test_account_refresh_601.py", "tests/test_forward_validation_61.py", "database/database.py"} | CI_FILES   # Stage 6.1.1 reconciles this file in place; the WAL bootstrap fix
     assert changed <= allowed, {"unexpected_changes": sorted(changed - allowed)}
     # production packages of the earlier stages: byte-identical (every file that exists in the base)

@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from requests.adapters import BaseAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view as ledger_view, view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -577,7 +578,7 @@ def test_A01_read_only_api(tmp_path, monkeypatch):
     st = api.get("/api/execution/status").json()
     assert st["account_data"]["status"] == "FRESH" and st["account_data"]["label"].startswith("Account data: Fresh")
     paths = {p: set(o) for p, o in app.openapi()["paths"].items() if p.startswith("/api/account-refresh")}
-    assert paths == {"/api/account-refresh": {"get"}, "/api/account-refresh/history": {"get"}}
+    assert paths == {"/api/account-refresh": {"get"}, "/api/account-refresh/history": {"get"}, "/api/account-refresh/positions": {"get"}}   # Stage 6.8: + the positions (GET)
     for p in paths:
         assert not re.search(r"alpaca|paper|broker|order|trade|submit|execute", p), p
 
@@ -610,7 +611,7 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
     # >>> Stage 6.0.3: the Stage 6.0 pin test also carries one marked, additive Stage 6.0.3 block (CI-parallelization pin reconciliation, pinned
     # against the Stage 6.0.3 base by tests/test_ci_groups_603.py); strip its Stage 6.0.2 and 6.0.3 blocks, everything outside them stays byte-identical
     import re as _re603
-    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]|6\.1\b).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Stage 6.1 widened
+    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage (6\.0\.[23]|6\.1\b).*?^[ \t]*# <<< Stage \1[^\n]*\n", "", ledger_view("tests/test_execution_60.py", (ROOT / "tests/test_execution_60.py").read_text(encoding="utf-8").replace("\r\n", "\n")))   # Stage 6.1 widened
     assert now603.encode("utf-8") == blob("tests/test_execution_60.py"), f"tests/test_execution_60.py differs from {BASE} outside its Stage 6.0.2 / 6.0.3 blocks"
     pinned = [p for p in pinned if p != "tests/test_execution_60.py"]
     # <<< Stage 6.0.3
@@ -622,8 +623,8 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
     pinned = [p for p in pinned if not (p.startswith("safety/") or p == "tests/test_execution_60.py")]
     # <<< Stage 6.0.2
     for rel in pinned:
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
-    svc_now = (ROOT / "execution" / "service.py").read_text(encoding="utf-8").replace("\r\n", "\n")
+        assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE}"
+    svc_now = ledger_view("execution/service.py", (ROOT / "execution" / "service.py").read_text(encoding="utf-8").replace("\r\n", "\n"))
     svc_base = blob("execution/service.py").decode("utf-8")
     start = svc_now.index("        acct: Dict[str, Any] = {}\n")
     end = svc_now.index("        return BotStatus(", start)

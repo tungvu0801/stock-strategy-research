@@ -31,6 +31,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import NEW_68, unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -79,7 +80,7 @@ NEW_66 = {"mean_reversion/__init__.py", "mean_reversion/adapter.py", "mean_rever
 NEW_67 = {"breakout/__init__.py", "breakout/adapter.py", "breakout/audit.py", "breakout/core.py", "breakout/data.py", "breakout/diagnostics.py",
           "strategy_registry/breakout.py", "DESIGN_67_BREAKOUT.md", "tests/test_breakout_67.py", "tests/breakout_fixtures.py",
           "tests/frontend/breakout.test.cjs"}                                                     # Stage 6.7: the Breakout strategy
-NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67 | NEW_68   # Stage 6.8: + its new files (tests/freeze_ledger.py); every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py",
               "strategy_registry/registry.py"}   # + Stage 6.4 (VALUE_QUALITY implemented)
@@ -368,6 +369,7 @@ UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR + EDITS_64_SR + EDITS_65_
 
 def undo_62(rel: str, text: str) -> str:
     """`text` (a current file) without the Stage 6.2 changes: its delimited block removed, then its exact in-place edits undone (last first)."""
+    text = ledger_view(rel, text)                                                                 # Stage 6.8: a registered file is read as on main first
     if rel in STRIP_62:
         assert len(re.findall(STRIP_62[rel], text)) == 1, rel
         text = re.sub(STRIP_62[rel], "", text)
@@ -1132,10 +1134,11 @@ def test_F01_main_plus_only_the_stage_62_files_and_exact_edits():
     assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "strategy_registry/")) for p in NEW_631)   # Stage 6.3.1: the harness only
     assert {p.split("/")[0] for p in NEW_64} == {"value_quality", "strategy_registry", "tests", "DESIGN_64_VALUE_QUALITY.md"}   # Stage 6.4: the strategy package + its docs / tests
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
+    changed -= ledger_unchanged(changed, blob)                                                  # Stage 6.8: registered files equal to this base on main
     assert changed == CHANGED_62, {"unexpected_changes": sorted(changed - CHANGED_62), "missing_changes": sorted(CHANGED_62 - changed)}
     for rel in sorted(CHANGED_62):                                                              # each changed file: the base + its delimited block + its listed exact edits
         assert undo_62(rel, now_text(rel)) == blob(rel), f"{rel}: other than the Stage 6.2 block and the listed edits"
-    assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "paper/", "portfolio/", "forward_validation/", "account_refresh/", "cash_flow/", "scripts/")) for p in new | changed)
+    assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "paper/", "portfolio/", "forward_validation/", "account_refresh/", "cash_flow/", "scripts/")) for p in (new - NEW_68) | changed)   # Stage 6.8: its own files are pinned by tests/test_bot_activity_68.py
     for rel in ("api/server.py", "config.py", "database/database.py", "frontend/index.html", ".github/workflows/tests.yml", "strategy_registry/downside_recovery.py"):   # registry.py: Stage 6.4's two edits
         assert now_text(rel) == blob(rel), f"{rel} must not change"
     import forward_validation as FV

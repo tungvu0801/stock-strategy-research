@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 BASE = "24ae7d5"                                                                       # origin/main the stage was branched from (Stage 5.6 merged)
@@ -181,7 +182,7 @@ def test_09_backend_ppe_evidence_and_prior_tests_identical_to_base():
         assert out, rel
         return out.replace(b"\r\n", b"\n")
     for rel in UNCHANGED:
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE} (Stage 5.6.1 is UI only)"
+        assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE} (Stage 5.6.1 is UI only)"
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = HTML.splitlines()
     # >>> Stage 6.1: index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); they are stripped before

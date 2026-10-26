@@ -48,6 +48,9 @@ class ExecutionScheduler:
         self.runs = 0
         self.last_result: Optional[dict] = None
         self.last_error: Optional[str] = None
+        self.heartbeat_at: Optional[datetime] = None          # every scheduler decision of the loop thread, due or not (the worker's heartbeat)
+        self.cycle_started_at: Optional[datetime] = None      # set while a cycle runs; None between cycles
+        self.last_finished_at: Optional[datetime] = None
 
     def due(self, now: datetime) -> bool:
         return self.next_at is None or now >= self.next_at
@@ -58,6 +61,7 @@ class ExecutionScheduler:
     def step(self, now: Optional[datetime] = None) -> Optional[dict]:
         """One scheduler decision: run a cycle when the interval has elapsed and the lease is ours."""
         now = _utc(now or self.clock())
+        self.heartbeat_at = now
         if not self.due(now):
             return None
         if not self._lock.acquire(blocking=False):
@@ -69,6 +73,7 @@ class ExecutionScheduler:
                 if not lease.acquire(self.owner, now, ttl_min=LEASE_TTL_MIN, name=LEASE_NAME):
                     self.next_at = datetime.fromtimestamp(now.timestamp() + self._interval(now), tz=timezone.utc)
                     return {"result": "LEASE_HELD"}
+            self.cycle_started_at = now
             try:
                 out = self.service_fn().run_cycle(now, "SCHEDULED")
                 self.last_error = None
@@ -76,6 +81,9 @@ class ExecutionScheduler:
                 out = {"result": "ERROR", "error": type(exc).__name__}
                 self.last_error = type(exc).__name__
                 log.warning("paper executor cycle failed: %s", type(exc).__name__)
+            finally:
+                self.cycle_started_at = None
+            self.last_finished_at = _utc(self.clock())
             self.runs += 1
             self.last_run_at = now
             self.last_result = out
@@ -135,7 +143,10 @@ class ExecutionScheduler:
         return {"running": self.running(), "owner": self.owner, "interval_s": self.interval_s, "idle_interval_s": self.idle_interval_s, "lease": LEASE_NAME, "market": describe(now),
                 "last_run_at": self.last_run_at.isoformat(timespec="seconds") if self.last_run_at else None,
                 "next_at": self.next_at.isoformat(timespec="seconds") if self.next_at else None, "runs": self.runs, "last_error": self.last_error,
-                "last_result": {k: v for k, v in (self.last_result or {}).items() if k in ("result", "at", "trigger", "error")}}
+                "last_result": {k: v for k, v in (self.last_result or {}).items() if k in ("result", "at", "finished_at", "trigger", "error")},
+                "heartbeat_at": self.heartbeat_at.isoformat(timespec="seconds") if self.heartbeat_at else None, "in_cycle": self.cycle_started_at is not None,
+                "cycle_started_at": self.cycle_started_at.isoformat(timespec="seconds") if self.cycle_started_at else None,
+                "last_finished_at": self.last_finished_at.isoformat(timespec="seconds") if self.last_finished_at else None, "max_sleep_s": MAX_SLEEP_S}
 
 
 _SCHEDULER: Optional[ExecutionScheduler] = None

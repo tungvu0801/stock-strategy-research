@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,6 +35,8 @@ RUN_ROW_HEARTBEAT_S = 300.0                                 # quiet cycles write
 _STATE_OF = {RU.SUBMITTED: "SUBMITTED", RU.BROKER_ACCEPTED: "SUBMITTED", RU.PARTIALLY_FILLED: "PARTIALLY_FILLED", RU.FILLED: "FILLED", RU.CANCELED: "CANCELED",
              RU.BROKER_REJECTED: "REJECTED", RU.RR: "RECONCILIATION_REQUIRED"}
 _TERMINAL = ("FILLED", "CANCELED", "REJECTED", "NOT_SENT", "FAILED")
+CYCLE_STEPS = {"ORDERS": "Checking open orders with the broker", "RECONCILE": "Reconciling broker positions", "POSITIONS": "Monitoring bot positions and exits",
+               "SAFETY": "Running the risk checks", "ENTRIES": "Evaluating READY tickers for entry"}   # display only (ExecutionService.progress)
 
 
 class ExecutionRefused(RuntimeError):
@@ -95,6 +98,9 @@ class ExecutionService:
         self.recon_healthy = True
         self.recon_reasons: List[str] = []
         self._broker_positions: List[dict] = []
+        self._broker_positions_at: Optional[str] = None                      # when _reconcile last read the broker positions (display only)
+        self.progress: Optional[Dict[str, Any]] = None                       # the cycle in progress: step and ticker (display only; never persisted)
+        self._last_touch: Dict[str, str] = {}                                 # the last reason written per control (display only)
         self._open_orders: List[dict] = []
         self._clock_cache: Optional[dict] = None
         self._finding_sigs: set = set()
@@ -142,7 +148,17 @@ class ExecutionService:
         if fn is not None:
             fn(ctx)
 
+    def _record(self, fn: Callable[[], Any]) -> None:
+        """Display-only bookkeeping (cycle progress, per-ticker evaluations, per-position decisions, the last control text): any failure is logged
+        and swallowed here, so recording can never change or interrupt order handling. No decision reads what is recorded."""
+        try:
+            self._hook("before_record")                                             # tests inject a recording failure at every call site
+            fn()
+        except Exception as exc:  # noqa: BLE001 - display only
+            log.warning("execution activity record skipped (%s)", type(exc).__name__)
+
     def _touch(self, now: datetime, control_id: str, result: str, reason: str, inp: Optional[dict] = None, error: Optional[str] = None) -> None:
+        self._record(lambda: self._last_touch.__setitem__(control_id, reason[:300]))   # display only: the per-position decision text of this cycle
         try:
             self.store.touch_controls([ControlEvaluation(control_id=control_id, result=result, reason=reason[:300], input=inp or {})], now, error)
         except Exception as exc:  # noqa: BLE001 - liveness bookkeeping never breaks the loop
@@ -232,36 +248,52 @@ class ExecutionService:
                 self.startup(now)
             mode = self.mode()["mode"]
             if not self.needs_broker():
-                self.last_cycle = {"at": _iso(now), "result": "IDLE", "trigger": trigger, "mode": mode}
+                self.last_cycle = {"at": _iso(now), "finished_at": _iso(now), "result": "IDLE", "trigger": trigger, "mode": mode}
                 return self.last_cycle                                            # nothing to do: no broker call, no write
             summary: Dict[str, Any] = {"trigger": trigger, "mode": mode}
             error, result = None, "RUN"
+            started = time.monotonic()
+            self.progress = {"run_id": run_id, "trigger": trigger, "mode": mode, "started_at": _iso(now), "step": None, "step_label": None, "symbol": None, "index": None, "total": None}
             self.broker.reset_budget()
             try:
+                self._step("ORDERS")
                 summary["monitored"] = self._monitor_intents(now, trigger)
+                self._step("RECONCILE")
                 summary["findings"] = self._reconcile(now, trigger, run_id)
+                self._step("POSITIONS")
                 summary.update(self._evaluate_positions(now, trigger))
+                self._step("SAFETY")
                 sv = self._safety_view(now, evaluate=True)
                 summary["safety"] = sv.state if sv is not None else None
                 self._touch(now, "EXECUTION_MODE", "PASS" if mode == "PAPER_AUTO" else "BLOCK", f"mode {mode}", {"mode": mode})
                 self._touch(now, "SAFETY_GATE", "PASS" if (sv is not None and sv.allowed_new_entry) else "BLOCK",
                             f"{getattr(sv, 'state', 'UNKNOWN')}" + (f": {sv.reason_text}" if sv is not None and sv.reason_text else ""), {"state": getattr(sv, "state", None)})
                 if mode == "PAPER_AUTO":
+                    self._step("ENTRIES")
                     summary["entries"] = self._scan_entries(now, trigger, sv)
             except SimulatedCrash:
+                self.progress = None
                 raise
             except Exception as exc:  # noqa: BLE001 - never crash the loop; the run row says what failed
                 error, result = f"{type(exc).__name__}: {exc}"[:500], "ERROR"
                 log.warning("execution cycle failed: %s", type(exc).__name__)
+            finished = now + timedelta(seconds=time.monotonic() - started)              # the measured completion time (start + elapsed), not a second clock
+            summary["duration_ms"] = int((finished - now).total_seconds() * 1000)
             active = bool(error or summary.get("monitored") or summary.get("findings") or summary.get("positions") or (summary.get("entries") or {}).get("candidates"))
             if active or self._last_run_row_at is None or (now - self._last_run_row_at).total_seconds() >= RUN_ROW_HEARTBEAT_S:
                 try:
-                    self.store.add_run(run_id, now, now, trigger, mode, result, summary, error, self.owner)
+                    self.store.add_run(run_id, now, finished, trigger, mode, result, summary, error, self.owner)
                     self._last_run_row_at = now
                 except Exception as exc:  # noqa: BLE001
                     log.warning("execution run not saved (%s)", type(exc).__name__)
-            self.last_cycle = {"at": _iso(now), "result": result, "trigger": trigger, "mode": mode, "run_id": run_id, "summary": summary, "error": error}
+            self.progress = None
+            self.last_cycle = {"at": _iso(now), "finished_at": _iso(finished), "result": result, "trigger": trigger, "mode": mode, "run_id": run_id, "summary": summary, "error": error}
             return self.last_cycle
+
+    def _step(self, step: str) -> None:
+        """Display only: the step of the cycle in progress (a dict assignment; it cannot fail and no decision reads it)."""
+        if self.progress is not None:
+            self._record(lambda: self.progress.update(step=step, step_label=CYCLE_STEPS[step], symbol=None, index=None, total=None))
 
     # ---------------------------------------------------------------- intents: monitoring, lookups, fills -----------------------
     def _monitor_intents(self, now: datetime, trigger: str) -> int:
@@ -416,6 +448,7 @@ class ExecutionService:
             self._touch(now, "BROKER_RECONCILIATION", "UNKNOWN", f"broker unavailable ({exc.code})", {}, exc.code)
             return 1
         self._broker_positions, self._open_orders = bpos, open_orders
+        self._broker_positions_at = _iso(now)
         n = 0
         internal_open = self.store.positions(open_only=True)
         open_intents = self.store.open_intents()
@@ -504,14 +537,18 @@ class ExecutionService:
                            max_hold_sessions=self.max_hold_sessions, demand_exit=self.demand_exit, demand_exit_evals=self.demand_exit_evals, stretch_exit=self.stretch_exit)
 
     def _evaluate_positions(self, now: datetime, trigger: str) -> dict:
-        out = {"positions": 0, "exits_decided": 0, "exits_submitted": 0, "exits_deferred": 0}
+        out = {"positions": 0, "exits_decided": 0, "exits_submitted": 0, "exits_deferred": 0, "decisions": []}
         open_intents = self.store.open_intents()
+        decide = lambda pos, decision, text: self._record(lambda: out["decisions"].append({"symbol": pos.symbol, "position_id": pos.position_id, "decision": decision,  # noqa: E731
+                                                                                         "text": text() if callable(text) else text}))
         for pos in self.store.positions(open_only=True):
             out["positions"] += 1
             if any(i.position_id == pos.position_id and i.intent_type == "EXIT" for i in open_intents):
+                decide(pos, "EXIT_IN_PROGRESS", "An exit order is already at the broker; the order monitor follows it.")
                 continue                                                                    # an exit is in flight: the monitor owns it
             if pos.state == "ATTENTION":
                 self._touch(now, "EXIT_TRIGGER", "UNKNOWN", f"{pos.symbol}: position needs attention ({pos.attention_reason}); no automatic action", {"position_id": pos.position_id})
+                decide(pos, "ATTENTION", lambda: f"Needs attention ({(pos.attention_reason or 'manual review').replace('_', ' ').lower()}); no automatic action.")
                 continue
             ctx = self._exit_context(pos, now)
             dec = exit_decision(pos, ctx)
@@ -525,10 +562,13 @@ class ExecutionService:
                     self._touch(now, "EXIT_TRIGGER", "RUN", f"{pos.symbol}: {dec.reason}", dec.detail)
                 else:
                     pos = self.store.update_position(pos.position_id, now, None, **fields)
+                self._record(lambda: self._last_touch.pop("EXIT_SUBMISSION", None))
                 if self._maybe_submit_exit(pos, now, trigger):
                     out["exits_submitted"] += 1
+                    decide(pos, "EXIT_SENT", lambda: f"Exit required: {EXIT_TEXT.get(dec.reason, dec.reason)}. Exit order sent to the broker ({self._last_touch.get('EXIT_SUBMISSION') or 'see its order'}).")
                 else:
                     out["exits_deferred"] += 1
+                    decide(pos, "EXIT_DEFERRED", lambda: f"Exit required: {EXIT_TEXT.get(dec.reason, dec.reason)}. Not sent this cycle: {self._last_touch.get('EXIT_SUBMISSION') or 'deferred'}.")
             else:
                 new_state = "WEAKENING" if dec.weakening else "HEALTHY"
                 ev = None
@@ -537,6 +577,7 @@ class ExecutionService:
                     ev = {"kind": "STATE", "from_state": pos.state, "to_state": new_state, "reason": dec.weakening or "healthy", "detail": dec.detail}
                 self.store.update_position(pos.position_id, now, ev, **fields)
                 self._touch(now, "EXIT_TRIGGER", "PASS", f"{pos.symbol}: no exit condition", dec.detail)
+                decide(pos, "HOLD", lambda: "No exit condition is met; holding." + (f" Weakening: {dec.weakening}." if dec.weakening else ""))
         return out
 
     def _maybe_submit_exit(self, pos: Position, now: datetime, trigger: str) -> bool:
@@ -592,10 +633,11 @@ class ExecutionService:
             return [f"4.6B intent store unreadable ({type(exc).__name__})"]
 
     def _scan_entries(self, now: datetime, trigger: str, sv) -> dict:
-        out: Dict[str, Any] = {"candidates": [], "submitted": [], "blocked": {}}
+        out: Dict[str, Any] = {"candidates": [], "submitted": [], "blocked": {}, "evaluations": []}
         episodes = [e for e in self.setups.store.open_episodes() if e.state == "READY"]
         if not episodes:
             return out
+        evaluated = lambda sym, result, reasons, **kw: self._record(lambda: out["evaluations"].append({"symbol": sym, "result": result, "reasons": reasons, **kw}))  # noqa: E731
         env = self._environment(now)
         try:
             self._clock_cache = self.broker.clock()
@@ -609,10 +651,14 @@ class ExecutionService:
         pending_entries = [i for i in open_intents if i.intent_type == "ENTRY" and self.store.position_for_execution(i.execution_id) is None]
         by_sym = {p["symbol"]: p for p in self._broker_positions}
         budget = self.max_entries_per_cycle
-        for ep in episodes:
+        for n, ep in enumerate(episodes, 1):
             if budget <= 0:
+                for rest in episodes[n - 1:]:
+                    evaluated(rest.symbol, "SKIPPED", [{"control": "ENTRIES_PER_CYCLE", "text": f"the limit of {self.max_entries_per_cycle} new entr(y/ies) per cycle was used; evaluated again next cycle"}])
                 break
             sym = ep.symbol
+            if self.progress is not None:
+                self._record(lambda: self.progress.update(symbol=sym, index=n, total=len(episodes)))
             out["candidates"].append(sym)
             pv = self.proposals.current(sym, now)
             setup = self.setups.current(sym)
@@ -633,10 +679,12 @@ class ExecutionService:
             blocked = blocking(controls)
             if blocked:
                 out["blocked"][sym] = [c.control_id for c in blocked]
+                evaluated(sym, "BLOCKED", [{"control": c.control_id, "text": c.reason} for c in blocked])
                 continue
             xid = execution_id_for(pv.proposal_id)
             if self.store.intent(xid) is not None:
                 out["blocked"][sym] = ["DUPLICATE_ENTRY"]
+                evaluated(sym, "BLOCKED", [{"control": "DUPLICATE_ENTRY", "text": "an entry for this proposal already exists"}])
                 continue
             qty = entry_quantity(pv.final_qty, self.qty_cap)
             snap = {k: getattr(pv, k) for k in ("proposal_id", "setup_id", "status", "effective_status", "reference_price", "price_source", "invalidation_price", "stop_rule", "risk_per_share",
@@ -646,8 +694,16 @@ class ExecutionService:
                             created_at=_iso(now), updated_at=_iso(now), created_by=self.owner, proposal_snapshot=snap, environment=dict(env))
             intent = self.store.insert_intent(intent)
             self._hook("after_intent", intent=intent)
+            self._record(lambda: self._last_touch.pop("ENTRY_SUBMISSION", None))
             self._submit(intent, now, "ENTRY_SUBMISSION", recheck=lambda i=intent: self._recheck_entry(i, now))
             out["submitted"].append(sym)
+
+            def sent_row(sym=sym, xid=xid) -> None:                                         # the persisted intent: its state comes from the broker's answer only
+                sent = self.store.intent(xid)
+                out["evaluations"].append({"symbol": sym, "result": "ENTRY_INTENT", "execution_id": xid, "intent_state": sent.state if sent else None,
+                                           "broker_status": sent.broker_status if sent else None,
+                                           "reasons": [{"control": "ENTRY_SUBMISSION", "text": self._last_touch.get("ENTRY_SUBMISSION") or "entry intent recorded"}]})
+            self._record(sent_row)
             pending_entries.append(intent)
             budget -= 1
         return out
@@ -847,6 +903,16 @@ class ExecutionService:
         pending_entries = [i for i in opens if i.intent_type == "ENTRY"]
         pending_exits = [i for i in opens if i.intent_type == "EXIT"]
         external = [p for p in self._broker_positions if p["symbol"] not in {x.symbol for x in open_pos} | {i.symbol for i in pending_entries}]
+        ext_source, ext_at = ("BROKER_RECONCILIATION", self._broker_positions_at) if self._broker_positions_at else (None, None)
+        try:                                                                       # display only: the account refresh's newer read of the same account (0 broker calls)
+            refresher = getattr(self.stream_fn(), "account_refresh", None)
+            snap = refresher.store.snapshot() if refresher is not None and refresher.enabled() else None
+            if snap is not None and (ext_at is None or str(snap["refreshed_at"]) > ext_at):
+                from execution.account_positions import classify
+                external = [r for r in classify(snap["positions"], self.store) if not r["managed"]]
+                ext_source, ext_at = "ACCOUNT_REFRESH", snap["refreshed_at"]
+        except Exception:  # noqa: BLE001 - display only
+            pass
         icon, label = (ATTENTION_ICON, ATTENTION_LABEL) if attention else (MODE_ICONS[m["mode"]], MODE_LABELS[m["mode"]])
         try:
             from execution.scheduler import status as sched_status
@@ -877,6 +943,7 @@ class ExecutionService:
         return BotStatus(mode=m["mode"], mode_label=MODE_LABELS[m["mode"]], icon=icon, headline=label, attention=bool(attention), attention_reasons=attention, ready=self.ready,
                          environment=dict(self.environment_cache), safety_state=sv.state if sv is not None else None, safety_label=sv.state_label if sv is not None else None,
                          open_positions=len(open_pos), pending_entries=len(pending_entries), pending_exits=len(pending_exits), external_positions=len(external),
+                         external_positions_source=ext_source, external_positions_as_of=ext_at, external_symbols=sorted(str(p["symbol"]) for p in external),
                          max_open_positions=self.max_open_positions, reconciliation_healthy=self.recon_healthy, last_cycle_at=last.get("at"), last_cycle_result=last.get("result"),
                          scheduler=sched, cards=self.cards(now), recent=self.history(8), mode_changed_at=m.get("changed_at"), mode_changed_by=m.get("changed_by"),
                          account_data=acct)

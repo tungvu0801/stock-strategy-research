@@ -1,0 +1,92 @@
+"""
+tests/freeze_ledger.py - the Stage 6.8 post-freeze ledger (account position visibility + Bot Activity; DESIGN_68 section 6).
+
+The earlier freeze tests pin execution, Trader View, route and UI files to their own base commits. Stage 6.8 changes some of those files on
+purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
+the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
+every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 plus this ledger.
+"""
+import hashlib
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_68 = "b2a20ea0e5418f92f2c943dcc54a7268260f1a9b"                                     # main: Stage 6.7 merged (PR #30)
+NEW_68 = {"execution/account_positions.py", "execution/activity.py", "tests/test_bot_activity_68.py", "tests/frontend/bot_activity.test.cjs", "tests/freeze_ledger.py",
+          "DESIGN_68_ACCOUNT_POSITIONS_BOT_ACTIVITY.md"}
+LEDGER = {
+    ".github/ci/pytest_groups.json": "dbc13e63462bb9e850c32fce807a5b39638cf25ea8cf7e89a00dee3c0eaa02b2",
+    "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
+    "api/routes/execution.py": "9fe4a8b3f88e015b3fa6fcbfcd149a230c504a3d5baaec312a7d5d553d1d6e00",
+    "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
+    "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
+    "execution/service.py": "5c09941615195dba6b50c41976b02b5a9b087c0cd3a0c805445ad2c8b91017e6",
+    "frontend/product_ui.css": "f990ca8d8d5dc0739a6564e6c54b5f6b69dd9184fc132f1ec84b2ff9e45bac4a",
+    "frontend/product_ui.js": "cb30999f1daad116a82d22a1bd8e02dbe3b2255d63704c69b12bfcc8241f68df",
+    "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
+    "tests/frontend/product_flow.test.cjs": "8896ff2ccaf2df2779d89e89fff09f2e63d04c325c8b4b692104a3d01d56b0cd",
+    "tests/frontend/product_ui.test.cjs": "54923273be7ccf34b7561acc00b4043d1387aef02d41af94a09966d44d44e01e",
+    "tests/frontend/strategy_validation.test.cjs": "d4d26d71b4a68ffe3388bba145b966735b162040474151fa48cd144eaf5596dc",
+    "tests/test_account_refresh_601.py": "42aeb7db6c614d1c0cf41cc7d9c8bf8bbcabebd5301d7dea1fafba4e0eab2587",
+    "tests/test_cash_flow_602.py": "15581c69f6fe12e475f7311a03652bb0e128e06eaaa7bc227eab6281eae141ec",
+    "tests/test_ci_groups_603.py": "8b1b0a4659424e7fc733a275dae76e3b72ac3f7df156234a8bf8c72f3e57c477",
+    "tests/test_db_bootstrap_busy.py": "0253939a872b26f83dd479c31432adc75c5ba7000d3842a84dcc8d3717b38d86",
+    "tests/test_demand_57.py": "2b76510307e4973f2c932ca64fb6759990d2e9ebd6328e1a3a6b8f4cb2a16ba0",
+    "tests/test_execution_60.py": "0f4069088880feab466ac266139d29808b6a1759b3b406a2ed79ab7d4426d07f",
+    "tests/test_execution_safety_591.py": "e5d2a1faefc7be7f04077f744155c2e9dbe82b2b0b35ebe2cff27f26b39f0c89",
+    "tests/test_forward_validation_61.py": "d7b5260e7b70bdae9344f5d26212ac0dcf3200651b374ab72e668166a4363fe7",
+    "tests/test_product_flow_612.py": "eb39ab71d55a397913cf897b23e9f275fb4784218ac04aed7b940d1513084bb9",
+    "tests/test_product_ui_611.py": "40c13b3292c05b1f2a8a719c9b00d2c5b454c0545b3c05a5774a64c4b45384ce",
+    "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
+    "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
+    "tests/test_strategy_validation_62.py": "d608578b43e779480ff210da91db1465822f98d9c4b710886e2b9931dff2fc9b",
+    "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
+    "trader_view/positions.py": "467ef46288c1528aff95cbeb199265adc9f650ec545a0ca40f14357e105a1567",
+    "trader_view/stream.py": "52d9d2d46c1c7a0f022762079d84f99e339aba69d8f2d4430b34d3333e2a3510",
+}
+
+
+def _norm(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
+def sha(text: str) -> str:
+    return hashlib.sha256(_norm(text).encode("utf-8")).hexdigest()
+
+
+def now_text(rel: str) -> str:
+    return _norm((ROOT / rel).read_text(encoding="utf-8"))
+
+
+def base_text(rel: str) -> str:
+    out = subprocess.run(["git", "show", f"{BASE_68}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {BASE_68} (fetch-depth 0 is required)"
+    return _norm(out.decode("utf-8"))
+
+
+def view(rel: str, text: str) -> str:
+    """`text` (the current file) as the freeze tests see it: a registered file is main's version, after proving it is exactly the registered one."""
+    if rel not in LEDGER:
+        return text
+    base = base_text(rel)
+    if _norm(text) == base:
+        return base                                                                      # already read through the ledger (e.g. undo_62 after a shadowed read)
+    assert sha(text) == LEDGER[rel], f"{rel} differs from the Stage 6.8 ledger entry (tests/freeze_ledger.py): register the change or revert it"
+    return base
+
+
+def view_bytes(rel: str, data: bytes) -> bytes:
+    return data if rel not in LEDGER else view(rel, data.decode("utf-8")).encode("utf-8")
+
+
+def unchanged(paths, blob_fn) -> set:
+    """The registered files among `paths` that, read through the ledger, equal the caller's base (`blob_fn(rel)`, str or bytes): for that freeze
+    test they did not change. A registered file that differed from the caller's base on main stays in its change set and is checked as before."""
+    out = set()
+    for rel in paths:
+        if rel in LEDGER:
+            b = blob_fn(rel)
+            if view(rel, now_text(rel)) == _norm(b.decode("utf-8") if isinstance(b, bytes) else b):
+                out.add(rel)
+    return out

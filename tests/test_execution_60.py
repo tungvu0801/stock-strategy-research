@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -1216,7 +1217,7 @@ def test_N04_exact_routes_and_no_banned_path_words(stack):
     mine = {p: set(o) for p, o in app.openapi()["paths"].items() if p.startswith("/api/execution") and not p.startswith("/api/execution-safety")}
     assert mine == {"/api/execution": {"get"}, "/api/execution/status": {"get"}, "/api/execution/history": {"get"}, "/api/execution/controls": {"get"}, "/api/execution/intents": {"get"},
                     "/api/execution/positions": {"get"}, "/api/execution/findings": {"get"}, "/api/execution/symbol/{symbol}": {"get"}, "/api/execution/auto/enable": {"post"},
-                    "/api/execution/auto/disable": {"post"}}
+                    "/api/execution/auto/disable": {"post"}, "/api/execution/activity": {"get"}}   # Stage 6.8: + Bot Activity (GET)
     for p in mine:
         assert not re.search(r"paper|alpaca|broker|execute|trade|place|cancel|submit|order", p), p
     assert stack.api.post("/api/execution/auto/enable", json={"reason": "x", "qty": 5}).status_code == 422
@@ -1365,7 +1366,7 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
     pinned = [p for p in pinned if p != "tests/test_trader_view_55.py"]
     # <<< Stage 6.0.3
     for rel in pinned:
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
+        assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")
     now_cfg = (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "EXECUTION_SCHEDULER_ENABLED" in now_cfg and config.MAX_OPEN_POSITIONS == 10

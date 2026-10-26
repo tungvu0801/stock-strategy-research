@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 MANIFEST = ROOT / ".github" / "ci" / "pytest_groups.json"
 WORKFLOW = ROOT / ".github" / "workflows" / "tests.yml"
 HELPER = ROOT / "scripts" / "ci_pytest_groups.py"
@@ -161,7 +162,7 @@ def test_P01_prior_stage_pin_tests_differ_from_the_stage_603_base_only_by_their_
         assert out, rel
         return out.replace(b"\r\n", b"\n")
     for rel, n in STAGE_603_BLOCKS.items():
-        text = (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        text = ledger_view(rel, (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n"))
         # >>> Stage 6.1: these pin tests may also carry marked, additive Stage 6.1 blocks (the forward paper validation reconciliation, pinned against the
         # Stage 6.1 base by tests/test_forward_validation_61.py); they are stripped before the Stage 6.0.3 comparison
         text = re.sub(r"(?ms)^[ \t]*# >>> Stage 6\.1\b.*?^[ \t]*# <<< Stage 6\.1[^\n]*\n", "", text)

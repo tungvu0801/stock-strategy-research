@@ -219,7 +219,8 @@
       return;
     }
     const held = p.sources.filter((s) => s.status === "POSITION");
-    el.dataset.state = held.length ? "POSITION" : "NO_POSITION";
+    const known = held.length || p.sources.some((s) => s.status === "NO_POSITION");   // "No position" only when a source read the account and found none
+    el.dataset.state = held.length ? "POSITION" : known ? "NO_POSITION" : "NOT_LOADED";
     const row = (s) => {
       const tag = s.status === "POSITION" ? "ok" : s.status === "NO_POSITION" ? "dim" : "warn";
       return `<div class="tv-src" title="${esc(s.message || "")}"><span class="tv-src-label">${esc(s.label)}</span><span class="tv-tag ${tag}">${esc(String(s.status).replace(/_/g, " "))}</span></div>`;
@@ -227,7 +228,7 @@
     const kv = (s) => `<table class="tv-kv"><tr><td>Qty</td><td>${esc(v(s.quantity))}</td></tr><tr><td>Avg cost</td><td>${esc(v(s.average_cost))}</td></tr>` +
       `<tr><td>Mkt value</td><td>${esc(v(s.market_value))}</td></tr><tr><td>P/L</td><td>${esc(v(s.unrealized_pnl))}${s.unrealized_pnl_pct == null ? "" : ` (${esc(s.unrealized_pnl_pct)}%)`}</td></tr>` +
       (s.as_of ? `<tr><td>As of</td><td>${esc(s.as_of)}</td></tr>` : "") + `</table>`;
-    el.innerHTML = (held.length ? "" : R.stateHtml("NO_POSITION", "NO POSITION")) +
+    el.innerHTML = (held.length ? "" : known ? R.stateHtml("NO_POSITION", "NO POSITION") : R.stateHtml("NOT_LOADED", "NOT LOADED", "No source has read a position for this symbol yet.")) +
       p.sources.map((s) => row(s) + (s.status === "POSITION" ? kv(s) + (s.message ? `<p class="tv-dim">${esc(s.message)}</p>` : "") : "")).join("") +
       `<details class="tv-details"><summary>Why each source shows this</summary>` +
       p.sources.map((s) => `<div class="tv-dim"><b>${esc(s.label)}</b> — ${esc(s.message || (s.status === "NO_POSITION" ? "No position" : s.status))}</div>`).join("") +

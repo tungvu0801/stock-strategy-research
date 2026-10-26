@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -708,7 +709,7 @@ def test_B01_prior_stage_files_identical_to_base():
               "tests/frontend/trader_core.test.cjs", "tests/frontend/trader_demand.test.cjs", "tests/frontend/trader_render.test.cjs", "tests/frontend/trader_setup.test.cjs",
               "tests/frontend/trader_proposal.test.cjs", "frontend/trade_review.js", "frontend/setup_alerts.js"]
     for rel in pinned:
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
+        assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")
     now_cfg = (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "EXECUTION_SAFETY_STARTUP_POLICY" in now_cfg and config.MAX_DAILY_LOSS_PERCENT == 3.0
