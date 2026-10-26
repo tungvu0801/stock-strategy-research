@@ -1018,7 +1018,7 @@
     const real = eq.real_external, rs = realSource(u);
     return `<section class="pui-acct pui-unified" data-pui-unified="${esc(u.state)}"><h3>Unified exposure <span class="pui-badge ${st[1]}">${esc(st[0])}</span></h3>${disc}` +
       `<div class="pui-kv pui-bot-kv"><span>Known invested value (PAPER + ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}, gross)</span><b data-pui-uni-total>${esc(usd(ex.total_market_value))}${ex.basis === "KNOWN_SOURCES_ONLY" ? " (known sources only)" : ""}</b>` +
-      `<span>PAPER · REAL</span><b>${by(ex.by_account_type)}</b><span>By ownership</span><b>${by(ex.by_ownership)}</b>` +
+      `<span>By account type</span><b data-pui-uni-types>${by(ex.by_account_type)}</b><span>By ownership</span><b>${by(ex.by_ownership)}</b>` +
       `<span>Largest</span><b>${ex.largest ? `${esc(ex.largest.symbol)} ${esc(ex.largest.weight_pct)}%` : "—"}</b><span>Top 5</span><b>${ex.top5_pct == null ? "—" : `${esc(ex.top5_pct)}%`}</b>` +
       `<span>Equity · PAPER</span><b>${esc(usd(eq.paper && eq.paper.equity))}</b><span>Equity · ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}</span><b>${real ? esc(usd(real.equity)) : "unknown (Robinhood not loaded)"}</b></div>` +
       `<div class="pui-sub">${esc(eq.note || "")}</div>` +

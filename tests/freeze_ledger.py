@@ -30,7 +30,7 @@ LEDGER = {
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
     "execution/service.py": "5c09941615195dba6b50c41976b02b5a9b087c0cd3a0c805445ad2c8b91017e6",
     "frontend/product_ui.css": "ba1285b4c1cb1fcc49380f55cb3d871323a695649c227b797ed4450212de7d5c",
-    "frontend/product_ui.js": "725a1d584ede808f6d3df15e732df6622211d42ccd13eab49839c4f6c697ea8f",
+    "frontend/product_ui.js": "fabb2d402b13c1b7bebe3ae7ff7d0248b396fc198a35ba85ce7fe4ad2fe615c8",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "tests/frontend/product_flow.test.cjs": "36c3b0c3729d8cab7bb009972dd9209e8ecf269648c3a14980aac3a439139306",
     "tests/frontend/product_ui.test.cjs": "929211ac8de8181d05cac3ab3c3dc8450f55c07c865b07a09f3034eb82433238",
