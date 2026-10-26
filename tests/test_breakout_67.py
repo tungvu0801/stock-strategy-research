@@ -22,6 +22,8 @@ import io
 import json
 import re
 import socket
+import statistics
+import subprocess
 import sys
 from pathlib import Path
 
@@ -45,6 +47,8 @@ from strategy_validation.dataset import Dataset  # noqa: E402
 
 AT = "2026-10-26T00:00:00+00:00"
 FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"
+FREEZE = "2eb5981"                                                                              # "freeze Breakout v1 rules before OOS"
+FREEZE_RUN_SET = "2a1f66f5c2024258d83fa6db0678cb45"                                             # the candidate set of the first OOS run (at the freeze)
 D = F.weekdays("2019-01-02", "2022-12-30")
 SCHED = BreakoutStrategyCore().schedule(D)
 
@@ -284,8 +288,29 @@ def test_C03_the_cash_driven_excess_guard_never_reads_cash_as_selection():
     assert edge["status"] == "NOT_ESTABLISHED" and edge["reasons"][0]["code"] == "CASH_DRIVEN_EXCESS"   # ... which is not selection
     segs = {"OOS": {**oo, "excess_t_stat": 9.0}, "TRAIN": run.cross_sectional["segments"]["TRAIN"], "ALL": run.cross_sectional["segments"]["ALL"]}
     assert CS.selection_edge(segs, {"status": "PASS"})["status"] == "NOT_ESTABLISHED"              # however strong the t
-    ok = {**segs["OOS"], "invested_capital_weeks": 40, "invested_capital_mean_excess": 0.004}
+    ok = {**segs["OOS"], "selection_part_mean": 0.004, "selection_part_t": 2.5}
     assert CS.selection_edge({**segs, "OOS": ok}, {"status": "PASS"})["status"] != "NOT_ESTABLISHED"
+    weak = {**segs["OOS"], "selection_part_mean": 0.004, "selection_part_t": 0.6}                    # a positive but negligible selection part
+    assert CS.selection_edge({**segs, "OOS": weak}, {"status": "PASS"})["reasons"][0]["code"] == "CASH_DRIVEN_EXCESS"
+
+
+def test_C05_cash_timing_is_not_selection_the_review_counter_example():
+    """Up weeks fully invested with a losing selection, down weeks 1 position with a winning one: the UNWEIGHTED mean over weeks with a position is
+    positive, the capital-weighted selection part is negative, the period excess (all from cash in down weeks) is large - never an edge."""
+    rows = []
+    for k in range(120):
+        up = k % 2 == 0
+        c = 0.02 if up else -0.02
+        n, legs = (20, c - 0.002) if up else (1, c + 0.004)
+        net = n * legs / 20
+        rows.append({"rebalance": f"2025-{1 + k // 28:02d}-{1 + k % 28:02d}", "segment": "OOS", "excess": net - c, "excess_gross": net - c,
+                     "strategy": {"net": net, "gross": net, "positions": n, "entries": 0, "slots": 20, "invested_fraction": n / 20},
+                     "control": {"net": c, "gross": c, "positions": 70, "entries": 0}, "benchmark": {"return": c}})
+    s = CS.segment_stats(rows, 52.0)
+    assert s["invested_capital_mean_excess"] > 0 and s["selection_part_mean"] < 0 and s["mean_excess_period_return"] > 0 and s["excess_t_stat"] > 2
+    assert s["selection_part_mean"] + s["cash_part_mean"] == pytest.approx(s["mean_excess_period_return"], abs=1e-12)   # the exact split
+    edge = CS.selection_edge({"OOS": s, "TRAIN": s, "ALL": s}, {"status": "PASS"})
+    assert edge["status"] == "NOT_ESTABLISHED" and edge["reasons"][0]["code"] == "CASH_DRIVEN_EXCESS"
 
 
 def test_C04_a_continuing_holding_pays_no_friction_and_flags_follow_the_selection():
@@ -388,6 +413,10 @@ def test_V04_turnover_friction_exposure_and_absolute_diagnostics():
     assert c["average_one_way_turnover"] is not None and "entries / N slots" in c["turnover_basis"]
     assert set(d["portfolio"]["ALL"]) == {"strategy", "selection_control", "market_benchmark"} and "strategy_beta_to_spy" in d["market_sensitivity"]["ALL"]
     assert set(d["market_weeks"]["ALL"]) == {"benchmark_up", "benchmark_down"} and d["invested_capital"]["ALL"]["weeks_with_a_position"] >= 1
+    ic = d["invested_capital"]["ALL"]
+    assert ic["selection_part_mean"] + ic["cash_part_mean"] == pytest.approx(statistics.mean(p["excess"] for p in run.cross_sectional["periods"] if p["status"] == "INCLUDED"), abs=1e-5)
+    oo = run.cross_sectional["segments"]["ALL"]
+    assert oo["strategy_turnover"] == pytest.approx(statistics.mean(p["strategy"]["entries"] / 20 for p in run.cross_sectional["periods"] if p["status"] == "INCLUDED"), abs=1e-4)
 
 
 def test_V05_the_sensitivity_never_sees_a_bar_after_the_train_end():
@@ -419,6 +448,7 @@ def test_V07_follow_through_failed_breakouts_and_the_momentum_overlap_are_diagno
     assert 0 <= fb["share_ending_below_entry_price"] <= 1 and 0 <= fb["share_ending_below_breakout_reference"] <= 1
     ov = d["momentum_overlap"]
     assert ov["weeks"] > 0 and 0 <= ov["share_of_breakout_holdings_in_momentum_portfolio"] <= 1 and "never combined" in ov["note"]
+    assert 0 < ov["share_expected_by_chance"] <= 1 and set(f["relative_to_control"]) == {"above_control", "within_band", "below_control", "mean"}
     src = now_text("breakout/core.py") + now_text("breakout/adapter.py") + now_text("breakout/data.py")
     assert not re.search(r"(?m)^\s*(from|import) (momentum|mean_reversion|value_quality)", src)       # the rules never use another strategy
 
@@ -442,6 +472,13 @@ def test_V09_the_data_quality_diagnostics_report_exclusions_and_held_window_arti
     dq = run.diagnostics["strategy"]["data_quality"]
     assert dq["data_inconsistent_exclusions"] >= 1 and set(dq["by_code"]) == {"RATIO_ARTIFACT"} and [a["symbol"] for a in dq["ratio_artifacts"]] == ["HON"]
     assert any(x["side"] == "control" and x["symbol"] == "HON" for x in dq["holding_window_anomalies"]) and BO.FLAG_HOLDING_ANOMALY in run.research_flags
+    assert all(x["code"] != "LARGE_REBASING" for x in dq["holding_window_anomalies"])               # an adjusted distribution is total return, not an error
+    sp = F.universe(25)
+    sp[k]["adj_steps"] = [(D[300], 0.85)]                                                            # an ADJUSTED large distribution only (a spin-off)
+    run2 = E.run_validation(BreakoutAdapter({"max_holdings": 5}), F.dataset(sp), registry=R.by_id(), created_at=AT)
+    dq2 = run2.diagnostics["strategy"]["data_quality"]
+    assert dq2["holding_window_anomaly_count"] == 0 and BO.FLAG_HOLDING_ANOMALY not in run2.research_flags
+    assert dq2["adjusted_distributions_in_held_windows"] and all("excess_at_stake_if_misadjusted" in x for x in dq2["adjusted_distributions_in_held_windows"])
     assert run.audit.status == "PASS"
 
 
@@ -590,3 +627,54 @@ def test_G08_frozen_controls_and_ci_manifest():
     import mean_reversion as MR
     assert (BO.SPLIT_SESSION, BO.NORMAL_DAY, BO.SPLIT_DAY_TOL, BO.ADJUSTED_LOSS_TOL) == (MR.SPLIT_SESSION, MR.NORMAL_DAY, MR.SPLIT_DAY_TOL, MR.ADJUSTED_LOSS_TOL)
     assert BO.LARGE_REBASING_TOL == 0.05
+
+
+def test_G06_the_rules_and_the_cash_basis_are_the_frozen_ones():
+    r = subprocess.run(["git", "show", f"{FREEZE}:breakout/__init__.py"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        pytest.skip("the freeze commit is not reachable (shallow clone)")
+    frozen: dict = {}
+    exec(compile(r.stdout, "frozen", "exec"), frozen)                                              # noqa: S102 - the repository's own file at a fixed commit
+    for k in ("STRATEGY_VERSION", "RESEARCH_UNIVERSE", "MIN_PRICE", "MIN_MEDIAN_DOLLAR_VOLUME", "DOLLAR_VOLUME_SESSIONS", "LOOKBACK_SESSIONS", "SPLIT_SESSION",
+              "NORMAL_DAY", "SPLIT_DAY_TOL", "ADJUSTED_LOSS_TOL", "LARGE_REBASING_TOL", "MAX_HOLDINGS", "SLOT_PCT", "CASH_RETURN", "REBALANCE",
+              "FRICTION_BPS_PER_SIDE", "SENSITIVITY", "FOLLOW_THROUGH_BAND", "POSITION_BUCKETS", "CONCENTRATION_TOP_NAMES", "CONCENTRATION_NAME_SHARE"):
+        assert frozen[k] == getattr(BO, k), k                                                      # nothing tuned after the OOS result
+    for f in ("breakout/core.py", "breakout/data.py", "breakout/adapter.py"):
+        assert subprocess.run(["git", "diff", "--quiet", FREEZE, "--", f], cwd=ROOT).returncode == 0, f   # the rule code is byte-identical
+    v3 = subprocess.run(["git", "show", f"{FREEZE}:strategy_validation/cross_sectional.py"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout
+    assert "CASH_DRIVEN_EXCESS" in v3 and "FIXED_SLOTS_CASH" in v3                                   # the cash basis and its guard were pre-registered
+
+
+def test_G07_documents_state_the_hypothesis_the_result_and_the_limits():
+    d = now_text("DESIGN_67_BREAKOUT.md")
+    for s in ("## 1. Hypothesis (written before any code)", "## 2. Definition (v1, frozen before the OOS run)", "## 3. Feasibility", "## 5. Results",
+              "SURVIVORSHIP_BIAS_PRESENT", "FIXED_CURRENT_UNIVERSE", "UNTRUSTED", "NOT_ESTABLISHED", "SELECTION CONTROL", "MARKET BENCHMARK",
+              "NOT SELECTION-EDGE EVIDENCE", "## 6a. Development log", "## 7. Adversarial review", "## 8. Limitations", "Backtest results are hypothetical.",
+              FREEZE, "CASH_DRIVEN_EXCESS", "never clipped", "invested fraction"):
+        assert s in d, s
+    h = now_text("STRATEGY_VALIDATION_HARNESS.md")
+    assert "## 16. Fixed-slot cash accounting (Stage 6.7, opt-in)" in h and "CASH_DRIVEN_EXCESS" in h
+    readme = now_text("README.md")
+    sec = re.findall(r"(?ms)^## Breakout strategy \(Stage 6\.7, research only\)\n.*?(?=^## )", readme)
+    assert len(sec) == 1 and "python -m strategy_validation validate --strategy BREAKOUT" in sec[0] and "SURVIVORSHIP_BIAS_PRESENT" in sec[0]
+    assert readme.index("## Mean Reversion strategy (Stage 6.6") < readme.index("## Breakout strategy (Stage 6.7") < readme.index("## Continuous integration (Stage 6.0.3")
+    assert not re.search(r"(?i)\b(guaranteed|profitable|buy now|sell now|regime)\b", sec[0])
+
+
+def test_G09_the_real_breakout_result_where_the_local_data_exists():
+    db = ROOT / "runtime" / "preview_67.db"
+    if not db.exists():
+        pytest.skip("local data only: the Breakout run lives in a git-ignored runtime database")
+    from strategy_validation.store import StrategyValidationStore
+    store = StrategyValidationStore(db)
+    run = store.latest("BREAKOUT")
+    if run is None:
+        pytest.skip("no stored Breakout run in this local database")
+    cs, oo = run["cross_sectional"], run["cross_sectional"]["segments"]["OOS"]
+    assert run["validation_version"] == "validation_v3" and run["eligibility"]["status"] == "ELIGIBLE" and cs["parity"]["status"] == "PASS" and run["audit"]["status"] == "PASS"
+    assert run["candidate_set_hash"] == FREEZE_RUN_SET and cs["control"]["strategy_capital"] == {"basis": "FIXED_SLOTS_CASH", "slots": 20, "slot_pct": 5.0, "cash_return": 0.0}
+    assert cs["selection_edge"]["status"] == run["selection_edge"]["status"] == "NOT_ESTABLISHED" and oo["period_count"] == 98 and oo["excess_t_stat"] < 1.0
+    assert run["verdict"]["verdict"] == "FAIL" and run["performance_verdict"]["verdict"] == "PASS" and run["universe_integrity"]["status"] == "UNTRUSTED"
+    assert 0.2 < oo["mean_invested_fraction"] < 0.5 and "SURVIVORSHIP_BIAS_PRESENT" in run["research_flags"] and R.get("BREAKOUT").status == "RESEARCH"
+    first = [StrategyValidationStore(db).run(x["run_id"]) for x in store.runs("BREAKOUT")]
+    assert any((x or {}).get("git_commit_sha", "").startswith(FREEZE) for x in first)                  # the first OOS run ran the frozen code

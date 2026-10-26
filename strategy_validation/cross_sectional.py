@@ -316,9 +316,12 @@ def segment_stats(rows: List[dict], ppy: float) -> dict:
     sd = statistics.stdev(ex) if n >= 2 else None
     t = (statistics.mean(ex) / (sd / math.sqrt(n))) if (n >= CS_MIN_PERIODS_T and sd and sd > 0) else None
     worst = min(rows, key=lambda r: r["excess"])
-    def turn(side):                                                              # Stage 6.7: an all-cash segment (fixed slots) has no turnover
+    def turn(side):                                                              # Stage 6.7: fixed slots - the capital bought (entries / slots)
+        if side == "strategy" and "slots" in r_strategy0:
+            return statistics.mean(r["strategy"]["entries"] / r["strategy"]["slots"] for r in rows)
         xs = [r[side]["entries"] / r[side]["positions"] for r in rows if r[side]["positions"]]
         return statistics.mean(xs) if xs else None
+    r_strategy0 = rows[0]["strategy"]
     vol = lambda xs: _r(statistics.stdev(xs) * math.sqrt(ppy), 6) if len(xs) >= 2 else None   # noqa: E731
     return {"period_count": n, "from": rows[0]["rebalance"], "to": rows[-1]["rebalance"],
             "strategy_total_return": _r(sp["total_return"]), "control_total_return": _r(cp["total_return"]),
@@ -339,13 +342,20 @@ def segment_stats(rows: List[dict], ppy: float) -> dict:
 
 
 def _invested_capital(rows: List[dict]) -> dict:
-    """Stage 6.7, fixed slots only: the selection's excess on the capital it actually invested (per week with a position: the mean of its legs minus
-    the control), so that an excess earned by holding cash is never read as selection. Absent for the default basis."""
+    """Stage 6.7, fixed slots only. A week's excess splits exactly into a SELECTION part, invested fraction x (legs - control) = strategy -
+    fraction x control, and a CASH part, -(1 - fraction) x control. The guard reads the selection part (capital-weighted, every week - an all-cash
+    week contributes 0), so that an excess earned by holding cash - or by holding cash at the right time - is never read as selection. The
+    unweighted mean over weeks with a position is kept as a description. Absent for the default basis."""
     if not rows or "slots" not in rows[0]["strategy"]:
         return {}
     ic = [r["strategy"]["net"] * r["strategy"]["slots"] / r["strategy"]["positions"] - r["control"]["net"] for r in rows if r["strategy"]["positions"]]
+    sel = [r["strategy"]["net"] - r["strategy"]["invested_fraction"] * r["control"]["net"] for r in rows]
+    cash = [-(1.0 - r["strategy"]["invested_fraction"]) * r["control"]["net"] for r in rows]
+    sd = statistics.stdev(sel) if len(sel) >= 2 else None
+    t = (statistics.mean(sel) / (sd / math.sqrt(len(sel)))) if (len(sel) >= CS_MIN_PERIODS_T and sd and sd > 0) else None
     return {"mean_invested_fraction": _r(statistics.mean(r["strategy"]["invested_fraction"] for r in rows), 6), "invested_capital_weeks": len(ic),
-            "invested_capital_mean_excess": statistics.mean(ic) if ic else None}
+            "invested_capital_mean_excess": statistics.mean(ic) if ic else None,
+            "selection_part_mean": statistics.mean(sel), "selection_part_t": t, "cash_part_mean": statistics.mean(cash)}
 
 
 # ---------------------------------------------------------------- the selection edge and the overall verdict --------------------------------
@@ -372,11 +382,13 @@ def selection_edge(segments: Dict[str, dict], parity: dict) -> dict:
         code = "FRICTION_ERASES_EXCESS" if (mg or 0) > 0 else "NO_OOS_EXCESS"
         return _edge("NOT_ESTABLISHED", [{"code": code, "text": ("Friction turns the OOS excess over the control negative." if code == "FRICTION_ERASES_EXCESS" else
                                                                   f"The OOS mean excess over the control is {_pct(m)} per period: not positive.")}], **stat)
-    if "invested_capital_weeks" in oo and (not oo["invested_capital_weeks"] or (oo.get("invested_capital_mean_excess") or 0.0) <= 0):
-        return _edge("NOT_ESTABLISHED", [{"code": "CASH_DRIVEN_EXCESS", "text": (                    # Stage 6.7, fixed slots: cash is not selection skill
-            f"The OOS excess over the fully invested control is {_pct(m)} per period, but the selection's excess on the capital it actually invested "
-            f"is {_pct(oo.get('invested_capital_mean_excess'))} over {oo['invested_capital_weeks']} week(s) with a position: the excess comes from "
-            "holding cash, not from the selection.")}], **stat)
+    if "selection_part_mean" in oo:                                              # Stage 6.7, fixed slots: cash is not selection skill
+        sp, spt = oo.get("selection_part_mean"), oo.get("selection_part_t")
+        if sp is None or sp <= 0 or spt is None or spt < CS_T_NEGLIGIBLE:
+            return _edge("NOT_ESTABLISHED", [{"code": "CASH_DRIVEN_EXCESS", "text": (
+                f"The OOS excess over the fully invested control is {_pct(m)} per period, but its selection part (the invested fraction x the legs' "
+                f"excess over the control) is {_pct(sp)} per period with t = {_t(spt)} (< {CS_T_NEGLIGIBLE} or not positive); the rest is the cash "
+                f"part ({_pct(oo.get('cash_part_mean'))}): the excess comes from holding cash, not from the selection.")}], **stat)
     if t is None or t < CS_T_NEGLIGIBLE:
         return _edge("NOT_ESTABLISHED", [{"code": "EXCESS_NEGLIGIBLE", "text": f"OOS mean excess {_pct(m)} per period with t = {_t(t)} over {n_oos} periods "
                                                                                f"(< {CS_T_NEGLIGIBLE}): statistically indistinguishable from zero."}], **stat)

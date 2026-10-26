@@ -20,11 +20,11 @@ const BO_DIAG = { construction: { average_one_way_turnover: 0.24, annualized_one
                   exposure: { ALL: { mean_invested_fraction: 0.41, median_invested_fraction: 0.35, min_invested_fraction: 0.0, max_invested_fraction: 1.0, mean_positions: 8.2,
                                      weeks_by_positions: { "0": 12, "1-5": 90, "6-10": 110, "11-19": 80, "20": 29 } } },
                   market_sensitivity: { ALL: { strategy_beta_to_spy: 0.52, control_beta_to_spy: 1.01 } },
-                  invested_capital: { OOS: { weeks_with_a_position: 93, mean_excess_on_invested_capital: 0.0007, t_stat: 0.41 } },
+                  invested_capital: { OOS: { weeks_with_a_position: 93, mean_excess_on_invested_capital: 0.0007, t_stat: 0.41, selection_part_mean: 0.0002, selection_part_t: 0.14, cash_part_mean: -0.0032 } },
                   follow_through: { legs: 2600, continued_higher: 0.38, flat: 0.25, failed: 0.37 },
                   failed_breakouts: { legs: 2600, share_ending_below_entry_price: 0.46, share_ending_below_breakout_reference: 0.31 },
                   concentration: { excess_contribution: { cash: -0.31, names: 0.05, top: [["<i>Z</i>", 0.02]] } },
-                  momentum_overlap: { weeks: 270, share_of_breakout_holdings_in_momentum_portfolio: 0.44, weekly_excess_correlation: 0.37 } };
+                  momentum_overlap: { weeks: 270, share_of_breakout_holdings_in_momentum_portfolio: 0.44, share_expected_by_chance: 0.26, weekly_excess_correlation: 0.37 } };
 const RUN = (diag) => ({ run_id: "7".repeat(32), created_at: "2026-10-26T09:00:00+00:00", strategy_version: "1.0", dataset_kind: "HISTORICAL", dataset_start: "2020-07-27", dataset_end: "2026-10-23",
   train_start: "2020-07-27", train_end: "2024-12-05", oos_start: "2024-12-06", oos_end: "2026-10-23", oos_sessions: 471, candidate_count: 2700, verdict: OVERALL,
   integrity: { same_candidate_set: true }, friction_model: { slippage_bps_per_side: 5 }, causality: { automated_checks: [] }, audit: { status: "PASS", note: "all trades validated" },
@@ -44,9 +44,10 @@ test("1 a Breakout run shows exposure, beta, the invested-capital excess, follow
   const t = text(h.slice(h.indexOf('data-pui-sv-section="research"')));
   for (const s of ["Exposure, follow-through, turnover and concentration", "Invested fraction (mean / median / min / max) 41.0% / 35.0% / 0.0% / 100.0% · 8.2 positions on average",
                    "Weeks by number of positions 0: 12 · 1-5: 90 · 6-10: 110 · 11-19: 80 · 20: 29", "Beta to SPY (strategy / control) 0.52 / 1.01",
-                   "Excess on invested capital (OOS) +0.07% a week, t 0.41 over 93 weeks with a position", "Follow-through (next week) 38.0% continued higher · 25.0% flat · 37.0% failed",
+                   "Weekly excess split (OOS): selection part / cash part +0.02% (t 0.14) / -0.32%",
+                   "Excess on invested capital (OOS) +0.07% a week, t 0.41 over 93 weeks with a position (unweighted)", "Follow-through (next week) 38.0% continued higher · 25.0% flat · 37.0% failed",
                    "Failed breakouts 46.0% ended below the entry price · 31.0% below the breakout reference", "Cash part of the summed excess -31.00% (names +5.00%)",
-                   "Overlap with the Momentum portfolio 44.0% of holdings · weekly excess correlation 0.37", "One-way turnover 24.0% per period · 12.5× a year",
+                   "Overlap with the Momentum portfolio 44.0% of holdings (26.0% by chance) · weekly excess correlation 0.37", "One-way turnover 24.0% per period · 12.5× a year",
                    "never a gate and not selection-edge evidence"]) {
     assert.ok(t.includes(s), s + " | " + t.slice(0, 1200));
   }

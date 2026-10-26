@@ -1203,6 +1203,28 @@ excludes the stock (`DATA_INCONSISTENT`, flagged, never clipped). Rules frozen i
 
 Docs: `DESIGN_66_MEAN_REVERSION.md`. Tests: `tests/test_mean_reversion_66.py`, `tests/frontend/mean_reversion.test.cjs`.
 
+## Breakout strategy (Stage 6.7, research only)
+
+`breakout/` is Strategy #5: long only, weekly, deterministic, no model. At the close of the first session of each ISO week the shared core
+(`breakout/core.py`) finds the stocks whose **adjusted close is above the highest adjusted high of the 20 sessions before** (the session's own
+high never counts), ranks them by breakout strength (close / reference - 1) and holds up to 20 of them for a week at a **fixed 5 % each - the
+unused slots stay cash** (7 breakouts = 35 % invested; no breakout = all cash; never scaled up). Eligibility: raw close >= 5 USD, 20-session
+median dollar volume >= 1M USD, a complete 20-session lookback (never filled), one listing per issuer, and a consistent breakout window (a ratio
+artifact, an unabsorbed split, an adjusted loss the raw price did not have, or a large re-basing such as a spin-off excludes the stock, flagged,
+never clipped). Rules frozen in a commit before the OOS run.
+
+* **Universe**: `FIXED_CURRENT_UNIVERSE` -> **`SURVIVORSHIP_BIAS_PRESENT`**, universe integrity **UNTRUSTED** (final edge capped at NOT_ESTABLISHED).
+* **Cash accounting** (an opt-in validation_v3 capital basis, `FIXED_SLOTS_CASH`): a week's return is the sum of its legs / 20, an all-cash week
+  is an observation, and a positive excess earned only by holding cash never reads as a selection edge (`CASH_DRIVEN_EXCESS`). The control is the
+  fully invested equal-weight eligible universe; SPY is the market benchmark only.
+* **Validate**: `python -m strategy_validation validate --strategy BREAKOUT --dataset runtime/vq/vq_bundle.json --persist`.
+* **Result** (2020-08 to 2026-10, 321 weeks): about 31 % invested on average (beta 0.21 to SPY); OOS the strategy returned +10.9 % vs +47.8 % for
+  the selection control (mean excess −0.31 % a week, t −1.59; TRAIN −0.34 %, t −2.47) - the shortfall is the cash (it lagged in the weeks SPY
+  rose and led in the weeks it fell); on the capital it actually invested the selection added +0.31 % a week OOS (t 0.76) and nothing in TRAIN
+  -> raw and final selection edge **NOT_ESTABLISHED**, overall FAIL. The lifecycle stays **Research**.
+
+Docs: `DESIGN_67_BREAKOUT.md`. Tests: `tests/test_breakout_67.py`, `tests/frontend/breakout.test.cjs`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

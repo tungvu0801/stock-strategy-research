@@ -147,14 +147,17 @@ def sensitivity(dataset, train_end: str, slip: float, base: dict) -> dict:
                      f"same {len(common)} weekly periods; diagnostic, never used to choose", "rows": rows}
 
 
-def holding_window_anomalies(record: dict, dataset, log: List[dict], slots: int) -> List[dict]:
+def holding_window_anomalies(record: dict, dataset, log: List[dict], slots: int, distributions: bool = False) -> List[dict]:
     """Inconsistent day-pairs inside a HELD window - a strategy leg (its simulated entry -> exit) or a control position - with the effect on the
-    week's excess: +step / N for a strategy leg (fixed slots), -step / members for a control position."""
+    week's excess: +step / N for a strategy leg (fixed slots), -step / members for a control position. A provider-ADJUSTED large distribution
+    (LARGE_REBASING: a spin-off) is correct total return inside a held window - it only makes a LEVEL reference unverifiable - so it is listed
+    apart (distributions=True), with the excess at stake if the adjustment were wrong, and never raises the anomaly flag."""
     from breakout.audit import inconsistent_pairs
     from strategy_validation.cross_sectional import _after, _window
     pairs: Dict[str, List[dict]] = defaultdict(list)
     for ev in inconsistent_pairs(dataset, [s for s in RESEARCH_UNIVERSE if s in dataset.bars]):
-        pairs[ev["symbol"]].append(ev)
+        if (ev["code"] == "LARGE_REBASING") == distributions:                     # a held window: an adjusted distribution is total return, not an error
+            pairs[ev["symbol"]].append(ev)
     if not pairs:
         return []
     period = {p["rebalance"]: p for p in (record.get("cross_sectional") or {}).get("periods") or []}
@@ -199,6 +202,8 @@ def momentum_overlap(record: dict, dataset, log: List[dict], slots: int) -> dict
         mom = mc.evaluate(r["rebalance"], universe, data)
         top = set(mom["selected"])
         sel = set(r["selected"])
+        el = set(r.get("eligible_symbols") or [])
+        c["chance"] += len(sel) * (len(top & el) / len(el) if el else 0.0)            # a random pick of as many stocks from the same eligible set
         c["weeks"] += 1
         c["holdings"] += len(sel)
         c["also_in_momentum"] += len(sel & top)
@@ -217,6 +222,7 @@ def momentum_overlap(record: dict, dataset, log: List[dict], slots: int) -> dict
             mo_ex.append(statistics.mean(mo) - cm)
     share = lambda a, b: _r(a / b, 4) if b else None                              # noqa: E731
     return {"weeks": c["weeks"], "breakout_holdings": c["holdings"], "share_of_breakout_holdings_in_momentum_portfolio": share(c["also_in_momentum"], c["holdings"]),
+            "share_expected_by_chance": share(c["chance"], c["holdings"]),
             "mean_weekly_overlap": _r(statistics.mean(per_week), 4) if per_week else None,
             "weekly_excess_correlation": _r(_corr(bo_ex, mo_ex), 4), "correlation_weeks": len(bo_ex),
             "note": "Momentum's 20-stock 12-1 portfolio evaluated at each weekly Breakout rebalance (momentum.core); the correlation is between the two "
@@ -264,10 +270,14 @@ def diagnostics(record: dict, dataset, log: List[dict], max_holdings: int) -> di
                             "strategy_correlation_to_spy": _r(_corr([p["strategy"]["net"] for p in bp], spy), 4)}
         held = [p for p in ps if p["strategy"]["positions"]]
         x = [p["strategy"]["net"] * slots / p["strategy"]["positions"] - p["control"]["net"] for p in held]
+        sel = [p["strategy"]["net"] - p["strategy"].get("invested_fraction", 0.0) * p["control"]["net"] for p in ps]
         invested[k] = {"weeks_with_a_position": len(held), "mean_excess_on_invested_capital": _r(statistics.mean(x)) if x else None,
-                       "t_stat": _r(_t(x), 4), "win_rate": _r(sum(1 for v in x if v > 0) / len(x), 4) if x else None}
-    invested["note"] = ("per week with a position: the mean of the selected legs minus the control - the selection effect on the capital actually "
-                        "invested, free of the cash effect; pre-registered diagnostic, never the v3 selection edge")
+                       "t_stat": _r(_t(x), 4), "win_rate": _r(sum(1 for v in x if v > 0) / len(x), 4) if x else None,
+                       "selection_part_mean": _r(statistics.mean(sel)), "selection_part_t": _r(_t(sel), 4),
+                       "cash_part_mean": _r(statistics.mean(-(1.0 - p["strategy"].get("invested_fraction", 0.0)) * p["control"]["net"] for p in ps))}
+    invested["note"] = ("per week with a position: the mean of the selected legs minus the control (unweighted: a 1-stock week counts like a 20-stock "
+                        "week); selection_part / cash_part: the exact split of every week's excess - invested fraction x (legs - control) and "
+                        "-(1 - fraction) x control - the selection part is what the v3 cash guard reads")
     friction = {}
     for k, ps in by_seg.items():
         if not ps:
@@ -292,7 +302,12 @@ def diagnostics(record: dict, dataset, log: List[dict], max_holdings: int) -> di
     follow, failed = {}, {}
     if legs:
         g = [float(t["exit_raw"]) / float(t["entry_raw"]) - 1.0 for t in legs]
-        follow = {"legs": len(g), "continued_higher": _r(sum(1 for x in g if x > FOLLOW_THROUGH_BAND) / len(g), 4),
+        ctl_g = {p["rebalance"]: p["control"]["gross"] for p in inc}
+        rel = [x - ctl_g[t["signal_date"]] for x, t in zip(g, legs)]
+        follow_rel = {"above_control": _r(sum(1 for x in rel if x > FOLLOW_THROUGH_BAND) / len(rel), 4),
+                      "within_band": _r(sum(1 for x in rel if -FOLLOW_THROUGH_BAND <= x <= FOLLOW_THROUGH_BAND) / len(rel), 4),
+                      "below_control": _r(sum(1 for x in rel if x < -FOLLOW_THROUGH_BAND) / len(rel), 4), "mean": _r(statistics.mean(rel))}
+        follow = {"legs": len(g), "relative_to_control": follow_rel, "continued_higher": _r(sum(1 for x in g if x > FOLLOW_THROUGH_BAND) / len(g), 4),
                   "flat": _r(sum(1 for x in g if -FOLLOW_THROUGH_BAND <= x <= FOLLOW_THROUGH_BAND) / len(g), 4),
                   "failed": _r(sum(1 for x in g if x < -FOLLOW_THROUGH_BAND) / len(g), 4),
                   "mean_gross_leg_return": _r(statistics.mean(g)), "median_gross_leg_return": _r(statistics.median(g)), "band": FOLLOW_THROUGH_BAND}
@@ -326,6 +341,7 @@ def diagnostics(record: dict, dataset, log: List[dict], max_holdings: int) -> di
     excl = [{"rebalance": r["rebalance"], **x} for r in log for x in r.get("data_exclusions") or []]
     from breakout.audit import RawData, split_events
     in_held = holding_window_anomalies(record, dataset, log, slots)
+    dist_held = holding_window_anomalies(record, dataset, log, slots, distributions=True)
     if any(x["period_included"] for x in in_held):
         flags.append(FLAG_HOLDING_ANOMALY)
     artifacts = [{k: (_r(v) if isinstance(v, float) else v) for k, v in ev.items()}
@@ -398,6 +414,8 @@ def diagnostics(record: dict, dataset, log: List[dict], max_holdings: int) -> di
                          "exclusions": [{k: (_r(v) if isinstance(v, float) else v) for k, v in x.items()} for x in excl[:60]],
                          "ratio_artifacts": artifacts, "holding_window_anomalies": in_held[:50], "holding_window_anomaly_count": len(in_held),
                          "holding_window_effect_on_summed_excess": _r(sum(x["effect_on_period_excess"] for x in in_held if x["period_included"])),
+                         "adjusted_distributions_in_held_windows": [{**{k: v for k, v in x.items() if k != "effect_on_period_excess"},
+                                                                     "excess_at_stake_if_misadjusted": x["effect_on_period_excess"]} for x in dist_held[:50]],
                          "extreme_breakouts": extreme[:50], "extreme_breakout_count": len(extreme), "single_print_spikes": spikes,
                          "note": "exclusions: a breakout window the corporate-action contract finds inconsistent (never clipped); extreme breakouts (> +25 % "
                                  "above the reference) and single-print spikes (a close > 25 % above the previous close that the next open gives back by more "

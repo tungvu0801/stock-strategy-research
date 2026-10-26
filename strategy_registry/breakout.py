@@ -69,7 +69,8 @@ def sections() -> List[Section]:
             "statistics say.",
             "Breakouts can fail and reverse; exposure varies with the number of breakouts, so the strategy can hold much cash - a lower-volatility "
             "result from cash is not selection skill; breakouts may cluster in one sector during trends and overlap with momentum.",
-            "Volumes are IEX-only; sector labels are today's SEC SIC descriptions (not point in time)."]),
+            "Bars and volumes are IEX-only: an IEX-only high can sit below the consolidated high, which makes a breakout above it easier to trigger; "
+            "sector labels are today's SEC SIC descriptions (not point in time)."]),
         Section(key="paper_results", title="Paper results", state="NOT_EVALUATED", note=f"{NOT_EVALUATED}: research only - no paper trading."),
         Section(key="decision_log", title="Decision log", state="NOT_EVALUATED",
                 note=f"{NOT_EVALUATED}: no human decision is recorded. A validation PASS means eligible for human review, never a promotion."),

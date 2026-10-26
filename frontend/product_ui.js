@@ -810,11 +810,12 @@
       ex && ["Invested fraction (mean / median / min / max)", `${svPct(ex.mean_invested_fraction)} / ${svPct(ex.median_invested_fraction)} / ${svPct(ex.min_invested_fraction)} / ${svPct(ex.max_invested_fraction)} · ${svNum(ex.mean_positions, 1)} positions on average`],
       bk && ["Weeks by number of positions", ["0", "1-5", "6-10", "11-19", "20"].filter((k) => k in bk).map((k) => `${k}: ${bk[k]}`).join(" · ")],   // declared order (JS sorts integer keys first)
       ms && ms.strategy_beta_to_spy != null && ["Beta to SPY (strategy / control)", `${svNum(ms.strategy_beta_to_spy)} / ${svNum(ms.control_beta_to_spy)}`],
-      ic && ic.weeks_with_a_position != null && ["Excess on invested capital (OOS)", ic.weeks_with_a_position ? `${svPct2(ic.mean_excess_on_invested_capital)} a week, t ${svNum(ic.t_stat)} over ${ic.weeks_with_a_position} weeks with a position` : "no week with a position"],
+      ic && ic.selection_part_mean != null && ["Weekly excess split (OOS): selection part / cash part", `${svPct2(ic.selection_part_mean)} (t ${svNum(ic.selection_part_t)}) / ${svPct2(ic.cash_part_mean)}`],
+      ic && ic.weeks_with_a_position != null && ["Excess on invested capital (OOS)", ic.weeks_with_a_position ? `${svPct2(ic.mean_excess_on_invested_capital)} a week, t ${svNum(ic.t_stat)} over ${ic.weeks_with_a_position} weeks with a position (unweighted)` : "no week with a position"],
       ft.legs && ["Follow-through (next week)", `${svPct(ft.continued_higher)} continued higher · ${svPct(ft.flat)} flat · ${svPct(ft.failed)} failed`],
       fb.legs && ["Failed breakouts", `${svPct(fb.share_ending_below_entry_price)} ended below the entry price · ${svPct(fb.share_ending_below_breakout_reference)} below the breakout reference`],
       ec.cash != null && ["Cash part of the summed excess", `${svPct2(ec.cash)} (names ${svPct2(ec.names)})`],
-      ov.weeks && ["Overlap with the Momentum portfolio", `${svPct(ov.share_of_breakout_holdings_in_momentum_portfolio)} of holdings · weekly excess correlation ${svNum(ov.weekly_excess_correlation)}`],
+      ov.weeks && ["Overlap with the Momentum portfolio", `${svPct(ov.share_of_breakout_holdings_in_momentum_portfolio)} of holdings${ov.share_expected_by_chance != null ? ` (${svPct(ov.share_expected_by_chance)} by chance)` : ""} · weekly excess correlation ${svNum(ov.weekly_excess_correlation)}`],
     ];
     const kv = [...kv0,
       c.average_one_way_turnover != null && ["One-way turnover", `${svPct(c.average_one_way_turnover)} per period · ${svNum(c.annualized_one_way_turnover, 1)}× a year`],
