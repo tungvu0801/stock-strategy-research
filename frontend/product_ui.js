@@ -1108,7 +1108,7 @@
   }
   function readChips() { return [...document.querySelectorAll("#tv-status-line .tv-chip")].map((e) => ({ text: e.textContent.trim(), warn: e.classList.contains("warn"), bad: e.classList.contains("bad") })); }
   const collapsed = () => { try { return localStorage.getItem("pui.details") !== "open"; } catch (e) { return true; } };
-  function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } }
+  function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } placeBotActivity(); }
 
   function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen, autoPending: state.autoPending, autoError: state.autoError }); }
   function renderCards() {
@@ -1438,8 +1438,22 @@
     const el = document.createElement("section"); el.id = "pui-bot-activity"; el.className = "pui-section pui-bot-host";
     el.addEventListener("toggle", (e) => { const d = e.target; if (d && d.dataset && d.dataset.puiBotFold) state.botOpen[d.dataset.puiBotFold] = d.open; }, true);
     cards.insertAdjacentElement("afterend", el);
+    placeBotActivity();
     renderBotActivity();
     return true;
+  }
+  // where the panel lives: the default layout already scrolls (tall cards), so it sits below the TRADE cards; View details is the Stage 5.5 layout
+  // that fits the window (.tv-grid = 100vh - 240px), so it moves INTO the detail column, before the sticky Actions panel: it scrolls inside the
+  // column and never adds page height, moves Risk Controls / PPE / Actions, or pushes the search out of view. Nothing in it is hidden.
+  function placeBotActivity() {
+    const el = $("pui-bot-activity");
+    if (!el) return;
+    const right = q("#tv-body .tv-right"), cards = $("pui-cards"), inColumn = !collapsed() && !!right;
+    if (inColumn) {
+      const last = right.querySelector(":scope > .tv-panel-last");
+      if (el.parentElement !== right || el.nextElementSibling !== last) right.insertBefore(el, last);
+    } else if (cards && el.previousElementSibling !== cards) cards.insertAdjacentElement("afterend", el);
+    el.classList.toggle("pui-bot-in-column", inColumn);
   }
   function loadBotActivity(force) {
     const a = state.botAct, every = a && a.worker && a.worker.state === "RUNNING" ? 2000 : 10000;

@@ -318,3 +318,9 @@ table.pui-sv-table tr.pui-sv-note td { text-align: left; white-space: normal; bo
 .pui-bot-list li.error { color: var(--red); }
 .pui-bot-steps { margin: 2px 0 6px; padding-left: 18px; }
 .pui-bot-body { padding: 4px 0; }
+.pui-bot { overflow-wrap: anywhere; }
+/* View details: Bot Activity sits inside the Stage 5.5 detail column (before the sticky Actions) - compact, wrapping, never wider than the column */
+.tv-right > .pui-bot-host { flex: 0 0 auto; padding: 0; }
+.pui-bot-in-column .pui-bot { margin: 0 0 7px; padding: 0 0 7px; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.pui-bot-in-column .pui-bot h3 { margin: 4px 0 8px; }
+.pui-bot-in-column .pui-bot-chip { flex-basis: 100%; }

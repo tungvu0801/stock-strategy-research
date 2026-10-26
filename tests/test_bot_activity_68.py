@@ -400,7 +400,9 @@ def test_B07_activity_makes_no_broker_call_carries_no_credential_and_no_model(st
 def test_B08_the_frontend_panel_and_the_positions_card_are_wired():
     ui = (ROOT / "frontend" / "product_ui.js").read_text(encoding="utf-8")
     for k in ('getJson("/api/execution/activity")', 'getJson("/api/account-refresh/positions")', "accountPositionsHtml(state.acctPos, state.acctPosError)",
-              'cards.insertAdjacentElement("afterend", el)', "if (ensureBotActivity()) loadBotActivity();"):
+              'cards.insertAdjacentElement("afterend", el)', "if (ensureBotActivity()) loadBotActivity();",
+              # View details (the window-fitting Stage 5.5 layout): hosted inside the detail column before the sticky Actions, re-hosted on every toggle
+              "inColumn = !collapsed() && !!right;", "right.insertBefore(el, last);", 'b.setAttribute("aria-expanded", v ? "false" : "true"); } placeBotActivity(); }'):
         assert k in ui, k
     assert not re.search(r"(?i)ai_explain|/api/ai|anthropic", ui[ui.index("Stage 6.8: account positions + Bot Activity"):ui.index("page wiring (browser only)")])
 
