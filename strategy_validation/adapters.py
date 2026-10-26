@@ -45,6 +45,15 @@ class StrategyAdapter:
     sizing: Optional[dict] = None                         # merged over the defaults, e.g. {"mode": "EQUAL_WEIGHT", "position_pct": 5.0}
     audit_extra = None                                    # optional callable(record, dataset) -> [violation]: independent strategy-specific checks
     strategy_diagnostics = None                           # optional callable(record, dataset) -> dict: research diagnostics, never a gate
+    # Stage 6.4.1 (validation_v3): how the evidence is judged - DECLARED, never inferred from trade counts
+    evaluation_mode = "EVENT_DRIVEN"                      # EVENT_DRIVEN (per trade) | CROSS_SECTIONAL_PORTFOLIO (per rebalance period vs a control)
+    control_definition: Optional[dict] = None             # CROSS_SECTIONAL_PORTFOLIO: the SELECTION CONTROL (role, membership, weighting, timing,
+                                                          # friction "RUN_FRICTION_MODEL", capital "EQUAL_CAPITAL_BUY_AND_HOLD")
+    market_benchmark: Optional[str] = None                # e.g. SPY: a market comparison only, never selection-edge evidence
+
+    def selection_snapshots(self, dataset) -> list:
+        """CROSS_SECTIONAL_PORTFOLIO: [{rebalance, eligible: [symbols], selected: [symbols]}] in rebalance order (the control's membership)."""
+        raise NotImplementedError
 
     def research_flags(self, dataset) -> list:
         """Research limitations shown with every result of this adapter (e.g. SURVIVORSHIP_BIAS_PRESENT)."""
@@ -65,7 +74,8 @@ class StrategyAdapter:
                 "moc_declared": self.moc_declared, "signal_basis": self.signal_basis, "max_hold_bars": self.max_hold_bars, "critical_features": list(self.critical_features),
                 "params": dict(self.params), "historical_replay_supported": self.historical_replay_supported, "stop_policy": self.stop_policy,
                 "time_exit_fill": self.time_exit_fill,
-                "sizing": dict(self.sizing or {}),
+                "sizing": dict(self.sizing or {}), "evaluation_mode": self.evaluation_mode,
+                **({"control_definition": dict(self.control_definition), "market_benchmark": self.market_benchmark} if self.control_definition else {}),
                 "declarations": {"live_implementation": self.live_implementation, "replay_parity_requirement": self.replay_parity_requirement,
                                  "replay_parity_status": self.replay_parity_status, "replay_parity_reference": self.replay_parity_reference,
                                  "provenance_requires": None if self.provenance_requires is None else list(self.provenance_requires),

@@ -55,6 +55,17 @@ class ValueQualityAdapter(StrategyAdapter):
     replay_parity_requirement = "NOT_APPLICABLE"
     provenance_requires = ("corporate_actions", "universe", "point_in_time")
     causality_review = {"status": "PENDING", "reference": ""}
+    # Stage 6.4.1 (validation_v3): judged per rebalance period against the equal-weight eligible universe (the Stage 6.4 universe control).
+    # Declarations only: the rules, the candidates and the legs are unchanged (the candidate set hash is identical).
+    evaluation_mode = "CROSS_SECTIONAL_PORTFOLIO"
+    control_definition = {"control_id": "EQUAL_WEIGHT_ELIGIBLE_UNIVERSE", "label": "Equal-weight eligible universe", "role": "SELECTION_CONTROL",
+                          "membership": "every stock eligible at the rebalance: the same universe, filters and point-in-time data as the selection",
+                          "weighting": "EQUAL_WEIGHT", "rebalance": "the strategy's rebalance sessions",
+                          "execution": "the legs' timing: the open after the rebalance to the open after the next one (the last period: the last close)",
+                          "friction": "RUN_FRICTION_MODEL", "capital": "EQUAL_CAPITAL_BUY_AND_HOLD",
+                          "membership_size_feature": "eligible_count",     # each leg records the eligible count: the control's size is checked against it
+                          "omits": "the Value + Quality ranking (it holds every eligible stock)"}
+    market_benchmark = "SPY"
 
     def __init__(self, params=None):
         super().__init__(params)
@@ -69,6 +80,14 @@ class ValueQualityAdapter(StrategyAdapter):
 
     def research_flags(self, dataset) -> list:
         return [FLAG_SURVIVORSHIP]                        # a fixed universe of today's large caps: never suppressed
+
+    def selection_snapshots(self, dataset) -> list:
+        """Every rebalance's eligible universe (the control's membership) and selection, from the core's own decisions."""
+        if dataset.dataset_id not in self.rebalance_log:
+            for _ in self.candidates(dataset):
+                pass
+        return [{"rebalance": r["rebalance"], "eligible": list(r["eligible_symbols"]), "selected": [x["symbol"] for x in r["selected"]]}
+                for r in self.rebalance_log[dataset.dataset_id]]
 
     def candidates(self, dataset) -> Iterable[RawCandidate]:
         data = BundleData(dataset)

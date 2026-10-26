@@ -67,7 +67,9 @@ NEW_631 = {"strategy_validation/integrity.py", "tests/test_validation_integrity_
 NEW_64 = {"value_quality/__init__.py", "value_quality/adapter.py", "value_quality/audit.py", "value_quality/core.py", "value_quality/data.py",
           "value_quality/diagnostics.py", "value_quality/ingest.py", "value_quality/pit.py", "strategy_registry/value_quality.py", "DESIGN_64_VALUE_QUALITY.md",
           "tests/test_value_quality_64.py", "tests/value_quality_fixtures.py", "tests/frontend/value_quality.test.cjs"}   # Stage 6.4: the Value + Quality strategy
-NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_641 = {"strategy_validation/cross_sectional.py", "DESIGN_641_CROSS_SECTIONAL_VALIDATION.md", "tests/test_cross_sectional_641.py",
+           "tests/frontend/cross_sectional.test.cjs"}   # Stage 6.4.1: cross-sectional validation (validation_v3)
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py",
               "strategy_registry/registry.py"}   # + Stage 6.4 (VALUE_QUALITY implemented)
@@ -196,10 +198,14 @@ EDITS_64_612 = [                                                                
     ('    for pid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        with pytest.raises(StrategyStandardError) as e:\n            validate_signal(signal(strategy_id=pid), reg)\n        assert e.value.code == "STRATEGY_NOT_IMPLEMENTED"                                        # a future placeholder never appears as an active signal\n',
      '    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        with pytest.raises(StrategyStandardError) as e:\n            validate_signal(signal(strategy_id=pid), reg)\n        assert e.value.code == "STRATEGY_NOT_IMPLEMENTED"                                        # a future placeholder never appears as an active signal\n    with pytest.raises(StrategyStandardError) as e:                                              # Stage 6.4: a RESEARCH strategy never emits a live signal either\n        validate_signal(signal(strategy_id="VALUE_QUALITY"), reg)\n    assert e.value.code == "STRATEGY_INACTIVE"\n'),
 ]
+GROUPS_EDITS_641 = [                                                                               # .github/ci/pytest_groups.json: tests/test_cross_sectional_641.py (undone first)
+    ('        "test_value_quality_64.py"\n      ]',
+     '        "test_value_quality_64.py",\n        "test_cross_sectional_641.py"\n      ]'),
+]
 EDITS_62_612 = EDITS_62_612_OWN + EDITS_64_612   # applied in this order (the WAL bootstrap fix test replays it)
 UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR + EDITS_64_SR, "api/routes/strategy_registry.py": EDITS_62_ROUTE, "frontend/product_ui.js": EDITS_62_JS,
            "browser_tests/flows.py": EDITS_62_FLOWS + EDITS_64_FLOWS, "strategy_registry/registry.py": EDITS_64_REG,
-           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631 + GROUPS_EDITS_64, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
+           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631 + GROUPS_EDITS_64 + GROUPS_EDITS_641, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
            "tests/test_product_flow_612.py": EDITS_62_612, "tests/test_db_bootstrap_busy.py": EDITS_62_FIX}
 
 

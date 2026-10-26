@@ -221,3 +221,25 @@ Added for Value + Quality (`value_quality/`, `DESIGN_64_VALUE_QUALITY.md`) and a
   (`STRATEGY_INACTIVE`).
 * **`CANDIDATE_CONTRACT`** (integrity gate): a run in which any generated candidate failed the Strategy Standard v1 contract is BLOCKED - a
   replay whose candidates were all rejected can no longer be persisted as an "eligible" empty result.
+
+## 14. Cross-sectional portfolio strategies (Stage 6.4.1, validation_v3)
+
+Design and policy: `DESIGN_641_CROSS_SECTIONAL_VALIDATION.md`. Code: `strategy_validation/cross_sectional.py`.
+
+* **Evaluation mode** (declared by the adapter, never inferred): `EVENT_DRIVEN` keeps everything above unchanged (its selection edge reads
+  NOT_APPLICABLE); `CROSS_SECTIONAL_PORTFOLIO` requires a `control_definition` (role SELECTION CONTROL, friction `RUN_FRICTION_MODEL`, capital
+  `EQUAL_CAPITAL_BUY_AND_HOLD`), `selection_snapshots(dataset)` (per rebalance: the eligible set and the selection) and equal-weight sizing.
+* **Unit of evidence**: one rebalance period. Strategy period return = the mean net return of the period's legs; SELECTION CONTROL period return =
+  the mean net return of every eligible stock, entered and exited on the same sessions with the same friction convention (real orders only);
+  excess = strategy - control. The per-leg metrics above remain a trade-level description, labelled NOT SELECTION-EDGE EVIDENCE.
+  The MARKET BENCHMARK (SPY) is shown per period for context and never enters the decision.
+* **Selection edge**: NOT_APPLICABLE / INVALID (the control-parity audit failed) / INSUFFICIENT_DATA (< 12 OOS periods) / NOT_ESTABLISHED (OOS mean
+  excess <= 0, friction erasing it, or OOS period-excess t < 1) / WEAK / ESTABLISHED (OOS t >= 2, >= 24 periods, not concentrated, TRAIN not
+  strongly contradicting). The **overall verdict** of a cross-sectional run is PASS only with an ESTABLISHED edge; the absolute verdict is kept in
+  `performance_verdict`.
+* **Control-parity audit** (8 checks) and the integrity check `SELECTION_CONTROL`: the recorded edge and the overall verdict must equal the policy
+  re-applied to the record's own statistics; a failed parity audit is persistable only with an INVALID edge.
+* **Storage**: a v3 run records `evaluation_mode`, `performance_verdict`, `selection_edge` and `cross_sectional`. An older run is assessed by a
+  methodology evaluation in `strategy_validation_evaluations` (append-only, re-checked by the store; the run row is never touched), created with
+  `python -m strategy_validation evaluate --run RUN_ID --dataset FILE [--persist]`. The Strategy Lab shows the overall verdict, the absolute
+  performance, the control comparison and the selection edge as separate, labelled parts.

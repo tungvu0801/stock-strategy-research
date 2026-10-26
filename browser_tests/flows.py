@@ -3362,7 +3362,9 @@ def strategy_validation_results(c: Ctx):
     """Stage 6.2 (B-F, results): three SYNTHETIC test-only registry entries with stored fixture runs, injected in this harness process only (STOCK_AGENT_ENV =
     browser_test; removed afterwards; never in a preview). PASS shows TRAIN / OOS metrics and the audit; INSUFFICIENT DATA shows the real counts without
     invented performance; FAIL states its reason and "should not progress"; the arm comparison shows RULES / GATED / MODEL on one candidate count with MODEL
-    Not evaluated; viewing changes no lifecycle; GET only; no JS error."""
+    Not evaluated; viewing changes no lifecycle; GET only; no JS error. Stage 6.4.1: a SYNTHETIC cross-sectional run (the Value + Quality adapter on
+    synthetic fixtures, under a test-only id) shows absolute performance, the control comparison and the selection edge apart, SELECTION CONTROL and
+    MARKET BENCHMARK labelled apart, and an absolute PASS without a selection edge is not eligible for review."""
     import importlib.util
     import os
     from pathlib import Path
@@ -3383,12 +3385,22 @@ def strategy_validation_results(c: Ctx):
     added = [StrategyEntry(**{**ddr.model_dump(), "strategy_id": sid, "display_name": f"Test fixture {name.lower().replace('_', ' ')}", "status": st, "setup_type": None,
                               "description": "SYNTHETIC test fixture (browser harness only; never registered)."}) for name, sid, st in SV_FIXTURES]
     R.ENTRIES.extend(added)
+    vspec = importlib.util.spec_from_file_location("vq_fixtures_harness", Path(__file__).resolve().parents[1] / "tests" / "value_quality_fixtures.py")
+    VF = importlib.util.module_from_spec(vspec)
+    vspec.loader.exec_module(VF)
+    from value_quality.adapter import ValueQualityAdapter
+    cs_adapter = type("CrossSectionalFixture", (ValueQualityAdapter,), {"strategy_id": "FIXTURE_CROSS_SECTIONAL"})
+    cs_entry = StrategyEntry(**{**ddr.model_dump(), "strategy_id": "FIXTURE_CROSS_SECTIONAL", "display_name": "Test fixture cross sectional", "status": "RESEARCH",
+                                "setup_type": None, "time_horizon": "POSITION", "description": "SYNTHETIC test fixture (browser harness only; never registered)."})
+    R.ENTRIES.append(cs_entry)
     try:
         runs = {}
         for name, sid, _ in SV_FIXTURES:
             ds, ad = FX.fixture(name)
             runs[name] = E.run_validation(ad, ds, gates=[FX.SymbolGate()] if name == "GOOD" else ())
             StrategyValidationStore().insert(runs[name])
+        csr = E.run_validation(cs_adapter({"top_n": 5}), VF.dataset(VF.run_set(), end="2022-12-30"))   # Stage 6.4.1: one cross-sectional run
+        StrategyValidationStore().insert(csr)
         lc0 = _sv_lifecycles(c)
         _pf_boot(c)
         reqs = _sv_lab(c)
@@ -3422,13 +3434,28 @@ def strategy_validation_results(c: Ctx):
         c.r.check("FAIL: stated plainly with its reason and 'This strategy should not progress to paper trading.' once",
                   "FAIL · Not ready for paper" in fail and reason in fail and fail.count("This strategy should not progress to paper trading.") == 1, fail[:500])
         c.shot("strategy_validation_fail", "#pui-more-body [data-pui-sv]")
+        r4, cst = _sv_open(c, "FIXTURE_CROSS_SECTIONAL")
+        order = c.js("['absolute', 'control', 'edge'].map((k) => { const e = document.querySelector('#pui-more-body [data-pui-sv-section=\"' + k + '\"]'); "
+                     "return e ? [...document.querySelectorAll('#pui-more-body *')].indexOf(e) : -1; })")
+        es, pv, ov = csr.selection_edge["status"], csr.performance_verdict["label"], csr.verdict
+        c.r.check("Stage 6.4.1: a cross-sectional run shows Absolute performance, Control comparison and Selection edge as three sections in that order",
+                  all(i >= 0 for i in order) and order == sorted(order) and es in ("NOT_ESTABLISHED", "INSUFFICIENT_DATA", "WEAK")
+                  and c.js(f"!!document.querySelector('#pui-more-body [data-pui-sv-edge-block=\"{es}\"]')"), [order, es])
+        c.r.check("Stage 6.4.1: SELECTION CONTROL and MARKET BENCHMARK are labelled apart; the per-leg t-statistic reads NOT SELECTION-EDGE EVIDENCE; "
+                  "an absolute PASS without an established edge is not eligible for review",
+                  "SELECTION CONTROL Equal-weight eligible universe" in cst and "MARKET BENCHMARK SPY" in cst and "NOT SELECTION-EDGE EVIDENCE" in cst
+                  and f"Absolute performance: {pv}" in cst and f"{ov['label']} · {ov['decision']}" in cst and "Eligible for review" not in cst
+                  and "beating it is not evidence of selection" in cst and "control parity: 8 / 8 checks pass" in cst, cst[:700])
+        c.shot("strategy_validation_cross_sectional", "#pui-more-body [data-pui-sv]")
         c.r.check("viewing validation changes no lifecycle (RESEARCH stays RESEARCH, PAPER_CANDIDATE stays PAPER_CANDIDATE); no control, no form, no POST",
                   _sv_lifecycles(c) == lc0 and lc0["FIXTURE_GOOD"] == "RESEARCH" and lc0["FIXTURE_OVERFIT"] == "PAPER_CANDIDATE" and [e.status for e in R.ENTRIES if e in added] == [x[2] for x in SV_FIXTURES]
-                  and c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0 and _pui_posts(reqs + r1 + r2 + r3) == [], lc0)
+                  and c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0
+                  and _pui_posts(reqs + r1 + r2 + r3 + r4) == [] and cs_entry.status == "RESEARCH", lc0)
         _pf_readonly(c, xsvc, sim, intents0, posts0, mode0, errs0, "validation results flow")
     finally:
         for e in added:
             R.ENTRIES.remove(e)
+        R.ENTRIES.remove(cs_entry)
 # <<< Strategy Validation 6.2
 
 

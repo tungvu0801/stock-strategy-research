@@ -7,6 +7,10 @@ cannot launch anything from the browser: research runs are made here, on purpose
       exit 1  an input error (dataset, split, arms, provenance file)          exit 2  NOT_RUN: no honest historical replay / not implemented
       exit 3  --persist was given but the run was NOT stored: the integrity gate BLOCKED it (or the store refused it); the reasons are printed
   runs [--strategy ID] [--db PATH]     the stored runs, newest first
+  evaluate --run RUN_ID --dataset FILE [--db PATH] [--persist] [--output evaluation.json]
+      Stage 6.4.1: a validation_v3 METHODOLOGY EVALUATION of a stored cross-sectional run - the selection edge against the declared control, per
+      rebalance period. The run is never rewritten; the snapshots are re-derived from the same dataset and must reproduce its candidate set.
+      exit 0 evaluated (with --persist: stored) · 1 input error / cannot be evaluated honestly · 3 --persist refused by the store
 
 A run is persisted only with --persist, and only when the Stage 6.3.1 integrity gate finds it ELIGIBLE (strategy_validation/integrity.py) - a
 blocked --persist is never silently downgraded to an ephemeral run. Without --persist a run is ephemeral (research / debug) and its integrity
@@ -39,7 +43,55 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("runs", help="list stored validation runs")
     r.add_argument("--strategy", default="")
     r.add_argument("--db", default="")
+    e = sub.add_parser("evaluate", help="validation_v3 methodology evaluation of a stored cross-sectional run (the run is never rewritten)")
+    e.add_argument("--run", required=True, help="the stored run_id")
+    e.add_argument("--dataset", required=True, help="the run's dataset file (its content hash must equal the run's dataset_id)")
+    e.add_argument("--db", default="")
+    e.add_argument("--persist", action="store_true", help="store the evaluation (append-only) so the Strategy Lab shows it")
+    e.add_argument("--output", default="", help="write the evaluation record as JSON")
     return p
+
+
+def _evaluate(args, out) -> int:
+    from strategy_registry import registry as R
+    from strategy_validation import cross_sectional as CS
+    from strategy_validation import engine as E
+    from strategy_validation.adapters import adapter_for
+    from strategy_validation.dataset import DatasetError, load
+    from strategy_validation.store import StoreError, StrategyValidationStore
+    store = StrategyValidationStore(Path(args.db) if args.db else None)
+    run = store.run(args.run)
+    if run is None:
+        print(f"ERROR no visible stored run {args.run}", file=out)
+        return 1
+    adapter, reason = adapter_for(run["strategy_id"], R.get(run["strategy_id"]))
+    if adapter is None:
+        print(f"ERROR {run['strategy_id']}: {reason}", file=out)
+        return 1
+    try:
+        dataset = load(args.dataset)
+        ev = CS.assess_stored_run(run, store.candidates(args.run), store.trades(args.run, "RULES"), dataset, adapter, registry=R.by_id(), git_sha=E.git_commit_sha())
+    except (DatasetError, CS.EvaluationError, ValueError, OSError) as exc:
+        print(f"ERROR {type(exc).__name__}: {exc}", file=out)
+        return 1
+    cs, edge, v = ev["cross_sectional"], ev["selection_edge"], ev["verdict"]
+    print(f"{ev['strategy_id']} v{ev['strategy_version']} run {ev['run_id']} ({ev['evaluated_run_validation_version']}) -> {ev['methodology_version']}: "
+          f"selection edge {edge['status']}; overall {v['label']} (absolute performance {ev['performance_verdict'].get('label')})", file=out)
+    for seg in ("TRAIN", "OOS", "ALL"):
+        s = cs["segments"].get(seg) or {}
+        print(f"  {seg}: {s.get('period_count')} periods, strategy {s.get('strategy_total_return')}, control {s.get('control_total_return')}, "
+              f"market benchmark {s.get('benchmark_total_return')}, mean excess {s.get('mean_excess_period_return')}, t {s.get('excess_t_stat')}", file=out)
+    print(f"  {cs['parity']['note']}; reasons: " + "; ".join(r["text"] for r in edge["reasons"]), file=out)
+    if args.output:
+        Path(args.output).write_text(json.dumps(ev, indent=1), encoding="utf-8")
+    if args.persist:
+        try:
+            store.insert_evaluation(ev)
+        except StoreError as exc:
+            print(f"  NOT STORED - {exc}", file=out)
+            return 3
+        print(f"  stored evaluation {ev['evaluation_id']} (run {ev['run_id']} unchanged)", file=out)
+    return 0
 
 
 def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]] = None, out=None) -> int:
@@ -47,6 +99,8 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
     out = out or sys.stdout
     args = build_parser().parse_args(argv)
     from strategy_validation.store import PersistenceBlocked, StoreError, StrategyValidationStore
+    if args.cmd == "evaluate":
+        return _evaluate(args, out)
     if args.cmd == "runs":
         store = StrategyValidationStore(Path(args.db) if args.db else None)
         for row in store.runs(args.strategy.upper() or None):
@@ -90,6 +144,10 @@ def main(argv: Optional[List[str]] = None, adapters: Optional[Dict[str, object]]
         print(f"  {seg}: {s.get('trade_count')} trades, net {s.get('net_pnl')} (gross {s.get('gross_pnl')}), mean R {s.get('expectancy_R')}, t {s.get('mean_R_t_stat')}, "
               f"max drawdown {s.get('max_drawdown')}", file=out)
     print(f"  audit: {run.audit.note}; decision: {v['decision']}", file=out)
+    if run.evaluation_mode == "CROSS_SECTIONAL_PORTFOLIO":                      # Stage 6.4.1: the selection edge is a separate result
+        o = (run.cross_sectional.get("segments") or {}).get("OOS") or {}
+        print(f"  selection edge (vs {run.cross_sectional.get('control', {}).get('label')}): {run.selection_edge.get('status')} - OOS {o.get('period_count')} periods, "
+              f"mean excess {o.get('mean_excess_period_return')}, t {o.get('excess_t_stat')}; absolute performance {run.performance_verdict.get('label')}", file=out)
     el = run.eligibility
     print(f"  integrity: {el['integrity_status']} - persistence {el['status']}; accounting {run.accounting.get('status')}; "
           f"{run.boundary.get('train_boundary_purged_count', 0)} TRAIN outcome(s) purged at the TRAIN / OOS boundary", file=out)

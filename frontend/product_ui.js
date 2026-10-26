@@ -739,7 +739,49 @@
   function svBadge(s) {
     const st = (s && s.validation_status) || "NOT_RUN";
     return `<span class="pui-badge ${st === "NOT_RUN" ? "dim" : SV_CLS[st] || ""}" data-pui-sv-status="${esc(st)}">${esc(st === "NOT_RUN" ? "Not yet evaluated" : (s.validation_label || words(st)))}</span>` +
+      (s && s.evaluation_mode === "CROSS_SECTIONAL_PORTFOLIO" && s.selection_edge_status ? ` ${svEdgeBadge(s.selection_edge_status, s.selection_edge_label)}` : "") +
       (s && s.validation_synthetic ? ` <span class="pui-badge dim" data-pui-sv-synthetic>synthetic test data</span>` : "");
+  }
+  // Stage 6.4.1 (validation_v3): a cross-sectional strategy is judged on its SELECTION EDGE over a declared SELECTION CONTROL, one observation per
+  // rebalance period. The page keeps three things apart: the absolute performance (per leg: description, not selection evidence), the control
+  // comparison (the strategy vs the control that omits the selection; SPY only as the MARKET BENCHMARK) and the selection-edge status.
+  const SV_EDGE_CLS = { ESTABLISHED: "ok", WEAK: "", NOT_ESTABLISHED: "bad", INSUFFICIENT_DATA: "dim", INVALID: "bad", NOT_APPLICABLE: "dim" };
+  function svEdgeBadge(st, label) {
+    return `<span class="pui-badge ${SV_EDGE_CLS[st] != null ? SV_EDGE_CLS[st] : "dim"}" data-pui-sv-edge="${esc(st)}">Selection edge: ${esc(label || words(st))}</span>`;
+  }
+  const svPp = (x) => (x == null ? "—" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(1)} pp`);
+  const svPct2 = (x) => (x == null ? "—" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)}%`);
+  function svControl(cs) {
+    const sg = cs.segments || {}, segs = ["TRAIN", "OOS", "ALL"], ctl = cs.control || {}, mb = cs.market_benchmark || {};
+    const row = (label, f, attr) => `<tr data-pui-sv-cs-row="${esc(attr)}"><td>${label}</td>${segs.map((k) => `<td>${esc(f(sg[k] || {}))}</td>`).join("")}</tr>`;
+    const par = cs.parity || {}, excl = Object.entries(cs.excluded_periods || {});
+    return `<div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-control><thead><tr><th>Per rebalance period</th><th>TRAIN</th><th>OOS</th><th>All</th></tr></thead><tbody>` +
+      row("Rebalance periods", (x) => svNum(x.period_count, 0), "periods") +
+      row("Strategy", (x) => svPct(x.strategy_total_return), "strategy") +
+      row(`<span class="pui-badge" data-pui-sv-role="SELECTION_CONTROL">SELECTION CONTROL</span> ${esc(ctl.label || ctl.control_id || "")}`, (x) => svPct(x.control_total_return), "control") +
+      row("Excess over the control", (x) => svPp(x.cumulative_excess_return), "excess") +
+      row("Mean excess per period", (x) => svPct2(x.mean_excess_period_return), "mean_excess") +
+      row("Excess t-statistic (per period)", (x) => svNum(x.excess_t_stat), "t") +
+      row("Excess win rate (periods)", (x) => svPct(x.excess_win_rate), "win") +
+      row("Active volatility (annualized)", (x) => svPct(x.active_volatility), "active_vol") +
+      row("Worst relative period", (x) => (x.worst_relative_period ? `${x.worst_relative_period.rebalance} ${svPct2(x.worst_relative_period.excess)}` : "—"), "worst") +
+      row("Max relative drawdown", (x) => svPct(x.max_relative_drawdown), "rel_dd") +
+      row("Turnover (strategy / control)", (x) => (x.strategy_turnover == null ? "—" : `${svPct(x.strategy_turnover)} / ${svPct(x.control_turnover)}`), "turnover") +
+      row(`<span class="pui-badge dim" data-pui-sv-role="MARKET_BENCHMARK">MARKET BENCHMARK</span> ${esc(mb.symbol || "")}`, (x) => svPct(x.benchmark_total_return), "benchmark") +
+      `</tbody></table></div><div class="pui-sub" data-pui-sv-cs-note>${esc(cs.unit || "")}. The selection control holds the same eligible universe with the same timing, ` +
+      `friction and capital basis, without the selection. ${esc(mb.symbol || "The market benchmark")} is a market benchmark only: beating it is not evidence of selection.</div>` +
+      `<div class="pui-sub" data-pui-sv-parity="${esc(par.status || "—")}">${esc(par.note || "")}` +
+      `${excl.length ? ` · excluded on both sides: ${esc(excl.map(([k, n]) => `${n} ${words(k)}`).join(", "))}` : ""}</div>`;
+  }
+  function svEdge(edge, cs, ev) {
+    const oo = ((cs || {}).segments || {}).OOS || {}, conc = oo.concentration || {}, pol = edge.policy || {};
+    return `<div class="pui-sv-edge" data-pui-sv-edge-block="${esc(edge.status)}">${svEdgeBadge(edge.status, edge.label)}</div>` +
+      (edge.reasons || []).map((x) => `<div data-pui-sv-edge-reason="${esc(x.code)}">${esc(x.text)}</div>`).join("") +
+      `<div class="pui-sub">Primary statistic: OOS mean excess per period ${esc(svPct2(oo.mean_excess_period_return))}, t = ${esc(svNum(oo.excess_t_stat))} over ` +
+      `${esc(svNum(oo.period_count, 0))} periods${conc.applicable ? ` · ${esc(conc.text)}` : ""}. Established needs at least ${esc(pol.min_oos_periods)} OOS periods, ` +
+      `t >= ${esc(pol.t_established)}, no concentration and no strong TRAIN contradiction - never t alone.</div>` +
+      (ev ? `<div class="pui-sub" data-pui-sv-evaluation="${esc(ev.evaluation_id)}">Methodology ${esc(ev.methodology_version)} evaluation of run ${esc(ev.run_id)} ` +
+        `(${esc(ev.created_at)}), recorded under ${esc(ev.evaluated_run_validation_version)}: that record is unchanged; its own verdict is the absolute performance verdict.</div>` : "");
   }
   const svNum = (x, d) => (x == null || x === "" ? "—" : typeof x === "number" ? x.toFixed(d == null ? 2 : d) : String(x));
   const svPct = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
@@ -757,9 +799,10 @@
     const segs = ["TRAIN", "OOS", "ALL"], pct = (x) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
     const row = (label, f) => `<tr><td>${esc(label)}</td>${segs.map((k) => `<td>${esc(f(p[k] || {}))}</td>`).join("")}</tr>`;
     return `<h4>Portfolio (research diagnostics)</h4><div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-portfolio><thead><tr><th>Equal-weight portfolio</th><th>TRAIN</th><th>OOS</th><th>All</th></tr></thead><tbody>` +
-      row("Strategy total return", (x) => pct((x.strategy || {}).total_return)) + row("SPY total return", (x) => pct((x.benchmark || {}).total_return)) +
-      row("Universe (equal weight) total return", (x) => pct((x.universe_equal_weight || {}).total_return)) + row("Excess vs SPY", (x) => pct(x.excess_total_return)) +
-      row("Excess vs universe", (x) => pct(x.excess_vs_universe)) +
+      row("Strategy total return", (x) => pct((x.strategy || {}).total_return)) + row("Market benchmark (SPY) total return", (x) => pct((x.benchmark || {}).total_return)) +
+      row("Selection control (equal-weight universe) total return", (x) => pct((x.universe_equal_weight || {}).total_return)) +
+      row("Excess vs the market benchmark (SPY)", (x) => pct(x.excess_total_return)) +
+      row("Excess vs the selection control", (x) => pct(x.excess_vs_universe)) +
       row("Excess vs universe: t per rebalance period", (x) => svNum((x.excess_vs_universe_per_period || {}).t_stat)) +
       row("Sharpe (strategy / SPY)", (x) => `${svNum((x.strategy || {}).sharpe)} / ${svNum((x.benchmark || {}).sharpe)}`) +
       row("Max drawdown (strategy / SPY)", (x) => `${pct((x.strategy || {}).max_drawdown)} / ${pct((x.benchmark || {}).max_drawdown)}`) +
@@ -775,10 +818,12 @@
         (pol.min_trades ? `<div class="pui-sub">A verdict needs at least ${esc(pol.min_trades)} trades, ${esc(pol.min_oos_trades)} out-of-sample trades and ${esc(pol.min_oos_sessions)} out-of-sample sessions; below that it reads INSUFFICIENT DATA.</div>` : "") +
         `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;
     }
-    const vd = r.verdict || {}, arms = r.arms || {}, rules = arms.RULES || {}, au = r.audit || {}, ca = r.causality || {}, ig = r.integrity || {}, fr = r.friction_model || {}, dg = r.diagnostics || {};
+    const vd = v.overall_verdict || r.verdict || {}, arms = r.arms || {}, rules = arms.RULES || {}, au = r.audit || {}, ca = r.causality || {}, ig = r.integrity || {}, fr = r.friction_model || {}, dg = r.diagnostics || {};
+    const cs = v.evaluation_mode === "CROSS_SECTIONAL_PORTFOLIO" && v.cross_sectional ? v.cross_sectional : null, absV = v.absolute_verdict || r.verdict || {};
     const cell = (m, row) => { const x = m ? m[row[1]] : null; return row[2] === "pct" ? svPct(x) : svNum(x, row[2]); };
+    const rowLabel = (row) => (cs && row[1] === "mean_R_t_stat" ? "Mean R t-stat (per leg · NOT SELECTION-EDGE EVIDENCE)" : row[0]);
     const metrics = `<div class="pui-sv-scroll"><table class="pui-sv-table" data-pui-sv-metrics><thead><tr><th>RULES arm</th><th>TRAIN</th><th>OOS</th><th>All</th></tr></thead><tbody>` +
-      SV_ROWS.map((row) => `<tr><td>${esc(row[0])}</td><td>${cell(rules.TRAIN, row)}</td><td>${cell(rules.OOS, row)}</td><td>${cell(rules.ALL, row)}</td></tr>`).join("") + `</tbody></table></div>`;
+      SV_ROWS.map((row) => `<tr><td>${esc(rowLabel(row))}</td><td>${cell(rules.TRAIN, row)}</td><td>${cell(rules.OOS, row)}</td><td>${cell(rules.ALL, row)}</td></tr>`).join("") + `</tbody></table></div>`;
     const armRow = (name) => {
       const a = arms[name] || { status: "NOT_RUN", label: "Not run" }, o = a.OOS || {}, all = a.ALL || {}, evald = a.status === "EVALUATED";
       return `<tr data-pui-sv-arm="${esc(name)}" data-pui-sv-arm-status="${esc(a.status)}"><td>${esc(name)}</td><td>${esc(a.candidate_count != null ? a.candidate_count : "—")}</td>` +
@@ -799,6 +844,8 @@
     return `<div class="pui-sv" data-pui-sv data-pui-sv-state="${esc(st)}" data-pui-sv-run="${esc(r.run_id)}">${head}` +
       `<div class="pui-sv-verdict" data-pui-sv-verdict="${esc(vd.verdict || st)}"><b>${esc(vd.label || st)}</b> · ${esc(vd.decision || "")}</div>` +
       (vd.reasons || []).map((x) => `<div data-pui-sv-reason="${esc(x.code)}">${esc(x.text)}</div>`).join("") +
+      (cs ? `<div class="pui-row" data-pui-sv-split><span>Absolute performance: <b data-pui-sv-absolute="${esc(absV.verdict || "")}">${esc(absV.label || absV.verdict || "—")}</b></span>` +
+        `${svEdgeBadge((v.selection_edge || {}).status, (v.selection_edge || {}).label)}</div>` : "") +
       (vd.verdict === "FAIL" || vd.verdict === "INVALID" ? `<div class="pui-sv-fail">This strategy should not progress to paper trading.</div>` : "") +
       (vd.note && !/should not progress/.test(vd.note) ? `<div class="pui-sub">${esc(vd.note)}</div>` : "") +
       ((vd.warnings || []).length ? `<div class="pui-sub" data-pui-sv-warnings>Warnings: ${esc(vd.warnings.map((w) => w.text || w.code || w).join(" · "))}</div>` : "") +
@@ -812,7 +859,11 @@
       `<span>Integrity</span><b data-pui-sv-integrity="${esc(ig2.recorded ? ig2.status : "NOT_RECORDED")}">${esc(integrityText)}</b>` +
       `<span>Train vs OOS</span><b>${esc(ttl.text || "—")}</b><span>Parameter sensitivity</span><b>${esc(sens.label || "—")}${sens.note ? ` · ${esc(sens.note)}` : ""}</b>` +
       `<span>Run</span><b>${esc(r.run_id)} · ${esc(r.created_at)}</b></div>` +
-      metrics + svPortfolio(dg.strategy) + `<h4>Arm comparison</h4>` + armTable +
+      (cs ? `<h4 data-pui-sv-section="absolute">Absolute performance</h4><div class="pui-sub">${esc(absV.label || "—")} on the legs (the validation_v2 policy). A trade-level ` +
+        `description: the legs of one rebalance are correlated, so neither these figures nor beating the market benchmark is evidence of selection.</div>` + metrics +
+        `<h4 data-pui-sv-section="control">Control comparison</h4>` + svControl(cs) + `<h4 data-pui-sv-section="edge">Selection edge</h4>` +
+        svEdge(v.selection_edge || {}, cs, v.methodology_evaluation)
+        : metrics + svPortfolio(dg.strategy)) + `<h4>Arm comparison</h4>` + armTable +
       `<div class="pui-sub" data-pui-sv-causality>Causality: ${esc((ca.automated_checks || []).length)} automated checks, ${esc(crit.length)} critical, ${esc(warn.length)} warnings. ${esc(ca.manual_review_note || "MANUAL_CAUSALITY_REVIEW_REQUIRED")}${ca.manual_review_status ? ` Manual review: ${esc(ca.manual_review_status)}${ca.manual_review_reference ? ` (${esc(ca.manual_review_reference)})` : ""}.` : ""}</div>` +
       `<details class="pui-fold pui-tech"><summary>Technical details</summary><pre class="pui-sub">${esc(JSON.stringify({ execution_assumptions: r.execution_assumptions, causality: ca.automated_checks, diagnostics: dg, skips: r.skips, first_audit_violations: au.first_violations, dataset_id: r.dataset_id, validation_version: r.validation_version, git_commit_sha: r.git_commit_sha }, null, 1))}</pre></details>` +
       `<div class="pui-sub">${esc(v.disclaimer || "")}</div></div>`;
