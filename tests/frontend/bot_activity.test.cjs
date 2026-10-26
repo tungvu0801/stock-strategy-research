@@ -112,3 +112,48 @@ test("the TRADE Position card names an external account holding instead of a bar
   assert.match(text(PUI.accountCardHtml({ state: "NOT_LOADED" }, "F")), /Account positions not loaded yet/);
   assert.equal(PUI.accountCardHtml(null, "F"), null);
 });
+
+test("the current mode and the last cycle's mode are separate; Paper Auto switched on after the last cycle is awaiting its first cycle", () => {
+  // the earlier payload (no mode.note / awaiting fields): derived from mode.changed_at vs last_cycle.at - the live screenshot case
+  const old = { ...ACT, mode: { mode: "PAPER_AUTO", label: "Paper Auto", changed_at: "2026-10-26T20:00:44+00:00", changed_by: "user" },
+                worker: { ...ACT.worker, running: true, next_at: "2026-10-26T20:05:16+00:00" },
+                last_cycle: { ...ACT.last_cycle, at: "2026-10-26T20:00:16+00:00", finished_at: "2026-10-26T20:00:16+00:00", mode: "MONITOR_ONLY" } };
+  const m = PUI.botActivityModel(old, {});
+  assert.equal(m.awaiting, true);
+  assert.equal(m.mode, "Paper Auto");
+  assert.equal(m.lastCycleMode, "Monitor only");
+  assert.equal(m.modeNote, "Paper Auto since 20:00:44: awaiting its first cycle (next scheduled run 20:05:16). The last cycle (20:00:16) ran in Monitor only.");
+  const html = PUI.botActivityHtml(m, {});
+  assert.match(html, /data-pui-mode="PAPER_AUTO">Paper Auto · since 2026-10-26 20:00:44</);
+  assert.match(html, /data-pui-last-cycle-mode>Monitor only</);
+  assert.match(html, /data-pui-mode-note data-awaiting="1"/);
+  // the backend's own fields win when present; once Paper Auto ran a cycle nothing is awaited
+  const ran = PUI.botActivityModel({ ...old, mode: { ...old.mode, last_cycle_mode: "PAPER_AUTO", awaiting_first_cycle: false, note: null },
+                                     last_cycle: { ...old.last_cycle, at: "2026-10-26T20:05:16+00:00", mode: "PAPER_AUTO" } }, {});
+  assert.equal(ran.awaiting, false);
+  assert.equal(ran.modeNote, "");
+  assert.doesNotMatch(PUI.botActivityHtml(ran, {}), /data-pui-mode-note/);
+  const stopped = PUI.botActivityModel({ ...old, worker: { ...old.worker, running: false } }, {});
+  assert.match(stopped.modeNote, /the worker is not running, so no cycle is scheduled/);
+});
+
+test("ticker rows say whether they are the latest cycle's work, an earlier cycle's or the setup state, with their times", () => {
+  const a = { ...ACT, last_cycle: { ...ACT.last_cycle, at: "2026-10-26T18:54:30+00:00", mode: "PAPER_AUTO" },
+              tickers: [{ symbol: "SNDK", status: "BLOCKED", label: "Entry blocked", text: "Entry blocked: x", at: "2026-10-26T18:54:30+00:00", reasons: [] },
+                        { symbol: "AMD", status: "SKIPPED", label: "Skipped this cycle", text: "limit used", at: "2026-10-26T18:20:00+00:00", reasons: [] },
+                        { symbol: "CLS", status: "WAITING", label: "Waiting", text: "PPE Confidence below 40.", at: "2026-10-26T18:50:00+00:00", reasons: [] }] };
+  const m = PUI.botActivityModel(a, {});
+  const by = Object.fromEntries(m.tickers.map((t) => [t.symbol, t]));
+  assert.equal(by.SNDK.scope, "LATEST_CYCLE");
+  assert.equal(by.SNDK.when, "evaluated 18:54:30 · latest cycle");
+  assert.equal(by.AMD.scope, "EARLIER_CYCLE");
+  assert.equal(by.AMD.when, "evaluated 18:20:00 · earlier cycle, not re-evaluated since");
+  assert.equal(by.CLS.when, "setup checked 18:50:00");
+  assert.equal(m.latestWork, "Latest cycle (18:54:30) evaluated: SNDK blocked.");
+  const html = PUI.botActivityHtml(m, { tickers: true });
+  assert.match(html, /data-pui-ticker="AMD" data-status="SKIPPED" data-scope="EARLIER_CYCLE"/);
+  assert.match(html, /data-pui-latest-work>Latest cycle \(18:54:30\) evaluated: SNDK blocked\.</);
+  const backend = PUI.botActivityModel({ ...a, latest_cycle_evaluations: [], tickers: [{ ...a.tickers[0], scope: "EARLIER_CYCLE", evaluated_at: "2026-10-26T18:54:30+00:00" }] }, {});
+  assert.equal(backend.tickers[0].scope, "EARLIER_CYCLE");                                  // the backend's scope wins
+  assert.equal(backend.latestWork, "Latest cycle (18:54:30) evaluated no ticker for entry.");
+});
