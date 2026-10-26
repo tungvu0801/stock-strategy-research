@@ -3152,7 +3152,7 @@ def product_flow_lab(c: Ctx):
               c.js("document.querySelectorAll('#pui-more-body button[data-pui], #pui-more-body form, #pui-more-body input').length") == 0 and not any(w in det for w in ("Enable Paper Auto", "Emergency Stop", "Execute", "Place order")) and _pui_posts(reqs) == [], det[:200])
     c.shot("product_flow_lab_detail")
     c.step("__click('#pui-more-body [data-pui-lab=\"back\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
-    c.step("__click('#pui-more-body [data-pui-lab=\"MOMENTUM\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"MOMENTUM\"]')", 30)
+    c.step("__click('#pui-more-body [data-pui-lab=\"MEAN_REVERSION\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"MEAN_REVERSION\"]')", 30)   # Stage 6.5: MOMENTUM is implemented
     ph = c.js("__tvText('#pui-more-body [data-pui-lab-detail]')") or ""
     ph_secs = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-section]')].map((e) => e.dataset.puiSectionState)")
     c.r.check("detail (placeholder): marked placeholder · not active, every section but the overview reads Not yet evaluated; it never appears as an active signal",
@@ -3351,7 +3351,7 @@ def strategy_validation(c: Ctx):
               and not re.search(r"Net P&L|Win rate|t-stat|\bPASS\b|\bFAIL\b", ddr.replace(api["disclaimer"], "")), ddr[:400])   # the disclaimer itself names PASS
     c.shot("strategy_validation_none", "#pui-more-body [data-pui-sv]")
     c.r.check("Stage 6.3.1: no run -> no integrity line is invented", c.js("document.querySelectorAll('#pui-more-body [data-pui-sv-integrity]').length") == 0)
-    r2, mom = _sv_open(c, "MOMENTUM")
+    r2, mom = _sv_open(c, "MEAN_REVERSION")                                                        # Stage 6.5: MOMENTUM is implemented
     c.r.check("a placeholder: Validation · Not yet evaluated - not implemented, no rules, no candidate", "Not yet evaluated." in mom and "Not implemented" in mom, mom[:300])
     c.r.check("no control, no form and no POST in the lab; viewing changes no lifecycle (RESEARCH / PAPER_CANDIDATE as before)",
               c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0 and _pui_posts(reqs + r1 + r2) == []

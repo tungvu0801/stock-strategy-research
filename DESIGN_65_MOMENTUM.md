@@ -74,7 +74,8 @@ uses only its bars, raw series and issuer map - no fundamentals.
 
 ## 5. Results
 
-Run `baaa5cff3a204a898e5e6df403ce0cd1` (git `3b8ead2`): 1,260 candidates (0 skipped), candidate set `1d4b0d0e9ac8a70c2a661120605450b8`;
+Run `52922e3f66234c489d6816f3243bd139` (git `26891c5`; the same candidate set and period results as run `baaa5cff…` at `3b8ead2`, which
+predates the review fixes to the audit and the diagnostics): 1,260 candidates (0 skipped), candidate set `1d4b0d0e9ac8a70c2a661120605450b8`;
 integrity PASS, persistence ELIGIBLE; audit 2,480 / 2,480 trades validated, 0 strategy-specific violations; control parity 8 / 8; 20 boundary
 legs purged; causality: one STATIC_FUTURE_INDEX WARN (`decisions[k + 1]` sets when a leg ends - the next rebalance's decision, made before the
 exit fill: not look-ahead).
@@ -120,10 +121,18 @@ Diagnostics (descriptive only):
   months; OOS: +2.40 % (16) vs −2.32 % (6). Together with 2.4x the control's volatility in OOS, the excess looks largely like a higher-beta tilt
   in a rising market rather than a clean selection edge.
 * Calendar (mean excess per period): 2021 (Aug–Dec) +0.48 %, 2022 −0.19 %, 2023 −0.12 %, 2024 +0.91 %, 2025 +0.09 %, 2026 +2.34 %.
-* Concentration: semiconductors were the most frequent top sector (35 of 63 rebalances; mean top-sector share 22 %, max 35 %); the most held
-  names were AVGO (70 % of rebalances), LLY (68 %), NVDA (67 %), GE (65 %) and KLAC (62 %); max single-name weight 5 %.
-* Sensitivity (TRAIN view only; same per-period computation): base t 0.39 (40 periods); 9-1 −0.04; 15-1 −0.27; top 15 0.25; top 25 0.34. No
-  neighbour shows an edge on TRAIN; nothing was chosen from it.
+* Concentration: by SEC SIC major group, electronic equipment & semiconductors (SIC 36) led the portfolio at 42 of 63 rebalances (mean top-group
+  share 29 %, max 45 %; by the narrow SIC description, semiconductors led at 35); the most held names were AVGO (70 % of rebalances), LLY (68 %),
+  NVDA (67 %), GE (65 %) and KLAC (62 %); max single-name weight 5 %.
+* Who carried the excess (each name's part of the summed period excess, +0.332 over all 62 periods): CLS +0.114 (34 %), AMD +0.070, MU +0.066,
+  NVDA +0.059, SNDK +0.054 - the top five exceed the total; the largest detractors were ORCL −0.027, TSLA −0.021, BRK.B −0.017, MRVL −0.016,
+  BKNG −0.016. CLS and SNDK are exactly the names the survivor universe favours (section 8).
+* Sensitivity (TRAIN view only; every row on the same 37 periods that all configurations can form): base t 0.22; 9-1 0.04; 15-1 −0.27; top 15
+  0.20; top 25 0.19. No neighbour shows an edge on TRAIN; nothing was chosen from it.
+* Data quality: one provider artifact - HON 2026-06-29: the raw / split-adjusted ratio moves 0.5 -> 1.0 with no raw price move (no real split);
+  the all-adjusted series Momentum uses shows an unexplained −4.6 % step against raw there. Momentum never held HON in 2026; the step lowers
+  HON's momentum for the Aug-Oct 2026 rebalances (it was not near the top 20) and the control's June 2026 period return by about 0.06 pp. All 20
+  real splits in the bundle are absorbed by the adjusted series (to within 0.01 %).
 * Eligibility: 78-80 eligible stocks per rebalance (mean 78.7); exclusions (stock-rebalances): SECOND_LISTING 63 (GOOGL), NO_PRICE 43 (SNDK before
   its listing), LIQUIDITY_BELOW_MIN 28 (CLS, IEX volume), INSUFFICIENT_HISTORY 11 and LIQUIDITY_HISTORY 1 (SNDK's first year).
 
@@ -133,7 +142,9 @@ The 12-1 ranking selected a portfolio that beat both the market benchmark and it
 (+30.5 pp over 22 months). The validation_v3 question is whether that is evidence of a selection edge, and the answer is no: one month carries
 64 % of the OOS excess, the excess swings with the market's direction, the portfolio ran at 2.4x the control's volatility, and the period-excess
 t-statistic is 0.87 - below the pre-registered threshold for "not negligible" (1.0), let alone "established" (2.0). TRAIN is weaker still (t 0.39,
-the excess carried by one period) and no TRAIN-only neighbour shows an edge. **Decision: keep Momentum in Research.** Per the policy it is not
+the excess carried by one period) and no TRAIN-only neighbour shows an edge. A third of the excess comes from one name (CLS) and much of the rest
+from semiconductors and a 2025 listing (SNDK) - names a survivor universe selects for - so even this paper excess overstates what momentum
+selection would have earned on a point-in-time universe. **Decision: keep Momentum in Research.** Per the policy it is not
 eligible for human review for paper trading; nothing is promoted.
 
 ## 6a. Development log (what was seen when)
@@ -146,7 +157,33 @@ eligible for human review for paper trading; nothing is promoted.
    distributions (total return). That run printed its OOS figures (they were seen). The AUDIT was corrected (commit `3b8ead2`: split continuity on
    real split sessions); no strategy rule changed - the candidate set is identical, and `test_G06` checks the rule code is byte-identical to the
    freeze commit.
-5. Second run: the result above (stored).
+5. Second run (`baaa5cff…`, git `3b8ead2`): the result above (stored).
+6. Timeline evidence: the freeze commit is 03:56:35Z; the first OOS run started at 03:56:48Z and its record carries `git_commit_sha` `ad3e71c` (the
+   tree was clean - the frozen code); the audit fix was committed at 03:57:58Z and the second run started at 03:58:04Z on `3b8ead2`.
+7. Independent adversarial review (section 7). Its fixes changed the audit's coverage (stricter: every split of every stock), the diagnostics and
+   the survivorship wording - no strategy rule. The stricter audit found the HON ratio artifact; the classification of ratio moves (a real split
+   moves the raw price) was added so that a provider artifact in a series the strategy does not use is reported rather than failing the run.
+   Final run `52922e3f…` at `26891c5`: identical candidate set and period results.
+
+## 7. Adversarial review
+
+An independent reviewer read the code (without this document's conclusions) and probed it with synthetic data. Look-ahead, 12-1 endpoints,
+correctly adjusted splits, history handling, timing, friction, the control, sample size, arms and isolation were clean; the engine reorder leaves
+Value + Quality's diagnostics, flags and verdict unchanged. Findings:
+
+| # | Area | Finding | Severity | Resolution |
+|---|---|---|---|---|
+| 1 | Survivorship | for a price ranking the survivor universe is not neutral between strategy and control (CLS, SNDK in; collapsed winners out); the Lab text claimed the control shares it | HIGH | cannot be fixed without point-in-time constituents: the disclosure is corrected everywhere (Lab, README, here) and the attribution shows the bias at work (CLS 34 % of the excess, SNDK in the top five); the v3 policy is not changed after the OOS - a survivorship gate is recommended for a future validation version |
+| 2 | Split audit coverage | the split check only looked at the SELECTED legs' lookback windows: an unadjusted split in a non-selected stock (or one with a hole before it) went undetected | MEDIUM | fixed: every split of every universe stock over the whole dataset, across holes, independent of the selection (test U04) |
+| 3 | Post-OOS audit change | the first run's audit change was disclosed in the commit only; git alone could not show the freeze preceded the OOS run | MEDIUM | disclosed in section 6a with the run records' timestamps and code versions (the first OOS run carries the freeze commit) |
+| 4 | Listing order | one listing per issuer is applied before eligibility: if GOOG were ineligible, GOOGL would still be dropped | LOW | a rule: deferred to a v1.1 (GOOG was never ineligible in the data, so v1 is unaffected) |
+| 5 | A month-long data gap | with no bar between two rebalances a leg would exit at its entry bar's close while the control exits at the open: parity fails and the run is INVALID (fails closed) | LOW | documented (no such gap in the data) |
+| 6 | Sensitivity periods | the neighbours were measured on different period sets | LOW | fixed: every row on the same 37 TRAIN periods (test V06) |
+| 7 | Concentration | the narrow SIC description understated the sector concentration; there was no per-name attribution | LOW | fixed: SIC major group and per-name excess contribution (test V06) |
+| 8 | Final period | the last (DATA_END) period counts as a full OOS observation (validation_v3 behaviour) | LOW | documented |
+| 9 | Control membership | checked by size against the candidate set; the momentum audit (which re-derives the eligible set) runs before the v3 block | LOW | documented; the size check is pinned by the candidate set hash |
+| 10 | Provenance text | the shared bundle's universe text describes Value + Quality's SIC exclusion | LOW | documented: Momentum's universe rule is in section 2 |
+| 11 | Data quality (found by fix 2) | HON 2026-06-29 ratio artifact | — | reported in the run's diagnostics (section 5); it also affects **Value + Quality**, whose share counts are re-based by that ratio: HON's market cap read $66.9B (about half) and HON entered Value + Quality's top 20 (rank 20) at the 2026-09-01 OOS rebalance - a finding for the Value + Quality record, which this stage does not modify |
 
 ## 8. Limitations
 
@@ -162,6 +199,7 @@ eligible for human review for paper trading; nothing is promoted.
 * IEX-only volume (a conservative liquidity filter: it excludes CLS at 28 rebalances); sector labels are today's SEC SIC (not point in time); 1-4
   missing sessions per symbol in the
   bundle (an endpoint on one excludes the stock for that rebalance; 50 symbols have such gaps).
+* The provider's split-adjusted series carries one artifact (HON 2026-06-29); a split missed in BOTH adjusted series would be undetectable.
 * Monthly re-sizing of continuing legs is not charged friction (the Stage 6.4 convention; about 0.35 bp of equity a month at 5 bps).
 * Total-return momentum (dividends and spin-offs included); a price-only variant would differ slightly for high-yield and spin-off names.
 

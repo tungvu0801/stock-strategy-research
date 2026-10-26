@@ -224,6 +224,8 @@ EDITS_65_FLOWS = [                                                              
      'the two placeholders not implemented, not active, marked; "\n              "Value + Quality and Momentum implemented, Research, not active, no placeholder mark",\n'),
     ('if r[0] in PF_PLACEHOLDERS]) == 3\n              and any(r[0] == "VALUE_QUALITY" and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows)\n',
      'if r[0] in PF_PLACEHOLDERS]) == 2\n              and all(any(r[0] == sid and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows) for sid in ("VALUE_QUALITY", "MOMENTUM"))\n'),
+    ('    c.step("__click(\'#pui-more-body [data-pui-lab=\\"MOMENTUM\\"]\')", "!!document.querySelector(\'#pui-more-body [data-pui-lab-detail=\\"MOMENTUM\\"]\')", 30)\n',
+     '    c.step("__click(\'#pui-more-body [data-pui-lab=\\"MEAN_REVERSION\\"]\')", "!!document.querySelector(\'#pui-more-body [data-pui-lab-detail=\\"MEAN_REVERSION\\"]\')", 30)   # Stage 6.5: MOMENTUM is implemented\n'),
 ]
 GROUPS_EDITS_65 = [                                                                                # .github/ci/pytest_groups.json: tests/test_momentum_65.py in the research group (undone first)
     ('        "test_cross_sectional_641.py"\n      ]',
