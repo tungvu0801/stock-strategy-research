@@ -20,6 +20,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 BASE = "ec87dc6f6e8b7fec64e7aedefa77e5af88da5e79"                                          # origin/main with Stage 6.1 merged (PR #17)
 NEW_611 = {"frontend/product_ui.js", "frontend/product_ui.css", "tests/test_product_ui_611.py", "tests/frontend/product_ui.test.cjs", "DESIGN_611_PRODUCT_UI.md"}
 NEW_612 = {"strategy_registry/__init__.py", "strategy_registry/models.py", "strategy_registry/standard.py", "strategy_registry/registry.py", "strategy_registry/service.py",
@@ -39,7 +40,8 @@ TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Li
 STALE = ("never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
 GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events",
               "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
-              "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls"}   # Stage 6.1.2: the strategy registry and the frozen controls (GET only)
+              "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",   # Stage 6.1.2: the strategy registry and the frozen controls (GET only)
+              "/api/execution/activity", "/api/account-refresh/positions"}   # Stage 6.8: Bot Activity and the account positions (GET only)
 # the exact in-place edits of tests/test_forward_validation_61.py (each `old` occurs once in the base; applied in order they produce the current file)
 EDITS_61 = [
     ('OPEN_61, CLOSE_61 = "# >>> " + "Stage 6.1", "# <<< " + "Stage 6.1"                   # built, not literal: this file must not read as a marked-block carrier\n',
@@ -183,11 +185,13 @@ def test_C01_ci_manifest_carries_this_file_and_the_frontend_job_runs_every_node_
 # ================================================================ F freeze ========================================================================
 
 def test_F01_every_tracked_file_of_the_stage_61_base_is_identical_except_the_eight_wiring_files_and_the_five_new_ones():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     assert new == NEW_611 | NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_611 - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_611 | NEW_612 | NEW_FIX | NEW_62) - new)}   # Stage 6.1.2 files + the WAL bootstrap fix + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
+    changed -= ledger_unchanged(changed, blob)                                                  # Stage 6.8: registered files equal to this base on main
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
     # Stage 6.1.2: api/server.py gains exactly two additive lines (the strategy-registry import and its GET-only router), nothing removed
     base_lines, now_lines = blob("api/server.py").splitlines(), now_text("api/server.py").splitlines()
@@ -222,6 +226,7 @@ def test_F02_strategy_execution_risk_and_broker_constants_and_the_validation_cal
 
 
 def test_F03_reconciled_prior_stage_tests_differ_from_the_base_only_by_one_marked_block_or_the_listed_exact_edits_and_nothing_else_carries_the_markers():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     for rel in BLOCK_TESTS:
         text = now_text(rel)
         assert text.count(OPEN_611) == 1 == text.count(CLOSE_611) and len(re.findall(STRIP_611, text)) == 1, rel

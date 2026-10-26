@@ -100,7 +100,9 @@
                   // Stage 6.1.2: the strategy registry and the frozen controls (read once), the per-symbol terminal state behind Why? (on demand, 10 s cache), the WHY technical fold,
                   // the ACTIVITY filter, the MORE fold state, the open MORE panel and the Strategy Lab detail
                   registry: null, registryBusy: false, registryFailedAt: null, frozen: null, frozenBusy: false, frozenFailedAt: null, terminal: {}, terminalBusy: false, techOpen: false, filter: "all", moreOpen: {}, moreAction: null,
-                  labDetail: null, labError: null };
+                  labDetail: null, labError: null,
+                  // Stage 6.8: the account's positions (POSITIONS) and the Bot Activity read (TRADE): the payload, this page's connection, the open folds
+                  acctPos: null, acctPosError: null, botAct: null, botConn: null, botBusy: false, botReadAt: null, botOpen: {} };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -617,7 +619,8 @@
     const pos = p.open ? `<div class="pui-card position" data-pui-card="position" data-open="1"><h4>Position</h4><div class="pui-big">${esc(p.symbol)} · ${esc(p.shares)} share${Number(p.shares) === 1 ? "" : "s"}</div>` +
       `<div class="pui-kv"><span>Entry</span><b>${esc(p.entry)}</b><span>Current</span><b>${esc(p.current)}</b><span>P/L</span><b>${esc(p.pnl)}</b></div><div class="pui-line">${esc(p.holding)} · ${esc(p.status)}</div>` +
       (p.reason ? `<div class="pui-sub">${esc(p.reason)}</div>` : "") + posDetails + `</div>`
-      : `<div class="pui-card position" data-pui-card="position" data-open="0"><h4>Position</h4><div class="pui-big">${esc(p.entering ? "Entering" : "No position")}</div><div class="pui-sub">${esc(p.entering ? "Order submitted. Waiting for broker fill." : a.key === "ENTRY_FAILED" ? "The entry did not fill. No automatic replacement order." : "")}</div></div>`;
+      : (accountCardHtml(p.entering ? null : ctx.account, ctx.symbol) ||                                // Stage 6.8: an account holding the bot does not manage is named, never hidden
+         `<div class="pui-card position" data-pui-card="position" data-open="0"><h4>Position</h4><div class="pui-big">${esc(p.entering ? "Entering" : "No position")}</div><div class="pui-sub">${esc(p.entering ? "Order submitted. Waiting for broker fill." : a.key === "ENTRY_FAILED" ? "The entry did not fill. No automatic replacement order." : "")}</div></div>`);
     const riskDetails = fold("risk", !!ctx.riskOpen, "Details", r.lines.slice(1).map((l) => `<div class="${lvl(l.level)}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") || `<div class="pui-dim">No further detail.</div>`);
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}" data-kill="${r.killActive ? "1" : "0"}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
       (r.primary ? `<div class="pui-sub ${r.critical ? "pui-bad" : ""}" data-pui-risk-reason>${esc(r.primary)}</div>` : "") +
@@ -949,6 +952,130 @@
       `<div class="pui-sub">${esc(det.disclaimer || "")}</div></div>`;
   }
 
+  // ---------------------------------------------------------------- Stage 6.8: account positions + Bot Activity (pure; real backend records only) -------
+  const hms = (iso) => (iso ? String(iso).slice(11, 19) : "—");
+  const MGMT_CLS = { BOT: "ok", BOT_ENTRY: "info", NEEDS_REVIEW: "bad", EXTERNAL: "warn" };
+  // POSITIONS: the Alpaca PAPER account's positions as the read-only account refresh fetched them (GET /api/account-refresh/positions), each marked
+  // bot-managed or external; "Not loaded" (no snapshot yet) is never shown as "no position"
+  function accountPositionsHtml(v, error) {
+    const head = `<h3>${esc((v && v.account_label) || "Alpaca PAPER account")} <span class="pui-sub">all positions · read-only account refresh</span></h3>`;
+    if (!v) return `<section class="pui-acct" data-pui-acct="UNAVAILABLE">${head}<div class="pui-bad">Account positions unavailable${error ? ` (${esc(error)})` : ""}.</div></section>`;
+    const fr = v.freshness || {};
+    const fresh = `<div class="pui-sub" data-pui-acct-fresh="${esc(fr.status || v.state)}">Source: ${esc(v.source_label || "account refresh")}${v.host ? ` (${esc(v.host)})` : ""}` +
+      `${fr.label ? ` · ${esc(fr.label)}` : ""}${v.refreshed_at ? ` · read at ${esc(day(v.refreshed_at))} ${esc(hms(v.refreshed_at))} UTC` : ""}</div>`;
+    if (v.state !== "LOADED") return `<section class="pui-acct" data-pui-acct="${esc(v.state)}">${head}${fresh}<div class="pui-empty" data-pui-acct-empty="${esc(v.state)}">` +
+      `<b>${v.state === "NOT_LOADED" ? "Not loaded yet" : "Not available"}.</b> ${esc(v.message || "")}</div></section>`;
+    const stale = fr.status && fr.status !== "FRESH" ? `<div class="pui-line pui-warn" data-pui-acct-stale>${esc(v.message)}</div>` : "";
+    if (!(v.positions || []).length) return `<section class="pui-acct" data-pui-acct="LOADED" data-pui-acct-count="0">${head}${fresh}${stale}<div class="pui-empty">No positions in the ${esc(v.account_label || "Alpaca PAPER account")}.</div></section>`;
+    const rows = v.positions.map((p) => `<tr data-pui-acct-row="${esc(p.symbol)}" data-management="${esc(p.management)}"><td><b>${esc(p.symbol)}</b></td><td>${esc(p.qty)}</td>` +
+      `<td>${esc(p.avg_entry_price || "—")}</td><td>${esc(p.current_price || "—")}</td><td>${esc(p.market_value || "—")}</td><td>${esc(money(p.unrealized_pl))}</td>` +
+      `<td><span class="pui-badge ${MGMT_CLS[p.management] || "dim"}" title="${esc(p.management_text)}">${esc(p.management_label)}</span></td></tr>`).join("");
+    const c = v.counts || {};
+    return `<section class="pui-acct" data-pui-acct="LOADED" data-pui-acct-count="${esc(v.positions.length)}">${head}${fresh}${stale}` +
+      `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg entry</th><th>Current</th><th>Market value</th><th>Unrealized P/L</th><th>Managed by</th></tr></thead><tbody>${rows}</tbody></table>` +
+      `<div class="pui-sub">${esc(c.bot || 0)} bot-managed · ${esc(c.external || 0)} external (the bot never trades or exits these; they count toward the open-positions limit and block a bot entry in the same symbol)` +
+      `${c.needs_review ? ` · ${esc(c.needs_review)} need a look` : ""}.</div></section>`;
+  }
+
+  // TRADE › Position card when the bot holds nothing in the symbol: the account's own holding (external, unmanaged) or "not loaded" - null keeps the plain card
+  function accountCardHtml(v, sym) {
+    if (!v || !sym) return null;
+    const card = (attr, line, sub) => `<div class="pui-card position" data-pui-card="position" data-open="0" ${attr}><h4>Position</h4><div class="pui-big">No bot position</div>${line}<div class="pui-sub">${esc(sub)}</div></div>`;
+    if (v.state === "NOT_LOADED") return card('data-pui-account="NOT_LOADED"', "", "Account positions not loaded yet: whether the account holds this symbol is unknown.");
+    const row = v.state === "LOADED" ? (v.positions || []).find((r) => r.symbol === sym) : null;
+    if (!row || row.managed) return null;
+    return card(`data-pui-account="LOADED" data-pui-external="${esc(row.symbol)}"`, `<div class="pui-line pui-warn">Account holds ${esc(row.qty)} ${esc(row.symbol)} · ${esc(row.management_label)}</div>`,
+                `${(v.freshness && v.freshness.label) || ""} The bot never trades or exits it; it blocks a bot entry in ${row.symbol}.`.trim());
+  }
+
+  // TRADE › Bot Activity: is the WORKER working (its own heartbeat), not just the page connected (the last successful read of this page)
+  const STEP_ORDER = ["ORDERS", "RECONCILE", "POSITIONS", "SAFETY", "ENTRIES"];
+  const WORKER_CLS = { RUNNING: "ok", IDLE: "ok", STANDBY: "info", STARTING: "info", STALE: "bad", ERROR: "bad", STOPPED: "bad", DISABLED: "dim" };
+  const TICKER_CLS = { ENTRY_INTENT: "ok", BLOCKED: "warn", SKIPPED: "info", WAITING: "dim", READY_MONITOR_ONLY: "info", READY_PENDING: "info" };
+  const EVALUATED = ["ENTRY_INTENT", "BLOCKED", "SKIPPED"];
+  const MODE_TXT = { MONITOR_ONLY: "Monitor only", PAPER_AUTO: "Paper Auto" };
+  function botActivityModel(a, conn) {
+    const c = conn || {};
+    const dashboard = c.okAt ? { state: c.error ? "STALE" : "CONNECTED", cls: c.error ? "warn" : "ok", text: c.error ? `Last read failed (${c.error}); showing the read from ${hms(c.okAtIso)}.` : `Connected · read at ${hms(c.okAtIso)}` }
+      : { state: c.error ? "DISCONNECTED" : "CONNECTING", cls: c.error ? "bad" : "dim", text: c.error ? `Server not reachable (${c.error}).` : "Connecting…" };
+    if (!a) return { dashboard, loaded: false };
+    const w = a.worker || {};
+    const p = a.progress;
+    const progress = p && p.step ? `Step ${STEP_ORDER.indexOf(p.step) + 1} of ${STEP_ORDER.length}: ${p.step_label}${p.symbol ? ` · ${p.symbol} (${p.index} of ${p.total})` : ""} · cycle started ${hms(p.started_at)}`
+      : w.in_cycle ? "A cycle is in progress (step not reported yet)." : "No cycle in progress.";
+    const lc = a.last_cycle;
+    const last = lc ? `${hms(lc.at)}${lc.finished_at ? ` → ${hms(lc.finished_at)}` : ""}${lc.duration_ms != null ? ` (${lc.duration_ms} ms)` : ""} · ${String(lc.trigger || "").toLowerCase()} · ${lc.text}` +
+      (lc.source === "DATABASE" ? " (recorded before this server started)" : "") : "No cycle recorded yet.";
+    // the CURRENT mode vs the mode the last cycle ran in: Paper Auto switched on after the last cycle is awaiting its first cycle (never shown as run)
+    const md = a.mode || {}, lcMode = md.last_cycle_mode || (lc && lc.mode) || null, since = md.changed_at || null;
+    const awaiting = md.awaiting_first_cycle != null ? !!md.awaiting_first_cycle : md.mode === "PAPER_AUTO" && lcMode !== "PAPER_AUTO" && !!since && (!lc || String(since) > String(lc.at || ""));
+    const ran = lc && lcMode ? ` The last cycle (${hms(lc.at)}) ran in ${MODE_TXT[lcMode] || lcMode}.` : "";
+    const modeNote = md.note || (awaiting ? `Paper Auto since ${hms(since)}: awaiting its first cycle (${w.running && w.next_at ? `next scheduled run ${hms(w.next_at)}` : "the worker is not running, so no cycle is scheduled"}).${ran}`
+      : lcMode && lcMode !== md.mode ? `${md.label || MODE_TXT[md.mode] || "—"} since ${hms(since)}.${ran}` : "");
+    // every ticker row names its origin: the LATEST cycle's evaluation, an EARLIER cycle's (not re-evaluated since), or the SETUP state - with its time
+    const latestAt = lc ? lc.at : null;
+    const tickers = (a.tickers || []).map((t) => {
+      const scope = t.scope || (EVALUATED.includes(t.status) ? (t.at && t.at === latestAt ? "LATEST_CYCLE" : "EARLIER_CYCLE") : "SETUP");
+      const evAt = t.evaluated_at || t.at, chAt = t.checked_at || t.at;
+      const when = scope === "LATEST_CYCLE" ? `evaluated ${hms(evAt)} · latest cycle` : scope === "EARLIER_CYCLE" ? `evaluated ${hms(evAt)} · earlier cycle, not re-evaluated since`
+        : `setup checked ${hms(chAt)}`;
+      return { symbol: t.symbol, status: t.status, label: t.label, cls: TICKER_CLS[t.status] || "dim", text: t.text, at: t.at, scope, when,
+               reasons: (t.reasons || []).map((r) => `${r.label || r.control}: ${r.text}`) };
+    });
+    const work = a.latest_cycle_evaluations || tickers.filter((t) => t.scope === "LATEST_CYCLE").map((t) => ({ symbol: t.symbol, result: t.status }));
+    const latestWork = !lc ? "No cycle recorded yet." : work.length ? `Latest cycle (${hms(lc.at)}) evaluated: ${work.map((x) => `${x.symbol} ${String(x.result).replace(/_/g, " ").toLowerCase()}`).join(", ")}.`
+      : `Latest cycle (${hms(lc.at)}) evaluated no ticker for entry${lcMode && lcMode !== "PAPER_AUTO" ? " (Monitor only)" : ""}.`;
+    const r = a.risk || {}, g = r.gate || {};
+    const orders = (a.orders || []).map((o) => ({ symbol: o.symbol, title: `${o.symbol} · ${o.type.toLowerCase()} ${o.side} ${o.qty} · ${o.state.replace(/_/g, " ").toLowerCase()}`,
+      steps: (o.steps || []).map((s) => ({ at: s.at, kind: s.kind, label: s.label })) }));
+    const pos = a.positions || {}, acct = pos.account || {};
+    const external = acct.state === "LOADED" ? (acct.positions || []).filter((x) => !x.managed) : [];
+    return { dashboard, loaded: true, mode: md.label || MODE_TXT[md.mode] || "—", modeKey: md.mode || null, modeSince: since ? `${day(since)} ${hms(since)}` : "—",
+      lastCycleMode: lcMode ? (MODE_TXT[lcMode] || lcMode) : "—", awaiting, modeNote, latestWork, generatedAt: a.generated_at,
+      worker: { state: w.state, label: w.label, cls: WORKER_CLS[w.state] || "dim", text: w.text,
+        heartbeat: w.heartbeat_at ? `${hms(w.heartbeat_at)} (${w.heartbeat_age_s != null ? `${Math.round(w.heartbeat_age_s)} s ago` : "—"}${w.expected_every_s ? `, expected every ~${Math.round(w.expected_every_s)} s` : ""})` : "none yet",
+        lastStart: hms(w.last_started_at), lastFinish: hms(w.last_finished_at), next: hms(w.next_at), runs: w.runs == null ? "—" : String(w.runs) },
+      progress, last, tickers,
+      gate: { label: g.label || "—", cls: g.allowed_new_entry ? "ok" : "warn", text: g.reason_text || (g.allowed_new_entry ? "New entries allowed." : "New entries paused."),
+        checks: (g.checks || []).map((x) => ({ label: x.control, result: x.result, text: x.text })) },
+      controls: (r.controls || []).map((x) => ({ label: x.label, result: x.result, text: x.text, at: x.at })),
+      orders, bot: (pos.bot || []).map((b) => ({ symbol: b.symbol, state: b.state, text: b.decision_text, at: b.decision_at })),
+      external: external.map((x) => ({ symbol: x.symbol, qty: x.qty, label: x.management_label })), accountState: acct.state || "UNAVAILABLE", accountMessage: acct.message || "",
+      history: (a.history || []).map((h) => ({ at: h.at, kind: h.kind, level: h.level, text: h.text, count: h.count || 1, firstAt: h.first_at || null })) };
+  }
+  function botActivityHtml(m, open) {
+    const o = open || {};
+    const fold = (id, title, body) => `<details class="pui-fold" data-pui-bot-fold="${id}"${o[id] ? " open" : ""}><summary data-pui-bot-summary="${id}">${title}</summary><div class="pui-bot-body">${body}</div></details>`;
+    const chip = (k, cls, label, text, attr) => `<div class="pui-bot-chip ${cls}" ${attr}><span class="pui-bot-k">${esc(k)}</span><b>${esc(label)}</b><span class="pui-sub">${esc(text)}</span></div>`;
+    const dash = chip("Dashboard", m.dashboard.cls, m.dashboard.state === "CONNECTED" ? "Connected" : m.dashboard.state === "STALE" ? "Read failed" : m.dashboard.state === "DISCONNECTED" ? "Disconnected" : "Connecting", m.dashboard.text, `data-pui-dash="${esc(m.dashboard.state)}"`);
+    if (!m.loaded) return `<section class="pui-bot" data-pui-bot="NOT_LOADED"><h3>Bot Activity</h3><div class="pui-bot-chips">${dash}${chip("Bot worker", "dim", "Unknown", "The bot's activity has not been read yet.", 'data-pui-worker="UNKNOWN"')}</div></section>`;
+    const w = m.worker;
+    const rowsOf = (items, fn, empty) => (items.length ? `<ul class="pui-bot-list">${items.map(fn).join("")}</ul>` : `<div class="pui-sub">${esc(empty)}</div>`);
+    const tick = `<div class="pui-line" data-pui-latest-work>${esc(m.latestWork)}</div>` +
+      rowsOf(m.tickers, (t) => `<li data-pui-ticker="${esc(t.symbol)}" data-status="${esc(t.status)}" data-scope="${esc(t.scope)}"><b>${esc(t.symbol)}</b> <span class="pui-badge ${t.cls}">${esc(t.label)}</span> ${esc(t.text)}` +
+      ` <span class="pui-sub" data-pui-when>· ${esc(t.when)}</span>${t.reasons.length ? `<ul>${t.reasons.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</li>`, "No ticker has an open setup or an entry evaluation yet.");
+    const risk = `<div class="pui-line"><span class="pui-badge ${m.gate.cls}">${esc(m.gate.label)}</span> ${esc(m.gate.text)}</div>` +
+      rowsOf(m.gate.checks, (x) => `<li>${esc(x.label)} · <b>${esc(x.result)}</b> · ${esc(x.text)}</li>`, "") +
+      `<div class="pui-sub">Executor checks (last result of each):</div>` + rowsOf(m.controls, (x) => `<li data-pui-control="${esc(x.label)}">${esc(x.label)} · <b>${esc(x.result)}</b> · ${esc(x.text || "")} <span class="pui-sub">· ${esc(hms(x.at))}</span></li>`, "No executor check has run yet.");
+    const orders = rowsOf(m.orders, (x) => `<li data-pui-order="${esc(x.symbol)}"><b>${esc(x.title)}</b><ol class="pui-bot-steps">${x.steps.map((s) => `<li data-kind="${esc(s.kind)}">${esc(hms(s.at))} · ${esc(s.label)}${s.kind === "BROKER" ? " <span class=\"pui-sub\">(broker)</span>" : ""}</li>`).join("")}</ol></li>`,
+      "No bot order yet. Orders appear here only with the broker's own reported statuses.");
+    const pos = rowsOf(m.bot, (b) => `<li data-pui-bot-pos="${esc(b.symbol)}"><b>${esc(b.symbol)}</b> · ${esc(String(b.state).replace(/_/g, " ").toLowerCase())} · ${esc(b.text)}</li>`, "No bot-managed position.") +
+      (m.accountState === "LOADED" ? rowsOf(m.external, (x) => `<li data-pui-external="${esc(x.symbol)}"><b>${esc(x.symbol)}</b> · ${esc(x.qty)} · <span class="pui-badge warn">${esc(x.label)}</span></li>`, "No external position in the account.")
+        : `<div class="pui-sub" data-pui-external-state="${esc(m.accountState)}">Account positions: ${esc(m.accountState === "NOT_LOADED" ? "not loaded yet" : "not available")}. ${esc(m.accountMessage)}</div>`);
+    const hist = rowsOf(m.history, (h) => `<li data-kind="${esc(h.kind)}" class="${esc(h.level)}">${esc(day(h.at))} ${esc(hms(h.at))} · ${esc(h.text)}${h.count > 1 ? ` <span class="pui-sub">×${esc(h.count)} since ${esc(hms(h.firstAt))}</span>` : ""}</li>`, "No activity recorded yet.");
+    return `<section class="pui-bot" data-pui-bot="${esc(w.state)}"><h3>Bot Activity</h3>` +
+      `<div class="pui-bot-chips">${dash}${chip("Bot worker", w.cls, w.label, w.text, `data-pui-worker="${esc(w.state)}"`)}</div>` +
+      `<div class="pui-kv pui-bot-kv"><span>Current mode</span><b data-pui-mode="${esc(m.modeKey || "")}">${esc(m.mode)} · since ${esc(m.modeSince)}</b>` +
+      `<span>Last cycle ran in</span><b data-pui-last-cycle-mode>${esc(m.lastCycleMode)}</b>` +
+      `<span>Heartbeat</span><b data-pui-heartbeat>${esc(w.heartbeat)}</b><span>Last cycle</span><b>${esc(w.lastStart)} → ${esc(w.lastFinish)}</b>` +
+      `<span>Next run</span><b>${esc(w.next)}</b><span>Cycles this run</span><b>${esc(w.runs)}</b></div>` +
+      (m.modeNote ? `<div class="pui-line ${m.awaiting ? "pui-warn" : ""}" data-pui-mode-note data-awaiting="${m.awaiting ? "1" : "0"}">${esc(m.modeNote)}</div>` : "") +
+      `<div class="pui-line" data-pui-progress>Now: ${esc(m.progress)}</div><div class="pui-line" data-pui-last-cycle>Last cycle: ${esc(m.last)}</div>` +
+      fold("tickers", `Tickers (${m.tickers.length})`, tick) + fold("risk", `Risk checks · ${esc(m.gate.label)}`, risk) + fold("orders", `Orders (${m.orders.length})`, orders) +
+      fold("positions", `Positions (${m.bot.length} bot · ${m.external.length} external, unmanaged)`, pos) + fold("history", `Activity history (${m.history.length})`, hist) +
+      `<div class="pui-sub">Times are UTC. Real backend records only: nothing is estimated, no fill is inferred from a submission, no AI narration.</div></section>`;
+  }
+
   // ---------------------------------------------------------------- page wiring (browser only) ---------------------------------------
   const $ = (id) => document.getElementById(id);
   const q = (sel) => document.querySelector(sel);
@@ -981,7 +1108,7 @@
   }
   function readChips() { return [...document.querySelectorAll("#tv-status-line .tv-chip")].map((e) => ({ text: e.textContent.trim(), warn: e.classList.contains("warn"), bad: e.classList.contains("bad") })); }
   const collapsed = () => { try { return localStorage.getItem("pui.details") !== "open"; } catch (e) { return true; } };
-  function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } }
+  function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } placeBotActivity(); }
 
   function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen, autoPending: state.autoPending, autoError: state.autoError }); }
   function renderCards() {
@@ -995,7 +1122,8 @@
     if (state.whyOpen) loadTerminal(sym);                                        // the proposal's own blocker and the stored setup detail: on demand (Why? open), 10 s cache
     host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
                                  whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError,
-                                 registry: state.registry, terminal: (state.terminal[sym] || {}).data || null, frozen: state.frozen, techOpen: state.techOpen });
+                                 registry: state.registry, terminal: (state.terminal[sym] || {}).data || null, frozen: state.frozen, techOpen: state.techOpen,
+                                 account: (state.botAct && state.botAct.positions && state.botAct.positions.account) || state.acctPos || null });   // Stage 6.8
   }
   // Stage 6.1.2 read-only loaders: the registry and the frozen controls once per page, the terminal state of the active ticker only while Why? is open
   // a failed read is read again at most once a minute (never a 2 s poll)
@@ -1122,6 +1250,8 @@
   async function loadPositions() {
     try { state.posData = await getJson("/api/execution/positions?limit=100"); if (window.PaperBot) await window.PaperBot.refresh(); state.error = null; }   // open and closed: the lifecycle view
     catch (e) { state.error = `Positions unavailable (${e.message}).`; }
+    try { state.acctPos = await getJson("/api/account-refresh/positions"); state.acctPosError = null; }   // Stage 6.8: the account's positions (0 broker calls)
+    catch (e) { state.acctPos = null; state.acctPosError = e.message; }
     loadRegistry(); loadFrozen();
     renderPositions();
   }
@@ -1131,7 +1261,7 @@
     const positions = (state.posData && state.posData.positions) || [];
     const rows = positionCards(exec(), positions, state.posData && state.posData.events, strategyName());
     const closed = positions.filter((p) => p.state === "CLOSED").length;
-    host.innerHTML = `<h2>Positions</h2>` + (state.error ? `<div class="pui-bad">${esc(state.error)}</div>` : "") + positionsHtml(rows) + `<div id="pui-pos-detail"></div>` +
+    host.innerHTML = `<h2>Positions</h2>` + (state.error ? `<div class="pui-bad">${esc(state.error)}</div>` : "") + positionsHtml(rows) + accountPositionsHtml(state.acctPos, state.acctPosError) + `<div id="pui-pos-detail"></div>` +
       `<details class="pui-fold" data-pui-closed-fold><summary>Closed paper trades (${closed})</summary>${closedHtml(positions, strategyName(), state.limits)}</details>`;
     if (state.posDetails) renderPositionDetails(state.posDetails);
   }
@@ -1298,7 +1428,46 @@
   function tick() {
     observeBot();
     renderStatus();
-    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } }
+    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); }
+  }
+  // Stage 6.8 TRADE › Bot Activity: GET /api/execution/activity every 10 s (every 2 s while the worker reports a cycle in progress); never a broker call
+  function ensureBotActivity() {
+    if ($("pui-bot-activity")) return true;
+    const cards = $("pui-cards");
+    if (!cards) return false;
+    const el = document.createElement("section"); el.id = "pui-bot-activity"; el.className = "pui-section pui-bot-host";
+    el.addEventListener("toggle", (e) => { const d = e.target; if (d && d.dataset && d.dataset.puiBotFold) state.botOpen[d.dataset.puiBotFold] = d.open; }, true);
+    cards.insertAdjacentElement("afterend", el);
+    placeBotActivity();
+    renderBotActivity();
+    return true;
+  }
+  // where the panel lives: the default layout already scrolls (tall cards), so it sits below the TRADE cards; View details is the Stage 5.5 layout
+  // that fits the window (.tv-grid = 100vh - 240px), so it moves INTO the detail column, before the sticky Actions panel: it scrolls inside the
+  // column and never adds page height, moves Risk Controls / PPE / Actions, or pushes the search out of view. Nothing in it is hidden.
+  function placeBotActivity() {
+    const el = $("pui-bot-activity");
+    if (!el) return;
+    const right = q("#tv-body .tv-right"), cards = $("pui-cards"), inColumn = !collapsed() && !!right;
+    if (inColumn) {
+      const last = right.querySelector(":scope > .tv-panel-last");
+      if (el.parentElement !== right || el.nextElementSibling !== last) right.insertBefore(el, last);
+    } else if (cards && el.previousElementSibling !== cards) cards.insertAdjacentElement("afterend", el);
+    el.classList.toggle("pui-bot-in-column", inColumn);
+  }
+  function loadBotActivity(force) {
+    const a = state.botAct, every = a && a.worker && a.worker.state === "RUNNING" ? 2000 : 10000;
+    if (state.botBusy || (!force && state.botReadAt && Date.now() - state.botReadAt < every)) return;
+    state.botBusy = true; state.botReadAt = Date.now();
+    getJson("/api/execution/activity").then((d) => { state.botAct = d; state.botConn = { okAt: Date.now(), okAtIso: new Date().toISOString(), error: null }; })
+      .catch((e) => { state.botConn = Object.assign({}, state.botConn, { error: e.message || "error" }); })
+      .finally(() => { state.botBusy = false; renderBotActivity(); });
+  }
+  function renderBotActivity() {
+    const el = $("pui-bot-activity");
+    if (!el) return;
+    const html = botActivityHtml(botActivityModel(state.botAct, state.botConn), state.botOpen);
+    if (el.innerHTML !== html) el.innerHTML = html;
   }
 
   function mount() {
@@ -1358,5 +1527,7 @@
            LEGACY_LINKS, FILTERS, PRIORITY, READY_NOTE, NO_SCORE, NO_SUPPORT, routeFor, minutesToClose, moreTabs, strategyModel, blockerModel, priorityModel, sessionModel, whyModel, holdingLines, positionLifecycle,
            dedupe, activityItems, filterItems, dailyReview, focusHtml, whyHtml, closedHtml, registryHtml, strategyDetailHtml, openRoute, openMore, renderLab,
            // Stage 6.2
-           svBadge, validationHtml };
+           svBadge, validationHtml,
+           // Stage 6.8
+           accountPositionsHtml, accountCardHtml, botActivityModel, botActivityHtml, renderBotActivity, loadBotActivity };
 });

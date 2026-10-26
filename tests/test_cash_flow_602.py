@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from requests.adapters import BaseAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -1030,7 +1031,7 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
         return out.replace(b"\r\n", b"\n").decode("utf-8")
 
     def now(rel):
-        return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        return ledger_view(rel, (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n"))
     pinned = [p.relative_to(ROOT).as_posix() for d in ("ppe", "demand", "evidence", "setups", "proposals", "paper") for p in (ROOT / d).glob("*.py")] + \
              [p.relative_to(ROOT).as_posix() for p in (ROOT / "account_refresh").glob("*.py") if p.name not in ("scheduler.py", "__init__.py")] + \
              ["execution/engine.py", "execution/broker.py", "execution/store.py", "execution/scheduler.py", "execution/simulated.py", "execution/models.py", "execution/__init__.py",

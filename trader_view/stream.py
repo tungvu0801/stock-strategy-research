@@ -585,5 +585,9 @@ def build_stream(mode: Optional[str] = None) -> TerminalStream:
     """Production wiring: the configured market adapter, the Stock Agent position sources and the stored-evidence reader."""
     from trader_view.positions import StockAgentPositionAdapter
     from trader_view.research import EvidenceResearchAdapter
-    return TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(), EvidenceResearchAdapter(),
-                          allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval, safety_eval) in the harness process only
+    from execution.account_positions import view as account_view
+    holder: Dict[str, TerminalStream] = {}
+    s = TerminalStream(build_market_adapter(mode), StockAgentPositionAdapter(account_view=lambda: account_view(holder["s"].account_refresh, holder["s"].execution.store)),
+                       EvidenceResearchAdapter(), allow_manual_tick=os.environ.get("STOCK_AGENT_ENV", "") == "browser_test")     # test-only socket commands (tick, setup_eval, proposal_eval, safety_eval) in the harness process only
+    holder["s"] = s                                                                          # the account positions come from THIS stream's refresher and executor
+    return s

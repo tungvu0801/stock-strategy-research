@@ -152,6 +152,9 @@ class BotStatus(_M):
     pending_entries: int = 0
     pending_exits: int = 0
     external_positions: int = 0
+    external_positions_source: Optional[str] = None                 # BROKER_RECONCILIATION | ACCOUNT_REFRESH (the newer read) | None (not read yet)
+    external_positions_as_of: Optional[str] = None
+    external_symbols: List[str] = Field(default_factory=list)
     max_open_positions: int = 0
     reconciliation_healthy: bool = True
     last_cycle_at: Optional[str] = None

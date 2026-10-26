@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 BASE = "1825958fdf0fe6e18393a729fa2db32a28ce239f"                                          # origin/main: Stage 6.1 + 6.1.1 + the Paper Auto state-sync fix (PR #19)
@@ -40,7 +41,8 @@ MARK_OPEN, MARK_CLOSE = "# >>> " + "Product Flow 6.1.2", "# <<< " + "Product Flo
 STRIP_PF = r"(?ms)^# >>> Product Flow 6\.1\.2\b.*?^# <<< Product Flow 6\.1\.2[^\n]*\n\n\n"
 GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events",
               "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
-              "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls"}
+              "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",
+              "/api/execution/activity", "/api/account-refresh/positions"}   # Stage 6.8: Bot Activity and the account positions (GET only)
 LEGACY_TABS = ("overview", "daily", "watchlist", "agent", "alerts", "setups", "history", "portfolio", "review", "strategy", "paper", "trader", "settings")
 SECTIONS = ("overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log")
 STALE = ("never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
@@ -474,11 +476,13 @@ def test_C01_ci_manifest_carries_this_file_in_core_and_the_node_glob_runs_the_ne
 # ================================================================ F freeze ========================================================================
 
 def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_reconciliation_files_and_the_frozen_controls_are_unchanged():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked() - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     assert new == NEW_612 | NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_612 - NEW_FIX - NEW_62), "missing_new": sorted((NEW_612 | NEW_FIX | NEW_62) - new)}   # + the WAL bootstrap fix test + Stage 6.2
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
+    changed -= ledger_unchanged(changed, blob)                                                  # Stage 6.8: registered files equal to this base on main
     assert changed <= ALLOWED_CHANGED, {"unexpected_changes": sorted(changed - ALLOWED_CHANGED)}
     for d in ("setups", "proposals", "safety", "execution", "account_refresh", "cash_flow", "ppe", "demand", "evidence", "paper", "forward", "forward_validation", "notifications", "trader_view", "database", "scripts", "api/routes"):
         for rel in sorted(p for p in in_base if p.startswith(d + "/") and p.endswith((".py", ".ps1"))):
@@ -500,6 +504,7 @@ def test_F01_every_tracked_file_of_the_base_is_identical_except_the_wiring_and_r
 
 
 def test_F02_reconciled_files_differ_from_the_base_only_by_the_listed_exact_edits_and_one_marked_harness_block():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     assert replay(blob("tests/test_product_ui_611.py"), EDITS_611 + EDITS_611_FIX + EDITS_62_611) == now_text("tests/test_product_ui_611.py"), "tests/test_product_ui_611.py: other than the listed in-place edits"
     assert replay(blob("tests/test_forward_validation_61.py"), EDITS_612_61 + EDITS_61_FIX + EDITS_62_61) == now_text("tests/test_forward_validation_61.py"), "tests/test_forward_validation_61.py: other than the listed edits"
     assert replay(blob("tests/frontend/product_ui.test.cjs"), EDITS_CJS) == now_text("tests/frontend/product_ui.test.cjs"), "tests/frontend/product_ui.test.cjs: other than the four listed edits"

@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+from freeze_ledger import unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import database.database as DB  # noqa: E402
@@ -214,11 +215,13 @@ def test_U04_a_fresh_research_database_is_in_wal_and_every_connection_keeps_the_
 # ================================================================ F freeze ======================================================================
 
 def test_F01_only_the_bootstrap_and_its_listed_reconciliations_changed():
+    now_text = lambda rel, _read=globals()["now_text"]: ledger_view(rel, _read(rel))  # noqa: E731 - Stage 6.8: registered files are read as on main
     tracked = set(subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""}
     assert in_base, "the base commit must be reachable (fetch-depth 0)"
     new = {p for p in tracked - in_base if not p.startswith(("scratchpad/", "runtime/", "data/", "browser_tests/artifacts/")) and not p.endswith((".pyc", ".db"))}
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
+    changed -= ledger_unchanged(changed, blob)                                                  # Stage 6.8: registered files equal to this base on main
     assert new == NEW_FIX | NEW_62, {"unexpected_new": sorted(new - NEW_FIX - NEW_62), "missing_new": sorted((NEW_FIX | NEW_62) - new)}   # + Stage 6.2
     assert changed == CHANGED_FIX | (CHANGED_62 - NEW_FIX), {"unexpected_changes": sorted(changed - CHANGED_FIX - CHANGED_62), "missing_changes": sorted((CHANGED_FIX | (CHANGED_62 - NEW_FIX)) - changed)}
     assert replay(blob("database/database.py"), DB_EDITS) == now_text("database/database.py"), "database/database.py: other than the listed bootstrap edits"

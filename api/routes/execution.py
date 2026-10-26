@@ -9,6 +9,7 @@ GET  /api/execution/intents         intents (newest first)
 GET  /api/execution/positions       internal paper positions
 GET  /api/execution/findings        reconciliation findings
 GET  /api/execution/symbol/{symbol} one symbol card
+GET  /api/execution/activity        the Bot Activity view: worker heartbeat, cycle progress / summary, per-ticker results, risk, broker-reported orders, history
 POST /api/execution/auto/enable     mode -> PAPER_AUTO (refused unless the PAPER environment is proven and reconciliation is healthy)
 POST /api/execution/auto/disable    mode -> MONITOR_ONLY (monitoring and exits of existing paper positions continue)
 
@@ -86,6 +87,18 @@ def get_symbol(symbol: str) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse({"error": "INVALID_SYMBOL", "message": str(exc)}, status_code=400)
     return JSONResponse(_service().card(s).model_dump())
+
+
+@router.get("/activity")
+def get_activity() -> JSONResponse:
+    import config
+    from api.routes.trader_view import stream
+    from execution.account_positions import view
+    from execution.activity import activity
+    from execution.scheduler import status as sched_status
+    s = stream()
+    return JSONResponse(activity(s.execution, scheduler_status=sched_status(), enabled=bool(config.EXECUTION_SCHEDULER_ENABLED),
+                                 account=view(s.account_refresh, s.execution.store)))
 
 
 def _act(fn_name: str, body: Optional[ActionBody]) -> JSONResponse:

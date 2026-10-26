@@ -2944,6 +2944,11 @@ def product_ui(c: Ctx):
     c.r.check("1280x720, default layout: no horizontal overflow, the Agent card, the Emergency Stop control and the AUTO status in view, the chart >= 600 px wide, the detail column collapsed",
               small[0] is False and small[1] is True and small[2] is True and small[3] is True and small[4] >= 600 and small[5] is False and small[6] is True, small)
     c.shot("product_ui_trade_1280")
+    # Stage 6.8: in the default layout (it already scrolls) Bot Activity sits right below the TRADE cards, with the worker and the mode rows
+    c.wait("!!document.querySelector('#pui-bot-activity [data-pui-worker]') && !!document.querySelector('#pui-bot-activity [data-pui-mode]')", 30, "Bot Activity rendered")
+    c.r.eq("1280x720, default layout: Bot Activity right below the TRADE cards, with the worker state, the current mode and the last cycle's mode",
+           [c.js("!!document.querySelector('#pui-cards + #pui-bot-activity')"), c.js("__tvVisible('#pui-bot-activity [data-pui-worker]')"), c.js("__tvVisible('#pui-bot-activity [data-pui-mode]')"),
+            c.js("__tvVisible('#pui-bot-activity [data-pui-last-cycle-mode]')")], [True, True, True, True])
     c.b.viewport(768, 1024)
     time.sleep(0.6)
     narrow = [c.js("__overflow()"), c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => Math.round(e.getBoundingClientRect().left))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')"),
@@ -2963,6 +2968,11 @@ def product_ui(c: Ctx):
               big[0] is False and big[1] is True and big[2] is True and big[3] is True
               and big[4] == [["prepare_buy", True, "true"], ["prepare_sell", True, "true"], ["research", False, "false"], ["add_alert", True, "true"]] and big[5] >= 11 and big[6] is True
               and big[7] is True and big[8] is False, big)
+    # Stage 6.8: in View details Bot Activity moves INTO the detail column, before the sticky Actions - it adds no page height (the checks above)
+    c.r.eq("1280x720, View details: Bot Activity inside the detail column before the sticky Actions (scrolls with the column), worker, mode and tickers present",
+           [c.js("!!document.querySelector('#tv-body .tv-right > #pui-bot-activity + .tv-panel-last')"), c.js("__tvVisible('#pui-bot-activity [data-pui-worker]')"),
+            c.js("!!document.querySelector('#pui-bot-activity [data-pui-mode]') && !!document.querySelector('#pui-bot-activity [data-pui-last-cycle-mode]')"),
+            c.js("!!document.querySelector('#pui-bot-activity [data-pui-bot-fold=\"tickers\"]')"), c.js("__tvClipped()")], [True, True, True, True, []])
     c.b.viewport(1920, 1080)
     time.sleep(0.4)
     c.no_overflow("product UI, TRADE with details")
