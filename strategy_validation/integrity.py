@@ -8,6 +8,10 @@ ephemeral research / debug run.
   reconcile(record)  per evaluated arm, as disjoint candidate-id sets: accepted = simulated + boundary_purged + explicit simulation skips, and
                      input candidates = accepted + stand_aside; the same split by TRAIN / OOS. Anything else: accounting FAIL (VALIDATION INVALID).
   evaluate(record)   PersistenceEligibility: every check PASS / FAIL / NOT_APPLICABLE with its detail; ELIGIBLE only when none FAILS.
+  selection_control(record)   Stage 6.4.1 (validation_v3): a cross-sectional record carries its control, period table and control-parity audit;
+                     nothing recorded is trusted: the parity status must follow its checks, the statistics / edge / overall verdict are re-derived
+                     from the period table, the strategy side from the trades, the control's size from the candidate set (cross_sectional.verify).
+                     A failed parity audit with an INVALID edge is consistent (no selection claim; the absolute research result stands).
 
 Both read the run RECORD (plain data, exactly as stored) and never the engine's objects, so the store re-evaluates the gate itself before it
 writes: neither the CLI nor any caller can persist a run the gate blocks."""
@@ -186,6 +190,42 @@ def _parity(rec: dict) -> GateCheck:
     return GateCheck(check="REPLAY_PARITY", status="NOT_APPLICABLE", detail="research-only strategy: no separate live implementation to reproduce")
 
 
+def selection_control(rec: dict) -> GateCheck:
+    from strategy_validation import cross_sectional as CS
+    if "evaluation_mode" not in rec:
+        return GateCheck(check="SELECTION_CONTROL", status="NOT_APPLICABLE",
+                         detail=f"{rec.get('validation_version') or 'an older'} record: no cross-sectional evidence recorded (never back-filled)")
+    mode, edge = rec.get("evaluation_mode"), rec.get("selection_edge") or {}
+    perf, overall = rec.get("performance_verdict") or {}, (rec.get("verdict") or {}).get("verdict")
+    if mode == CS.EVENT_DRIVEN:
+        ok = edge.get("status") == "NOT_APPLICABLE" and overall == perf.get("verdict")
+        return GateCheck(check="SELECTION_CONTROL", status="NOT_APPLICABLE" if ok else "FAIL",
+                         detail="event-driven: judged per trade, no selection control" if ok else "an event-driven record with a selection claim or a changed verdict")
+    if mode != CS.CROSS_SECTIONAL:
+        return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail=f"unknown evaluation mode {mode}")
+    cs = rec.get("cross_sectional") or {}
+    if not cs:                                                                 # an integrity-failed run that was never simulated
+        ok = edge.get("status") == "INVALID" and overall == CS.overall_verdict(perf, "INVALID").get("verdict")
+        return GateCheck(check="SELECTION_CONTROL", status="PASS" if ok else "FAIL",
+                         detail="no simulation: selection edge INVALID" if ok else "a cross-sectional record without its control comparison")
+    ctl, par = cs.get("control") or {}, cs.get("parity") or {}
+    missing = [k for k, v in (("control definition", ctl.get("control_id") and ctl.get("role") == "SELECTION_CONTROL"), ("period table", cs.get("periods")),
+                              ("segments", cs.get("segments")), ("control-parity audit", par.get("checks"))) if not v]
+    if missing:
+        return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail="missing: " + ", ".join(missing))
+    if (adapter_mode := ((rec.get("config_snapshot") or {}).get("adapter") or {}).get("evaluation_mode")) not in (None, mode):
+        return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail=f"the record says {mode}, its adapter declared {adapter_mode}")
+    trades = [t for a in (rec.get("arms") or {}).values() for t in a.get("trades") or []] if any("trades" in a for a in (rec.get("arms") or {}).values()) else None
+    problems = CS.verify(cs, edge, perf, rec.get("verdict") or {}, trades=trades, candidates=rec.get("candidates"))
+    if problems:                                                               # re-derived from the period table, the trades and the candidate set
+        return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail="; ".join(problems[:3]))
+    want = edge.get("status")
+    if par.get("status") != "PASS":
+        return GateCheck(check="SELECTION_CONTROL", status="PASS", detail=f"control parity FAILED ({', '.join(par.get('failed') or [])}): selection edge INVALID, "
+                                                                          "no selection claim; the absolute research result stands")
+    return GateCheck(check="SELECTION_CONTROL", status="PASS", detail=f"{ctl.get('label') or ctl.get('control_id')}: {par.get('note')}; selection edge {want}")
+
+
 def evaluate(rec: dict) -> PersistenceEligibility:
     checks: List[GateCheck] = []
     miss = _structure(rec)
@@ -238,6 +278,7 @@ def evaluate(rec: dict) -> PersistenceEligibility:
     checks.append(GateCheck(check="BOUNDARY", status="FAIL" if bnd_bad else "PASS",
                             detail=(f"policy {bnd.get('policy') or 'missing'}; {len(leaks)} TRAIN trade(s) use bars after the TRAIN end") if bnd_bad
                             else f"PURGE: {bnd.get('train_boundary_purged_count', 0)} TRAIN outcome(s) purged; no TRAIN trade uses an OOS bar"))
+    checks.append(selection_control(rec))
     verdict = (rec.get("verdict") or {}).get("verdict")
     checks.append(GateCheck(check="PERFORMANCE_VERDICT", status="PASS" if verdict in PERFORMANCE_VERDICTS else "FAIL",
                             detail=f"{verdict} (a performance result; integrity is judged separately)" if verdict in PERFORMANCE_VERDICTS

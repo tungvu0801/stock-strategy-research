@@ -45,9 +45,9 @@ test("2 portfolio table: strategy / SPY / universe total returns, excess vs both
   const h = PUI.validationHtml(DETAIL(RUN({ portfolio: PORTFOLIO, note: "research diagnostics: never a gate, never used to choose a rule" }), ["SURVIVORSHIP_BIAS_PRESENT"]));
   assert.ok(h.includes("data-pui-sv-portfolio") && h.includes("<th>Equal-weight portfolio</th><th>TRAIN</th><th>OOS</th><th>All</th>"));
   const t = text(h);
-  assert.ok(t.includes("Strategy total return 119.9% 53.7% 238.0%") && t.includes("SPY total return 83.1% 28.1% 134.6%"), t);
-  assert.ok(t.includes("Universe (equal weight) total return 121.2% 44.7% 220.2%") && t.includes("Excess vs SPY 36.8% 25.6% 103.4%"));
-  assert.ok(t.includes("Excess vs universe -1.3% 9.0% 17.8%") && t.includes("Excess vs universe: t per rebalance period -0.03 0.51 0.36"));
+  assert.ok(t.includes("Strategy total return 119.9% 53.7% 238.0%") && t.includes("Market benchmark (SPY) total return 83.1% 28.1% 134.6%"), t);
+  assert.ok(t.includes("Selection control (equal-weight universe) total return 121.2% 44.7% 220.2%") && t.includes("Excess vs the market benchmark (SPY) 36.8% 25.6% 103.4%"));
+  assert.ok(t.includes("Excess vs the selection control -1.3% 9.0% 17.8%") && t.includes("Excess vs universe: t per rebalance period -0.03 0.51 0.36"));
   assert.ok(t.includes("Max drawdown (strategy / SPY) 22.1% / 24.5% 17.6% / 18.7% 22.1% / 24.5%"));
   assert.ok(t.includes("The universe control shares the universe's survivorship bias; the excess over it is what the selection added."));
   assert.ok(h.indexOf("data-pui-sv-metrics") < h.indexOf("data-pui-sv-portfolio") && h.indexOf("data-pui-sv-portfolio") < h.indexOf("data-pui-sv-arms"));
@@ -57,7 +57,7 @@ test("3 no portfolio view (e.g. a per-trade strategy): no table, nothing invente
   assert.ok(!PUI.validationHtml(DETAIL(RUN(null), [])).includes("data-pui-sv-portfolio"));
   assert.ok(!PUI.validationHtml(DETAIL(RUN({ note: "x" }), [])).includes("data-pui-sv-portfolio"));
   const h = PUI.validationHtml(DETAIL(RUN({ portfolio: { TRAIN: { strategy: perf(0.1, null, 0.05) } }, note: "n" }), []));
-  assert.ok(text(h).includes("Strategy total return 10.0% — —") && text(h).includes("SPY total return — — —"));
+  assert.ok(text(h).includes("Strategy total return 10.0% — —") && text(h).includes("Market benchmark (SPY) total return — — —"));
 });
 
 test("4 escaping and read-only: flags and notes are escaped; the block holds no control and no form", () => {

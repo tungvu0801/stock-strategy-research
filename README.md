@@ -1119,6 +1119,28 @@ equity ratio), as cross-sectional percentile ranks; the top 20 are held at equal
 
 Docs: `DESIGN_64_VALUE_QUALITY.md`. Tests: `tests/test_value_quality_64.py`, `tests/frontend/value_quality.test.cjs`.
 
+## Cross-sectional validation (Stage 6.4.1, validation_v3)
+
+A cross-sectional portfolio strategy (a monthly top-N selection such as Value + Quality) is no longer judged on its legs: the ~20 legs of one
+rebalance share the same month, so they are one observation, not twenty. The adapter declares `evaluation_mode = CROSS_SECTIONAL_PORTFOLIO` and a
+**selection control** (for Value + Quality: the equal-weight eligible universe - the same universe, rebalance dates, entry / exit sessions,
+friction convention and equal-capital basis, without the selection). Evidence of selection is the **excess over that control, one observation per
+rebalance period**, with a t-statistic over periods. SPY is shown as the **market benchmark** only: beating it is not evidence of selection.
+
+* `selection_edge_status` (NOT_APPLICABLE / INSUFFICIENT_DATA / NOT_ESTABLISHED / WEAK / ESTABLISHED / INVALID) is separate from the integrity
+  status and the absolute performance verdict; a cross-sectional strategy reaches PASS only with an ESTABLISHED edge (at least 12 OOS periods,
+  OOS period-excess t >= 2, at least 24 periods in total, not concentrated in one period, TRAIN not strongly contradicting - never t alone).
+  The policy was committed before it was applied to any result.
+* A control-parity audit (same periods, universe snapshot, timestamps, capital, friction; no missing or one-sided period; the boundary month
+  excluded on both sides) must pass, or the edge is INVALID (no selection claim; the absolute research result stands).
+* Older stored runs are never rewritten: `python -m strategy_validation evaluate --run RUN_ID --dataset FILE --persist` adds a separate,
+  append-only methodology evaluation that re-derives the selection snapshots from the same dataset (they must reproduce the run's candidate set).
+* **Value + Quality** (Stage 6.4 run, unchanged): absolute performance PASS; OOS strategy +54.8 % vs selection control +52.2 % over 22 monthly
+  periods, period-excess t 0.18 -> selection edge **NOT_ESTABLISHED**, overall FAIL. The lifecycle stays **Research**.
+
+Docs: `DESIGN_641_CROSS_SECTIONAL_VALIDATION.md`, `STRATEGY_VALIDATION_HARNESS.md` section 14. Tests: `tests/test_cross_sectional_641.py`,
+`tests/frontend/cross_sectional.test.cjs`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

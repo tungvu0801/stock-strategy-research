@@ -10,9 +10,11 @@ ELIGIBLE run - a BLOCKED run raises PersistenceBlocked with its reasons (it may 
 run. Stage 6.2 records (validation_v1) stay readable as they are: nothing is back-filled or rewritten."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -105,9 +107,12 @@ class StrategyValidationStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             for (prior,) in conn.execute("SELECT run_json FROM strategy_validation_runs WHERE strategy_id = ? AND strategy_version = ?", (run.strategy_id, run.strategy_version)):
-                if _strategy_config(json.loads(prior)) != adapter:
+                prior_rec = json.loads(prior)
+                if _strategy_config(prior_rec) != adapter:
                     raise StoreError(f"{run.strategy_id} v{run.strategy_version} was validated with other parameters / execution assumptions: a change after a "
                                      "validation is a new strategy_version (no OOS contamination)")
+                if prior_rec.get("evaluation_mode") == "CROSS_SECTIONAL_PORTFOLIO" and run.evaluation_mode != "CROSS_SECTIONAL_PORTFOLIO":   # Stage 6.4.1
+                    raise StoreError(f"{run.strategy_id} v{run.strategy_version} was validated as a cross-sectional portfolio: its evaluation mode cannot change")
             conn.execute("INSERT INTO strategy_validation_runs (run_id, strategy_id, strategy_version, dataset_id, dataset_kind, verdict, validation_version, candidate_count, "
                          "created_at, run_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                          (run.run_id, run.strategy_id, run.strategy_version, run.dataset_id, run.dataset_kind, run.verdict["verdict"], run.validation_version, run.candidate_count,
@@ -123,6 +128,56 @@ class StrategyValidationStore:
         finally:
             conn.close()
         return run.run_id
+
+    # ---------------------------------------------------------------- methodology evaluations (Stage 6.4.1) ----------------------------------
+    def insert_evaluation(self, ev: dict) -> str:
+        """Append a validation_v3 methodology evaluation of a stored run. The run is never touched; the evaluation is re-checked here."""
+        from strategy_validation import VERSION
+        from strategy_validation import cross_sectional as CS
+        run = self.run(ev.get("run_id") or "")
+        problems = []
+        if run is None:
+            problems.append("no visible stored run with this run_id")
+        else:
+            for k in ("strategy_id", "strategy_version", "dataset_id", "candidate_set_hash"):
+                if ev.get(k) != run.get(k):
+                    problems.append(f"{k} differs from the run's")
+            if run.get("validation_version") == VERSION or ev.get("evaluated_run_validation_version") != run.get("validation_version"):
+                problems.append(f"a {VERSION} run carries its own assessment; an evaluation is only for a run of an older methodology")
+            if ev.get("performance_verdict") != run.get("verdict"):
+                problems.append("the performance verdict is not the run's recorded verdict")
+            ids = sorted(c["candidate_id"] for c in self.candidates(run["run_id"]))
+            if hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()[:32] != run.get("candidate_set_hash"):
+                problems.append("the run's stored candidates do not match its candidate set hash")
+        if ev.get("methodology_version") != VERSION or ev.get("evaluation_mode") != CS.CROSS_SECTIONAL or not ev.get("candidate_set_reproduced"):
+            problems.append("not a validation_v3 cross-sectional evaluation with a reproduced candidate set")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        if not isinstance(ev.get("created_at"), str) or ev["created_at"] > now:
+            problems.append("created_at is missing or in the future")
+        if run is not None and not problems:                                  # nothing recorded is trusted: re-derived from the run's own trades / candidates
+            problems += CS.verify(ev.get("cross_sectional") or {}, ev.get("selection_edge") or {}, ev.get("performance_verdict") or {}, ev.get("verdict") or {},
+                                  trades=self.trades(run["run_id"], "RULES"), candidates=self.candidates(run["run_id"]))
+        if problems:
+            raise StoreError("methodology evaluation refused: " + "; ".join(problems))
+        conn = self._rw()
+        try:
+            conn.execute("INSERT INTO strategy_validation_evaluations (evaluation_id, run_id, strategy_id, strategy_version, methodology_version, selection_edge_status, "
+                         "verdict, created_at, evaluation_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (ev["evaluation_id"], ev["run_id"], ev["strategy_id"], ev["strategy_version"], ev["methodology_version"], ev["selection_edge"]["status"],
+                          ev["verdict"]["verdict"], ev["created_at"], json.dumps(ev, sort_keys=True)))
+        finally:
+            conn.close()
+        return ev["evaluation_id"]
+
+    def evaluations(self, run_id: str) -> List[dict]:
+        if self.run(run_id) is None:
+            return []
+        return [json.loads(r["evaluation_json"]) for r in self._read("SELECT evaluation_json FROM strategy_validation_evaluations WHERE run_id = ? "
+                                                                      "ORDER BY rowid DESC", (run_id,))]   # insertion order: never a caller's timestamp
+
+    def latest_evaluation(self, run_id: str) -> Optional[dict]:
+        evs = self.evaluations(run_id)
+        return evs[0] if evs else None
 
     # ---------------------------------------------------------------- reads -----------------------------------------------------------------
     def _visible(self, kind: str) -> bool:
@@ -142,8 +197,13 @@ class StrategyValidationStore:
         return [r for r in rows if self._visible(r["dataset_kind"])]
 
     def latest(self, strategy_id: str) -> Optional[dict]:
+        """The latest stored run as a READ VIEW: its record as stored, plus `methodology_evaluation` - its latest validation_v3 methodology
+        evaluation (Stage 6.4.1) or None. The stored run JSON itself is never modified."""
         rows = self.runs(strategy_id, limit=20)
-        return self.run(rows[0]["run_id"]) if rows else None
+        if not rows:
+            return None
+        run = self.run(rows[0]["run_id"])
+        return None if run is None else {**run, "methodology_evaluation": self.latest_evaluation(run["run_id"])}
 
     def candidates(self, run_id: str) -> List[dict]:
         if self.run(run_id) is None:

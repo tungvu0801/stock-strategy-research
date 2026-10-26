@@ -98,7 +98,8 @@
         "test_signal_research_52.py",
         "test_strategy_validation_62.py",
         "test_validation_integrity_631.py",
-        "test_value_quality_64.py"
+        "test_value_quality_64.py",
+        "test_cross_sectional_641.py"
       ]
     },
     "campaign": {

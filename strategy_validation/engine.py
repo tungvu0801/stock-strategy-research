@@ -21,12 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from strategy_validation import ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, NEAR_ZERO_R, PURGE_REASON, VERSION
+from strategy_validation import (ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, EVALUATION_MODES, NEAR_ZERO_R, PURGE_REASON,
+                                 VERSION)
 from strategy_validation import arms as A
 from strategy_validation import integrity as IG
 from strategy_validation import audit as AU
 from strategy_validation import candidates as CD
 from strategy_validation import causality as CA
+from strategy_validation import cross_sectional as CS
 from strategy_validation import diagnostics as DG
 from strategy_validation import metrics as MX
 from strategy_validation import simulator as SIM
@@ -132,6 +134,11 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     sizing = {**DEFAULT_SIZING, **(getattr(adapter, "sizing", None) or {}), **(sizing or {})}     # Stage 6.4: an adapter may declare its sizing
     if getattr(adapter, "stop_policy", "INVALIDATION") == "NONE" and sizing.get("mode") != "EQUAL_WEIGHT":
         raise ValidationError("a stop-less strategy (stop_policy NONE) needs EQUAL_WEIGHT sizing: risk sizing needs a stop")
+    mode = getattr(adapter, "evaluation_mode", CS.EVENT_DRIVEN)                  # Stage 6.4.1: declared, never inferred
+    if mode not in EVALUATION_MODES:
+        raise ValidationError(f"evaluation_mode must be one of {', '.join(EVALUATION_MODES)}")
+    if mode == CS.CROSS_SECTIONAL and not (getattr(adapter, "control_definition", None) and callable(getattr(adapter, "selection_snapshots", None))):
+        raise ValidationError("a CROSS_SECTIONAL_PORTFOLIO strategy must declare its selection control and expose its selection snapshots")
     split_info = split(dataset, train_ratio)
     train_view = dataset.until(split_info["train_end"])                          # what a TRAIN outcome may read: nothing after the TRAIN end
     cands, skipped = CD.normalize(adapter, adapter.candidates(dataset), dataset, registry)      # ONCE
@@ -227,6 +234,19 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     if callable(sdiag):
         run.diagnostics = {**run.diagnostics, "strategy": sdiag(json.loads(run.model_dump_json()), dataset)}
         run.research_flags = sorted(set(run.research_flags) | set(run.diagnostics["strategy"].get("flags") or []))   # disclosures, never a gate
+    # Stage 6.4.1 (validation_v3): a cross-sectional strategy is judged on its selection edge over its control, per rebalance period
+    run.evaluation_mode = mode
+    run.performance_verdict = dict(run.verdict)
+    if mode == CS.CROSS_SECTIONAL and results["RULES"].metrics:
+        rec = json.loads(run.model_dump_json())
+        run.cross_sectional = CS.evaluate(rec, rec["arms"]["RULES"]["trades"], rec["candidates"], dataset, adapter.selection_snapshots(dataset),
+                                          adapter.control_definition, getattr(adapter, "market_benchmark", None) or "SPY")
+        run.selection_edge = run.cross_sectional["selection_edge"]
+    elif mode == CS.CROSS_SECTIONAL:
+        run.selection_edge = CS._edge("INVALID", [{"code": "NO_SIMULATION", "text": "The RULES arm was not simulated (an integrity failure): no selection assessment."}])
+    else:
+        run.selection_edge = CS.not_applicable()
+    run.verdict = CS.overall_verdict(run.performance_verdict, run.selection_edge["status"])
     run.eligibility = IG.evaluate(json.loads(run.model_dump_json())).model_dump()   # informational here; the store re-evaluates before any write
     return run
 

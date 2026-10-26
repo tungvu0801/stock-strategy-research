@@ -228,7 +228,7 @@ def test_G01_a_clean_run_is_eligible_and_every_check_is_explained():
     el = _gate(run(ds, ad))
     assert el.status == "ELIGIBLE" and el.integrity_status == "PASS" and el.reasons == []
     assert [c.check for c in el.checks] == ["STRUCTURE", "STRATEGY_VERSION", "PROVENANCE", "CANDIDATE_SET", "CANDIDATE_CONTRACT", "ARM_CONTRACT", "CAUSALITY_AUTOMATED", "CAUSALITY_MANUAL_REVIEW",
-                                            "REPLAY_PARITY", "MECHANICAL_AUDIT", "ACCOUNTING", "BOUNDARY", "PERFORMANCE_VERDICT"]
+                                            "REPLAY_PARITY", "MECHANICAL_AUDIT", "ACCOUNTING", "BOUNDARY", "SELECTION_CONTROL", "PERFORMANCE_VERDICT"]   # + Stage 6.4.1
     by = {c.check: c for c in el.checks}
     assert by["REPLAY_PARITY"].status == "NOT_APPLICABLE" and "research-only" in by["REPLAY_PARITY"].detail
     assert "PENDING" in by["CAUSALITY_MANUAL_REVIEW"].detail and "never counted as reviewed" in by["CAUSALITY_MANUAL_REVIEW"].detail

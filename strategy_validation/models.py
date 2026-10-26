@@ -181,6 +181,11 @@ class ValidationRun(_M):
     candidates: List[StrategyCandidate] = Field(default_factory=list)
     disclaimer: str = ""
     research_flags: List[str] = Field(default_factory=list)       # Stage 6.4: adapter-declared research limitations shown with the result
+    # Stage 6.4.1 (validation_v3): absent on older records, which stay readable and are never back-filled
+    evaluation_mode: str = "EVENT_DRIVEN"                           # EVENT_DRIVEN | CROSS_SECTIONAL_PORTFOLIO (declared by the adapter)
+    performance_verdict: Dict[str, Any] = Field(default_factory=dict)   # the absolute performance verdict (the v2 policy on the legs / trades)
+    selection_edge: Dict[str, Any] = Field(default_factory=dict)    # NOT_APPLICABLE | INVALID | INSUFFICIENT_DATA | NOT_ESTABLISHED | WEAK | ESTABLISHED
+    cross_sectional: Dict[str, Any] = Field(default_factory=dict)   # the period table, segments, control, market benchmark and control-parity audit
     # Stage 6.3.1 (validation_v2): absent on Stage 6.2 records, which stay readable and are never back-filled
     provenance: Dict[str, Any] = Field(default_factory=dict)        # the dataset's declared + derived provenance
     boundary: Dict[str, Any] = Field(default_factory=dict)          # the TRAIN / OOS boundary PURGE: policy, train_end, purged candidate ids per arm

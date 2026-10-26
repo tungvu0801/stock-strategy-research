@@ -6,12 +6,15 @@ detail()   the Strategy Lab Validation section: the run's period and split, TRAI
            counts side by side; MODEL "Not evaluated" when no decider ran), friction, execution assumptions, causality, the audit, diagnostics, warnings
            and the decision line. With no run: "Not yet evaluated" and why - nothing is estimated or filled in.
 Stage 6.3.1: integrity_status, persistence_eligibility, boundary_purged_count and accounting_status come from the stored record (validation_v2).
-A Stage 6.2 record (validation_v1) has none of them: they read None with integrity_recorded False - never back-filled, never assumed."""
+A Stage 6.2 record (validation_v1) has none of them: they read None with integrity_recorded False - never back-filled, never assumed.
+Stage 6.4.1 (validation_v3): the OVERALL verdict, the absolute PERFORMANCE verdict and the SELECTION EDGE are separate fields. For a
+cross-sectional strategy they come from the run itself (a v3 run) or from the latest methodology evaluation that references an older run
+(`methodology_evaluation`, attached by the store's read view) - the older run keeps its own verdict, shown as its absolute performance verdict."""
 from __future__ import annotations
 
 from typing import Dict, Optional
 
-from strategy_validation import DISCLAIMER, MIN_OOS_SESSIONS, MIN_OOS_TRADES, MIN_TRADES, T_STAT_WEAK, VERDICT_LABELS, VERSION
+from strategy_validation import DISCLAIMER, EDGE_LABELS, MIN_OOS_SESSIONS, MIN_OOS_TRADES, MIN_TRADES, T_STAT_WEAK, VERDICT_LABELS, VERSION
 from strategy_validation.adapters import not_run_reason
 
 NOT_EVALUATED = "Not yet evaluated"
@@ -41,20 +44,36 @@ def integrity_fields(run: Optional[dict]) -> dict:
             "research_flags": flags}
 
 
+def methodology_fields(run: Optional[dict]) -> dict:
+    """Stage 6.4.1: the overall / performance verdicts and the selection edge of a stored run, from the run (validation_v3) or its latest
+    methodology evaluation; an older run without an evaluation reads its own verdict and "not assessed" - never back-filled."""
+    if not run:
+        return {"evaluation_mode": None, "performance_verdict": None, "selection_edge_status": None, "selection_edge_label": None, "methodology_version": None,
+                "methodology_evaluation_id": None}
+    ev = run.get("methodology_evaluation")
+    src = ev or run
+    perf = (src.get("performance_verdict") or run.get("verdict") or {}).get("verdict")
+    edge = (src.get("selection_edge") or {}).get("status")
+    return {"evaluation_mode": src.get("evaluation_mode"), "performance_verdict": perf, "selection_edge_status": edge,
+            "selection_edge_label": EDGE_LABELS.get(edge) if edge else "Not assessed", "methodology_version": (ev or {}).get("methodology_version") or run.get("validation_version"),
+            "methodology_evaluation_id": (ev or {}).get("evaluation_id")}
+
+
 def summary(run: Optional[dict], strategy_id: str, entry=None) -> dict:
     if not run:
         return {"validation_status": "NOT_RUN", "validation_label": NOT_EVALUATED,
                 "not_run_reason": not_run_reason(strategy_id, entry) or "No validation run is stored yet (python -m strategy_validation validate ... --persist).",
                 "latest_validation_run_id": None,
                 "validation_verdict": None, "train_trade_count": None, "oos_trade_count": None, "mechanical_audit_status": None, "last_validated_at": None, "validation_synthetic": False,
-                **integrity_fields(None)}
+                **integrity_fields(None), **methodology_fields(None)}
     rules = (run.get("arms") or {}).get("RULES") or {}
     m = rules.get("metrics") or {}
-    v = (run.get("verdict") or {}).get("verdict")
+    ev = run.get("methodology_evaluation")
+    v = ((ev or run).get("verdict") or {}).get("verdict")                      # the overall verdict (a v3 evaluation's, when one exists)
     return {"validation_status": v, "validation_label": VERDICT_LABELS.get(v, v), "not_run_reason": "", "latest_validation_run_id": run["run_id"], "validation_verdict": v,
             "train_trade_count": (m.get("TRAIN") or {}).get("trade_count"), "oos_trade_count": (m.get("OOS") or {}).get("trade_count"),
             "mechanical_audit_status": (run.get("audit") or {}).get("status"), "last_validated_at": run.get("created_at"), "validation_synthetic": run.get("dataset_kind") == "SYNTHETIC",
-            **integrity_fields(run)}
+            **integrity_fields(run), **methodology_fields(run)}
 
 
 def detail(run: Optional[dict], strategy_id: str, entry=None) -> dict:
@@ -87,7 +106,22 @@ def detail(run: Optional[dict], strategy_id: str, entry=None) -> dict:
         "integrity_gate": ({"recorded": True, "status": el.get("integrity_status"), "eligibility": el.get("status"), "checks": el.get("checks") or [], "reasons": el.get("reasons") or [],
                        "gate_version": el.get("gate_version")} if el else {"recorded": False, "note": "not recorded: a Stage 6.2 run (validation_v1) predates the integrity gate"}),
         "boundary": run.get("boundary") or None, "accounting": run.get("accounting") or None, "provenance": run.get("provenance") or None,
-        "replay_parity": run.get("replay_parity") or None}}
+        "replay_parity": run.get("replay_parity") or None},
+        **_methodology_detail(run)}
+
+
+def _methodology_detail(run: dict) -> dict:
+    """Stage 6.4.1: the overall verdict, the absolute performance verdict, the selection edge and the cross-sectional control comparison (without the
+    per-position detail), labelled by where they come from."""
+    ev = run.get("methodology_evaluation")
+    src = ev or run
+    cs = src.get("cross_sectional") or {}
+    return {"overall_verdict": (src.get("verdict") or run.get("verdict")), "absolute_verdict": src.get("performance_verdict") or run.get("verdict"),
+            "selection_edge": src.get("selection_edge") or None, "cross_sectional": cs or None,
+            "methodology_evaluation": ({"evaluation_id": ev["evaluation_id"], "created_at": ev["created_at"], "methodology_version": ev["methodology_version"],
+                                        "run_id": ev["run_id"], "evaluated_run_validation_version": ev.get("evaluated_run_validation_version"),
+                                        "candidate_set_reproduced": ev.get("candidate_set_reproduced"), "git_commit_sha": ev.get("git_commit_sha"), "note": ev.get("note")}
+                                       if ev else None)}
 
 
 def registry_summaries(store, entries) -> Dict[str, dict]:
