@@ -81,6 +81,7 @@
         "test_portfolio_provider.py",
         "test_portfolio_routes.py",
         "test_reconciliation_grounding.py",
+        "test_robinhood_portfolio_69.py",
         "test_trade_review.py"
       ]
     },

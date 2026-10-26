@@ -6,7 +6,9 @@ Read-only position sources for Trader View, shown side by side and NEVER combine
   ALPACA_PAPER_VIEW     paper.alpaca_view.view()  — the last explicit "Refresh Alpaca Paper" held in memory (0 broker calls here); used only
                         when no account view is wired or no paper broker is configured
   LOCAL_PAPER           paper.portfolio.view()    — the Stage 4.5 local simulator (reads the local database only)
-  ROBINHOOD_READ_ONLY   api.routes.portfolio.load_view(provider) — the existing read-only route surface, only when PORTFOLIO_AWARENESS_ENABLED;
+  ROBINHOOD_READ_ONLY   Stage 6.9: the cached Robinhood READ-ONLY snapshot (unified_portfolio.robinhood; no gateway call from this poll), labelled
+                        REAL · user managed, when ROBINHOOD_PORTFOLIO_ENABLED (wired by build_stream). Otherwise, unchanged:
+                        api.routes.portfolio.load_view(provider) — the existing read-only route surface, only when PORTFOLIO_AWARENESS_ENABLED;
                         otherwise DISABLED and nothing is called. Reads only (get_portfolio / get_positions / realized P&L).
 
 A source without a row for the symbol says No position; nothing is inferred and no totals are built across sources. Each source
@@ -73,9 +75,11 @@ class StockAgentPositionAdapter:
     def __init__(self, *, alpaca_status: Callable[[], dict] = _default_alpaca_status, alpaca_view: Callable[[], dict] = _default_alpaca_view,
                  local_view: Callable[[], dict] = _default_local_view, robinhood_view: Callable = _default_robinhood_view,
                  awareness_enabled: Optional[Callable[[], bool]] = None, cache_seconds: Optional[float] = None,
-                 now_fn: Callable[[], float] = time.monotonic, account_view: Optional[Callable[[], Optional[dict]]] = None):
+                 now_fn: Callable[[], float] = time.monotonic, account_view: Optional[Callable[[], Optional[dict]]] = None,
+                 robinhood_snapshot: Optional[Callable[[], Optional[dict]]] = None):
         self._alpaca_status, self._alpaca_view, self._local_view, self._robinhood_view = alpaca_status, alpaca_view, local_view, robinhood_view
         self._account_view = account_view                                   # the account refresh's classified snapshot (build_stream wires it)
+        self._robinhood_snapshot = robinhood_snapshot                       # Stage 6.9: the cached Robinhood READ-ONLY snapshot (build_stream wires it)
         self._awareness_enabled = awareness_enabled or (lambda: bool(config.PORTFOLIO_AWARENESS_ENABLED))
         self.cache_seconds = float(cache_seconds if cache_seconds is not None else config.TRADER_POSITION_POLL_SECONDS)
         self._now = now_fn
@@ -170,8 +174,32 @@ class StockAgentPositionAdapter:
             log.warning("Trader View: local paper view unavailable (%s)", type(exc).__name__)
             return self._src(src, "ERROR", message=f"Unavailable ({type(exc).__name__}).")
 
+    def _robinhood_real(self, s: str, v: dict) -> PositionSource:
+        """Stage 6.9: one REAL, user-managed account - never the bot's. NOT_LOADED / AUTH_REQUIRED / ERROR never read as "No position"."""
+        src, label = ROBINHOOD_READ_ONLY, v.get("label") or "Robinhood · REAL · user managed"
+        mk = lambda status, **kw: PositionSource(source=src, label=label, status=status, **kw)  # noqa: E731
+        state = v.get("state")
+        if state not in ("LOADED", "STALE") or v.get("positions") is None:
+            return mk(state or "NOT_LOADED", message=v.get("message") or "Not loaded yet: Robinhood holdings are unknown.")
+        stale = f" STALE: {v.get('message')}" if state == "STALE" else ""
+        row = next((p for p in v["positions"] if str(p.get("symbol") or "").upper() == s), None)
+        if row is None:
+            return mk("NO_POSITION", message=f"No {s} in the Robinhood account (read at {v.get('refreshed_at')}).{stale}", as_of=v.get("refreshed_at"))
+        kind = "SYNTHETIC fixture (not a real account)" if v.get("account_type") == "SYNTHETIC" else "REAL account"
+        return mk("POSITION", message=f"User managed · {kind}: the bot never trades, exits or resizes it.{stale}", quantity=_s(row.get("quantity")),
+                  average_cost=_s(row.get("average_entry_price")), market_value=_s(row.get("market_value")), unrealized_pnl=_s(row.get("unrealized_pl")),
+                  unrealized_pnl_pct=_s(row.get("unrealized_pl_pct")), as_of=v.get("refreshed_at"))
+
     def _robinhood(self, s: str) -> PositionSource:
         src = ROBINHOOD_READ_ONLY
+        if self._robinhood_snapshot is not None:
+            try:
+                v = self._robinhood_snapshot()
+            except Exception as exc:  # noqa: BLE001 - one source never hides the others
+                log.warning("Trader View: Robinhood snapshot unavailable (%s)", type(exc).__name__)
+                v = {"state": "ERROR", "message": f"Unavailable ({type(exc).__name__})."}
+            if v and v.get("state") != "NOT_CONFIGURED":
+                return self._robinhood_real(s, v)
         if not self._awareness_enabled():
             return self._src(src, "DISABLED", message="Portfolio awareness is off (PORTFOLIO_AWARENESS_ENABLED=false); nothing was called.")
         try:

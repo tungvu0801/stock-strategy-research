@@ -673,3 +673,13 @@ FORWARD_VALIDATION_TARGET_SESSIONS: int = int(os.getenv("FORWARD_VALIDATION_TARG
 FORWARD_VALIDATION_TARGET_EVENTS: int = int(os.getenv("FORWARD_VALIDATION_TARGET_EVENTS", "100"))              # READY transitions + reviewable proposals wanted before conclusions
 FORWARD_VALIDATION_MIN_TRADES: int = int(os.getenv("FORWARD_VALIDATION_MIN_TRADES", "30"))                     # below it the strategy status stays INSUFFICIENT_DATA
 FORWARD_VALIDATION_EARLY_STOP: bool = os.getenv("FORWARD_VALIDATION_EARLY_STOP", "true").strip().lower() in ("1", "true", "yes", "on")   # Paper Auto -> Monitor only on a critical defect
+
+# Stage 6.9: Robinhood READ-ONLY portfolio source of the unified portfolio (unified_portfolio/; DESIGN_69_ROBINHOOD_UNIFIED_PORTFOLIO.md).
+# Reads go through the existing loopback rh_gateway (RH_GATEWAY_URL, PORTFOLIO_ACCOUNT_ALIAS), which calls only read tools. There is NO
+# Robinhood execution setting: no configuration path enables a Robinhood write, and Robinhood holdings never become bot-managed.
+ROBINHOOD_PORTFOLIO_ENABLED: bool = os.getenv("ROBINHOOD_PORTFOLIO_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+ROBINHOOD_PORTFOLIO_SOURCE: str = os.getenv("ROBINHOOD_PORTFOLIO_SOURCE", "gateway").strip().lower()       # gateway | fixture (synthetic data for previews / tests)
+ROBINHOOD_PORTFOLIO_FIXTURE: str = os.getenv("ROBINHOOD_PORTFOLIO_FIXTURE", "")                               # the synthetic gateway-shaped JSON file (fixture only)
+ROBINHOOD_PORTFOLIO_TTL_SECONDS: float = float(os.getenv("ROBINHOOD_PORTFOLIO_TTL_SECONDS", "120"))           # a read older than this is refreshed on the next unified read
+ROBINHOOD_DUPLICATE_ENTRY_POLICY: str = os.getenv("ROBINHOOD_DUPLICATE_ENTRY_POLICY", "ADVISORY").strip().upper()   # ADVISORY | OFF - never enforced by the executor in Stage 6.9
+UNIFIED_CONCENTRATION_WARN_PCT: float = float(os.getenv("UNIFIED_CONCENTRATION_WARN_PCT", "20"))              # one symbol >= this % of the known invested value -> warning

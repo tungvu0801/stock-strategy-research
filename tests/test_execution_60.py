@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
-from freeze_ledger import view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import view as ledger_view, view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -1361,7 +1361,7 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
     # >>> Stage 6.0.3: the Stage 5.5 pin test carries one marked, additive Stage 6.0.3 block (the workflow is verified structurally by
     # tests/test_ci_groups_603.py instead of byte-pinned); everything outside it stays byte-identical
     import re as _re603
-    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n", "", (ROOT / "tests/test_trader_view_55.py").read_text(encoding="utf-8").replace("\r\n", "\n"))
+    now603 = _re603.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.3.*?^[ \t]*# <<< Stage 6\.0\.3[^\n]*\n", "", ledger_view("tests/test_trader_view_55.py", (ROOT / "tests/test_trader_view_55.py").read_text(encoding="utf-8").replace("\r\n", "\n")))
     assert now603.encode("utf-8") == blob("tests/test_trader_view_55.py"), f"tests/test_trader_view_55.py differs from {BASE} outside the Stage 6.0.3 block"
     pinned = [p for p in pinned if p != "tests/test_trader_view_55.py"]
     # <<< Stage 6.0.3

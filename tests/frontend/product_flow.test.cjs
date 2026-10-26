@@ -276,7 +276,7 @@ test("13 wiring: GET routes only (registry, frozen controls added), no new poll,
   const routes = [...JS.matchAll(/["`](\/api\/[a-z0-9_\-\/]+)/g)].map((m) => m[1]);
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
                    "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/", "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",
-                   "/api/execution/activity", "/api/account-refresh/positions"];                                     // Stage 6.8: Bot Activity and the account positions (GET)
+                   "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio"];                                     // Stage 6.8: Bot Activity and the account positions (GET)
   assert.ok(routes.every((r) => allowed.includes(r)), routes);
   assert.ok(routes.includes("/api/strategy-registry") && routes.includes("/api/strategy-registry/") && routes.includes("/api/forward-validation/frozen-controls"));
   assert.ok(!JS.includes('method: "POST"') && !/fetch\([^)]*\{[^}]*method/.test(JS) && !JS.includes("/api/portfolio") && !JS.includes("/api/rh") && !JS.includes("/api/alpaca") && !JS.includes("/api/execution/auto"));

@@ -42,7 +42,7 @@ STRIP_PF = r"(?ms)^# >>> Product Flow 6\.1\.2\b.*?^# <<< Product Flow 6\.1\.2[^\
 GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events",
               "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
               "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",
-              "/api/execution/activity", "/api/account-refresh/positions"}   # Stage 6.8: Bot Activity and the account positions (GET only)
+              "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio"}   # Stage 6.8: Bot Activity and the account positions (GET only)
 LEGACY_TABS = ("overview", "daily", "watchlist", "agent", "alerts", "setups", "history", "portfolio", "review", "strategy", "paper", "trader", "settings")
 SECTIONS = ("overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log")
 STALE = ("never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
