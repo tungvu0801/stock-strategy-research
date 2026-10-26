@@ -79,8 +79,8 @@ class ValueQualityAdapter(StrategyAdapter):
             dec = self.core.evaluate(R, universe, data, data.calendar, prev=prev)   # selection is stateless; prev only labels enter / hold / exit
             decisions.append(dec)
             prev = set(dec["selected"])
-        self.rebalance_log[dataset.dataset_id] = [{**d["summary"], "rebalance": d["rebalance"], "enter": d["enter"], "hold": d["hold"], "exit": d["exit"]}
-                                                  for d in decisions]
+        self.rebalance_log[dataset.dataset_id] = [{**d["summary"], "rebalance": d["rebalance"], "enter": d["enter"], "hold": d["hold"], "exit": d["exit"],
+                                                   "eligible_symbols": [x["symbol"] for x in d["ranked"]]} for d in decisions]   # diagnostics only
         for k, dec in enumerate(decisions):
             nxt = decisions[k + 1] if k + 1 < len(decisions) else None
             prev_sel = set(decisions[k - 1]["selected"]) if k > 0 else set()

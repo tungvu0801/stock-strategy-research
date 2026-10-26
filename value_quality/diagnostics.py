@@ -1,8 +1,11 @@
 """value_quality/diagnostics.py — Value + Quality RESEARCH diagnostics (never a gate, never a selection rule).
 
-Portfolio view (the harness metrics are per spell): the daily net P/L of the simulated RULES spells (all-adjusted bars: total return; entry and exit
-at their friction-inclusive fills) over the fixed hypothetical equity, compounded; SPY over the same sessions (all-adjusted). Purged boundary spells
-are not in the portfolio (the TRAIN / OOS split is per segment of sessions). Plus turnover, sector (SEC SIC, today's classification) and single-name
+Portfolio view (the harness metrics are per leg): the daily net P/L of the simulated RULES legs (all-adjusted bars: total return; entry and exit at
+their friction-inclusive fills) over the fixed hypothetical equity, compounded; SPY over the same sessions (all-adjusted). Purged boundary legs are not
+in the portfolio (the TRAIN / OOS split is per segment of sessions). UNIVERSE CONTROL: an equal-weight, monthly re-formed portfolio of every ELIGIBLE
+stock at each rebalance (close-to-close, no friction) - it shares the universe's survivorship bias, so strategy minus control isolates what the
+Value + Quality SELECTION added; strategy minus SPY does not. The excess over the control is also tested per REBALANCE PERIOD (about one month:
+the independent unit - the ~20 legs of one month share the market's move, so the per-leg t-statistic of the harness overstates the evidence). Plus turnover, sector (SEC SIC, today's classification) and single-name
 concentration, factor coverage, value vs quality contribution, selection stability and calendar-year returns."""
 from __future__ import annotations
 
@@ -55,11 +58,37 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
         p = sessions[sessions.index(d) - 1] if d in sessions else None
         b = (bench[d] / bench[p] - 1.0) if (p in bench and d in bench) else None
         rows.append((d, pnl[d] / equity, b, expo[d]))
+    ctrl = {}                                                                    # the equal-weight eligible-universe control
+    for k, r in enumerate(log):
+        start, stop = r["rebalance"], (log[k + 1]["rebalance"] if k + 1 < len(log) else "9999")
+        for d in [x for x in days if start < x <= stop]:
+            p = sessions[sessions.index(d) - 1]
+            rets = [close[s][d] / close[s][p] - 1.0 for s in r.get("eligible_symbols") or [] if d in (close.get(s) or {}) and p in (close.get(s) or {})]
+            if rets:
+                ctrl[d] = sum(rets) / len(rets)
     seg = {"TRAIN": [r for r in rows if r[0] <= train_end], "OOS": [r for r in rows if r[0] > train_end], "ALL": rows}
+    starts = [r["rebalance"] for r in log]
+
+    def monthly_excess(rs):
+        per = defaultdict(lambda: [1.0, 1.0])
+        for d, r, _, _ in rs:
+            if d in ctrl:
+                k = max(s for s in starts if s < d)
+                per[k][0] *= 1.0 + r
+                per[k][1] *= 1.0 + ctrl[d]
+        ex = [a - b for a, b in per.values()]
+        if len(ex) < 2:
+            return {"periods": len(ex), "mean": None, "t_stat": None}
+        sd = statistics.stdev(ex)
+        return {"periods": len(ex), "mean": round(statistics.mean(ex), 6), "t_stat": round(statistics.mean(ex) / (sd / math.sqrt(len(ex))), 4) if sd > 0 else None,
+                "positive_share": round(sum(1 for x in ex if x > 0) / len(ex), 4)}
     portfolio = {}
     for k, rs in seg.items():
         s, b = _perf([r[1] for r in rs]), _perf([r[2] for r in rs if r[2] is not None])
+        u = _perf([ctrl[r[0]] for r in rs if r[0] in ctrl])
         portfolio[k] = {"strategy": s, "benchmark": b, "excess_total_return": round(s["total_return"] - b["total_return"], 6) if s and b else None,
+                        "universe_equal_weight": u, "excess_vs_universe": round(s["total_return"] - u["total_return"], 6) if s and u else None,
+                        "excess_vs_universe_per_period": monthly_excess(rs),
                         "average_positions": round(statistics.mean([r[3] for r in rs]), 2) if rs else None, "from": rs[0][0] if rs else None,
                         "to": rs[-1][0] if rs else None}
     years = defaultdict(lambda: [1.0, 1.0])
@@ -85,8 +114,16 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
         reasons.update(r["ineligible_by_reason"])
     sel_v = [x["value_score"] for r in log for x in r["selected"]]
     sel_q = [x["quality_score"] for r in log for x in r["selected"]]
+    from strategy_validation import T_STAT_WEAK
+    flags = []                                                                   # disclosures shown with the verdict (never a gate)
+    for k in ("TRAIN", "OOS"):
+        t = ((portfolio.get(k) or {}).get("excess_vs_universe_per_period") or {}).get("t_stat")
+        if t is None or t < T_STAT_WEAK:
+            flags.append("SELECTION_EDGE_NOT_ESTABLISHED")
+            break
     return {
         "note": "research diagnostics: never a gate, never used to choose a rule",
+        "flags": flags,
         "portfolio": portfolio,
         "calendar_years": {y: {"strategy": round(v[0] - 1, 6), "benchmark": round(v[1] - 1, 6)} for y, v in sorted(years.items())},
         "construction": {"rebalances": len(log), "first_rebalance": first, "top_n": top_n,

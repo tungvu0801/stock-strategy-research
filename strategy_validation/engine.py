@@ -225,6 +225,7 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     sdiag = getattr(adapter, "strategy_diagnostics", None)                      # Stage 6.4: research diagnostics (never a gate)
     if callable(sdiag):
         run.diagnostics = {**run.diagnostics, "strategy": sdiag(json.loads(run.model_dump_json()), dataset)}
+        run.research_flags = sorted(set(run.research_flags) | set(run.diagnostics["strategy"].get("flags") or []))   # disclosures, never a gate
     run.eligibility = IG.evaluate(json.loads(run.model_dump_json())).model_dump()   # informational here; the store re-evaluates before any write
     return run
 
