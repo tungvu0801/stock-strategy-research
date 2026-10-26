@@ -2975,7 +2975,7 @@ def product_ui(c: Ctx):
 PF_NAV = [["trade", "TRADE"], ["positions", "POSITIONS"], ["activity", "ACTIVITY"], ["more", "MORE"]]
 PF_TODAY = ["System", "Market", "Setup changes", "READY setups", "Entries", "Exits", "Blocked", "Safety blocks", "Paper P/L", "Attention"]
 PF_SECTIONS = ["overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log"]
-PF_PLACEHOLDERS = ["MEAN_REVERSION", "BREAKOUT"]                                             # Stage 6.4 / 6.5: VALUE_QUALITY and MOMENTUM are implemented (research only)
+PF_PLACEHOLDERS = ["BREAKOUT"]                                                               # Stage 6.4 / 6.5 / 6.6: VALUE_QUALITY, MOMENTUM and MEAN_REVERSION are implemented (research only)
 PF_READY_NOTE = "READY means the setup is eligible. Execution eligibility is decided separately by the safety gate and the entry controls."
 PF_VISIBLE = "((sel) => [...document.querySelectorAll(sel)].filter((e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && !!e.offsetParent; }).length)"
 PF_SHOWN = "((sel) => [...document.querySelectorAll(sel)].filter((e) => !e.closest('details:not([open])')).length)"   # items a user can see: not inside a collapsed fold (Chromium keeps closed-details boxes measurable)
@@ -3115,8 +3115,8 @@ def product_flow_degraded(c: Ctx):
 
 def product_flow_lab(c: Ctx):
     """Stage 6.1.2 (C, Strategy Lab): MORE -> Research -> Strategy Lab shows the registry: the real Downside Dislocation Recovery entry with its derived lifecycle status, the
-    two placeholders marked placeholder · not active (Stage 6.4 / 6.5: Value + Quality and Momentum are implemented, research, not active), QuantConnect as a
-    supported source with
+    one placeholder marked placeholder · not active (Stage 6.4 / 6.5 / 6.6: Value + Quality, Momentum and Mean Reversion are implemented, research, not
+    active), QuantConnect as a supported source with
     nothing registered; the detail view shows the thirteen sections with
     Not yet evaluated where nothing exists. No execution control anywhere in the lab; GET only."""
     from api.routes.trader_view import stream
@@ -3130,11 +3130,11 @@ def product_flow_lab(c: Ctx):
     reg = c.http("GET", "/api/strategy-registry")
     rows = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-strategy-row]')].map((e) => [e.dataset.puiStrategyRow, e.dataset.puiImplemented, e.dataset.puiActive, e.innerText.replace(/\\s+/g, ' ').trim()])")
     ddr = next((s for s in reg["strategies"] if s["strategy_id"] == "DOWNSIDE_DISLOCATION_RECOVERY"), None)
-    c.r.check("registry: the five entries in the API's order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the two placeholders not implemented, not active, marked; "
-              "Value + Quality and Momentum implemented, Research, not active, no placeholder mark",
+    c.r.check("registry: the five entries in the API's order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the placeholder not implemented, not active, marked; "
+              "Value + Quality, Momentum and Mean Reversion implemented, Research, not active, no placeholder mark",
               [r[0] for r in rows] == [s["strategy_id"] for s in reg["strategies"]] and rows[0][:3] == ["DOWNSIDE_DISLOCATION_RECOVERY", "1", "1"] and ddr is not None and ddr["status_label"] in rows[0][3]
-              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 2
-              and all(any(r[0] == sid and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows) for sid in ("VALUE_QUALITY", "MOMENTUM"))
+              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 1
+              and all(any(r[0] == sid and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows) for sid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION"))
               and ddr["status"] in ("PAPER_CANDIDATE", "PAPER_ACTIVE"), rows)
     lab_text = c.js("__tvText('#pui-more-body [data-pui-lab-panel]')") or ""
     c.r.check("registry: QuantConnect is a supported source with nothing registered and not integrated; the pipeline Strategy -> … -> Broker is stated; MORE stays the section",
@@ -3152,7 +3152,7 @@ def product_flow_lab(c: Ctx):
               c.js("document.querySelectorAll('#pui-more-body button[data-pui], #pui-more-body form, #pui-more-body input').length") == 0 and not any(w in det for w in ("Enable Paper Auto", "Emergency Stop", "Execute", "Place order")) and _pui_posts(reqs) == [], det[:200])
     c.shot("product_flow_lab_detail")
     c.step("__click('#pui-more-body [data-pui-lab=\"back\"]')", "!!document.querySelector('#pui-more-body [data-pui-registry]')", 30)
-    c.step("__click('#pui-more-body [data-pui-lab=\"MEAN_REVERSION\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"MEAN_REVERSION\"]')", 30)   # Stage 6.5: MOMENTUM is implemented
+    c.step("__click('#pui-more-body [data-pui-lab=\"BREAKOUT\"]')", "!!document.querySelector('#pui-more-body [data-pui-lab-detail=\"BREAKOUT\"]')", 30)   # Stage 6.5 / 6.6: MOMENTUM and MEAN_REVERSION are implemented
     ph = c.js("__tvText('#pui-more-body [data-pui-lab-detail]')") or ""
     ph_secs = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-section]')].map((e) => e.dataset.puiSectionState)")
     c.r.check("detail (placeholder): marked placeholder · not active, every section but the overview reads Not yet evaluated; it never appears as an active signal",
@@ -3351,7 +3351,7 @@ def strategy_validation(c: Ctx):
               and not re.search(r"Net P&L|Win rate|t-stat|\bPASS\b|\bFAIL\b", ddr.replace(api["disclaimer"], "")), ddr[:400])   # the disclaimer itself names PASS
     c.shot("strategy_validation_none", "#pui-more-body [data-pui-sv]")
     c.r.check("Stage 6.3.1: no run -> no integrity line is invented", c.js("document.querySelectorAll('#pui-more-body [data-pui-sv-integrity]').length") == 0)
-    r2, mom = _sv_open(c, "MEAN_REVERSION")                                                        # Stage 6.5: MOMENTUM is implemented
+    r2, mom = _sv_open(c, "BREAKOUT")                                                              # Stage 6.5 / 6.6: MOMENTUM and MEAN_REVERSION are implemented
     c.r.check("a placeholder: Validation · Not yet evaluated - not implemented, no rules, no candidate", "Not yet evaluated." in mom and "Not implemented" in mom, mom[:300])
     c.r.check("no control, no form and no POST in the lab; viewing changes no lifecycle (RESEARCH / PAPER_CANDIDATE as before)",
               c.js("document.querySelectorAll('#pui-more-body form, #pui-more-body input, #pui-more-body button[data-pui-sv]').length") == 0 and _pui_posts(reqs + r1 + r2) == []

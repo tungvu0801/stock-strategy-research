@@ -115,6 +115,9 @@ def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None, valida
     elif entry.implemented and entry.strategy_id == "MOMENTUM":                     # Stage 6.5: research strategy #3 (documented from its frozen rules)
         from strategy_registry import momentum as MOS
         sections, links = MOS.sections(), MOS.LINKS
+    elif entry.implemented and entry.strategy_id == "MEAN_REVERSION":               # Stage 6.6: research strategy #4 (documented from its frozen rules)
+        from strategy_registry import mean_reversion as MRS
+        sections, links = MRS.sections(), MRS.LINKS
     else:
         sections, links = placeholder_sections(entry), {}
     detail = StrategyDetail(entry=entry, lifecycle=lc, sections=sections, links=dict(links), disclaimer=DISCLAIMER)

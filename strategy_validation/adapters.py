@@ -7,7 +7,8 @@ Registered strategies:
   DOWNSIDE_DISLOCATION_RECOVERY  no honest historical replay (below) -> NOT_RUN
   VALUE_QUALITY                  Stage 6.4: historical replay from point-in-time SEC fundamentals + daily bars (value_quality/adapter.py)
   MOMENTUM                       Stage 6.5: historical replay of 12-1 momentum from daily bars (momentum/adapter.py)
-  MEAN_REVERSION / BREAKOUT      placeholders: not implemented -> NOT_RUN
+  MEAN_REVERSION                 Stage 6.6: historical replay of weekly 5-session reversal from daily bars (mean_reversion/adapter.py)
+  BREAKOUT                       placeholder: not implemented -> NOT_RUN
 Test fixtures live in tests/strategy_validation_fixtures.py and are never registered here."""
 from __future__ import annotations
 
@@ -120,8 +121,14 @@ def _momentum(params: Optional[dict] = None) -> StrategyAdapter:
     return MomentumAdapter(params)
 
 
+def _mean_reversion(params: Optional[dict] = None) -> StrategyAdapter:
+    from mean_reversion.adapter import MeanReversionAdapter                     # lazy: the strategy package imports this module
+    return MeanReversionAdapter(params)
+
+
 ADAPTERS: Dict[str, type] = {"DOWNSIDE_DISLOCATION_RECOVERY": DownsideRecoveryAdapter, "VALUE_QUALITY": _value_quality,   # Stage 6.4: Value + Quality
-                             "MOMENTUM": _momentum}                                                                        # Stage 6.5: Momentum
+                             "MOMENTUM": _momentum,                                                                        # Stage 6.5: Momentum
+                             "MEAN_REVERSION": _mean_reversion}                                                            # Stage 6.6: Mean Reversion
 PLACEHOLDER_REASON = "Not implemented: a registry placeholder has no rules, so no candidate can be generated."
 
 
