@@ -6,7 +6,9 @@ the control's - a portfolio that holds the same eligible universe with the same 
 measured once per period. SPY is a MARKET BENCHMARK only (context, never selection evidence).
 
   period_table(...)      one row per rebalance: INCLUDED (TRAIN / OOS) or EXCLUDED with its reason, the strategy's legs and the control's
-                         positions with their net and gross returns, SPY, the excess
+                         positions with their net and gross returns, SPY, the excess. Stage 6.7: a control definition may declare the
+                         strategy's capital basis FIXED_SLOTS_CASH (N slots of 100 / N %): the strategy's period return is then the SUM of its
+                         legs' returns / N - the unused slots are cash at 0 % - and a period with no leg is INCLUDED as all cash
   parity_audit(...)      the comparison is fair: same periods, universe snapshot, timestamps, capital convention and friction; no missing or
                          one-sided period; the boundary period excluded on both sides; the legs reconcile
   segment_stats(rows)    the period-level metrics of a segment
@@ -36,6 +38,20 @@ POLICY = {"min_oos_periods": CS_MIN_OOS_PERIODS, "min_total_periods": CS_MIN_TOT
           "concentration_share": CS_CONCENTRATION_SHARE, "primary_statistic": "OOS mean period excess over the selection control, t over periods"}
 PARITY_CHECKS = ("SAME_PERIODS", "SAME_UNIVERSE_SNAPSHOT", "SAME_PRICE_TIMESTAMPS", "SAME_CAPITAL_CONVENTION", "SAME_FRICTION", "NO_MISSING_PERIOD",
                  "BOUNDARY_BOTH_SIDES", "PERIOD_ACCOUNTING")
+FIXED_SLOTS = "FIXED_SLOTS_CASH"                  # Stage 6.7: N fixed slots of 100 / N % each, unused slots cash at 0 % (Breakout)
+
+
+def slots_of(capital: Optional[dict]) -> int:
+    """The number of fixed slots of a declared FIXED_SLOTS_CASH capital basis; 0 = the default (the mean of the period's legs)."""
+    if not capital or capital.get("basis") != FIXED_SLOTS:
+        return 0
+    try:
+        n = int(capital.get("slots") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return n if n >= 1 else 0
+
+
 LEG_T_NOTE = "per-leg t-statistic: a trade-level description - NOT SELECTION-EDGE EVIDENCE (the legs of one rebalance are correlated)"
 
 
@@ -67,7 +83,9 @@ def _window(after: list, next_r: Optional[str]):
 
 
 # ---------------------------------------------------------------- the period table ------------------------------------------------------------
-def period_table(rec: dict, trades: List[dict], candidates: List[dict], dataset, snapshots: List[dict], benchmark: Optional[str] = "SPY") -> List[dict]:
+def period_table(rec: dict, trades: List[dict], candidates: List[dict], dataset, snapshots: List[dict], benchmark: Optional[str] = "SPY",
+                 capital: Optional[dict] = None) -> List[dict]:
+    slots = slots_of(capital)                                                    # Stage 6.7: 0 = the default basis (unchanged)
     fr = rec.get("friction_model") or {}
     slip = float(fr.get("slippage_bps_per_side") or 0.0) / 10000.0
     commission, fee = float(fr.get("commission_per_order") or 0.0), float(fr.get("fee_per_share") or 0.0)
@@ -121,11 +139,11 @@ def period_table(rec: dict, trades: List[dict], candidates: List[dict], dataset,
         exit_session = max([x["exit_date"] for x in ctrl] + [x["exit_date"] for x in sim] or [""]) or None
         if not members and not legs:
             status, reason = "EXCLUDED", "NO_ELIGIBLE_STOCK"
-        elif any(x["status"] == "PURGED" for x in legs):
-            status, reason = "EXCLUDED", "BOUNDARY"
+        elif any(x["status"] == "PURGED" for x in legs) or (slots and R <= train_end and any(x["exit_date"] > train_end for x in ctrl)):
+            status, reason = "EXCLUDED", "BOUNDARY"                              # fixed slots: an all-cash week whose control crosses the TRAIN end too
         elif any(x["status"] == "SKIPPED" for x in legs):
             status, reason = "EXCLUDED", "INCOMPLETE_STRATEGY_PERIOD"
-        elif not legs:
+        elif not legs and not slots:                                             # fixed slots: no leg = all cash, an included observation
             status, reason = "EXCLUDED", "NO_STRATEGY_LEG"
         elif not ctrl:
             status, reason = "EXCLUDED", "NO_CONTROL_POSITION"
@@ -137,14 +155,18 @@ def period_table(rec: dict, trades: List[dict], candidates: List[dict], dataset,
         if benchmark:
             w = _window(_after(dataset, benchmark, R), nxt)
             bench = None if w is None else w[2] / w[0].open - 1.0
-        s_net = statistics.mean(x["net"] for x in sim) if sim else None
+        if slots:                                                                # the unused slots earn 0 %: never renormalized to the legs held
+            s_net, s_gross = sum(x["net"] for x in sim) / slots, sum(x["gross"] for x in sim) / slots
+        else:
+            s_net = statistics.mean(x["net"] for x in sim) if sim else None
+            s_gross = statistics.mean(x["gross"] for x in sim) if sim else None
         c_net = statistics.mean(x["net"] for x in ctrl) if ctrl else None
-        s_gross = statistics.mean(x["gross"] for x in sim) if sim else None
         c_gross = statistics.mean(x["gross"] for x in ctrl) if ctrl else None
         rows.append({"period": k, "rebalance": R, "next_rebalance": nxt, "entry_session": (_after_session(dataset, R)), "exit_session": exit_session,
                      "status": status, "reason": reason, "segment": ("TRAIN" if R <= train_end else "OOS") if status == "INCLUDED" else None,
                      "strategy": {"positions": len(sim), "legs": len(legs), "net": s_net, "gross": s_gross, "entries": sum(1 for x in sim if x["entry_trade"]),
-                                  "exits": sum(1 for x in sim if x["exit_trade"]), "legs_detail": legs},
+                                  "exits": sum(1 for x in sim if x["exit_trade"]), "legs_detail": legs,
+                                  **({"slots": slots, "invested_fraction": len(sim) / slots} if slots else {})},
                      "control": {"positions": len(ctrl), "members": len(members), "net": c_net, "gross": c_gross, "entries": sum(1 for x in ctrl if x["entry_trade"]),
                                  "exits": sum(1 for x in ctrl if x["exit_trade"]), "missing_entry": missing, "positions_detail": ctrl},
                      "benchmark": {"symbol": benchmark, "return": bench},
@@ -212,6 +234,16 @@ def parity_audit(rec: dict, rows: List[dict], snapshots: List[dict], candidates:
     if (control or {}).get("capital") != CAPITAL_CONVENTION or sizing.get("mode") != "EQUAL_WEIGHT":
         p["SAME_CAPITAL_CONVENTION"].append(f"control capital {(control or {}).get('capital')} / strategy sizing {sizing.get('mode')}: both must be {CAPITAL_CONVENTION} "
                                             "with equal-weight legs")
+    cap = (control or {}).get("strategy_capital")
+    if cap is not None:                                                          # Stage 6.7: a declared fixed-slot basis must be the sizing's own
+        n = slots_of(cap)
+        pct = float(sizing.get("position_pct") or 0.0)
+        if not n or abs(float(cap.get("slot_pct") or 0.0) - pct) > 1e-9 or abs(n * pct - 100.0) > 1e-6 or cap.get("cash_return") != 0.0:
+            p["SAME_CAPITAL_CONVENTION"].append(f"strategy capital {cap}: FIXED_SLOTS_CASH needs N slots of the sizing's position_pct ({pct} %) summing to 100 % "
+                                                "and cash at 0 %")
+        over = [r["rebalance"] for r in rows if n and r["strategy"]["legs"] > n]
+        if over:
+            p["SAME_CAPITAL_CONVENTION"].append(f"{len(over)} period(s) hold more legs than the {n} slots (first {over[0]})")
     if (control or {}).get("friction") != "RUN_FRICTION_MODEL":
         p["SAME_FRICTION"].append("the control does not declare the run's friction model")
     purged = set(((rec.get("boundary") or {}).get("purged") or {}).get("RULES") or [])
@@ -284,7 +316,9 @@ def segment_stats(rows: List[dict], ppy: float) -> dict:
     sd = statistics.stdev(ex) if n >= 2 else None
     t = (statistics.mean(ex) / (sd / math.sqrt(n))) if (n >= CS_MIN_PERIODS_T and sd and sd > 0) else None
     worst = min(rows, key=lambda r: r["excess"])
-    turn = lambda side: statistics.mean(r[side]["entries"] / r[side]["positions"] for r in rows if r[side]["positions"])   # noqa: E731
+    def turn(side):                                                              # Stage 6.7: an all-cash segment (fixed slots) has no turnover
+        xs = [r[side]["entries"] / r[side]["positions"] for r in rows if r[side]["positions"]]
+        return statistics.mean(xs) if xs else None
     vol = lambda xs: _r(statistics.stdev(xs) * math.sqrt(ppy), 6) if len(xs) >= 2 else None   # noqa: E731
     return {"period_count": n, "from": rows[0]["rebalance"], "to": rows[-1]["rebalance"],
             "strategy_total_return": _r(sp["total_return"]), "control_total_return": _r(cp["total_return"]),
@@ -300,7 +334,18 @@ def segment_stats(rows: List[dict], ppy: float) -> dict:
             "relative_return": _r((1.0 + sp["total_return"]) / (1.0 + cp["total_return"]) - 1.0),
             "strategy_volatility": vol(s), "control_volatility": vol(c), "strategy_max_drawdown": _r(sp["max_drawdown"]), "control_max_drawdown": _r(cp["max_drawdown"]),
             "strategy_turnover": _r(turn("strategy"), 4), "control_turnover": _r(turn("control"), 4),
-            "turnover_difference": _r(turn("strategy") - turn("control"), 4), "concentration": concentration(ex)}
+            "turnover_difference": _r(turn("strategy") - turn("control"), 4) if turn("strategy") is not None and turn("control") is not None else None,
+            "concentration": concentration(ex), **_invested_capital(rows)}
+
+
+def _invested_capital(rows: List[dict]) -> dict:
+    """Stage 6.7, fixed slots only: the selection's excess on the capital it actually invested (per week with a position: the mean of its legs minus
+    the control), so that an excess earned by holding cash is never read as selection. Absent for the default basis."""
+    if not rows or "slots" not in rows[0]["strategy"]:
+        return {}
+    ic = [r["strategy"]["net"] * r["strategy"]["slots"] / r["strategy"]["positions"] - r["control"]["net"] for r in rows if r["strategy"]["positions"]]
+    return {"mean_invested_fraction": _r(statistics.mean(r["strategy"]["invested_fraction"] for r in rows), 6), "invested_capital_weeks": len(ic),
+            "invested_capital_mean_excess": statistics.mean(ic) if ic else None}
 
 
 # ---------------------------------------------------------------- the selection edge and the overall verdict --------------------------------
@@ -327,6 +372,11 @@ def selection_edge(segments: Dict[str, dict], parity: dict) -> dict:
         code = "FRICTION_ERASES_EXCESS" if (mg or 0) > 0 else "NO_OOS_EXCESS"
         return _edge("NOT_ESTABLISHED", [{"code": code, "text": ("Friction turns the OOS excess over the control negative." if code == "FRICTION_ERASES_EXCESS" else
                                                                   f"The OOS mean excess over the control is {_pct(m)} per period: not positive.")}], **stat)
+    if "invested_capital_weeks" in oo and (not oo["invested_capital_weeks"] or (oo.get("invested_capital_mean_excess") or 0.0) <= 0):
+        return _edge("NOT_ESTABLISHED", [{"code": "CASH_DRIVEN_EXCESS", "text": (                    # Stage 6.7, fixed slots: cash is not selection skill
+            f"The OOS excess over the fully invested control is {_pct(m)} per period, but the selection's excess on the capital it actually invested "
+            f"is {_pct(oo.get('invested_capital_mean_excess'))} over {oo['invested_capital_weeks']} week(s) with a position: the excess comes from "
+            "holding cash, not from the selection.")}], **stat)
     if t is None or t < CS_T_NEGLIGIBLE:
         return _edge("NOT_ESTABLISHED", [{"code": "EXCESS_NEGLIGIBLE", "text": f"OOS mean excess {_pct(m)} per period with t = {_t(t)} over {n_oos} periods "
                                                                                f"(< {CS_T_NEGLIGIBLE}): statistically indistinguishable from zero."}], **stat)
@@ -418,6 +468,10 @@ def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optio
     if (edge or {}).get("status") != want["status"] or (overall or {}).get("verdict") != want_overall:
         problems.append(f"the recorded selection edge {(edge or {}).get('status')} / verdict {(overall or {}).get('verdict')} do not follow the policy "
                         f"({want['status']} / {want_overall})")
+    cap = ctl.get("strategy_capital")
+    slots = slots_of(cap)
+    if cap is not None and not slots:
+        problems.append(f"an unknown strategy capital basis {cap}")
     if trades is not None:
         by: Dict[str, List[float]] = {}
         for t in trades:
@@ -425,7 +479,9 @@ def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optio
                 by.setdefault(t["signal_date"], []).append(float(t["trade_return"]))
         for r in inc:
             got = by.get(r["rebalance"]) or []
-            if len(got) != r["strategy"]["positions"] or abs(statistics.mean(got) - float(r["strategy"]["net"])) > STRATEGY_SIDE_TOL:
+            want_s = (sum(got) / slots) if slots else (statistics.mean(got) if got else None)   # fixed slots: cash at 0 %, never renormalized
+            if len(got) != r["strategy"]["positions"] or want_s is None or abs(want_s - float(r["strategy"]["net"])) > STRATEGY_SIDE_TOL \
+                    or (slots and abs(float(r["strategy"].get("invested_fraction", -1)) - len(got) / slots) > 1e-12):
                 problems.append(f"{r['rebalance']}: the strategy side does not match the run's stored trades")
                 break
     if candidates is not None:
@@ -446,7 +502,7 @@ def verify(cs: dict, edge: dict, performance: dict, overall: dict, trades: Optio
 # ---------------------------------------------------------------- the v3 block -----------------------------------------------------------------
 def evaluate(rec: dict, trades: List[dict], candidates: List[dict], dataset, snapshots: List[dict], control: Optional[dict],
              benchmark: Optional[str] = "SPY") -> dict:
-    rows = period_table(rec, trades, candidates, dataset, snapshots, benchmark)
+    rows = period_table(rec, trades, candidates, dataset, snapshots, benchmark, (control or {}).get("strategy_capital"))
     parity = parity_audit(rec, rows, snapshots, candidates, trades, control)
     inc = [r for r in rows if r["status"] == "INCLUDED"]
     ppy = periods_per_year(rows) if len(rows) > 1 else 12.0

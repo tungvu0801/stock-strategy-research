@@ -494,7 +494,7 @@ def test_G02_registry_entry_is_an_implemented_research_strategy_that_never_trade
     assert e.source == "INTERNAL" and e.setup_type is None and not e.placeholder_note
     assert [s["strategy_id"] for s in S.registry_view({"available": False})["strategies"] if s["active"]] == ["DOWNSIDE_DISLOCATION_RECOVERY"]
     assert check_signal(signal(strategy_id="MEAN_REVERSION"), R.by_id())["error"]["code"] == "STRATEGY_INACTIVE"
-    assert R.PLACEHOLDER_IDS == ("BREAKOUT",)
+    assert R.PLACEHOLDER_IDS == ()                                                                # Stage 6.7: BREAKOUT implemented
     assert not re.search(r"(?i)broker|account|quantity|order", json.dumps(e.model_dump()))
 
 

@@ -528,8 +528,9 @@ def test_G01_a_research_strategy_is_replayable_but_registry_rules_still_apply():
                        features={}, feature_as_of={})
     reg = R.by_id()
     assert research_registry_error(ValueQualityAdapter(), raw, reg) == ""                          # RESEARCH: validated BEFORE any promotion
-    fake = type("P", (ValueQualityAdapter,), {"strategy_id": "BREAKOUT"})()                     # a placeholder (Stage 6.5 / 6.6: MOMENTUM, MEAN_REVERSION are implemented)
-    assert research_registry_error(fake, raw, reg).startswith("STRATEGY_NOT_IMPLEMENTED")
+    fake = type("P", (ValueQualityAdapter,), {"strategy_id": "FUTURE_X"})()                     # a synthetic placeholder (Stage 6.7: none is left)
+    reg_ph = {**reg, "FUTURE_X": reg["BREAKOUT"].model_copy(update={"strategy_id": "FUTURE_X", "implemented": False, "placeholder_note": R.PLACEHOLDER_NOTE})}
+    assert research_registry_error(fake, raw, reg_ph).startswith("STRATEGY_NOT_IMPLEMENTED")
     assert research_registry_error(type("U", (ValueQualityAdapter,), {"strategy_id": "NOPE"})(), raw, reg).startswith("STRATEGY_UNKNOWN")
     assert research_registry_error(ValueQualityAdapter(), raw.model_copy(update={"direction": "SHORT"}), reg).startswith("DIRECTION_NOT_SUPPORTED")
     assert research_registry_error(type("Q", (ValueQualityAdapter,), {"source": "QUANTCONNECT"})(), raw, reg).startswith("SOURCE_MISMATCH")

@@ -118,6 +118,9 @@ def detail_view(strategy_id: str, facts: Optional[Dict[str, Any]] = None, valida
     elif entry.implemented and entry.strategy_id == "MEAN_REVERSION":               # Stage 6.6: research strategy #4 (documented from its frozen rules)
         from strategy_registry import mean_reversion as MRS
         sections, links = MRS.sections(), MRS.LINKS
+    elif entry.implemented and entry.strategy_id == "BREAKOUT":                     # Stage 6.7: research strategy #5 (documented from its frozen rules)
+        from strategy_registry import breakout as BOS
+        sections, links = BOS.sections(), BOS.LINKS
     else:
         sections, links = placeholder_sections(entry), {}
     detail = StrategyDetail(entry=entry, lifecycle=lc, sections=sections, links=dict(links), disclaimer=DISCLAIMER)

@@ -798,12 +798,25 @@
   // Stage 6.6: a cross-sectional strategy's research diagnostics in brief (turnover, friction, concentration, the selected losers' next week, the
   // market's up / down periods) - descriptive, never a gate and never selection-edge evidence; a field the diagnostics lack is not shown
   function svResearch(s) {
-    if (!s || !(s.construction || s.friction || s.concentration)) return "";
+    if (!s || !(s.construction || s.friction || s.concentration || s.exposure)) return "";
     const c = s.construction || {}, f = s.friction || {}, cc = s.concentration || {}, ec = cc.excess_contribution || {}, k = s.falling_knife || {};
     const mk = s.market_weeks || s.market_months || {}, up = (mk.ALL || {}).benchmark_up, dn = (mk.ALL || {}).benchmark_down;
     const share = (x) => (!x ? "—" : x.share_of_gross_excess_consumed != null ? svPct(x.share_of_gross_excess_consumed) : "no positive gross excess");
     const grp = ((cc.sic_major_group || {}).most_frequent_top_groups || [])[0];
-    const kv = [
+    // Stage 6.7 (Breakout): exposure, the cash-free selection effect, follow-through, failed breakouts, the cash part, the Momentum overlap
+    const ex = (s.exposure || {}).ALL, bk = ex && ex.weeks_by_positions, ic = (s.invested_capital || {}).OOS, ft = s.follow_through || {}, fb = s.failed_breakouts || {};
+    const ms = (s.market_sensitivity || {}).ALL, ov = s.momentum_overlap || {};
+    const kv0 = [
+      ex && ["Invested fraction (mean / median / min / max)", `${svPct(ex.mean_invested_fraction)} / ${svPct(ex.median_invested_fraction)} / ${svPct(ex.min_invested_fraction)} / ${svPct(ex.max_invested_fraction)} · ${svNum(ex.mean_positions, 1)} positions on average`],
+      bk && ["Weeks by number of positions", ["0", "1-5", "6-10", "11-19", "20"].filter((k) => k in bk).map((k) => `${k}: ${bk[k]}`).join(" · ")],   // declared order (JS sorts integer keys first)
+      ms && ms.strategy_beta_to_spy != null && ["Beta to SPY (strategy / control)", `${svNum(ms.strategy_beta_to_spy)} / ${svNum(ms.control_beta_to_spy)}`],
+      ic && ic.weeks_with_a_position != null && ["Excess on invested capital (OOS)", ic.weeks_with_a_position ? `${svPct2(ic.mean_excess_on_invested_capital)} a week, t ${svNum(ic.t_stat)} over ${ic.weeks_with_a_position} weeks with a position` : "no week with a position"],
+      ft.legs && ["Follow-through (next week)", `${svPct(ft.continued_higher)} continued higher · ${svPct(ft.flat)} flat · ${svPct(ft.failed)} failed`],
+      fb.legs && ["Failed breakouts", `${svPct(fb.share_ending_below_entry_price)} ended below the entry price · ${svPct(fb.share_ending_below_breakout_reference)} below the breakout reference`],
+      ec.cash != null && ["Cash part of the summed excess", `${svPct2(ec.cash)} (names ${svPct2(ec.names)})`],
+      ov.weeks && ["Overlap with the Momentum portfolio", `${svPct(ov.share_of_breakout_holdings_in_momentum_portfolio)} of holdings · weekly excess correlation ${svNum(ov.weekly_excess_correlation)}`],
+    ];
+    const kv = [...kv0,
       c.average_one_way_turnover != null && ["One-way turnover", `${svPct(c.average_one_way_turnover)} per period · ${svNum(c.annualized_one_way_turnover, 1)}× a year`],
       f.ALL && ["Gross excess consumed by friction", `TRAIN ${share(f.TRAIN)} · OOS ${share(f.OOS)} · All ${share(f.ALL)}`],
       f.ALL && f.ALL.strategy_friction_per_year != null && ["Strategy friction", `${svPct(f.ALL.strategy_friction_per_year)} a year`],
@@ -815,7 +828,7 @@
       up && dn && ["Mean excess when SPY rose / fell", `${svPct2(up.mean_excess)} (${svNum(up.periods, 0)}) / ${svPct2(dn.mean_excess)} (${svNum(dn.periods, 0)})`],
     ].filter(Boolean);
     if (!kv.length) return "";
-    return `<h4 data-pui-sv-section="research">Turnover, friction and concentration</h4><div class="pui-kv" data-pui-sv-research>` +
+    return `<h4 data-pui-sv-section="research">${ex ? "Exposure, follow-through, turnover and concentration" : "Turnover, friction and concentration"}</h4><div class="pui-kv" data-pui-sv-research>` +
       kv.map(([a, b]) => `<span>${esc(a)}</span><b>${esc(b)}</b>`).join("") + `</div>` +
       `<div class="pui-sub">Research diagnostics: descriptive, never a gate and not selection-edge evidence (the selection edge above is).</div>`;
   }

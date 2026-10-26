@@ -8,7 +8,7 @@ Registered strategies:
   VALUE_QUALITY                  Stage 6.4: historical replay from point-in-time SEC fundamentals + daily bars (value_quality/adapter.py)
   MOMENTUM                       Stage 6.5: historical replay of 12-1 momentum from daily bars (momentum/adapter.py)
   MEAN_REVERSION                 Stage 6.6: historical replay of weekly 5-session reversal from daily bars (mean_reversion/adapter.py)
-  BREAKOUT                       placeholder: not implemented -> NOT_RUN
+  BREAKOUT                       Stage 6.7: historical replay of weekly 20-session breakouts, fixed slots + cash (breakout/adapter.py)
 Test fixtures live in tests/strategy_validation_fixtures.py and are never registered here."""
 from __future__ import annotations
 
@@ -126,9 +126,15 @@ def _mean_reversion(params: Optional[dict] = None) -> StrategyAdapter:
     return MeanReversionAdapter(params)
 
 
+def _breakout(params: Optional[dict] = None) -> StrategyAdapter:
+    from breakout.adapter import BreakoutAdapter                                # lazy: the strategy package imports this module
+    return BreakoutAdapter(params)
+
+
 ADAPTERS: Dict[str, type] = {"DOWNSIDE_DISLOCATION_RECOVERY": DownsideRecoveryAdapter, "VALUE_QUALITY": _value_quality,   # Stage 6.4: Value + Quality
                              "MOMENTUM": _momentum,                                                                        # Stage 6.5: Momentum
-                             "MEAN_REVERSION": _mean_reversion}                                                            # Stage 6.6: Mean Reversion
+                             "MEAN_REVERSION": _mean_reversion,                                                            # Stage 6.6: Mean Reversion
+                             "BREAKOUT": _breakout}                                                                        # Stage 6.7: Breakout
 PLACEHOLDER_REASON = "Not implemented: a registry placeholder has no rules, so no candidate can be generated."
 
 
