@@ -50,6 +50,25 @@ def standard_signal(adapter, raw: RawCandidate) -> dict:
             "evidence": {"features": raw.features, "feature_as_of": raw.feature_as_of}}
 
 
+def research_registry_error(adapter, raw: RawCandidate, registry) -> str:
+    """The registry checks of the Strategy Standard that apply to a RESEARCH replay: the strategy is registered and implemented, the source and the
+    direction match. The live-emission rule (only PAPER_CANDIDATE / PAPER_ACTIVE / APPROVED strategies emit LIVE signals) is deliberately not applied:
+    a strategy is validated historically BEFORE any promotion (Stage 6.4 found the harness applying it, which made every RESEARCH strategy
+    unvalidatable)."""
+    if registry is None:
+        return ""
+    entry = registry.get(adapter.strategy_id)
+    if entry is None:
+        return f"STRATEGY_UNKNOWN: {adapter.strategy_id} is not in the strategy registry"
+    if not entry.implemented:
+        return f"STRATEGY_NOT_IMPLEMENTED: {adapter.strategy_id} is a placeholder"
+    if entry.source != getattr(adapter, "source", "INTERNAL"):
+        return f"SOURCE_MISMATCH: registered as {entry.source}"
+    if entry.direction_capability != "LONG_SHORT" and raw.direction != entry.direction_capability:
+        return f"DIRECTION_NOT_SUPPORTED: {adapter.strategy_id} is {entry.direction_capability} only"
+    return ""
+
+
 def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> Tuple[Tuple[StrategyCandidate, ...], List[SkippedCandidate]]:
     from strategy_registry.standard import check_signal
     out: List[StrategyCandidate] = []
@@ -83,9 +102,10 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
         if not isinstance(hold, int) or isinstance(hold, bool) or hold < 1:
             skipped.append(SkippedCandidate(**base, reason="INVALID_HOLD", detail=f"max_hold_bars {hold!r} is not a positive integer"))
             continue
-        chk = check_signal(standard_signal(adapter, raw), registry)
-        if not chk["valid"]:
-            skipped.append(SkippedCandidate(**base, reason="STANDARD_V1_INVALID", detail=f"{chk['error']['code']}: {chk['error']['message']}"))
+        chk = check_signal(standard_signal(adapter, raw), None)                  # the schema: no execution field anywhere, valid enums, a rank score
+        reg = research_registry_error(adapter, raw, registry) if chk["valid"] else ""
+        if not chk["valid"] or reg:
+            skipped.append(SkippedCandidate(**base, reason="STANDARD_V1_INVALID", detail=reg or f"{chk['error']['code']}: {chk['error']['message']}"))
             continue
         fh = feature_hash(raw.features, raw.feature_as_of)
         cid = candidate_identity(adapter.strategy_id, adapter.strategy_version, sym, raw.direction, raw.signal_date, raw.entry_reference, raw.invalidation_reference, fh)
