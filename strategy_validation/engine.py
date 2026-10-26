@@ -229,11 +229,6 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
                              audit_ok=run.audit.status == "PASS", diagnostics=diag if name == "RULES" else r.diagnostics,
                              sensitivity_label=sens["label"] if name == "RULES" else None, accounting_problems=accounting_problems)
     run.verdict = results["RULES"].verdict
-    run.research_flags = list(adapter.research_flags(dataset)) if hasattr(adapter, "research_flags") else []
-    sdiag = getattr(adapter, "strategy_diagnostics", None)                      # Stage 6.4: research diagnostics (never a gate)
-    if callable(sdiag):
-        run.diagnostics = {**run.diagnostics, "strategy": sdiag(json.loads(run.model_dump_json()), dataset)}
-        run.research_flags = sorted(set(run.research_flags) | set(run.diagnostics["strategy"].get("flags") or []))   # disclosures, never a gate
     # Stage 6.4.1 (validation_v3): a cross-sectional strategy is judged on its selection edge over its control, per rebalance period
     run.evaluation_mode = mode
     run.performance_verdict = dict(run.verdict)
@@ -247,6 +242,11 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     else:
         run.selection_edge = CS.not_applicable()
     run.verdict = CS.overall_verdict(run.performance_verdict, run.selection_edge["status"])
+    run.research_flags = list(adapter.research_flags(dataset)) if hasattr(adapter, "research_flags") else []
+    sdiag = getattr(adapter, "strategy_diagnostics", None)                      # Stage 6.4: research diagnostics (never a gate); Stage 6.5: after the
+    if callable(sdiag):                                                          # v3 block, so they can describe its period table
+        run.diagnostics = {**run.diagnostics, "strategy": sdiag(json.loads(run.model_dump_json()), dataset)}
+        run.research_flags = sorted(set(run.research_flags) | set(run.diagnostics["strategy"].get("flags") or []))   # disclosures, never a gate
     run.eligibility = IG.evaluate(json.loads(run.model_dump_json())).model_dump()   # informational here; the store re-evaluates before any write
     return run
 
