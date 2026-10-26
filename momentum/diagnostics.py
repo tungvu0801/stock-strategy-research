@@ -18,6 +18,10 @@ from typing import Dict, List, Optional
 
 from momentum import RESEARCH_UNIVERSE, SENSITIVITY
 
+MAJOR_GROUPS = {"28": "Chemicals & pharmaceuticals (SIC 28)", "35": "Industrial & computer equipment (SIC 35)", "36": "Electronic equipment & semiconductors (SIC 36)",
+                "37": "Transportation equipment (SIC 37)", "38": "Instruments & medical devices (SIC 38)", "48": "Communications (SIC 48)", "49": "Utilities (SIC 49)",
+                "60": "Banks (SIC 60)", "62": "Brokers & exchanges (SIC 62)", "73": "Software & business services (SIC 73)", "80": "Health services (SIC 80)"}
+
 
 def _compound(xs: List[float]) -> float:
     w = 1.0
@@ -80,15 +84,20 @@ def _period_returns(core, dataset, slip: float) -> List[dict]:
 def sensitivity(dataset, train_end: str, slip: float, base: dict) -> dict:
     from momentum.core import MomentumStrategyCore
     tv = dataset.until(train_end)
-    rows = []
+    runs = []
     for params in [{}] + list(SENSITIVITY):
         p = {**base, **params}
-        per = _period_returns(MomentumStrategyCore(p["top_n"], p["lookback_sessions"], p["skip_sessions"]), tv, slip)
-        ex = [x["strategy"] - x["control"] for x in per]
-        rows.append({"params": params or "base", "periods": len(per), "strategy_total_return": _r(_compound([x["strategy"] for x in per])),
-                     "control_total_return": _r(_compound([x["control"] for x in per])), "mean_excess": _r(statistics.mean(ex)) if ex else None,
+        runs.append((params or "base", _period_returns(MomentumStrategyCore(p["top_n"], p["lookback_sessions"], p["skip_sessions"]), tv, slip)))
+    common = set.intersection(*[{x["rebalance"] for x in per} for _, per in runs]) if runs else set()
+    rows = []
+    for params, per in runs:
+        on = [x for x in per if x["rebalance"] in common]                        # every row on the SAME rebalance periods
+        ex = [x["strategy"] - x["control"] for x in on]
+        rows.append({"params": params, "periods": len(on), "own_periods": len(per), "strategy_total_return": _r(_compound([x["strategy"] for x in on])),
+                     "control_total_return": _r(_compound([x["control"] for x in on])), "mean_excess": _r(statistics.mean(ex)) if ex else None,
                      "excess_t_stat": _r(_t(ex), 4)})
-    return {"scope": f"TRAIN view only (dataset.until({train_end}): no later bar exists); diagnostic, never used to choose", "rows": rows}
+    return {"scope": f"TRAIN view only (dataset.until({train_end}): no later bar exists); every row on the same {len(common)} periods (those all "
+                     "configurations can form); diagnostic, never used to choose", "rows": rows}
 
 
 def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
@@ -115,13 +124,24 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
     turnover = [len(r["enter"]) / top_n for r in invested[1:]]
     stability = [len(r["hold"]) / top_n for r in invested[1:]]
     issuers = {s: info for info in ((dataset.aux or {}).get("static") or {}).get("issuers", {}).values() for s in info.get("symbols") or []}
-    top_share, top_names, held = [], Counter(), Counter()
+    top_share, top_names, held, major_share, major_names = [], Counter(), Counter(), [], Counter()
     for r in invested:
         sec = Counter((issuers.get(x) or {}).get("sic_description") or "UNKNOWN" for x in r["selected"])
         name, n = sec.most_common(1)[0]
         top_share.append(n / len(r["selected"]))
         top_names[name] += 1
         held.update(r["selected"])
+        maj = Counter(MAJOR_GROUPS.get(str((issuers.get(x) or {}).get("sic") or "")[:2], "SIC " + (str((issuers.get(x) or {}).get("sic") or "??")[:2]))
+                      for x in r["selected"])
+        mname, mn = maj.most_common(1)[0]
+        major_share.append(mn / len(r["selected"]))
+        major_names[mname] += 1
+    control_of = {p["rebalance"]: p["control"]["net"] for p in inc}
+    contrib: Counter = Counter()
+    for t in ((record.get("arms") or {}).get("RULES") or {}).get("trades") or []:   # name i's part of a period's excess: (leg - control) / positions
+        p = next((q for q in inc if q["rebalance"] == t["signal_date"]), None)
+        if p is not None and t.get("trade_return") is not None:
+            contrib[t["symbol"]] += (float(t["trade_return"]) - control_of[t["signal_date"]]) / p["strategy"]["positions"]
     elig = [r["eligible"] for r in log if r.get("eligible") is not None]
     reasons = Counter()
     for r in log:
@@ -129,8 +149,16 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
     fr = record.get("friction_model") or {}
     base = {"top_n": top_n, "lookback_sessions": int(((record.get("config_snapshot") or {}).get("adapter") or {}).get("params", {}).get("lookback_sessions", 252)),
             "skip_sessions": int(((record.get("config_snapshot") or {}).get("adapter") or {}).get("params", {}).get("skip_sessions", 21))}
+    from momentum.audit import split_events
+    artifacts = [{**{k: (_r(v) if isinstance(v, float) else v) for k, v in ev.items()},
+                  "adjusted_vs_raw_step": _r((1 + ev["adjusted_return"]) / (1 + ev["raw_return"]) - 1) if ev["adjusted_return"] is not None else None}
+                 for ev in split_events(dataset, [s for s in RESEARCH_UNIVERSE if s in dataset.bars]) if ev["kind"] == "RATIO_ARTIFACT"]
     return {
         "note": "research diagnostics: never a gate, never used to choose a rule; the selection edge is validation_v3's",
+        "data_quality": {"ratio_artifacts": artifacts,
+                         "note": "moves of the provider's raw / split-adjusted ratio with no raw price move (no real split): the split-adjusted series is "
+                                 "wrong there and the strategy does not use it; adjusted_vs_raw_step is the unexplained step of the all-adjusted series "
+                                 "it does use"},
         "flags": [],
         "calendar": {"by_year": _group(inc, lambda p: p["rebalance"][:4]),
                      "by_quarter": _group(inc, lambda p: f"{p['rebalance'][:4]}-Q{(int(p['rebalance'][5:7]) - 1) // 3 + 1}")},
@@ -147,6 +175,14 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
                           "mean_top_sector_share": _r(statistics.mean(top_share), 4) if top_share else None,
                           "max_top_sector_share": _r(max(top_share), 4) if top_share else None, "most_frequent_top_sectors": top_names.most_common(5),
                           "most_held_names": [(s, _r(n / len(invested), 4)) for s, n in held.most_common(10)] if invested else [],
+                          "sic_major_group": {"mean_top_share": _r(statistics.mean(major_share), 4) if major_share else None,
+                                              "max_top_share": _r(max(major_share), 4) if major_share else None,
+                                              "most_frequent_top_groups": major_names.most_common(5)},
+                          "excess_contribution": {"note": "sum over a name's included legs of (leg return - control return) / positions: its share of "
+                                                          "the summed period excess (ALL periods)",
+                                                  "top": [(s, _r(v)) for s, v in contrib.most_common(5)],
+                                                  "bottom": [(s, _r(v)) for s, v in sorted(contrib.items(), key=lambda kv: kv[1])[:5]],
+                                                  "summed_period_excess": _r(sum(p["excess"] for p in inc))},
                           "period_excess": {k: (v or {}).get("concentration") for k, v in (cs.get("segments") or {}).items()}},
         "sensitivity": sensitivity(dataset, record.get("train_end") or "", float(fr.get("slippage_bps_per_side") or 0.0) / 10000.0, base),
     }

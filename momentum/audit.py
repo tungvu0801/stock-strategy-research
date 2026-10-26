@@ -8,9 +8,16 @@ not only its bookkeeping:
   LOOKBACK_ENDPOINTS    the recorded endpoints are sessions i - lookback and i - skip of the dataset calendar (the recent month excluded)
   NO_FUTURE_DATA        every feature dated on / before the signal; both endpoints strictly before it
   MOMENTUM_RETURN       the recorded endpoint closes and the momentum re-derived from the adjusted bars
-  SPLIT_CONSISTENCY     on every split session inside the lookback window the adjusted day return equals the split-adjusted raw day return (raw
-                        close / split ratio): a split can never create momentum. (The all-adjusted series also carries dividends and spin-off
-                        distributions - AT&T / WarnerMedia 2022, GE / GE HealthCare 2023, GE Vernova 2024 - which are total return, not errors.)
+  SPLIT_CONSISTENCY     for EVERY universe stock over the WHOLE dataset (selected or not; lookback and holding windows alike): across every
+                        split (a move of the raw / split-adjusted ratio between two consecutive bars of the stock, holes included) the adjusted
+                        return equals the split-adjusted raw return - a split can never create, remove or move momentum or a P/L. (The
+                        all-adjusted series also carries dividends and spin-off distributions - AT&T / WarnerMedia 2022, GE / GE HealthCare 2023,
+                        GE Vernova 2024 - which are total return, not errors.) A split missed by the provider in BOTH series is undetectable here.
+                        Every move of the ratio is classified first (split_events): a REAL split moves the raw price and leaves the split-adjusted
+                        series continuous - then the adjusted series must be continuous too (else a violation); a RATIO ARTIFACT moves the ratio
+                        while the raw price does not move (the provider's split-adjusted series is wrong there, and the strategy does not use it) -
+                        a data-quality finding with its measured adjusted-vs-raw step (momentum/diagnostics.py), not a violation; anything else
+                        (both series jump) is inconsistent - a violation.
   ELIGIBILITY           the eligible set re-derived (price, liquidity, history, endpoint bars, one listing per issuer): its size = eligible_count
   RANK_SELECTION        the selection = the re-derived top N by momentum (ties by symbol); every rank and percentile score re-derived
   PORTFOLIO_SIZE        a leg for every selected stock at every rebalance with an eligible stock
@@ -28,6 +35,30 @@ from momentum import DOLLAR_VOLUME_SESSIONS, MIN_MEDIAN_DOLLAR_VOLUME, MIN_PRICE
 TOL = 1e-6
 SPLIT_DAY_TOL = 0.02                              # adjusted vs split-adjusted raw day return on a split session (an ex-dividend the same day at most)
 SPLIT_SESSION = 0.01                              # the stored raw / split-adjusted ratio carries rounding noise; a real split moves it by >= ~33 %
+
+
+NORMAL_DAY = 0.25                                 # a day move beyond 25 % is a jump (a split implies >= ~33 %)
+
+
+def split_events(dataset, symbols) -> List[dict]:
+    """Every move of a stock's raw / split-adjusted ratio between two consecutive bars of the stock (holes included), classified."""
+    series = (dataset.aux or {}).get("series") or {}
+    raw, ratio = series.get("raw_close") or {}, series.get("split_ratio") or {}
+    closes = {s: {b.date: b.close for b in rows} for s, rows in dataset.bars.items()}
+    out = []
+    for sym in sorted(symbols):
+        rr, rt, cs = raw.get(sym) or {}, ratio.get(sym) or {}, closes.get(sym) or {}
+        ds_ = sorted(d for d in rt if d in rr)
+        for d0, d1 in zip(ds_, ds_[1:]):
+            if not (rt[d0] and rt[d1]) or abs(rt[d1] / rt[d0] - 1.0) <= SPLIT_SESSION:
+                continue
+            ev = {"symbol": sym, "from": d0, "to": d1, "ratio_from": rt[d0], "ratio_to": rt[d1], "raw_return": rr[d1] / rr[d0] - 1.0,
+                  "split_adjusted_return": (rr[d1] / rt[d1]) / (rr[d0] / rt[d0]) - 1.0,
+                  "adjusted_return": (cs[d1] / cs[d0] - 1.0) if (d0 in cs and d1 in cs) else None}
+            raw_jump, spl_jump = abs(ev["raw_return"]) > NORMAL_DAY, abs(ev["split_adjusted_return"]) > NORMAL_DAY
+            ev["kind"] = "REAL_SPLIT" if raw_jump and not spl_jump else "RATIO_ARTIFACT" if spl_jump and not raw_jump else "INCONSISTENT"
+            out.append(ev)
+    return out
 
 
 def _schedule(sessions: List[str], lookback: int) -> List[str]:
@@ -115,17 +146,6 @@ def audit(record: dict, dataset, top_n: int, lookback: int, skip: int) -> List[d
         if a is None or b is None or abs(float(f.get("lookback_start_close") or 0) - a) > TOL or abs(float(f.get("lookback_end_close") or 0) - b) > TOL \
                 or abs(float(f.get("momentum_return") or 0) - (b / a - 1.0)) > TOL:
             v(c, "MOMENTUM_RETURN", f"{sym} at {T}: recorded momentum {f.get('momentum_return')} does not re-derive from the adjusted closes")
-        rr, rt = raw.get(sym) or {}, ratio.get(sym) or {}
-        window = sessions[pos[start]:pos[end] + 1]
-        for d0, d1 in zip(window, window[1:]):
-            if rt.get(d0) and rt.get(d1) and abs(rt[d1] / rt[d0] - 1.0) > SPLIT_SESSION:       # a split session inside the lookback window
-                if not (rr.get(d0) and rr.get(d1) and cs.get(d0) and cs.get(d1)):
-                    v(c, "SPLIT_CONSISTENCY", f"{sym}: split on {d1} without both raw and adjusted bars")
-                    continue
-                adj_day = cs[d1] / cs[d0] - 1.0
-                split_day = (rr[d1] / rt[d1]) / (rr[d0] / rt[d0]) - 1.0
-                if abs(adj_day - split_day) > SPLIT_DAY_TOL:
-                    v(c, "SPLIT_CONSISTENCY", f"{sym} at {T}: split on {d1}: adjusted day return {adj_day:.4f} vs split-adjusted {split_day:.4f}")
         exp = expected.get(T) or {}
         if f.get("eligible_count") != len(exp):
             v(c, "ELIGIBILITY", f"{sym} at {T}: eligible_count {f.get('eligible_count')} != {len(exp)} re-derived")
@@ -135,6 +155,17 @@ def audit(record: dict, dataset, top_n: int, lookback: int, skip: int) -> List[d
             order = [s for s, _ in sorted(exp.items(), key=lambda kv: (-kv[1], kv[0]))]
             if f.get("rank") != order.index(sym) + 1 or abs(float(c.get("score") or 0) - 100.0 * _pct(exp)[sym]) > 1e-4:
                 v(c, "RANK_SELECTION", f"{sym} at {T}: rank {f.get('rank')} / score {c.get('score')} != re-derived {order.index(sym) + 1} / {100.0 * _pct(exp)[sym]:.4f}")
+    for ev in split_events(dataset, [x for x in RESEARCH_UNIVERSE if x in closes]):    # splits: the whole dataset, every universe stock
+        where = f"{ev['symbol']}: ratio {ev['ratio_from']:.4g} -> {ev['ratio_to']:.4g} between {ev['from']} and {ev['to']}"
+        if ev["kind"] == "RATIO_ARTIFACT":
+            continue                                                               # a provider artifact in a series the strategy does not use: reported
+        if ev["adjusted_return"] is None:
+            v(None, "SPLIT_CONSISTENCY", f"{where}: no adjusted bars on both sides")
+        elif ev["kind"] == "INCONSISTENT":
+            v(None, "SPLIT_CONSISTENCY", f"{where}: raw {ev['raw_return']:.4f} and split-adjusted {ev['split_adjusted_return']:.4f} both jump")
+        elif abs(ev["adjusted_return"] - ev["split_adjusted_return"]) > SPLIT_DAY_TOL:
+            v(None, "SPLIT_CONSISTENCY", f"{where}: adjusted return {ev['adjusted_return']:.4f} vs split-adjusted {ev['split_adjusted_return']:.4f} (a split "
+                                          "not absorbed by the adjusted series)")
     # legs: transaction flags, exits and hand-overs re-built from the candidates themselves
     for R, legs in sorted(by_r.items()):
         if R not in sset:

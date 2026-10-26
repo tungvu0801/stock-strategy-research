@@ -528,7 +528,7 @@ def test_G01_a_research_strategy_is_replayable_but_registry_rules_still_apply():
                        features={}, feature_as_of={})
     reg = R.by_id()
     assert research_registry_error(ValueQualityAdapter(), raw, reg) == ""                          # RESEARCH: validated BEFORE any promotion
-    fake = type("P", (ValueQualityAdapter,), {"strategy_id": "MOMENTUM"})()
+    fake = type("P", (ValueQualityAdapter,), {"strategy_id": "MEAN_REVERSION"})()               # a placeholder (Stage 6.5: MOMENTUM is implemented)
     assert research_registry_error(fake, raw, reg).startswith("STRATEGY_NOT_IMPLEMENTED")
     assert research_registry_error(type("U", (ValueQualityAdapter,), {"strategy_id": "NOPE"})(), raw, reg).startswith("STRATEGY_UNKNOWN")
     assert research_registry_error(ValueQualityAdapter(), raw.model_copy(update={"direction": "SHORT"}), reg).startswith("DIRECTION_NOT_SUPPORTED")

@@ -2975,7 +2975,7 @@ def product_ui(c: Ctx):
 PF_NAV = [["trade", "TRADE"], ["positions", "POSITIONS"], ["activity", "ACTIVITY"], ["more", "MORE"]]
 PF_TODAY = ["System", "Market", "Setup changes", "READY setups", "Entries", "Exits", "Blocked", "Safety blocks", "Paper P/L", "Attention"]
 PF_SECTIONS = ["overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log"]
-PF_PLACEHOLDERS = ["MOMENTUM", "MEAN_REVERSION", "BREAKOUT"]                                 # Stage 6.4: VALUE_QUALITY is implemented (research only)
+PF_PLACEHOLDERS = ["MEAN_REVERSION", "BREAKOUT"]                                             # Stage 6.4 / 6.5: VALUE_QUALITY and MOMENTUM are implemented (research only)
 PF_READY_NOTE = "READY means the setup is eligible. Execution eligibility is decided separately by the safety gate and the entry controls."
 PF_VISIBLE = "((sel) => [...document.querySelectorAll(sel)].filter((e) => { const b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && !!e.offsetParent; }).length)"
 PF_SHOWN = "((sel) => [...document.querySelectorAll(sel)].filter((e) => !e.closest('details:not([open])')).length)"   # items a user can see: not inside a collapsed fold (Chromium keeps closed-details boxes measurable)
@@ -3115,7 +3115,8 @@ def product_flow_degraded(c: Ctx):
 
 def product_flow_lab(c: Ctx):
     """Stage 6.1.2 (C, Strategy Lab): MORE -> Research -> Strategy Lab shows the registry: the real Downside Dislocation Recovery entry with its derived lifecycle status, the
-    three placeholders marked placeholder · not active (Stage 6.4: Value + Quality is implemented, research, not active), QuantConnect as a supported source with
+    two placeholders marked placeholder · not active (Stage 6.4 / 6.5: Value + Quality and Momentum are implemented, research, not active), QuantConnect as a
+    supported source with
     nothing registered; the detail view shows the thirteen sections with
     Not yet evaluated where nothing exists. No execution control anywhere in the lab; GET only."""
     from api.routes.trader_view import stream
@@ -3129,11 +3130,11 @@ def product_flow_lab(c: Ctx):
     reg = c.http("GET", "/api/strategy-registry")
     rows = c.js("[...document.querySelectorAll('#pui-more-body [data-pui-strategy-row]')].map((e) => [e.dataset.puiStrategyRow, e.dataset.puiImplemented, e.dataset.puiActive, e.innerText.replace(/\\s+/g, ' ').trim()])")
     ddr = next((s for s in reg["strategies"] if s["strategy_id"] == "DOWNSIDE_DISLOCATION_RECOVERY"), None)
-    c.r.check("registry: the five entries in the API's order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the three placeholders not implemented, not active, marked; "
-              "Value + Quality implemented, Research, not active, no placeholder mark",
+    c.r.check("registry: the five entries in the API's order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the two placeholders not implemented, not active, marked; "
+              "Value + Quality and Momentum implemented, Research, not active, no placeholder mark",
               [r[0] for r in rows] == [s["strategy_id"] for s in reg["strategies"]] and rows[0][:3] == ["DOWNSIDE_DISLOCATION_RECOVERY", "1", "1"] and ddr is not None and ddr["status_label"] in rows[0][3]
-              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 3
-              and any(r[0] == "VALUE_QUALITY" and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows)
+              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 2
+              and all(any(r[0] == sid and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows) for sid in ("VALUE_QUALITY", "MOMENTUM"))
               and ddr["status"] in ("PAPER_CANDIDATE", "PAPER_ACTIVE"), rows)
     lab_text = c.js("__tvText('#pui-more-body [data-pui-lab-panel]')") or ""
     c.r.check("registry: QuantConnect is a supported source with nothing registered and not integrated; the pipeline Strategy -> … -> Broker is stated; MORE stays the section",
