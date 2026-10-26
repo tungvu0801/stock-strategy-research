@@ -215,6 +215,9 @@ def selection_control(rec: dict) -> GateCheck:
         return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail="missing: " + ", ".join(missing))
     if (adapter_mode := ((rec.get("config_snapshot") or {}).get("adapter") or {}).get("evaluation_mode")) not in (None, mode):
         return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail=f"the record says {mode}, its adapter declared {adapter_mode}")
+    snap_ctl = ((rec.get("config_snapshot") or {}).get("adapter") or {}).get("control_definition")
+    if snap_ctl is not None and {k: v for k, v in ctl.items() if k != "role"} != {k: v for k, v in snap_ctl.items() if k != "role"}:
+        return GateCheck(check="SELECTION_CONTROL", status="FAIL", detail="the recorded control is not the adapter's own declaration (config snapshot)")   # Stage 6.7
     trades = [t for a in (rec.get("arms") or {}).values() for t in a.get("trades") or []] if any("trades" in a for a in (rec.get("arms") or {}).values()) else None
     problems = CS.verify(cs, edge, perf, rec.get("verdict") or {}, trades=trades, candidates=rec.get("candidates"),
                          universe=rec.get("universe_integrity") or None)

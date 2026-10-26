@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from strategy_registry.models import StrategyEntry
 
 DDR_ID = "DOWNSIDE_DISLOCATION_RECOVERY"
-PLACEHOLDER_IDS = ("BREAKOUT",)                                   # Stage 6.4: VALUE_QUALITY, 6.5: MOMENTUM, 6.6: MEAN_REVERSION are implemented (research only)
+PLACEHOLDER_IDS = ()                                              # Stage 6.4 / 6.5 / 6.6 / 6.7: every registry strategy is implemented (four research strategies)
 PLACEHOLDER_NOTE = "Registry placeholder only: not implemented. No rules, no data requirements, no backtest, no out-of-sample result, no paper result and no signal exist."
 REGISTRY_DATE = "2026-10-25"                                       # the day the registry (Stage 6.1.2) was created: the placeholders' created_at / updated_at
 
@@ -43,8 +43,11 @@ ENTRIES: List[StrategyEntry] = [
                                "against its eligible universe and never produces a trading signal."),
                   created_at=REGISTRY_DATE, updated_at="2026-10-26", implemented=True),
     StrategyEntry(strategy_id="BREAKOUT", display_name="Breakout", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="SWING",
-                  status="RESEARCH", version="0.0", description="Future internal strategy (range breakout). " + PLACEHOLDER_NOTE,
-                  created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),
+                  status="RESEARCH", version="1.0",
+                  description=("Long-only weekly rebalance of up to 20 stocks whose adjusted close broke above the highest adjusted high of the prior 20 "
+                               "sessions, the strongest breakouts first, at a fixed 5 % each with the unused slots in cash, from daily bars (Stage 6.7, "
+                               "breakout/). Research only: it is validated historically against its eligible universe and never produces a trading signal."),
+                  created_at=REGISTRY_DATE, updated_at="2026-10-26", implemented=True),
 ]
 
 

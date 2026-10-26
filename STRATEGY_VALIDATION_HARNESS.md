@@ -265,3 +265,22 @@ Design and policy: `DESIGN_651_UNIVERSE_INTEGRITY.md`. Code: `strategy_validatio
   The read view prefers the newest assessment (only when it references the newest evaluation), then a 6.5.1 run's own block; a cross-sectional
   record no assessment covers reads UNKNOWN -> UNTRUSTED, capped on read (never stored).
 * The validation methodology version stays `validation_v3`; no v3 threshold, friction assumption or control definition changed.
+
+## 16. Fixed-slot cash accounting (Stage 6.7, opt-in)
+
+A cross-sectional strategy that holds a VARIABLE number of stocks (Breakout: only the stocks that break out) declares its capital in its control
+definition: `strategy_capital = {"basis": "FIXED_SLOTS_CASH", "slots": N, "slot_pct": 100 / N, "cash_return": 0.0}`. Then:
+
+* a week's strategy return is the SUM of its legs' net returns / N - the unused slots are cash at 0 %, never renormalized to the stocks held;
+  each period row records `slots` and `invested_fraction`;
+* a week with no leg is an INCLUDED all-cash observation (never dropped); an all-cash week whose control crosses the TRAIN end is excluded on
+  both sides (BOUNDARY), like a week with purged legs;
+* the control is unchanged: the fully invested equal-weight eligible universe;
+* control parity checks that the declared slots and slot size are the sizing's own and that no week holds more legs than slots;
+* each segment records `mean_invested_fraction`, `invested_capital_weeks` and `invested_capital_mean_excess` (per week with a position: the
+  mean of the legs minus the control), and the selection edge adds one condition: a positive OOS excess with a non-positive (or no)
+  invested-capital excess reads NOT_ESTABLISHED (`CASH_DRIVEN_EXCESS`) - an excess earned by holding cash is not selection;
+* the gate re-derives every included week's strategy side from the stored trades on that basis (zero-position weeks included) and requires
+  the recorded control (with its capital basis) to equal the adapter's own declaration in the run's config snapshot.
+
+A strategy that declares nothing is computed exactly as before (Value + Quality, Momentum, Mean Reversion).

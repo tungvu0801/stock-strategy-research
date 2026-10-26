@@ -380,7 +380,7 @@ def test_G02_registry_entry_is_an_implemented_research_strategy_that_never_trade
     assert e.source == "INTERNAL" and e.setup_type is None and not e.placeholder_note
     assert [s["strategy_id"] for s in S.registry_view({"available": False})["strategies"] if s["active"]] == ["DOWNSIDE_DISLOCATION_RECOVERY"]
     assert check_signal(signal(strategy_id="MOMENTUM"), R.by_id())["error"]["code"] == "STRATEGY_INACTIVE"
-    assert R.PLACEHOLDER_IDS == ("BREAKOUT",)                                                     # Stage 6.6: MEAN_REVERSION is implemented
+    assert R.PLACEHOLDER_IDS == ()                                                                # Stage 6.6 / 6.7: MEAN_REVERSION, BREAKOUT implemented
 
 
 def test_G03_the_strategy_lab_detail_has_the_thirteen_sections_and_no_invented_result():
