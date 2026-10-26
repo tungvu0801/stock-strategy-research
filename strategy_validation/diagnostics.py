@@ -11,21 +11,23 @@ from strategy_validation import (AMBIGUOUS_DEPENDENCE, AMBIGUOUS_SHARE_WARN, CON
 from strategy_validation.models import SimulatedTrade
 
 
-def train_vs_oos(train: dict, oos: dict) -> dict:
+def train_vs_oos(train: dict, oos: dict, nz: float = NEAR_ZERO_R) -> dict:
+    """`nz`: the |mean R| band read as "near zero" - in RISK units (NEAR_ZERO_R) for stop-sized trades; 0 for equal-weight legs, whose R is
+    the return on the position notional (Stage 6.4: a 0.05 band would call any monthly return below 5 % "near zero")."""
     t, o = train.get("expectancy_R"), oos.get("expectancy_R")
     if not train.get("trade_count") or not oos.get("trade_count") or t is None or o is None:
         return {"code": "NO_COMPARISON", "text": "TRAIN or OOS has no trade: no comparison is possible.", "train_R": t, "oos_R": o}
-    if t > NEAR_ZERO_R and o > NEAR_ZERO_R:
+    if t > nz and o > nz:
         if o >= DEGRADATION_RATIO * t:
             return {"code": "CONSISTENT", "text": "TRAIN positive, OOS positive: consistent.", "train_R": t, "oos_R": o}
         return {"code": "DEGRADATION", "text": f"TRAIN positive, OOS positive but below {int(DEGRADATION_RATIO * 100)} % of TRAIN: degradation.", "train_R": t, "oos_R": o}
-    if t > NEAR_ZERO_R and abs(o) <= NEAR_ZERO_R:
+    if t > nz and abs(o) <= nz:
         return {"code": "DEGRADATION", "text": "TRAIN positive, OOS near zero: degradation.", "train_R": t, "oos_R": o}
-    if t > NEAR_ZERO_R and o < -NEAR_ZERO_R:
+    if t > nz and o < -nz:
         return {"code": "FAILURE_INSTABILITY", "text": "TRAIN positive, OOS negative: likely failure / instability.", "train_R": t, "oos_R": o}
-    if t <= NEAR_ZERO_R and o > NEAR_ZERO_R:
+    if t <= nz and o > nz:
         return {"code": "TRAIN_WEAK_OOS_POSITIVE", "text": "TRAIN not positive, OOS positive: not automatically good; the result may depend on the period.", "train_R": t, "oos_R": o}
-    return {"code": "CONSISTENTLY_WEAK", "text": "TRAIN and OOS not positive: no edge demonstrated.", "train_R": t, "oos_R": o}
+    return {"code": "CONSISTENTLY_WEAK", "text": "TRAIN and OOS not clearly positive: no edge demonstrated.", "train_R": t, "oos_R": o}
 
 
 def _period(date: str, kind: str) -> str:

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from strategy_validation import ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, PURGE_REASON, VERSION
+from strategy_validation import ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, NEAR_ZERO_R, PURGE_REASON, VERSION
 from strategy_validation import arms as A
 from strategy_validation import integrity as IG
 from strategy_validation import audit as AU
@@ -64,14 +64,14 @@ def git_commit_sha(root: Optional[Path] = None) -> Optional[str]:
     return None
 
 
-def outcome(c, dataset: Dataset, train_view: Dataset, split_info: dict, entry_policy: str, friction: dict, sizing: dict):
+def outcome(c, dataset: Dataset, train_view: Dataset, split_info: dict, entry_policy: str, friction: dict, sizing: dict, time_exit_fill: str = "CLOSE"):
     """(trade, skip) of one candidate under the Stage 6.3 PURGE policy (DESIGN_63 §9). A TRAIN candidate whose holding window - the bars its
     trade could use: the next max_hold_bars sessions of its symbol after the signal - reaches past the TRAIN end is purged before any simulation,
     whatever its outcome (the decision reads dates only, never a price). Every other TRAIN candidate is simulated on `train_view` (bars <= TRAIN end),
     so its outcome cannot read an OOS price. OOS candidates see everything."""
     seg = segment_of(c.signal_date, split_info)
     if seg == "OOS":
-        return SIM.simulate(c, dataset, arm="_", segment=seg, entry_policy=entry_policy, friction=friction, sizing=sizing)
+        return SIM.simulate(c, dataset, arm="_", segment=seg, entry_policy=entry_policy, friction=friction, sizing=sizing, time_exit_fill=time_exit_fill)
     end = split_info["train_end"]
     window = dataset.bars_after(c.symbol, c.signal_date)[:c.max_hold_bars]
     beyond = [b.date for b in window if b.date > end]
@@ -79,7 +79,7 @@ def outcome(c, dataset: Dataset, train_view: Dataset, split_info: dict, entry_po
         return None, SkippedCandidate(symbol=c.symbol, signal_date=c.signal_date, candidate_id=c.candidate_id, reason=PURGE_REASON,
                                       detail=f"TRAIN candidate (signal {c.signal_date}): its holding window (up to {c.max_hold_bars} sessions) reaches past the TRAIN "
                                              f"end {end} (from {beyond[0]}); excluded from TRAIN and OOS metrics whatever its outcome")
-    return SIM.simulate(c, train_view, arm="_", segment=seg, entry_policy=entry_policy, friction=friction, sizing=sizing)
+    return SIM.simulate(c, train_view, arm="_", segment=seg, entry_policy=entry_policy, friction=friction, sizing=sizing, time_exit_fill=time_exit_fill)
 
 
 def _simulate_arm(arm: ArmResult, cands, dataset, train_view, split_info, adapter, friction, sizing, cache) -> None:
@@ -88,7 +88,7 @@ def _simulate_arm(arm: ArmResult, cands, dataset, train_view, split_info, adapte
     trades: List[SimulatedTrade] = []
     for cid in accepted:
         if cid not in cache:
-            cache[cid] = outcome(by_id[cid], dataset, train_view, split_info, adapter.entry_policy, friction, sizing)
+            cache[cid] = outcome(by_id[cid], dataset, train_view, split_info, adapter.entry_policy, friction, sizing, getattr(adapter, "time_exit_fill", "CLOSE"))
         t, skip = cache[cid]
         if skip is not None:
             arm.simulation_skips.append(skip)
@@ -111,10 +111,11 @@ def _segment_metrics(arm: ArmResult, seg_of: dict, equity: float) -> dict:
     return out
 
 
-def _arm_diagnostics(r: ArmResult) -> dict:
+def _arm_diagnostics(r: ArmResult, sizing: Optional[dict] = None) -> dict:
     if not r.metrics:
         return {}
-    return {"train_vs_oos": DG.train_vs_oos(r.metrics["TRAIN"], r.metrics["OOS"]), "concentration": DG.concentration(r.trades), "ambiguous": DG.ambiguous(r.trades),
+    near = 0.0 if (sizing or {}).get("mode") == "EQUAL_WEIGHT" else NEAR_ZERO_R           # Stage 6.4: notional R has no risk-unit band
+    return {"train_vs_oos": DG.train_vs_oos(r.metrics["TRAIN"], r.metrics["OOS"], nz=near), "concentration": DG.concentration(r.trades), "ambiguous": DG.ambiguous(r.trades),
             "friction": DG.friction(r.metrics["ALL"])}
 
 
@@ -128,7 +129,9 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     if "RULES" not in arms:
         arms = ["RULES"] + arms                                                  # the raw strategy is always the reference arm
     friction = {**DEFAULT_FRICTION, **(friction or {})}
-    sizing = {**DEFAULT_SIZING, **(sizing or {})}
+    sizing = {**DEFAULT_SIZING, **(getattr(adapter, "sizing", None) or {}), **(sizing or {})}     # Stage 6.4: an adapter may declare its sizing
+    if getattr(adapter, "stop_policy", "INVALIDATION") == "NONE" and sizing.get("mode") != "EQUAL_WEIGHT":
+        raise ValidationError("a stop-less strategy (stop_policy NONE) needs EQUAL_WEIGHT sizing: risk sizing needs a stop")
     split_info = split(dataset, train_ratio)
     train_view = dataset.until(split_info["train_end"])                          # what a TRAIN outcome may read: nothing after the TRAIN end
     cands, skipped = CD.normalize(adapter, adapter.candidates(dataset), dataset, registry)      # ONCE
@@ -160,7 +163,7 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
         if r.status == "EVALUATED" and integrity["same_candidate_set"]:          # a mismatched set is never simulated: no comparative conclusion
             _simulate_arm(r, cands, dataset, train_view, split_info, adapter, friction, sizing, cache)
             r.metrics = _segment_metrics(r, seg_of, float(sizing["equity"]))
-            r.diagnostics = _arm_diagnostics(r)
+            r.diagnostics = _arm_diagnostics(r, sizing)
     now = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     run = ValidationRun(run_id=uuid.uuid4().hex, strategy_id=adapter.strategy_id, strategy_version=adapter.strategy_version, dataset_id=dataset.dataset_id, dataset_kind=dataset.kind,
                         dataset_start=dataset.start, dataset_end=dataset.end, train_start=split_info["train_start"], train_end=split_info["train_end"], oos_start=split_info["oos_start"],
@@ -169,7 +172,11 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
                                          "model": getattr(model, "name", None), "sizing": sizing, "dataset_source": dataset.source},
                         friction_model=friction, execution_assumptions={"entry_policy": adapter.entry_policy, "moc_declared": adapter.moc_declared, "signal_basis": adapter.signal_basis,
                                                                         "ambiguous_bar_policy": "STOP_FIRST", "target_gap_fill": "at the target (conservative)",
-                                                                        "stop_gap_fill": "at the open (worse)", "time_exit": "close of the last allowed bar",
+                                                                        "stop_gap_fill": "at the open (worse)",
+                                                                        "time_exit": ("open of the last allowed bar" if getattr(adapter, "time_exit_fill", "CLOSE") == "OPEN"
+                                                                                      else "close of the last allowed bar"),
+                                                                        "time_exit_fill": getattr(adapter, "time_exit_fill", "CLOSE"),
+                                                                        "stop_policy": getattr(adapter, "stop_policy", "INVALIDATION"),
                                                                         "sizing": "risk-based on a fixed hypothetical equity; overlapping trades allowed; no compounding"},
                         candidate_count=len(cands), candidate_set_hash=integrity["candidate_set_hash"], candidates_skipped=skipped, arms_run=arms, integrity=integrity,
                         causality=causality, arms=results, candidates=list(cands), disclaimer=DISCLAIMER, provenance=dataset.provenance_record())
@@ -189,6 +196,11 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
     trades = [t for a in rec["arms"].values() for t in a["trades"]]
     bars = {s: [b.model_dump() for b in rows] for s, rows in dataset.bars.items()}
     run.audit = AuditResult(**AU.audit(rec, rec["candidates"], trades, bars))
+    extra = getattr(adapter, "audit_extra", None)                                # Stage 6.4: strategy-specific checks, merged into the one audit
+    if callable(extra):
+        more = list(extra(rec, dataset) or [])
+        run.audit = run.audit.model_copy(update={"violations": run.audit.violations + more, "status": "FAIL" if more else run.audit.status,
+                                                 "note": run.audit.note + f"; strategy-specific checks: {len(more)} violation(s)"})
     rules = results["RULES"]
     diag = dict(rules.diagnostics)
     sens = {"label": "NOT_RUN", "text": "No neighbouring configuration was supplied.", "neighbours": []}
@@ -210,6 +222,11 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
                              audit_ok=run.audit.status == "PASS", diagnostics=diag if name == "RULES" else r.diagnostics,
                              sensitivity_label=sens["label"] if name == "RULES" else None, accounting_problems=accounting_problems)
     run.verdict = results["RULES"].verdict
+    run.research_flags = list(adapter.research_flags(dataset)) if hasattr(adapter, "research_flags") else []
+    sdiag = getattr(adapter, "strategy_diagnostics", None)                      # Stage 6.4: research diagnostics (never a gate)
+    if callable(sdiag):
+        run.diagnostics = {**run.diagnostics, "strategy": sdiag(json.loads(run.model_dump_json()), dataset)}
+        run.research_flags = sorted(set(run.research_flags) | set(run.diagnostics["strategy"].get("flags") or []))   # disclosures, never a gate
     run.eligibility = IG.evaluate(json.loads(run.model_dump_json())).model_dump()   # informational here; the store re-evaluates before any write
     return run
 
@@ -221,7 +238,7 @@ def _neighbour(factory, params: dict, dataset, train_ratio, friction, sizing, re
     cands, _ = CD.normalize(a, a.candidates(dataset), dataset, registry)
     trades = []
     for c in cands:
-        t, skip = outcome(c, dataset, train_view, split_info, a.entry_policy, friction, sizing)   # the same boundary policy as the base run
+        t, skip = outcome(c, dataset, train_view, split_info, a.entry_policy, friction, sizing, getattr(a, "time_exit_fill", "CLOSE"))   # the same boundary policy
         if t is not None:
             trades.append(t)
     m = MX.compute(trades, candidate_count=len(cands), accepted_count=len(cands), stand_aside_count=0, equity=float(sizing["equity"]))

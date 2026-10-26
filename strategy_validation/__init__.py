@@ -45,8 +45,12 @@ AMBIGUOUS_POLICIES = ("STOP_FIRST",)            # stop and target inside one bar
 EXIT_REASONS = ("STOP", "STOP_GAP", "TARGET", "TIME_EXIT", "DATA_END")
 DEFAULT_FRICTION = {"slippage_bps_per_side": 5.0, "commission_per_order": 0.0, "fee_per_share": 0.0}
 DEFAULT_SIZING = {"equity": 100000.0, "risk_fraction": 0.005, "max_position_pct": 10.0}   # the Stage 5.9 conventions (research simulation only)
+SIZING_MODES = ("RISK", "EQUAL_WEIGHT")         # Stage 6.4: EQUAL_WEIGHT = position_pct of the fixed equity per position (a stop-less portfolio
+                                                # strategy); its R is the return on the position's notional, documented as such
+STOP_POLICIES = ("INVALIDATION", "NONE")
 SKIP_REASONS = ("MISSING_CRITICAL_FEATURE", "STANDARD_V1_INVALID", "UNSUPPORTED_DIRECTION", "DUPLICATE_CANDIDATE", "SIGNAL_BAR_NOT_IN_DATASET",
-                "NO_ENTRY_BAR", "INVALID_STOP", "ENTRY_GAP_THROUGH_STOP", "ENTRY_GAP_THROUGH_TARGET", "TRAIN_OOS_BOUNDARY_PURGE")
+                "NO_ENTRY_BAR", "INVALID_STOP", "ENTRY_GAP_THROUGH_STOP", "ENTRY_GAP_THROUGH_TARGET", "TRAIN_OOS_BOUNDARY_PURGE",
+                "INVALID_HOLD")
 
 # ---- Stage 6.3.1: the TRAIN / OOS boundary and the persistence integrity gate (strategy_validation/integrity.py) ---------------------------
 BOUNDARY_POLICY = "PURGE"                       # a TRAIN candidate whose outcome needs a bar after the TRAIN end is excluded from TRAIN and OOS

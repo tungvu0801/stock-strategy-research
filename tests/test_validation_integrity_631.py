@@ -227,7 +227,7 @@ def test_G01_a_clean_run_is_eligible_and_every_check_is_explained():
     ds, ad = crossing()
     el = _gate(run(ds, ad))
     assert el.status == "ELIGIBLE" and el.integrity_status == "PASS" and el.reasons == []
-    assert [c.check for c in el.checks] == ["STRUCTURE", "STRATEGY_VERSION", "PROVENANCE", "CANDIDATE_SET", "ARM_CONTRACT", "CAUSALITY_AUTOMATED", "CAUSALITY_MANUAL_REVIEW",
+    assert [c.check for c in el.checks] == ["STRUCTURE", "STRATEGY_VERSION", "PROVENANCE", "CANDIDATE_SET", "CANDIDATE_CONTRACT", "ARM_CONTRACT", "CAUSALITY_AUTOMATED", "CAUSALITY_MANUAL_REVIEW",
                                             "REPLAY_PARITY", "MECHANICAL_AUDIT", "ACCOUNTING", "BOUNDARY", "PERFORMANCE_VERDICT"]
     by = {c.check: c for c in el.checks}
     assert by["REPLAY_PARITY"].status == "NOT_APPLICABLE" and "research-only" in by["REPLAY_PARITY"].detail
@@ -429,7 +429,7 @@ def test_D01_downside_recovery_stays_not_run():
     from strategy_validation.adapters import ADAPTERS, DownsideRecoveryAdapter, adapter_for
     a = DownsideRecoveryAdapter()
     assert a.historical_replay_supported is False and (a.replay_parity_requirement, a.replay_parity_status) == ("EXACT_REQUIRED", "NOT_ESTABLISHED")
-    assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY"))[0] is None and list(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY"]
+    assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY"))[0] is None and sorted(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]
     with pytest.raises(E.ValidationError):
         E.run_validation(a, F.fixture("GOOD")[0])
     v = SR.detail_view("DOWNSIDE_DISLOCATION_RECOVERY")["validation"]

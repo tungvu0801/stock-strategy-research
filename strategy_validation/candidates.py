@@ -31,8 +31,9 @@ def feature_hash(features: Dict[str, Any], feature_as_of: Dict[str, str]) -> str
 
 
 def candidate_identity(strategy_id: str, strategy_version: str, symbol: str, direction: str, signal_date: str, entry_reference: float,
-                       invalidation_reference: float, feature_snapshot_hash: str) -> str:
-    blob = json.dumps([strategy_id, strategy_version, symbol, direction, signal_date, round(float(entry_reference), 8), round(float(invalidation_reference), 8),
+                       invalidation_reference, feature_snapshot_hash: str) -> str:
+    inv = "NONE" if invalidation_reference is None else round(float(invalidation_reference), 8)    # NONE: a stop-less strategy (Stage 6.4)
+    blob = json.dumps([strategy_id, strategy_version, symbol, direction, signal_date, round(float(entry_reference), 8), inv,
                        feature_snapshot_hash], separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
@@ -49,6 +50,25 @@ def standard_signal(adapter, raw: RawCandidate) -> dict:
             "evidence": {"features": raw.features, "feature_as_of": raw.feature_as_of}}
 
 
+def research_registry_error(adapter, raw: RawCandidate, registry) -> str:
+    """The registry checks of the Strategy Standard that apply to a RESEARCH replay: the strategy is registered and implemented, the source and the
+    direction match. The live-emission rule (only PAPER_CANDIDATE / PAPER_ACTIVE / APPROVED strategies emit LIVE signals) is deliberately not applied:
+    a strategy is validated historically BEFORE any promotion (Stage 6.4 found the harness applying it, which made every RESEARCH strategy
+    unvalidatable)."""
+    if registry is None:
+        return ""
+    entry = registry.get(adapter.strategy_id)
+    if entry is None:
+        return f"STRATEGY_UNKNOWN: {adapter.strategy_id} is not in the strategy registry"
+    if not entry.implemented:
+        return f"STRATEGY_NOT_IMPLEMENTED: {adapter.strategy_id} is a placeholder"
+    if entry.source != getattr(adapter, "source", "INTERNAL"):
+        return f"SOURCE_MISMATCH: registered as {entry.source}"
+    if entry.direction_capability != "LONG_SHORT" and raw.direction != entry.direction_capability:
+        return f"DIRECTION_NOT_SUPPORTED: {adapter.strategy_id} is {entry.direction_capability} only"
+    return ""
+
+
 def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> Tuple[Tuple[StrategyCandidate, ...], List[SkippedCandidate]]:
     from strategy_registry.standard import check_signal
     out: List[StrategyCandidate] = []
@@ -61,9 +81,10 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
             skipped.append(SkippedCandidate(**base, reason="UNSUPPORTED_DIRECTION", detail=f"{raw.direction}: Stage 6.2 simulates long candidates only"))
             continue
         missing = [f for f in adapter.critical_features if is_missing(raw.features.get(f))]
+        stopless = getattr(adapter, "stop_policy", "INVALIDATION") == "NONE"          # Stage 6.4: a periodic rebalance strategy has no stop
         if raw.entry_reference is None or not _num(raw.entry_reference):
             missing.append("entry_reference")
-        if raw.invalidation_reference is None or not _num(raw.invalidation_reference):
+        if not stopless and (raw.invalidation_reference is None or not _num(raw.invalidation_reference)):
             missing.append("invalidation_reference")
         if missing:
             skipped.append(SkippedCandidate(**base, reason="MISSING_CRITICAL_FEATURE", detail=", ".join(missing)))
@@ -71,12 +92,20 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
         if dataset.bar(sym, raw.signal_date) is None:
             skipped.append(SkippedCandidate(**base, reason="SIGNAL_BAR_NOT_IN_DATASET", detail="the signal session is not in the dataset for this symbol"))
             continue
-        if float(raw.invalidation_reference) >= float(raw.entry_reference):
+        if stopless and raw.invalidation_reference is not None:
+            skipped.append(SkippedCandidate(**base, reason="INVALID_STOP", detail="the strategy declares no stop (stop_policy NONE) but the candidate carries one"))
+            continue
+        if not stopless and float(raw.invalidation_reference) >= float(raw.entry_reference):
             skipped.append(SkippedCandidate(**base, reason="INVALID_STOP", detail="the invalidation reference is not below the entry reference (long)"))
             continue
-        chk = check_signal(standard_signal(adapter, raw), registry)
-        if not chk["valid"]:
-            skipped.append(SkippedCandidate(**base, reason="STANDARD_V1_INVALID", detail=f"{chk['error']['code']}: {chk['error']['message']}"))
+        hold = raw.max_hold_bars if raw.max_hold_bars is not None else adapter.max_hold_bars
+        if not isinstance(hold, int) or isinstance(hold, bool) or hold < 1:
+            skipped.append(SkippedCandidate(**base, reason="INVALID_HOLD", detail=f"max_hold_bars {hold!r} is not a positive integer"))
+            continue
+        chk = check_signal(standard_signal(adapter, raw), None)                  # the schema: no execution field anywhere, valid enums, a rank score
+        reg = research_registry_error(adapter, raw, registry) if chk["valid"] else ""
+        if not chk["valid"] or reg:
+            skipped.append(SkippedCandidate(**base, reason="STANDARD_V1_INVALID", detail=reg or f"{chk['error']['code']}: {chk['error']['message']}"))
             continue
         fh = feature_hash(raw.features, raw.feature_as_of)
         cid = candidate_identity(adapter.strategy_id, adapter.strategy_version, sym, raw.direction, raw.signal_date, raw.entry_reference, raw.invalidation_reference, fh)
@@ -86,7 +115,8 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
         seen.add(cid)
         out.append(StrategyCandidate(candidate_id=cid, strategy_id=adapter.strategy_id, strategy_version=adapter.strategy_version, symbol=sym, direction=raw.direction,
                                      signal_date=raw.signal_date, signal_basis=adapter.signal_basis, entry_reference=float(raw.entry_reference),
-                                     invalidation_reference=float(raw.invalidation_reference), target_reference=None if raw.target_reference is None else float(raw.target_reference),
-                                     max_hold_bars=int(adapter.max_hold_bars), score=raw.score, feature_snapshot_hash=fh, features=dict(raw.features), feature_as_of=dict(raw.feature_as_of)))
+                                     invalidation_reference=None if raw.invalidation_reference is None else float(raw.invalidation_reference),
+                                     target_reference=None if raw.target_reference is None else float(raw.target_reference),
+                                     max_hold_bars=int(hold), entry_trade=bool(raw.entry_trade), exit_trade=bool(raw.exit_trade), score=raw.score, feature_snapshot_hash=fh, features=dict(raw.features), feature_as_of=dict(raw.feature_as_of)))
     out.sort(key=lambda c: (c.signal_date, c.symbol, c.candidate_id))
     return tuple(out), skipped

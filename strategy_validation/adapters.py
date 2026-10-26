@@ -5,7 +5,8 @@ then reports NOT_RUN and never manufactures a backtest.
 
 Registered strategies:
   DOWNSIDE_DISLOCATION_RECOVERY  no honest historical replay (below) -> NOT_RUN
-  VALUE_QUALITY / MOMENTUM / MEAN_REVERSION / BREAKOUT  placeholders: not implemented -> NOT_RUN
+  VALUE_QUALITY                  Stage 6.4: historical replay from point-in-time SEC fundamentals + daily bars (value_quality/adapter.py)
+  MOMENTUM / MEAN_REVERSION / BREAKOUT  placeholders: not implemented -> NOT_RUN
 Test fixtures live in tests/strategy_validation_fixtures.py and are never registered here."""
 from __future__ import annotations
 
@@ -38,6 +39,16 @@ class StrategyAdapter:
     replay_parity_reference: Optional[str] = None      # ESTABLISHED must cite its evidence (e.g. the parity test module)
     provenance_requires: Optional[Tuple[str, ...]] = None   # which of corporate_actions / universe / point_in_time the dataset must declare
     causality_review: Optional[dict] = None             # {"status": "PENDING" | "COMPLETED", "reference": "..."}: the MANUAL review, declared
+    # Stage 6.4: a periodic rebalance (factor) strategy has no stop and sizes by notional
+    stop_policy = "INVALIDATION"                          # INVALIDATION (every candidate carries a stop) | NONE (no stop: exits are rule-based)
+    time_exit_fill = "CLOSE"                              # CLOSE | OPEN: where a TIME_EXIT fills on the max_hold_bars-th bar
+    sizing: Optional[dict] = None                         # merged over the defaults, e.g. {"mode": "EQUAL_WEIGHT", "position_pct": 5.0}
+    audit_extra = None                                    # optional callable(record, dataset) -> [violation]: independent strategy-specific checks
+    strategy_diagnostics = None                           # optional callable(record, dataset) -> dict: research diagnostics, never a gate
+
+    def research_flags(self, dataset) -> list:
+        """Research limitations shown with every result of this adapter (e.g. SURVIVORSHIP_BIAS_PRESENT)."""
+        return []
 
     def __init__(self, params: Optional[dict] = None):
         self.params = dict(params or {})
@@ -52,7 +63,9 @@ class StrategyAdapter:
     def describe(self) -> dict:
         return {"strategy_id": self.strategy_id, "strategy_version": self.strategy_version, "source": self.source, "entry_policy": self.entry_policy,
                 "moc_declared": self.moc_declared, "signal_basis": self.signal_basis, "max_hold_bars": self.max_hold_bars, "critical_features": list(self.critical_features),
-                "params": dict(self.params), "historical_replay_supported": self.historical_replay_supported,
+                "params": dict(self.params), "historical_replay_supported": self.historical_replay_supported, "stop_policy": self.stop_policy,
+                "time_exit_fill": self.time_exit_fill,
+                "sizing": dict(self.sizing or {}),
                 "declarations": {"live_implementation": self.live_implementation, "replay_parity_requirement": self.replay_parity_requirement,
                                  "replay_parity_status": self.replay_parity_status, "replay_parity_reference": self.replay_parity_reference,
                                  "provenance_requires": None if self.provenance_requires is None else list(self.provenance_requires),
@@ -82,7 +95,12 @@ class DownsideRecoveryAdapter(StrategyAdapter):
         raise NotImplementedError(DDR_REASON)
 
 
-ADAPTERS: Dict[str, type] = {"DOWNSIDE_DISLOCATION_RECOVERY": DownsideRecoveryAdapter}
+def _value_quality(params: Optional[dict] = None) -> StrategyAdapter:
+    from value_quality.adapter import ValueQualityAdapter                       # lazy: the strategy package imports this module
+    return ValueQualityAdapter(params)
+
+
+ADAPTERS: Dict[str, type] = {"DOWNSIDE_DISLOCATION_RECOVERY": DownsideRecoveryAdapter, "VALUE_QUALITY": _value_quality}   # Stage 6.4: Value + Quality
 PLACEHOLDER_REASON = "Not implemented: a registry placeholder has no rules, so no candidate can be generated."
 
 

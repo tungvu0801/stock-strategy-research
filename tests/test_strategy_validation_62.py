@@ -64,9 +64,13 @@ NEW_62_OWN = {"DESIGN_62_STRATEGY_VALIDATION.md", "STRATEGY_VALIDATION_HARNESS.m
           "tests/test_strategy_validation_62.py"}   # Stage 6.2 files
 NEW_63 = {"DESIGN_63_DDR_REPLAY_READINESS.md"}                                                # Stage 6.3: the Downside Dislocation Recovery replay-readiness document
 NEW_631 = {"strategy_validation/integrity.py", "tests/test_validation_integrity_631.py", "DESIGN_631_VALIDATION_HARDENING.md"}   # Stage 6.3.1: validation integrity
-NEW_62 = NEW_62_OWN | NEW_63 | NEW_631   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_64 = {"value_quality/__init__.py", "value_quality/adapter.py", "value_quality/audit.py", "value_quality/core.py", "value_quality/data.py",
+          "value_quality/diagnostics.py", "value_quality/ingest.py", "value_quality/pit.py", "strategy_registry/value_quality.py", "DESIGN_64_VALUE_QUALITY.md",
+          "tests/test_value_quality_64.py", "tests/value_quality_fixtures.py", "tests/frontend/value_quality.test.cjs"}   # Stage 6.4: the Value + Quality strategy
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64   # every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
-              "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py"}
+              "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py",
+              "strategy_registry/registry.py"}   # + Stage 6.4 (VALUE_QUALITY implemented)
 MARK_62 = "# >>> " + "Strategy Validation 6.2"                                                  # built, not literal: only browser_tests/flows.py carries it
 STRIP_62 = {                                                                                   # the marked / delimited Stage 6.2 blocks, removed before the exact edits are undone
     "browser_tests/flows.py": r"(?ms)^# >>> Strategy Validation 6\.2\b.*?^# <<< Strategy Validation 6\.2[^\n]*\n\n\n",
@@ -125,7 +129,7 @@ EDITS_62_611 = [                                                                
     ("    for old, new in EDITS_61_FIX:                                                                 # the WAL bootstrap fix: its in-place edits, applied after Stage 6.1.2's\n        assert text.count(old) == 1 and new not in text, old[:70]\n        text = text.replace(old, new)\n",
      "    for old, new in EDITS_61_FIX:                                                                 # the WAL bootstrap fix: its in-place edits, applied after Stage 6.1.2's\n        assert text.count(old) == 1 and new not in text, old[:70]\n        text = text.replace(old, new)\n    for old, new in EDITS_62_61:                                                                  # Stage 6.2: its in-place edits, applied after the fix's\n        assert text.count(old) == 1 and new not in text, old[:70]\n        text = text.replace(old, new)\n"),
 ]
-EDITS_62_612 = [                                                                                   # tests/test_product_flow_612.py
+EDITS_62_612_OWN = [                                                                               # tests/test_product_flow_612.py
     ('from test_db_bootstrap_busy import EDITS_61_FIX, EDITS_611_FIX, GROUPS_EDIT_FIX, NEW_FIX  # noqa: E402 - the WAL bootstrap fix pins (tests/test_db_bootstrap_busy.py)\n',
      'from test_db_bootstrap_busy import EDITS_61_FIX, EDITS_611_FIX, GROUPS_EDIT_FIX, NEW_FIX  # noqa: E402 - the WAL bootstrap fix pins (tests/test_db_bootstrap_busy.py)\nfrom test_strategy_validation_62 import EDITS_62_61, EDITS_62_611, NEW_62, undo_62  # noqa: E402 - the Stage 6.2 pins (tests/test_strategy_validation_62.py)\n'),
     ('    assert mine == {"/api/strategy-registry": {"get"}, "/api/strategy-registry/standard": {"get"}, "/api/strategy-registry/{strategy_id}": {"get"}}\n',
@@ -153,8 +157,49 @@ EDITS_62_FIX = [                                                                
     ('    assert groups.count(GROUPS_EDIT_FIX[0]) == 1 and groups.replace(*GROUPS_EDIT_FIX) == now_text(".github/ci/pytest_groups.json")\n',
      '    assert groups.count(GROUPS_EDIT_FIX[0]) == 1 and groups.replace(*GROUPS_EDIT_FIX) == undo_62(".github/ci/pytest_groups.json", now_text(".github/ci/pytest_groups.json"))   # Stage 6.2 undone first\n'),
 ]
-UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR, "api/routes/strategy_registry.py": EDITS_62_ROUTE, "frontend/product_ui.js": EDITS_62_JS, "browser_tests/flows.py": EDITS_62_FLOWS,
-           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
+# ---------------------------------------------------------------- Stage 6.4 (Value + Quality): its files and its exact in-place edits of earlier files
+EDITS_64_REG = [                                                                                   # strategy_registry/registry.py: VALUE_QUALITY implemented (research), no longer a placeholder
+    ('PLACEHOLDER_IDS = ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT")\n',
+     'PLACEHOLDER_IDS = ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT")       # Stage 6.4: VALUE_QUALITY is implemented (research only)\n'),
+    ('                  status="RESEARCH", version="0.0", description="Future internal strategy (value and quality factors). " + PLACEHOLDER_NOTE,\n                  created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),\n',
+     '                  status="RESEARCH", version="1.0",\n                  description=("Long-only monthly rebalance of the 20 highest-ranked stocks by an equal-weight composite of value (earnings, book and operating "\n                               "cash-flow yield) and quality (return on assets, cash flow on assets, equity ratio), from point-in-time SEC fundamentals "\n                               "(Stage 6.4, value_quality/). Research only: it is validated historically and never produces a trading signal."),\n                  created_at=REGISTRY_DATE, updated_at="2026-10-25", implemented=True),\n'),
+]
+EDITS_64_SR = [                                                                                    # strategy_registry/service.py: the Value + Quality detail sections
+    ('        sections, links = DR.sections(facts), DR.LINKS\n    else:\n',
+     '        sections, links = DR.sections(facts), DR.LINKS\n    elif entry.implemented and entry.strategy_id == "VALUE_QUALITY":                # Stage 6.4: research strategy #2 (documented from its frozen rules)\n        from strategy_registry import value_quality as VQS\n        sections, links = VQS.sections(), VQS.LINKS\n    else:\n'),
+]
+EDITS_64_FLOWS = [                                                                                 # browser_tests/flows.py (outside the 6.2 block): the Strategy Lab registry check
+    ('PF_PLACEHOLDERS = ["VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"]\n',
+     'PF_PLACEHOLDERS = ["MOMENTUM", "MEAN_REVERSION", "BREAKOUT"]                                 # Stage 6.4: VALUE_QUALITY is implemented (research only)\n'),
+    ('    four placeholders marked placeholder · not active, QuantConnect as a supported source with nothing registered; the detail view shows the thirteen sections with\n',
+     '    three placeholders marked placeholder · not active (Stage 6.4: Value + Quality is implemented, research, not active), QuantConnect as a supported source with\n    nothing registered; the detail view shows the thirteen sections with\n'),
+    ('    c.r.check("registry: the five entries in the API\'s order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the four placeholders not implemented, not active, marked",\n',
+     '    c.r.check("registry: the five entries in the API\'s order; Downside Dislocation Recovery implemented + active with its derived lifecycle label; the three placeholders not implemented, not active, marked; "\n              "Value + Quality implemented, Research, not active, no placeholder mark",\n'),
+    ('              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 4\n',
+     '              and all(r[1] == "0" and r[2] == "0" and "placeholder · not active" in r[3] for r in rows if r[0] in PF_PLACEHOLDERS) and len([r for r in rows if r[0] in PF_PLACEHOLDERS]) == 3\n              and any(r[0] == "VALUE_QUALITY" and r[1:3] == ["1", "0"] and "Research" in r[3] and "placeholder" not in r[3] for r in rows)\n'),
+]
+GROUPS_EDITS_64 = [                                                                                # .github/ci/pytest_groups.json: tests/test_value_quality_64.py in the research group (undone first)
+    ('        "test_strategy_validation_62.py",\n        "test_validation_integrity_631.py"\n      ]',
+     '        "test_strategy_validation_62.py",\n        "test_validation_integrity_631.py",\n        "test_value_quality_64.py"\n      ]'),
+]
+EDITS_64_612 = [                                                                                   # tests/test_product_flow_612.py: VALUE_QUALITY implemented (research), three placeholders
+    ('    for pid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        assert rows[pid]["implemented"] is False and rows[pid]["active"] is False and rows[pid]["status"] == "RESEARCH" and rows[pid]["setup_type"] is None and "not implemented" in rows[pid]["placeholder_note"]\n',
+     '    vq = rows["VALUE_QUALITY"]                                                                    # Stage 6.4: implemented as a RESEARCH strategy - never active, no setup type\n    assert vq["implemented"] is True and vq["active"] is False and vq["status"] == vq["declared_status"] == "RESEARCH" and vq["setup_type"] is None and vq["placeholder_note"] is None\n    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        assert rows[pid]["implemented"] is False and rows[pid]["active"] is False and rows[pid]["status"] == "RESEARCH" and rows[pid]["setup_type"] is None and "not implemented" in rows[pid]["placeholder_note"]\n'),
+    ('"PAPER_ACTIVE", "APPROVED", "REJECTED"] and j["counts"] == {"strategies": 5, "implemented": 1, "placeholders": 4}\n',
+     '"PAPER_ACTIVE", "APPROVED", "REJECTED"] and j["counts"] == {"strategies": 5, "implemented": 2, "placeholders": 3}   # Stage 6.4: VALUE_QUALITY implemented\n'),
+    ('"BREAKOUT"] and [e.strategy_id for e in R.implemented()] == ["DOWNSIDE_DISLOCATION_RECOVERY"]\n',
+     '"BREAKOUT"] and [e.strategy_id for e in R.implemented()] == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]   # + Stage 6.4\n'),
+    ('        assert (e.implemented and e.status == "PAPER_CANDIDATE" and e.setup_type == "DOWNSIDE_DISLOCATION_RECOVERY") or (not e.implemented and e.status == "RESEARCH" and e.setup_type is None and e.placeholder_note)\n',
+     '        assert (e.implemented and e.status == "PAPER_CANDIDATE" and e.setup_type == "DOWNSIDE_DISLOCATION_RECOVERY") or (not e.implemented and e.status == "RESEARCH" and e.setup_type is None and e.placeholder_note) \\\n            or (e.implemented and e.strategy_id == "VALUE_QUALITY" and e.status == "RESEARCH" and e.setup_type is None and not e.placeholder_note)   # Stage 6.4: a research strategy\n'),
+    ('    assert v["counts"] == {"strategies": 5, "implemented": 1, "placeholders": 4} and [s["active"] for s in v["strategies"]] == [True, False, False, False, False]\n',
+     '    assert v["counts"] == {"strategies": 5, "implemented": 2, "placeholders": 3} and [s["active"] for s in v["strategies"]] == [True, False, False, False, False]   # Stage 6.4\n'),
+    ('    for pid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        with pytest.raises(StrategyStandardError) as e:\n            validate_signal(signal(strategy_id=pid), reg)\n        assert e.value.code == "STRATEGY_NOT_IMPLEMENTED"                                        # a future placeholder never appears as an active signal\n',
+     '    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):\n        with pytest.raises(StrategyStandardError) as e:\n            validate_signal(signal(strategy_id=pid), reg)\n        assert e.value.code == "STRATEGY_NOT_IMPLEMENTED"                                        # a future placeholder never appears as an active signal\n    with pytest.raises(StrategyStandardError) as e:                                              # Stage 6.4: a RESEARCH strategy never emits a live signal either\n        validate_signal(signal(strategy_id="VALUE_QUALITY"), reg)\n    assert e.value.code == "STRATEGY_INACTIVE"\n'),
+]
+EDITS_62_612 = EDITS_62_612_OWN + EDITS_64_612   # applied in this order (the WAL bootstrap fix test replays it)
+UNDO_62 = {"strategy_registry/service.py": EDITS_62_SR + EDITS_64_SR, "api/routes/strategy_registry.py": EDITS_62_ROUTE, "frontend/product_ui.js": EDITS_62_JS,
+           "browser_tests/flows.py": EDITS_62_FLOWS + EDITS_64_FLOWS, "strategy_registry/registry.py": EDITS_64_REG,
+           ".github/ci/pytest_groups.json": GROUPS_EDITS_62 + GROUPS_EDITS_631 + GROUPS_EDITS_64, "tests/test_forward_validation_61.py": EDITS_62_61, "tests/test_product_ui_611.py": EDITS_62_611,
            "tests/test_product_flow_612.py": EDITS_62_612, "tests/test_db_bootstrap_busy.py": EDITS_62_FIX}
 
 
@@ -785,7 +830,7 @@ def _write(p, obj):
 
 def test_C02_the_cli_reports_NOT_RUN_for_downside_recovery_and_the_placeholders_and_reads_a_csv(tmp_path, capsys):
     from strategy_validation import cli
-    for sid in ("DOWNSIDE_DISLOCATION_RECOVERY", "MOMENTUM", "VALUE_QUALITY", "NOT_A_STRATEGY"):
+    for sid in ("DOWNSIDE_DISLOCATION_RECOVERY", "MOMENTUM", "MEAN_REVERSION", "NOT_A_STRATEGY"):          # Stage 6.4: VALUE_QUALITY is implemented
         assert cli.main(["validate", "--strategy", sid, "--dataset", "x.csv", "--output", str(tmp_path / f"{sid}.json")]) == 2
         assert json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))["status"] == "NOT_RUN"
     out = capsys.readouterr().out
@@ -922,12 +967,13 @@ def test_F01_main_plus_only_the_stage_62_files_and_exact_edits():
     assert new == NEW_62, {"unexpected_new": sorted(new - NEW_62), "missing_new": sorted(NEW_62 - new)}
     assert all(p.endswith(".md") for p in NEW_63)                                                 # Stage 6.3 adds documentation only (no replay implementation)
     assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "strategy_registry/")) for p in NEW_631)   # Stage 6.3.1: the harness only
+    assert {p.split("/")[0] for p in NEW_64} == {"value_quality", "strategy_registry", "tests", "DESIGN_64_VALUE_QUALITY.md"}   # Stage 6.4: the strategy package + its docs / tests
     changed = set(subprocess.run(["git", "diff", "--name-only", BASE], cwd=ROOT, capture_output=True, text=True).stdout.split("\n")) - {""} - new
     assert changed == CHANGED_62, {"unexpected_changes": sorted(changed - CHANGED_62), "missing_changes": sorted(CHANGED_62 - changed)}
     for rel in sorted(CHANGED_62):                                                              # each changed file: the base + its delimited block + its listed exact edits
         assert undo_62(rel, now_text(rel)) == blob(rel), f"{rel}: other than the Stage 6.2 block and the listed edits"
     assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "paper/", "portfolio/", "forward_validation/", "account_refresh/", "cash_flow/", "scripts/")) for p in new | changed)
-    for rel in ("api/server.py", "config.py", "database/database.py", "frontend/index.html", ".github/workflows/tests.yml", "strategy_registry/registry.py", "strategy_registry/downside_recovery.py"):
+    for rel in ("api/server.py", "config.py", "database/database.py", "frontend/index.html", ".github/workflows/tests.yml", "strategy_registry/downside_recovery.py"):   # registry.py: Stage 6.4's two edits
         assert now_text(rel) == blob(rel), f"{rel} must not change"
     import forward_validation as FV
     import execution as X
@@ -986,6 +1032,6 @@ def test_Z02_stage_63_downside_recovery_replay_readiness_and_NOT_RUN_kept():
     from strategy_registry import registry as R
     from strategy_validation.adapters import ADAPTERS, DDR_REASON, DownsideRecoveryAdapter, adapter_for
     assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY")) == (None, DDR_REASON) and "DESIGN_63_DDR_REPLAY_READINESS.md" in DDR_REASON
-    assert DownsideRecoveryAdapter.historical_replay_supported is False and list(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY"]   # no replay adapter was added
+    assert DownsideRecoveryAdapter.historical_replay_supported is False and sorted(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]   # no DDR replay adapter; Stage 6.4 adds Value + Quality only
     from strategy_registry import service as SR
     assert SR.detail_view("DOWNSIDE_DISLOCATION_RECOVERY")["validation"]["validation_status"] == "NOT_RUN"

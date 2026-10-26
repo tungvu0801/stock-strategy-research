@@ -204,6 +204,10 @@ def evaluate(rec: dict) -> PersistenceEligibility:
     same = bool(integ.get("same_candidate_set")) and rec.get("candidate_set_hash") == set_hash and all(a.get("input_candidate_ids") == ids for a in arms.values())
     checks.append(GateCheck(check="CANDIDATE_SET", status="PASS" if same else "FAIL",
                             detail=f"one candidate set for every arm ({len(ids)} candidates)" if same else "the arms did not receive the generated candidate set (or its hash does not match)"))
+    contract = [s for s in rec.get("candidates_skipped") or [] if s.get("reason") == "STANDARD_V1_INVALID"]   # Stage 6.4
+    checks.append(GateCheck(check="CANDIDATE_CONTRACT", status="FAIL" if contract else "PASS",
+                            detail=(f"{len(contract)} candidate(s) failed the Strategy Standard v1 contract (first: {contract[0].get('detail', '')[:160]})" if contract
+                                    else "every generated candidate is a valid Strategy Standard v1 signal")))
     bad_arms = [n for n, a in arms.items() if a.get("status") not in ARM_STATUSES or a.get("status") == "INVALID"]
     checks.append(GateCheck(check="ARM_CONTRACT", status="FAIL" if bad_arms else "PASS", detail=("invalid arm(s): " + ", ".join(bad_arms)) if bad_arms else "every arm kept its contract"))
     ca = rec.get("causality") or {}

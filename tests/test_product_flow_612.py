@@ -269,11 +269,13 @@ def test_A01_registry_api_is_get_only_with_the_documented_shapes_and_derives_the
     ddr = rows["DOWNSIDE_DISLOCATION_RECOVERY"]
     assert ddr["implemented"] is True and ddr["active"] is True and ddr["declared_status"] == "PAPER_CANDIDATE" and ddr["status"] == "PAPER_CANDIDATE" and ddr["setup_type"] == "DOWNSIDE_DISLOCATION_RECOVERY"
     assert ddr["lifecycle_basis"] == ["no forward paper validation session recorded yet and Paper Auto is OFF"]
-    for pid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):
+    vq = rows["VALUE_QUALITY"]                                                                    # Stage 6.4: implemented as a RESEARCH strategy - never active, no setup type
+    assert vq["implemented"] is True and vq["active"] is False and vq["status"] == vq["declared_status"] == "RESEARCH" and vq["setup_type"] is None and vq["placeholder_note"] is None
+    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):
         assert rows[pid]["implemented"] is False and rows[pid]["active"] is False and rows[pid]["status"] == "RESEARCH" and rows[pid]["setup_type"] is None and "not implemented" in rows[pid]["placeholder_note"]
     assert {s["source"]: s["count"] for s in j["sources"]} == {"INTERNAL": 5, "QUANTCONNECT": 0} and j["quantconnect"]["integrated"] is False and j["quantconnect"]["registered"] == 0
     assert j["pipeline"] == ["Strategy", "Opportunity / Proposal", "Portfolio", "Risk / Safety", "Execution", "Broker"] and j["facts"]["mode"] == "MONITOR_ONLY" and j["facts"]["validation"]["sessions_completed"] == 0
-    assert [l["status"] for l in j["lifecycle"]] == ["RESEARCH", "BACKTEST_CANDIDATE", "REVIEW", "PAPER_CANDIDATE", "PAPER_ACTIVE", "APPROVED", "REJECTED"] and j["counts"] == {"strategies": 5, "implemented": 1, "placeholders": 4}
+    assert [l["status"] for l in j["lifecycle"]] == ["RESEARCH", "BACKTEST_CANDIDATE", "REVIEW", "PAPER_CANDIDATE", "PAPER_ACTIVE", "APPROVED", "REJECTED"] and j["counts"] == {"strategies": 5, "implemented": 2, "placeholders": 3}   # Stage 6.4: VALUE_QUALITY implemented
     s = api.get("/api/strategy-registry/standard").json()
     assert s["version"] == "strategy_standard_v1" and s["required"][:3] == ["strategy_id", "source", "asset_class"] and "qty" in s["forbidden_keys"] and "broker" in s["forbidden_keys"] and "not a probability" in s["score"]["note"].lower()
     d = api.get("/api/strategy-registry/downside_dislocation_recovery").json()                  # case-insensitive id
@@ -311,10 +313,11 @@ def test_R01_registry_entries_sources_lifecycle_statuses_and_placeholders():
     from strategy_registry.models import StrategyEntry
     assert SR.SOURCES == ("INTERNAL", "QUANTCONNECT") and SR.STATUSES == ("RESEARCH", "BACKTEST_CANDIDATE", "REVIEW", "PAPER_CANDIDATE", "PAPER_ACTIVE", "APPROVED", "REJECTED")
     ids = [e.strategy_id for e in R.entries()]
-    assert ids == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"] and [e.strategy_id for e in R.implemented()] == ["DOWNSIDE_DISLOCATION_RECOVERY"]
+    assert ids == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"] and [e.strategy_id for e in R.implemented()] == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]   # + Stage 6.4
     for e in R.entries():
         assert set(e.model_dump()) >= {"strategy_id", "display_name", "source", "asset_class", "direction_capability", "time_horizon", "status", "description", "version", "created_at", "updated_at"}
-        assert (e.implemented and e.status == "PAPER_CANDIDATE" and e.setup_type == "DOWNSIDE_DISLOCATION_RECOVERY") or (not e.implemented and e.status == "RESEARCH" and e.setup_type is None and e.placeholder_note)
+        assert (e.implemented and e.status == "PAPER_CANDIDATE" and e.setup_type == "DOWNSIDE_DISLOCATION_RECOVERY") or (not e.implemented and e.status == "RESEARCH" and e.setup_type is None and e.placeholder_note) \
+            or (e.implemented and e.strategy_id == "VALUE_QUALITY" and e.status == "RESEARCH" and e.setup_type is None and not e.placeholder_note)   # Stage 6.4: a research strategy
     base = dict(strategy_id="QC_TEST", display_name="QC test", source="QUANTCONNECT", asset_class="US_EQUITY", direction_capability="LONG_SHORT", time_horizon="INTRADAY", status="RESEARCH",
                 description="d", version="0.1", created_at="2026-10-25", updated_at="2026-10-25")
     assert StrategyEntry(**base).source == "QUANTCONNECT"                                      # a QuantConnect-sourced entry is a valid registry row
@@ -332,7 +335,7 @@ def test_R01_registry_entries_sources_lifecycle_statuses_and_placeholders():
     assert lc["status"] == "PAPER_ACTIVE" and "3 session(s)" in lc["basis"][0] and lc["decided"] is False and "never derived" in lc["decision"]
     assert S.derive_lifecycle(R.get("MOMENTUM"), {"available": True, "mode": "PAPER_AUTO", "validation": {"sessions_completed": 9}})["status"] == "RESEARCH"   # a placeholder never becomes active
     v = S.registry_view({"available": False})
-    assert v["counts"] == {"strategies": 5, "implemented": 1, "placeholders": 4} and [s["active"] for s in v["strategies"]] == [True, False, False, False, False]
+    assert v["counts"] == {"strategies": 5, "implemented": 2, "placeholders": 3} and [s["active"] for s in v["strategies"]] == [True, False, False, False, False]   # Stage 6.4
     assert v["sources"][1] == {"source": "QUANTCONNECT", "label": SR.SOURCE_LABELS["QUANTCONNECT"], "count": 0, "note": S.QUANTCONNECT_NOTE} and "nothing is wired" in S.QUANTCONNECT_NOTE
     assert "no strategy executes" in SR.DISCLAIMER and "not a probability" in SR.DISCLAIMER and SR.PIPELINE == ("Strategy", "Opportunity / Proposal", "Portfolio", "Risk / Safety", "Execution", "Broker")
     json.dumps(S.detail_view("BREAKOUT", None))
@@ -361,10 +364,13 @@ def test_R02_strategy_standard_v1_validation_rejects_execution_fields_uncalibrat
     for name, (bad, code) in codes.items():
         r = check_signal(bad, reg)
         assert r["valid"] is False and r["error"]["code"] == code, (name, r["error"])
-    for pid in ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):
+    for pid in ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT"):
         with pytest.raises(StrategyStandardError) as e:
             validate_signal(signal(strategy_id=pid), reg)
         assert e.value.code == "STRATEGY_NOT_IMPLEMENTED"                                        # a future placeholder never appears as an active signal
+    with pytest.raises(StrategyStandardError) as e:                                              # Stage 6.4: a RESEARCH strategy never emits a live signal either
+        validate_signal(signal(strategy_id="VALUE_QUALITY"), reg)
+    assert e.value.code == "STRATEGY_INACTIVE"
     from strategy_registry.models import StrategyEntry
     inactive = {**reg, "REVIEW_ONE": StrategyEntry(strategy_id="REVIEW_ONE", display_name="r", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="SWING", status="REVIEW",
                                                    description="d", version="0.1", created_at="2026-10-25", updated_at="2026-10-25", implemented=True, setup_type="X")}

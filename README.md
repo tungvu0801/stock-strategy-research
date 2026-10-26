@@ -1098,6 +1098,27 @@ Docs: `STRATEGY_VALIDATION_HARNESS.md`, `DESIGN_62_STRATEGY_VALIDATION.md`, `DES
 `tests/test_strategy_validation_62.py`, `tests/test_validation_integrity_631.py`, `tests/frontend/strategy_validation.test.cjs`, harness flows
 `strategy_validation*`.
 
+## Value + Quality strategy (Stage 6.4, research only)
+
+`value_quality/` is Strategy #2: long only, monthly, deterministic, no model. At the first session of each month the shared core
+(`value_quality/core.py`) ranks a fixed research universe by an equal-weight composite of **value** (earnings, book and operating cash-flow
+yield - each only when its numerator is positive, so a negative P/E is never "cheap") and **quality** (return on assets, cash flow on assets,
+equity ratio), as cross-sectional percentile ranks; the top 20 are held at equal weight and re-examined monthly (ENTER / HOLD / EXIT, no stop).
+
+* **Point in time**: SEC EDGAR XBRL facts with their filing dates; a fact is usable from the session after it was filed; per period the latest
+  filing visible at the rebalance wins, so a restatement appears only once filed. Share counts are re-based across splits; financial and
+  real-estate issuers (SIC 6000-6799) are excluded.
+* **Survivorship**: the universe is today's large caps (no point-in-time constituents): every run carries **`SURVIVORSHIP_BIAS_PRESENT`**,
+  displayed with the verdict, and an equal-weight universe control shows what the selection added beyond that universe.
+* **Data** (separate ingestion step, the only network access): `python -m value_quality.ingest fetch --out runtime/vq --env-file .env` then
+  `python -m value_quality.ingest build --out runtime/vq` (offline) -> `runtime/vq/vq_bundle.json` (git-ignored).
+* **Validate**: `python -m strategy_validation validate --strategy VALUE_QUALITY --dataset runtime/vq/vq_bundle.json --persist` (the Stage 6.2 /
+  6.3.1 harness: TRAIN 70 % / OOS 30 %, friction, independent audit, integrity gate; persisted only when ELIGIBLE).
+* Result (2020-09 to 2026-10, rules frozen before the OOS run): harness verdict PASS (eligible for human review) with
+  `SELECTION_EDGE_NOT_ESTABLISHED` - the portfolio beat SPY but not reliably the equal-weight universe control. The lifecycle stays **Research**.
+
+Docs: `DESIGN_64_VALUE_QUALITY.md`. Tests: `tests/test_value_quality_64.py`, `tests/frontend/value_quality.test.cjs`.
+
 ## Continuous integration (Stage 6.0.3, parallel suites)
 
 `Stock Agent CI` (`.github/workflows/tests.yml`) runs on every push to `main` and every pull request to `main`, on GitHub-hosted

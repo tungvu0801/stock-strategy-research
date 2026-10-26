@@ -188,7 +188,36 @@ patterns only.
   embargo before the OOS window.
 * Parameter-sensitivity neighbours are evaluated on the whole dataset (TRAIN + OOS): a diagnostic label only, never a selection.
 * The causality checks are pattern-based; a manual review is always required.
-* No real historical dataset ships with the repository, and no registered strategy has an honest historical replay yet: today every registered
-  strategy reads `NOT_RUN`. Value + Quality and Momentum are not implemented here.
+* No real historical dataset ships with the repository (data bundles are built under the git-ignored `runtime/`). Downside Dislocation Recovery
+  reads `NOT_RUN` (no honest replay, Stage 6.3); Value + Quality (Stage 6.4, section 13) is replayed from point-in-time SEC fundamentals; Momentum,
+  Mean Reversion and Breakout are not implemented.
 * The replay foundation (`strategy_validation/replay.py`) defines the research-vs-paper candidate-state comparison; no paper-side source is
   implemented in Stage 6.2.
+
+## 13. Cross-sectional, stop-less strategies (Stage 6.4)
+
+Added for Value + Quality (`value_quality/`, `DESIGN_64_VALUE_QUALITY.md`) and available to any adapter; a per-trade strategy is unaffected
+(every default is the Stage 6.2 behaviour).
+
+* **Auxiliary point-in-time data**: a dataset may carry `aux` = `series` ({name: {symbol: {date: value}}}), `events` (rows with a `filed` date)
+  and `static` (classification). `aux` is part of the content hash (`dataset_id`), and the TRAIN view (`Dataset.until(train_end)`) cuts it:
+  series after the TRAIN end and events filed after it are removed, so a TRAIN outcome can read no later filing either.
+* **`stop_policy = "NONE"`**: a candidate without an invalidation level (a periodic rebalance) - it must use **`EQUAL_WEIGHT`** sizing (an
+  adapter-declared `sizing` = {mode, position_pct}: notional = position_pct x the fixed equity; risk sizing needs a stop, so the engine refuses
+  the combination). The R of such a trade is its return on the position notional.
+* **Per-candidate `max_hold_bars`** and **`time_exit_fill = "OPEN"`**: a time exit fills at the open of its last bar (the hand-over to the next
+  monthly leg), instead of the default close.
+* **Transaction flags** `entry_trade` / `exit_trade`: a leg that continues a held position on one side is not an order there and pays no
+  slippage, commission or fee on that side; the audit re-derives the flags (TRANSACTION_FLAGS) and the fills.
+* **Train-vs-OOS diagnostic**: its near-zero band (|mean R| <= 0.05) is in risk units; for EQUAL_WEIGHT legs, whose R is the notional return, no
+  band is applied (the sign and the degradation ratio decide). Its weakest case now reads "not clearly positive" (it said "not positive" also
+  for two small positive values).
+* **Adapter hooks**: `audit_extra(record, dataset)` (strategy-specific mechanical checks merged into the one audit; any violation fails it),
+  `strategy_diagnostics(record, dataset)` (research diagnostics, never a gate) and `research_flags(dataset)` (limitations such as
+  `SURVIVORSHIP_BIAS_PRESENT`, stored with the run and displayed with the verdict - never suppressed).
+* **Research registry check**: a historical replay checks the Strategy Standard v1 schema plus the registry rules that apply to research
+  (registered, implemented, source, direction). The live-emission rule (only PAPER_CANDIDATE / PAPER_ACTIVE / APPROVED strategies emit LIVE
+  signals) is not applied to a replay: a strategy is validated BEFORE any promotion. A live signal of a RESEARCH strategy is still refused
+  (`STRATEGY_INACTIVE`).
+* **`CANDIDATE_CONTRACT`** (integrity gate): a run in which any generated candidate failed the Strategy Standard v1 contract is BLOCKED - a
+  replay whose candidates were all rejected can no longer be persisted as an "eligible" empty result.

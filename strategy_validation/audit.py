@@ -26,21 +26,24 @@ TOL = 1e-6
 def _rehash(c: dict) -> str:
     fh = hashlib.sha256(json.dumps({"features": c.get("features") or {}, "as_of": c.get("feature_as_of") or {}}, sort_keys=True, separators=(",", ":"), default=str)
                         .encode("utf-8")).hexdigest()[:32]
+    inv = "NONE" if c.get("invalidation_reference") is None else round(float(c["invalidation_reference"]), 8)
     blob = json.dumps([c["strategy_id"], c["strategy_version"], c["symbol"], c["direction"], c["signal_date"], round(float(c["entry_reference"]), 8),
-                       round(float(c["invalidation_reference"]), 8), fh], separators=(",", ":"))
+                       inv, fh], separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32], fh
 
 
-def _first_exit(rows: List[dict], si: int, policy: str, stop: float, target, limit: int):
+def _first_exit(rows: List[dict], si: int, policy: str, stop: float, target, limit: int, time_exit_fill: str = "CLOSE"):
     """The documented exit rules, re-implemented: (exit date, reason, bars held, ambiguous) or None when there is no bar to exit on."""
     seq = rows[si + 1: si + 1 + limit]                                          # next-bar-open: the entry bar is bar 1; market-on-close: the bar after the signal
     for k, b in enumerate(seq, start=1):
         entry_bar = policy == "NEXT_BAR_OPEN" and k == 1
-        if not entry_bar and b["open"] <= stop:
+        if not entry_bar and stop is not None and b["open"] <= stop:
             return b["date"], "STOP_GAP", k, False
         if not entry_bar and target is not None and b["open"] >= target:
             return b["date"], "TARGET", k, False
-        lo, hi = b["low"] <= stop, target is not None and b["high"] >= target
+        if not entry_bar and time_exit_fill == "OPEN" and k == limit:
+            return b["date"], "TIME_EXIT", k, False
+        lo, hi = stop is not None and b["low"] <= stop, target is not None and b["high"] >= target
         if lo:
             return b["date"], "STOP", k, hi                                    # both inside one bar: stop first, flagged ambiguous
         if hi:
@@ -111,6 +114,10 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
             continue
         if arms and t["candidate_id"] not in takes.get(t["arm"], set()):
             bad.append(("NOT_ACCEPTED", f"{t['arm']} did not accept (TAKE) this candidate"))
+        if bool(t.get("entry_trade", True)) != bool(c.get("entry_trade", True)) or bool(t.get("exit_trade", True)) != bool(c.get("exit_trade", True)):
+            bad.append(("TRANSACTION_FLAGS", "the trade's entry / exit transaction flags differ from its candidate's"))
+        e_slip = slip if t.get("entry_trade", True) else 0.0                     # a continuation is not a transaction: no slippage
+        x_slip = slip if t.get("exit_trade", True) else 0.0
         key = (t["arm"], t["candidate_id"])
         if key in seen:
             bad.append(("DUPLICATE_EXECUTION", "the candidate was executed twice in one arm"))
@@ -140,8 +147,11 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
             bad.append(("TRADE_BEFORE_SIGNAL", f"entry {t['entry_date']} vs signal {c['signal_date']}"))
         if not (t["entry_date"] <= t["exit_date"]) or (policy == "SIGNAL_CLOSE_MOC" and not t["exit_date"] > t["entry_date"]):
             bad.append(("TIMESTAMP_ORDER", f"entry {t['entry_date']} / exit {t['exit_date']}"))
-        if abs(t["stop"] - float(c["invalidation_reference"])) > TOL or not t["stop"] < t["entry_raw"]:
-            bad.append(("STOP_CONSISTENCY", f"stop {t['stop']} vs invalidation {c['invalidation_reference']} / entry {t['entry_raw']}"))
+        if c.get("invalidation_reference") is None:                              # a stop-less strategy: the trade must carry no stop either
+            if t.get("stop") is not None or t["exit_reason"] in ("STOP", "STOP_GAP"):
+                bad.append(("STOP_CONSISTENCY", f"a stop-less candidate traded with stop {t.get('stop')} / exit {t['exit_reason']}"))
+        elif t.get("stop") is None or abs(t["stop"] - float(c["invalidation_reference"])) > TOL or not t["stop"] < t["entry_raw"]:
+            bad.append(("STOP_CONSISTENCY", f"stop {t.get('stop')} vs invalidation {c['invalidation_reference']} / entry {t['entry_raw']}"))
         if t["exit_reason"] not in ALLOWED_EXITS:
             bad.append(("EXIT_REASON", f"{t['exit_reason']} is not an allowed exit"))
         if t["holding_bars"] > t["max_hold_bars"] or t["max_hold_bars"] != c["max_hold_bars"] or t["holding_bars"] < 1:
@@ -152,31 +162,35 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
         else:
             xb = rows[xi]
             r = t["exit_reason"]
-            if r == "STOP" and not (xb["low"] <= t["stop"] + TOL and abs(t["exit_raw"] - t["stop"]) <= TOL):
+            if r == "STOP" and not (t.get("stop") is not None and xb["low"] <= t["stop"] + TOL and abs(t["exit_raw"] - t["stop"]) <= TOL):
                 bad.append(("EXIT_CONSISTENCY", "STOP exit without the bar reaching the stop"))
-            elif r == "STOP_GAP" and not (xb["open"] <= t["stop"] + TOL and abs(t["exit_raw"] - xb["open"]) <= TOL):
+            elif r == "STOP_GAP" and not (t.get("stop") is not None and xb["open"] <= t["stop"] + TOL and abs(t["exit_raw"] - xb["open"]) <= TOL):
                 bad.append(("EXIT_CONSISTENCY", "STOP_GAP exit without a gap through the stop"))
             elif r == "TARGET" and not (t["target"] is not None and xb["high"] >= t["target"] - TOL and abs(t["exit_raw"] - t["target"]) <= TOL):
                 bad.append(("EXIT_CONSISTENCY", "TARGET exit without the bar reaching the target"))
-            elif r == "TIME_EXIT" and not (t["holding_bars"] == t["max_hold_bars"] and abs(t["exit_raw"] - xb["close"]) <= TOL):
+            elif r == "TIME_EXIT" and not (t["holding_bars"] == t["max_hold_bars"] and abs(t["exit_raw"] - xb["open" if ex.get("time_exit_fill") == "OPEN" else "close"]) <= TOL):
                 bad.append(("EXIT_CONSISTENCY", "TIME_EXIT before the holding limit or not at the close"))
             elif r == "DATA_END" and not (xi == len(rows) - 1 and abs(t["exit_raw"] - xb["close"]) <= TOL):
                 bad.append(("EXIT_CONSISTENCY", "DATA_END exit before the last bar"))
-        if abs(t["entry_fill"] - t["entry_raw"] * (1 + slip)) > 1e-4 or abs(t["exit_fill"] - t["exit_raw"] * (1 - slip)) > 1e-4:
+        if abs(t["entry_fill"] - t["entry_raw"] * (1 + e_slip)) > 1e-4 or abs(t["exit_fill"] - t["exit_raw"] * (1 - x_slip)) > 1e-4:
             bad.append(("FRICTION", "fills do not apply the configured slippage"))
         if abs(t["net_pnl"] - (t["gross_pnl"] - t["slippage_cost"] - t["fees"])) > 1e-4:
             bad.append(("FRICTION", "net P/L != gross - slippage - fees"))
         if abs(t["gross_pnl"] - (t["exit_raw"] - t["entry_raw"]) * t["qty"]) > 1e-4 * max(1, t["qty"]):
             bad.append(("GROSS", "gross P/L != (exit - entry) x quantity"))
-        ef = t["entry_raw"] * (1 + slip)                                         # the unrounded fill (the record keeps 6 decimals)
-        if sizing and ef > t["stop"]:
+        ef = t["entry_raw"] * (1 + e_slip)                                       # the unrounded fill (the record keeps 6 decimals)
+        if sizing and sizing.get("mode") == "EQUAL_WEIGHT":
+            q_ew = max(1, math.floor(float(sizing["equity"]) * float(sizing["position_pct"]) / 100.0 / ef))
+            if t["qty"] != q_ew:
+                bad.append(("SIZE", f"quantity {t['qty']} != the equal-weight size {q_ew}"))
+        elif sizing and t.get("stop") is not None and ef > t["stop"]:
             q_risk = math.floor(float(sizing["equity"]) * float(sizing["risk_fraction"]) / (ef - t["stop"]))
             q_cap = math.floor(float(sizing["equity"]) * float(sizing["max_position_pct"]) / 100.0 / ef)
             if t["qty"] != max(1, min(q_risk, q_cap)):
                 bad.append(("SIZE", f"quantity {t['qty']} != the risk-based size {max(1, min(q_risk, q_cap))}"))
         if t["target"] is not None and not t["target"] > t["entry_raw"]:
             bad.append(("TARGET_CONSISTENCY", f"target {t['target']} not above the entry {t['entry_raw']}"))
-        risk = t["qty"] * (t["entry_fill"] - t["stop"])
+        risk = t["qty"] * (t["entry_fill"] - t["stop"]) if t.get("stop") is not None else t["qty"] * t["entry_fill"]   # stop-less: the notional
         if risk <= 0 or abs(t["achieved_risk"] - risk) > 1e-4 * max(1, t["qty"]) or abs(t["r_net"] - t["net_pnl"] / risk) > 1e-4:
             bad.append(("R_MULTIPLE", "R is not net P/L / (quantity x (entry fill - stop))"))
         if run.get("train_end") and t.get("segment") == "TRAIN" and t["exit_date"] > run["train_end"]:
@@ -185,8 +199,8 @@ def audit(run: dict, candidates: List[dict], trades: List[dict], bars: Dict[str,
             bad.append(("BOUNDARY_NOT_PURGED", f"its holding window reaches past the TRAIN end {run['train_end']}: it must be purged, not traded"))
         if run.get("train_end") and t.get("segment") != ("TRAIN" if c["signal_date"] <= run["train_end"] else "OOS"):
             bad.append(("SEGMENT", f"labelled {t.get('segment')} but the signal {c['signal_date']} is {'on or before' if c['signal_date'] <= run['train_end'] else 'after'} the TRAIN end {run['train_end']}"))
-        if si is not None and t["stop"] < t["entry_raw"]:
-            exp = _first_exit(rows, si, policy, t["stop"], t["target"], c["max_hold_bars"])
+        if si is not None and (t.get("stop") is None or t["stop"] < t["entry_raw"]):
+            exp = _first_exit(rows, si, policy, t.get("stop"), t["target"], c["max_hold_bars"], ex.get("time_exit_fill", "CLOSE"))
             if exp is None or (exp[0], exp[1], exp[2]) != (t["exit_date"], t["exit_reason"], t["holding_bars"]) or exp[3] != bool(t.get("ambiguous_bar")):
                 bad.append(("EXIT_FIRST_TOUCH", f"expected {exp[:3] if exp else 'no exit'}{' (ambiguous)' if exp and exp[3] else ''}, recorded {(t['exit_date'], t['exit_reason'], t['holding_bars'])}"))
         if bad:
