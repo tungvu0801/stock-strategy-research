@@ -118,3 +118,148 @@ bars, raw series, split ratios and issuer map - no fundamentals.
 * Diagnostics (`breakout/diagnostics.py`, never a gate): exposure, market sensitivity, the invested-capital excess, absolute performance,
   friction and turnover, follow-through, failed breakouts, concentration (with the cash part of the excess), the Momentum overlap, data quality,
   the control-membership and cash-accounting re-checks, and the pre-declared sensitivity on the TRAIN view only.
+
+## 5. Results
+
+Final stored run `d6e4e34d5bc8470aa49e6646a66b613f` (git `8fe585b`: the freeze plus the review's correctness and disclosure fixes; no rule
+changed). It reproduces the first OOS run `dc45d3a761ab44d18dc0185d45e2fc16` (git `2eb5981`, the freeze commit) exactly - the same 2,005
+candidates (0 skipped), candidate set `2a1f66f5c2024258d83fa6db0678cb45`, the same period table, edge and verdict; only the descriptive fields
+the review fixed differ (section 6a). Integrity PASS, persistence ELIGIBLE; audit 4,000 / 4,000 trades validated, 0 strategy-specific
+violations; control parity 8 / 8; cash accounting re-derived from the trades: 0 mismatches over 321 weeks; control membership: 0 mismatches; 5
+boundary legs purged (one boundary week excluded); 52.2 periods a year; causality: one STATIC_FUTURE_INDEX WARN (the next rebalance's decision
+sets when a leg ends - made before the exit fill: not look-ahead).
+
+**Absolute performance (per leg, net) - a trade-level description, NOT SELECTION-EDGE EVIDENCE**
+
+| | Legs | Gross | Slippage | Net | Mean R | t (per leg) | Win rate |
+|---|---|---|---|---|---|---|---|
+| TRAIN | 1,364 | 23,785 | 5,493 | 18,292 | 0.0027 | 2.34 | 54.0 % |
+| OOS | 636 | 13,094 | 2,580 | 10,514 | 0.0034 | 1.44 | 53.9 % |
+| All | 2,000 | 36,879 | 8,073 | 28,806 | 0.0029 | 2.68 | 54.0 % |
+
+Absolute verdict: PASS (the validation_v2 policy on the legs).
+
+**Control comparison (one observation per WEEK; the strategy on the fixed-slot basis, cash at 0 %)**
+
+| | TRAIN (2020-08 → 2024-11) | OOS (2024-12 → 2026-10) | All |
+|---|---|---|---|
+| Weekly periods | 223 | 98 | 321 |
+| Mean invested fraction | 30.6 % | 32.4 % | 31.2 % |
+| Strategy | +18.8 % | +10.9 % | +31.7 % |
+| SELECTION CONTROL (equal-weight eligible universe, fully invested) | +142.4 % | +47.8 % | +258.3 % |
+| Mean excess per week (net / gross) | −0.34 % / −0.32 % | −0.31 % / −0.28 % | −0.33 % / −0.31 % |
+| Excess t-statistic (per week) | −2.47 | **−1.59** | −2.94 |
+| Selection part / cash part of the weekly excess | −0.033 % (t −0.79) / −0.31 % | +0.015 % (t 0.14) / −0.32 % | −0.018 % (t −0.43) / −0.31 % |
+| Excess win rate | 39.5 % | 40.8 % | 39.9 % |
+| Tracking (active) volatility, annualized | 15.0 % | 13.8 % | 14.7 % |
+| Worst relative week | 2022-03-14: −8.6 % | 2025-04-21: −5.8 % | 2022-03-14: −8.6 % |
+| Max relative drawdown | 51.0 % | 32.3 % | 64.0 % |
+| Concentration | n/a (no positive summed excess) | n/a | n/a |
+| Volatility strategy / control / SPY (annualized) | 7.2 % / 17.5 % / 15.9 % | 8.1 % / 14.0 % / 13.8 % | 7.5 % / 16.5 % / 15.3 % |
+| Sharpe strategy / control / SPY (rf 0) | 0.60 / 1.27 / 1.00 | 0.72 / 1.56 / 1.04 | 0.64 / 1.34 / 1.01 |
+| Max drawdown strategy / control / SPY | 9.6 % / 23.5 % / 24.4 % | 12.4 % / 14.8 % / 14.5 % | 12.4 % / 23.5 % / 24.4 % |
+| Capital turnover per week strategy / control | 25.2 % / 1.3 % | 27.2 % / 0.05 % | 25.8 % / 0.9 % |
+| MARKET BENCHMARK (SPY) | +86.9 % | +28.4 % | +140.0 % |
+
+**Raw selection edge: NOT_ESTABLISHED** (`NO_OOS_EXCESS`: the OOS mean excess over the control is −0.31 % per week, t = −1.59 over 98 weeks -
+not positive; the cash guard is not reached). **Universe integrity: UNTRUSTED** (the cap allows at most NOT_ESTABLISHED; not binding here).
+**Final selection edge: NOT_ESTABLISHED. Overall verdict: FAIL** (not ready for paper). **Lifecycle: Research.**
+
+Diagnostics (descriptive only):
+
+* Exposure (cash is not selection skill): the invested fraction averaged 31 % (median 25 %, from 0 % to 100 %); weeks with 0 / 1-5 / 6-10 /
+  11-19 / 20 holdings: 41 / 139 / 75 / 53 / 13 of 321 (OOS 9 / 41 / 27 / 18 / 3 of 98). Breakout candidates per week: mean 6.6, at most 47;
+  more than 20 in 12 weeks. Beta to SPY: strategy 0.21, control 1.04.
+* Where the excess comes from: the weekly excess splits exactly into a selection part (the invested fraction x the legs' excess over the
+  control) and a cash part. The cash part is −0.31 % a week in every segment and carries almost all of the shortfall (the summed excess of
+  −1.07 over 321 weeks: cash −1.01, names −0.06). The selection part is indistinguishable from zero: −0.033 % a week in TRAIN (t −0.79), +0.015 %
+  in OOS (t 0.14). The unweighted mean over weeks with a position reads −0.009 % (TRAIN) and +0.31 % (OOS, t 0.76) - that measure counts a
+  one-stock week like a twenty-stock week, which is why the guard does not use it (section 7, M1).
+* Market weeks: the excess was −1.38 % a week in the 187 weeks SPY rose and +1.12 % in the 134 weeks it fell (OOS −1.17 % in 56 / +0.85 % in
+  42): the signature of a low-exposure portfolio, not of selection. 2022 (a falling market) is the only year with a positive mean excess.
+* Follow-through (each selected leg's gross return over its week): 41.2 % continued higher (> +1 %), 25.6 % flat, 33.3 % failed (< −1 %);
+  relative to the control: 35.9 % above it by more than 1 %, 25.8 % within 1 %, 38.4 % below (mean +0.02 %).
+* Failed breakouts: 44.5 % of the legs ended below their entry price; 35.0 % ended below their breakout reference.
+* Momentum overlap (241 weeks with a full 12-1 history): 29.8 % of Breakout's holdings were also in the 12-1 Momentum portfolio at the same
+  session, against 25.6 % expected by chance from the same eligible set; the weekly excess of the two selections correlates at 0.07. Breakout
+  is close to independent of Momentum here.
+* Turnover and friction: capital turnover 25.8 % a week (13.4x a year: entries / 20 slots); selection stability 17 % (most breakouts are not
+  breaking out again a week later); friction costs 1.3 % a year; the gross weekly excess is already negative.
+* Concentration: by SEC SIC major group, software led at 64 of 322 rebalances, semiconductors 62, pharmaceuticals 54 (mean top-group share
+  45 %, max 100 % in thin weeks); the most held names were TSLA and NVDA (13 % of weeks each), KLAC, LRCX, MU, IBM. The largest name
+  contributions: SNDK +0.038, MRVL +0.034, MU +0.029, TSLA +0.027, UNH +0.020; detractors REGN −0.021, COST −0.020, DHR −0.020, KLAC −0.018,
+  NOW −0.016.
+* Sensitivity (TRAIN view only; every row on the same 218 weeks): base t −2.38; lookback 10 −2.01; lookback 40 −2.34; 15 holdings −2.22; 25
+  holdings −2.44. Every neighbour lags the fully invested control by about as much; nothing was chosen from it.
+* Data quality: 30 DATA_INCONSISTENT exclusions - 25 LARGE_REBASING (the spin-off windows of T 2022-04, GE 2023-01 and 2024-04, DHR 2023-10,
+  HON 2025-11, SPGI 2026-07) and 5 RATIO_ARTIFACT (HON at the five rebalances from 2026-06-29 to 2026-07-27, whose 20-session windows contain the
+  provider artifact); 0 extreme (> +25 %) breakouts; 0 single-print spikes. One inconsistent pair inside a held window: HON's control
+  position of the 2026-06-22 OOS week (+0.058 pp on that week's excess, `HOLDING_WINDOW_DATA_ANOMALY`). Five provider-adjusted spin-offs fall
+  inside held control windows (GE twice, DHR, HON 2025, SPGI 2026): correct total return, listed apart with the excess at stake had the
+  adjustment been wrong.
+* Eligibility: 29-80 eligible stocks per rebalance (mean 76.7); exclusions (stock-rebalances): MISSING_LOOKBACK_BAR 553 (the feed gaps),
+  NO_PRICE 327, SECOND_LISTING 322, LIQUIDITY_BELOW_MIN 162, DATA_INCONSISTENT 30, LIQUIDITY_HISTORY 4.
+
+## 6. Interpretation and decision
+
+Holding the week's breakouts - about six stocks on an average week, 31 % of the capital, the rest in cash - did not beat simply holding the
+eligible universe over the same weeks: it lagged by about 0.3 % a week in both TRAIN (t −2.47) and OOS (t −1.59). That shortfall is
+the cash: with a beta of 0.21 the strategy trailed in rising weeks and led in falling ones. The question the selection control asks -
+did choosing the breakouts add value on the capital that was invested? - has no positive answer either: the selection part of the excess
+is −0.03 % a week in TRAIN and +0.015 % in OOS, statistically zero, and the selected breakouts beat the control in their week about as often as
+they fell behind it. Breakout is close to independent of Momentum here, but independence does not help a selection that adds nothing. Even a
+positive raw edge would have been capped by the untrusted universe. **Decision: keep Breakout in Research.** Per the policy it is not eligible
+for human review for paper trading; nothing is promoted and no rule is changed after this result.
+
+## 6a. Development log (what was seen when)
+
+1. Hypothesis and definition written (sections 1-2) before any code.
+2. Implementation and tests on SYNTHETIC fixtures only. They exposed two validation gaps before any real return was seen, both fixed in the
+   pre-registered v3 extension: an all-cash boundary week was not excluded on both sides (the parity audit failed it), and an all-cash run
+   against a falling control read as an ESTABLISHED raw edge - hence the CASH_DRIVEN_EXCESS guard.
+3. Feasibility on the calendar, the adjusted OHLC and the TRAIN VIEW only: eligibility and breakout counts, the feed gaps, and the
+   adjusted-vs-raw gap distribution that bounds the large re-basing rule - no strategy or control return was computed on the real data.
+4. All 8 CI groups and the frontend tests green; then the freeze: commit `2eb5981` ("freeze Breakout v1 rules before OOS", 09:48:50Z) - every
+   rule, the cash basis, the guard, the friction, the sensitivity set and the diagnostic definitions.
+5. First real run `dc45d3a7…` (started 09:48:55Z on the clean freeze commit; its record carries `2eb5981`): the result above. The OOS result was
+   seen from here on.
+6. Independent adversarial review (section 7). Its fixes - committed as `8fe585b` with this disclosure - changed no Breakout rule
+   (`breakout/core.py`, `data.py`, `adapter.py` and `__init__.py` are byte-identical to the freeze, `test_G06`): the cash guard now reads the
+   exact capital-weighted selection part (it can only lower an edge and does not change this run, whose raw edge stops at NO_OOS_EXCESS), the
+   v3 strategy turnover uses the capital basis under fixed slots, and four diagnostics gained a baseline, a relative variant or a corrected
+   label. Rerun `d6e4e34d…` (10:07Z, on `8fe585b`) reproduces the first run's candidate set, period table, edge and verdict exactly; it is the
+   stored latest run.
+
+## 7. Adversarial review
+
+An independent reviewer read the code (without this document's conclusions), re-derived the stored run, cut the data after each rebalance and
+inflated T's own highs ten-fold at nine real rebalances (nothing changed), and re-ran the earlier strategies' stored records under the new
+harness code (byte-identical v3 blocks; the same gate results). Clean: look-ahead and self-inclusion, the 5 % large re-basing rule (a gap
+between the adjusted and the raw return, never the return itself; dividends at most 2.59 % and spin-offs at least 5.77 % over the whole
+dataset; it excludes the stock from both sides), cash accounting, the boundary rule, control fairness, SPY vs the control, survivorship
+(declared and capped), friction and continuations, post-OOS tuning (the run was on the freeze commit), audit independence, the gate, broker
+isolation and the earlier strategies. Findings:
+
+| # | Severity | Area | Finding | Resolution |
+|---|---|---|---|---|
+| M1 | MEDIUM | Cash accounting | the CASH_DRIVEN_EXCESS guard read an UNWEIGHTED mean over weeks with a position: a synthetic run losing on its 20-stock up weeks and winning on its 1-stock down weeks passed it with an ESTABLISHED edge built from cash timing | fixed: the guard reads the exact capital-weighted selection part of every week's excess, which must be positive with t >= the existing negligible bar (1.0); only lowers; this run unchanged (NO_OOS_EXCESS); the counter-example is a test (C05) |
+| L1 | LOW | Momentum overlap | no chance baseline: 30 % overlap looked like duplication | fixed: 25.6 % expected by chance from the same eligible set |
+| L2 | LOW | Data quality | the held-window flag fired on provider-ADJUSTED spin-offs (correct total return) | fixed: listed apart, never flagged; only the HON artifact remains |
+| L3 | LOW | Turnover | the v3 strategy turnover was entries / positions under fixed slots (not comparable with the control) | fixed: entries / slots (capital turnover) under fixed slots |
+| L4 | LOW | Follow-through | the absolute leg return favours "continued higher" in a rising market | the pre-declared definition kept; a control-relative variant added |
+| L5 | LOW | Data | IEX-only highs can sit below consolidated highs, making breakouts easier to trigger | disclosed in the Lab risk notes and section 8 |
+| L6 | LOW | Process | the results section was still being written during the review (a documents test red) | completed |
+
+## 8. Limitations
+
+* **Survivor universe** (`FIXED_CURRENT_UNIVERSE`, UNTRUSTED): today's large caps are partly the stocks whose breakouts kept going (SNDK, a 2025
+  spin-off, is the largest name contribution); breakouts that collapsed into delisting or a sale are absent. The final edge is capped regardless.
+* **Low exposure against a fully invested control**: the strategy is 31 % invested on average, so the period excess is dominated by the cash
+  part. The control was not exposure-matched (no matched-count control was pre-registered); the exact selection / cash split and the guard
+  are how the cash is kept apart from the selection. A matched-exposure control would be a new methodology version.
+* IEX-only bars: an IEX-only high can sit below the consolidated high (an easier breakout); IEX-only volume in the liquidity filter.
+* Feed gaps: 553 stock-weeks are excluded by the complete-lookback rule around three provider feed-gap sessions (never filled).
+* Unadjusted spin-offs (IBM 2021, MRK 2021, PFE 2020) read as real drops: they can only raise a later reference, never create a breakout.
+* One market path of 321 weeks (98 OOS), dominated by a broad advance in which cash lags; weekly observations are treated as independent.
+* No risk adjustment in the edge test; the strategy's lower volatility and beta are reported, not netted.
+* Continuing holdings are re-sized to 5 % at every weekly leg without a friction charge (the Stage 6.4 convention, on both sides).
