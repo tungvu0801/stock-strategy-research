@@ -13,7 +13,9 @@ edge itself is validation_v3's (strategy_validation/cross_sectional.py), capped 
   momentum_overlap    how often the selected losers are names the 12-1 Momentum ranking (Stage 6.5) would avoid or hold - diversification only,
                       never combined
   data_quality        the DATA_INCONSISTENT exclusions (by code), the provider's ratio artifacts, extreme selected drops and single-print V shapes
-                      (the latter uses the next open: reported, never a filter)
+                      (the latter uses the next open: reported, never a filter), and every inconsistent day-pair INSIDE a held window - a strategy
+                      leg or a control position - with its estimated effect on that week's excess (the window rule guards the signal only;
+                      outcomes are reported, never re-weighted or excluded)
   control_membership  the period table's control members re-checked against the independent audit's re-derived eligible set
   sensitivity         the pre-declared neighbours (mean_reversion.SENSITIVITY) and the base configuration, computed on the TRAIN VIEW of the dataset
                       (dataset.until(train_end): no bar after the TRAIN end exists for them), every row on the same weekly periods; never chosen"""
@@ -26,6 +28,8 @@ from typing import Dict, List, Optional
 
 from mean_reversion import (CONCENTRATION_NAME_SHARE, CONCENTRATION_TOP_NAMES, FLAG_FRICTION, FLAG_NAMES, LOOKBACK_SESSIONS, NORMAL_DAY, RESEARCH_UNIVERSE,
                             SENSITIVITY)
+
+FLAG_HOLDING_ANOMALY = "HOLDING_WINDOW_DATA_ANOMALY"                             # a disclosure (Stage 6.6 review): never a gate, never a filter
 
 MAJOR_GROUPS = {"28": "Chemicals & pharmaceuticals (SIC 28)", "35": "Industrial & computer equipment (SIC 35)", "36": "Electronic equipment & semiconductors (SIC 36)",
                 "37": "Transportation equipment (SIC 37)", "38": "Instruments & medical devices (SIC 38)", "48": "Communications (SIC 48)", "49": "Utilities (SIC 49)",
@@ -174,6 +178,42 @@ def momentum_overlap(dataset, log: List[dict]) -> dict:
                     "near the random expectation means the two rankings are close to unrelated - descriptive only, never combined"}
 
 
+def holding_window_anomalies(record: dict, dataset, log: List[dict]) -> List[dict]:
+    """Inconsistent day-pairs (mean_reversion.audit.inconsistent_pairs) inside a HELD window: a strategy leg (its simulated entry -> exit) or a
+    control position (every eligible stock, the legs' timing). A pair d0 -> d1 is inside a window entered at the open of E and left at the open of
+    X when E <= d0 and d1 <= X. Effect on the period excess: +step / positions for a strategy leg, -step / members for a control position."""
+    from mean_reversion.audit import inconsistent_pairs
+    from strategy_validation.cross_sectional import _after, _window
+    pairs: Dict[str, List[dict]] = defaultdict(list)
+    for ev in inconsistent_pairs(dataset, [s for s in RESEARCH_UNIVERSE if s in dataset.bars]):
+        pairs[ev["symbol"]].append(ev)
+    if not pairs:
+        return []
+    cs = record.get("cross_sectional") or {}
+    period = {p["rebalance"]: p for p in cs.get("periods") or []}
+    trades = ((record.get("arms") or {}).get("RULES") or {}).get("trades") or []
+    out = []
+    for t in trades:
+        for ev in pairs.get(t["symbol"], []):
+            if t["entry_date"] <= ev["from"] and ev["to"] <= t["exit_date"]:
+                p = period.get(t["signal_date"]) or {}
+                n = ((p.get("strategy") or {}).get("positions")) or 1
+                out.append({"rebalance": t["signal_date"], "symbol": t["symbol"], "side": "strategy", "code": ev["code"], "from": ev["from"], "to": ev["to"],
+                            "step": _r(ev["step"]), "effect_on_period_excess": _r(ev["step"] / n), "period_included": p.get("status") == "INCLUDED"})
+    rebs = [r["rebalance"] for r in log]
+    for k, r in enumerate(log):
+        nxt = rebs[k + 1] if k + 1 < len(rebs) else None
+        p = period.get(r["rebalance"]) or {}
+        m = ((p.get("control") or {}).get("members")) or len(r.get("eligible_symbols") or []) or 1
+        for s in r.get("eligible_symbols") or []:
+            for ev in pairs.get(s, []):
+                w = _window(_after(dataset, s, r["rebalance"]), nxt)
+                if w is not None and w[0].date <= ev["from"] and ev["to"] <= w[1].date:
+                    out.append({"rebalance": r["rebalance"], "symbol": s, "side": "control", "code": ev["code"], "from": ev["from"], "to": ev["to"],
+                                "step": _r(ev["step"]), "effect_on_period_excess": _r(-ev["step"] / m), "period_included": p.get("status") == "INCLUDED"})
+    return sorted(out, key=lambda x: (x["rebalance"], x["side"], x["symbol"]))
+
+
 def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
     cs = record.get("cross_sectional") or {}
     inc = [p for p in cs.get("periods") or [] if p.get("status") == "INCLUDED"]
@@ -250,7 +290,10 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
                          "descriptive only - no filter is derived from it in v1"}
     # data quality: what the window-integrity rule excluded, the provider's ratio artifacts, extreme selected drops and single-print V shapes
     excl = [{"rebalance": r["rebalance"], **x} for r in log for x in r.get("data_exclusions") or []]
-    from mean_reversion.audit import RawData, split_events
+    from mean_reversion.audit import RawData, inconsistent_pairs, split_events
+    in_held = holding_window_anomalies(record, dataset, log)
+    if any(x["period_included"] for x in in_held):
+        flags.append(FLAG_HOLDING_ANOMALY)
     artifacts = [{k: (_r(v) if isinstance(v, float) else v) for k, v in ev.items()}
                  for ev in split_events(dataset, [s for s in RESEARCH_UNIVERSE if s in dataset.bars]) if ev["kind"] == "RATIO_ARTIFACT"]
     extreme, vshape = [], []
@@ -318,6 +361,8 @@ def diagnostics(record: dict, dataset, log: List[dict], top_n: int) -> dict:
                          "exclusions": [{k: (_r(v) if isinstance(v, float) else v) for k, v in x.items()} for x in excl[:50]],
                          "ratio_artifacts": artifacts, "extreme_selected_drops": extreme[:50], "extreme_selected_drop_count": len(extreme),
                          "single_print_v_shapes": vshape,
+                         "holding_window_anomalies": in_held[:50], "holding_window_anomaly_count": len(in_held),
+                         "holding_window_effect_on_summed_excess": _r(sum(x["effect_on_period_excess"] for x in in_held if x["period_included"])),
                          "note": "exclusions: a signal window the corporate-action contract finds inconsistent (never clipped); extreme drops (< -25 % over "
                                  "the lookback) and single-print V shapes (a close > 25 % below both the previous close and the next open) are listed "
                                  "for inspection - the latter needs the next open, so it is never a filter"},

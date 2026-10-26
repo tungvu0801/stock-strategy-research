@@ -20,6 +20,7 @@ import io
 import json
 import re
 import socket
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -43,6 +44,7 @@ from strategy_validation.dataset import Dataset  # noqa: E402
 
 AT = "2026-10-26T00:00:00+00:00"
 FROZEN_HASH = "b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"
+FREEZE = "626fb11"                                                                              # "freeze Mean Reversion v1 rules before OOS"
 D = F.weekdays("2019-01-02", "2022-12-30")
 
 
@@ -396,6 +398,13 @@ def test_V09_the_data_quality_diagnostics_report_exclusions_and_artifacts():
     assert dq["data_inconsistent_exclusions"] >= 1 and dq["by_code"] == {"RATIO_ARTIFACT": dq["data_inconsistent_exclusions"]}
     assert [a["symbol"] for a in dq["ratio_artifacts"]] == ["HON"] and run.audit.status == "PASS"   # reported, not failed
     assert all(x["symbol"] == "HON" for x in dq["exclusions"])
+    held = dq["holding_window_anomalies"]                                                            # the artifact inside HON's held control window
+    assert held and {(x["symbol"], x["code"]) for x in held} == {("HON", "RATIO_ARTIFACT")} and any(x["side"] == "control" for x in held)
+    x = next(x for x in held if x["side"] == "control")
+    assert x["step"] == pytest.approx(1 / 1.048 - 1, abs=1e-4) and x["effect_on_period_excess"] > 0   # a lower control return: a higher excess
+    assert "HOLDING_WINDOW_DATA_ANOMALY" in run.research_flags and dq["holding_window_effect_on_summed_excess"] ==         pytest.approx(sum(x["effect_on_period_excess"] for x in held if x["period_included"]), abs=1e-5)
+    clean = full_run()[1].diagnostics["strategy"]["data_quality"]
+    assert clean["holding_window_anomaly_count"] == 0 and "HOLDING_WINDOW_DATA_ANOMALY" not in full_run()[1].research_flags
 
 
 # ================================================================ U the independent audit ===========================================================
@@ -541,3 +550,47 @@ def test_G08_frozen_controls_and_ci_manifest():
     assert (MR.SPLIT_SESSION, MR.NORMAL_DAY, MR.SPLIT_DAY_TOL) == (0.01, 0.25, 0.02)                 # the Stage 6.5 split audit's classification
     from momentum import audit as MA
     assert (MA.SPLIT_SESSION, MA.NORMAL_DAY, MA.SPLIT_DAY_TOL) == (MR.SPLIT_SESSION, MR.NORMAL_DAY, MR.SPLIT_DAY_TOL)
+
+
+def test_G06_the_rules_are_the_frozen_ones():
+    r = subprocess.run(["git", "show", f"{FREEZE}:mean_reversion/__init__.py"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        pytest.skip("the freeze commit is not reachable (shallow clone)")
+    frozen: dict = {}
+    exec(compile(r.stdout, "frozen", "exec"), frozen)                                              # noqa: S102 - the repository's own file at a fixed commit
+    for k in ("STRATEGY_VERSION", "RESEARCH_UNIVERSE", "MIN_PRICE", "MIN_MEDIAN_DOLLAR_VOLUME", "DOLLAR_VOLUME_SESSIONS", "LOOKBACK_SESSIONS", "SPLIT_SESSION",
+              "NORMAL_DAY", "SPLIT_DAY_TOL", "ADJUSTED_LOSS_TOL", "TOP_N", "POSITION_PCT", "REBALANCE", "FRICTION_BPS_PER_SIDE", "SENSITIVITY",
+              "CONCENTRATION_TOP_NAMES", "CONCENTRATION_NAME_SHARE"):
+        assert frozen[k] == getattr(MR, k), k                                                      # nothing tuned after the OOS result
+    for f in ("mean_reversion/core.py", "mean_reversion/data.py", "mean_reversion/adapter.py"):
+        assert subprocess.run(["git", "diff", "--quiet", FREEZE, "--", f], cwd=ROOT).returncode == 0, f   # the rule code is byte-identical
+
+
+def test_G07_documents_state_the_hypothesis_the_result_and_the_limits():
+    d = now_text("DESIGN_66_MEAN_REVERSION.md")
+    for s in ("## 1. Hypothesis (written before any code)", "## 2. Definition (v1, frozen before the OOS run)", "## 3. Feasibility", "## 5. Results",
+              "SURVIVORSHIP_BIAS_PRESENT", "FIXED_CURRENT_UNIVERSE", "UNTRUSTED", "NOT_ESTABLISHED", "SELECTION CONTROL", "MARKET BENCHMARK",
+              "NOT SELECTION-EDGE EVIDENCE", "## 6a. Development log", "## 7. Adversarial review", "## 8. Limitations", "Backtest results are hypothetical.",
+              "626fb11", "DATA_INCONSISTENT", "never clipped"):
+        assert s in d, s
+    readme = now_text("README.md")
+    sec = re.findall(r"(?ms)^## Mean Reversion strategy \(Stage 6\.6, research only\)\n.*?(?=^## )", readme)
+    assert len(sec) == 1 and "python -m strategy_validation validate --strategy MEAN_REVERSION" in sec[0] and "SURVIVORSHIP_BIAS_PRESENT" in sec[0]
+    assert readme.index("## Universe integrity (Stage 6.5.1)") < readme.index("## Mean Reversion strategy (Stage 6.6") < readme.index("## Continuous integration (Stage 6.0.3")
+    assert not re.search(r"(?i)\b(guaranteed|profitable|buy now|sell now|regime)\b", sec[0])
+
+
+def test_G09_the_real_mean_reversion_result_where_the_local_data_exists():
+    db = ROOT / "runtime" / "preview_66.db"
+    if not db.exists():
+        pytest.skip("local data only: the Mean Reversion run lives in a git-ignored runtime database")
+    from strategy_validation.store import StrategyValidationStore
+    run = StrategyValidationStore(db).latest("MEAN_REVERSION")
+    if run is None:
+        pytest.skip("no stored Mean Reversion run in this local database")
+    oo = run["cross_sectional"]["segments"]["OOS"]
+    assert run["validation_version"] == "validation_v3" and run["eligibility"]["status"] == "ELIGIBLE" and run["cross_sectional"]["parity"]["status"] == "PASS"
+    assert run["git_commit_sha"].startswith(FREEZE) and run["audit"]["status"] == "PASS"                          # the frozen code, a clean audit
+    assert run["cross_sectional"]["selection_edge"]["status"] == run["selection_edge"]["status"] == "NOT_ESTABLISHED" and oo["period_count"] == 98
+    assert oo["excess_t_stat"] < 1.0 and run["verdict"]["verdict"] == "FAIL" and run["performance_verdict"]["verdict"] == "PASS"
+    assert run["universe_integrity"]["status"] == "UNTRUSTED" and "SURVIVORSHIP_BIAS_PRESENT" in run["research_flags"] and R.get("MEAN_REVERSION").status == "RESEARCH"

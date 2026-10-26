@@ -116,6 +116,40 @@ class RawData:
         return out
 
 
+def inconsistent_pairs(dataset, symbols) -> List[dict]:
+    """Every pair of consecutive bars of a stock, over the WHOLE dataset, that the window-integrity contract finds inconsistent (a ratio artifact,
+    a ratio move that is not a clean split, an unabsorbed split, an adjusted loss the raw price did not have): `step` = adjusted - raw day return
+    (split-adjusted raw on a real split) - the part of the adjusted move no raw price explains. A distribution the provider did NOT adjust (adjusted
+    = raw on the ex-date) is invisible here: it needs a corporate-action list."""
+    D, out = RawData(dataset), []
+    for s in sorted(x for x in symbols if x in D.closes):
+        ds = D.bar_dates.get(s) or []
+        rr, rt, c = D.raw.get(s) or {}, D.ratio.get(s) or {}, D.closes[s]
+        for d0, d1 in zip(ds, ds[1:]):
+            vals = (rr.get(d0), rr.get(d1), rt.get(d0), rt.get(d1))
+            if any(v is None or v <= 0 for v in vals):
+                continue                                                           # unverifiable: never in a ranked window (the rule excludes it)
+            raw_ret, adj_ret = rr[d1] / rr[d0] - 1.0, c[d1] / c[d0] - 1.0
+            code, ref = None, raw_ret
+            if abs(rt[d1] / rt[d0] - 1.0) > SPLIT_SESSION:
+                spl = (rr[d1] / rt[d1]) / (rr[d0] / rt[d0]) - 1.0
+                raw_jump, spl_jump = abs(raw_ret) > NORMAL_DAY, abs(spl) > NORMAL_DAY
+                if spl_jump and not raw_jump:
+                    code = "RATIO_ARTIFACT"
+                elif not (raw_jump and not spl_jump):
+                    code = "INCONSISTENT_SPLIT"
+                elif abs(adj_ret - spl) > SPLIT_DAY_TOL:
+                    code, ref = "SPLIT_NOT_ABSORBED", spl
+                else:
+                    ref = spl
+            elif adj_ret < raw_ret - ADJUSTED_LOSS_TOL:
+                code = "ADJUSTED_LOSS_WITHOUT_RAW_MOVE"
+            if code:
+                out.append({"symbol": s, "from": d0, "to": d1, "code": code, "adjusted_return": adj_ret, "raw_return": raw_ret,
+                            "step": (1.0 + adj_ret) / (1.0 + ref) - 1.0})
+    return out
+
+
 def expected_universe(dataset, T: str, lookback: int) -> Dict[str, float]:
     return RawData(dataset).expected(T, lookback)
 
@@ -196,7 +230,8 @@ def audit(record: dict, dataset, top_n: int, lookback: int) -> List[dict]:
         if ev["adjusted_return"] is None:
             v(None, "SPLIT_CONSISTENCY", f"{where}: no adjusted bars on both sides")
         elif ev["kind"] == "INCONSISTENT":
-            v(None, "SPLIT_CONSISTENCY", f"{where}: raw {ev['raw_return']:.4f} and split-adjusted {ev['split_adjusted_return']:.4f} both jump")
+            v(None, "SPLIT_CONSISTENCY", f"{where}: raw {ev['raw_return']:.4f} / split-adjusted {ev['split_adjusted_return']:.4f}: neither a clean split (the raw "
+                                          "price jumps, the split-adjusted one does not) nor a ratio artifact (the reverse)")
         elif abs(ev["adjusted_return"] - ev["split_adjusted_return"]) > SPLIT_DAY_TOL:
             v(None, "SPLIT_CONSISTENCY", f"{where}: adjusted return {ev['adjusted_return']:.4f} vs split-adjusted {ev['split_adjusted_return']:.4f} (a split "
                                           "not absorbed by the adjusted series)")
