@@ -40,7 +40,9 @@ def integrity_fields(run: Optional[dict]) -> dict:
 
 def summary(run: Optional[dict], strategy_id: str, entry=None) -> dict:
     if not run:
-        return {"validation_status": "NOT_RUN", "validation_label": NOT_EVALUATED, "not_run_reason": not_run_reason(strategy_id, entry), "latest_validation_run_id": None,
+        return {"validation_status": "NOT_RUN", "validation_label": NOT_EVALUATED,
+                "not_run_reason": not_run_reason(strategy_id, entry) or "No validation run is stored yet (python -m strategy_validation validate ... --persist).",
+                "latest_validation_run_id": None,
                 "validation_verdict": None, "train_trade_count": None, "oos_trade_count": None, "mechanical_audit_status": None, "last_validated_at": None, "validation_synthetic": False,
                 **integrity_fields(None)}
     rules = (run.get("arms") or {}).get("RULES") or {}

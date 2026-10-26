@@ -36,6 +36,9 @@ class RawCandidate(_M):
     score: Optional[float] = None               # a deterministic rank 0-100 (Strategy Standard v1); never a probability
     features: Dict[str, Any] = Field(default_factory=dict)
     feature_as_of: Dict[str, str] = Field(default_factory=dict)   # the latest date each feature used (must be <= signal_date)
+    max_hold_bars: Optional[int] = None         # Stage 6.4: a per-candidate holding limit (a rebalance strategy's leg); None = the adapter's
+    entry_trade: bool = True                    # Stage 6.4: False = the leg continues a position already held (no transaction, no friction)
+    exit_trade: bool = True                     # Stage 6.4: False = the position continues into the next leg (no transaction, no friction)
 
 
 class StrategyCandidate(_Frozen):
@@ -47,9 +50,11 @@ class StrategyCandidate(_Frozen):
     signal_date: str
     signal_basis: str = "SESSION_CLOSE"
     entry_reference: float
-    invalidation_reference: float
+    invalidation_reference: Optional[float] = None   # None only for an adapter whose stop_policy is NONE (Stage 6.4)
     target_reference: Optional[float] = None
     max_hold_bars: int
+    entry_trade: bool = True                    # transaction flags (Stage 6.4): not part of the identity - like the holding limit, an exit-side fact
+    exit_trade: bool = True
     score: Optional[float] = None
     feature_snapshot_hash: str
     features: Dict[str, Any] = Field(default_factory=dict)
@@ -87,7 +92,7 @@ class SimulatedTrade(_M):
     entry_policy: str
     entry_raw: float
     entry_fill: float
-    stop: float
+    stop: Optional[float] = None               # None: a stop-less strategy (stop_policy NONE, e.g. a periodic rebalance)
     target: Optional[float] = None
     exit_date: str
     exit_raw: float
@@ -107,6 +112,8 @@ class SimulatedTrade(_M):
     r_net: float
     trade_return: float                         # net P/L / entry notional
     ambiguous_bar: bool = False
+    entry_trade: bool = True                    # Stage 6.4: friction is charged only on a real transaction
+    exit_trade: bool = True
     alt_target_first_net: Optional[float] = None   # what the ambiguous bar would have given if the target had come first (diagnostic only)
 
 
@@ -173,6 +180,7 @@ class ValidationRun(_M):
     verdict: Dict[str, Any] = Field(default_factory=dict)
     candidates: List[StrategyCandidate] = Field(default_factory=list)
     disclaimer: str = ""
+    research_flags: List[str] = Field(default_factory=list)       # Stage 6.4: adapter-declared research limitations shown with the result
     # Stage 6.3.1 (validation_v2): absent on Stage 6.2 records, which stay readable and are never back-filled
     provenance: Dict[str, Any] = Field(default_factory=dict)        # the dataset's declared + derived provenance
     boundary: Dict[str, Any] = Field(default_factory=dict)          # the TRAIN / OOS boundary PURGE: policy, train_end, purged candidate ids per arm

@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from strategy_registry.models import StrategyEntry
 
 DDR_ID = "DOWNSIDE_DISLOCATION_RECOVERY"
-PLACEHOLDER_IDS = ("VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT")
+PLACEHOLDER_IDS = ("MOMENTUM", "MEAN_REVERSION", "BREAKOUT")       # Stage 6.4: VALUE_QUALITY is implemented (research only)
 PLACEHOLDER_NOTE = "Registry placeholder only: not implemented. No rules, no data requirements, no backtest, no out-of-sample result, no paper result and no signal exist."
 REGISTRY_DATE = "2026-10-25"                                       # the day the registry (Stage 6.1.2) was created: the placeholders' created_at / updated_at
 
@@ -25,8 +25,11 @@ ENTRIES: List[StrategyEntry] = [
                                "execution controls decide every Alpaca PAPER entry; exits are deterministic. Observed by the Stage 6.1 forward paper validation."),
                   created_at="2026-10-21", updated_at="2026-10-24", implemented=True, setup_type=DDR_ID),
     StrategyEntry(strategy_id="VALUE_QUALITY", display_name="Value + Quality", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="POSITION",
-                  status="RESEARCH", version="0.0", description="Future internal strategy (value and quality factors). " + PLACEHOLDER_NOTE,
-                  created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),
+                  status="RESEARCH", version="1.0",
+                  description=("Long-only monthly rebalance of the 20 highest-ranked stocks by an equal-weight composite of value (earnings, book and operating "
+                               "cash-flow yield) and quality (return on assets, cash flow on assets, equity ratio), from point-in-time SEC fundamentals "
+                               "(Stage 6.4, value_quality/). Research only: it is validated historically and never produces a trading signal."),
+                  created_at=REGISTRY_DATE, updated_at="2026-10-25", implemented=True),
     StrategyEntry(strategy_id="MOMENTUM", display_name="Momentum", source="INTERNAL", asset_class="US_EQUITY", direction_capability="LONG", time_horizon="SWING",
                   status="RESEARCH", version="0.0", description="Future internal strategy (price momentum). " + PLACEHOLDER_NOTE,
                   created_at=REGISTRY_DATE, updated_at=REGISTRY_DATE, implemented=False, placeholder_note=PLACEHOLDER_NOTE),

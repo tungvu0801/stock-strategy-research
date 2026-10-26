@@ -30,7 +30,14 @@ def _r(x: float) -> float:
     return round(float(x), 6)
 
 
-def size(entry_fill: float, stop: float, sizing: dict) -> Tuple[int, str, float, float]:
+def size(entry_fill: float, stop: Optional[float], sizing: dict) -> Tuple[int, str, float, float]:
+    if sizing.get("mode") == "EQUAL_WEIGHT":                                    # Stage 6.4: notional sizing; the risk unit is the notional
+        notional = float(sizing["equity"]) * float(sizing["position_pct"]) / 100.0
+        qty = int(math.floor(notional / entry_fill))
+        status = "EQUAL_WEIGHT"
+        if qty < 1:
+            qty, status = 1, "MIN_ONE_UNIT"
+        return qty, status, notional, qty * entry_fill
     rps = entry_fill - stop
     budget = float(sizing["equity"]) * float(sizing["risk_fraction"])
     q_risk = int(math.floor(budget / rps)) if rps > 0 else 0
@@ -42,7 +49,11 @@ def size(entry_fill: float, stop: float, sizing: dict) -> Tuple[int, str, float,
     return qty, status, budget, qty * rps
 
 
-def simulate(c: StrategyCandidate, dataset, *, arm: str, segment: str, entry_policy: str, friction: dict, sizing: dict) -> Tuple[Optional[SimulatedTrade], Optional[SkippedCandidate]]:
+def simulate(c: StrategyCandidate, dataset, *, arm: str, segment: str, entry_policy: str, friction: dict, sizing: dict,
+             time_exit_fill: str = "CLOSE") -> Tuple[Optional[SimulatedTrade], Optional[SkippedCandidate]]:
+    """time_exit_fill (Stage 6.4): CLOSE (default) = a TIME_EXIT fills at the close of the max_hold_bars-th bar; OPEN = at its open (a periodic
+    rebalance: the leg ends at the moment the next leg would begin). A candidate whose entry_trade / exit_trade is False continues a position:
+    that side is not a transaction and pays no slippage, commission or fee."""
     base = {"symbol": c.symbol, "signal_date": c.signal_date, "candidate_id": c.candidate_id}
     stop, target = c.invalidation_reference, c.target_reference
     if entry_policy == "SIGNAL_CLOSE_MOC":
@@ -56,25 +67,28 @@ def simulate(c: StrategyCandidate, dataset, *, arm: str, segment: str, entry_pol
         if not window:
             return None, SkippedCandidate(**base, reason="NO_ENTRY_BAR", detail="no bar after the signal session (dataset end)")
         entry_date, entry_raw, scan, first_bar_is_entry = window[0].date, window[0].open, window, True
-    if entry_raw <= stop:
+    if stop is not None and entry_raw <= stop:
         return None, SkippedCandidate(**base, reason="ENTRY_GAP_THROUGH_STOP", detail=f"entry {entry_raw} at or below the invalidation {stop}")
     if target is not None and entry_raw >= target:
         return None, SkippedCandidate(**base, reason="ENTRY_GAP_THROUGH_TARGET", detail=f"entry {entry_raw} at or above the target {target}: the planned move is gone")
     slip = float(friction["slippage_bps_per_side"]) / 10000.0
-    entry_fill = entry_raw * (1 + slip)
+    entry_fill = entry_raw * (1 + slip) if c.entry_trade else entry_raw
     qty, status, configured, achieved = size(entry_fill, stop, sizing)
     scan = scan[:c.max_hold_bars]
     exit_bar, exit_raw, reason, ambiguous, alt_raw, held = None, None, None, False, None, 0
     for k, bar in enumerate(scan, start=1):
         held = k
         if not (first_bar_is_entry and k == 1):
-            if bar.open <= stop:
+            if stop is not None and bar.open <= stop:
                 exit_bar, exit_raw, reason = bar, bar.open, "STOP_GAP"
                 break
             if target is not None and bar.open >= target:
                 exit_bar, exit_raw, reason = bar, target, "TARGET"
                 break
-        stop_hit = bar.low <= stop
+            if time_exit_fill == "OPEN" and k == c.max_hold_bars:
+                exit_bar, exit_raw, reason = bar, bar.open, "TIME_EXIT"
+                break
+        stop_hit = stop is not None and bar.low <= stop
         tgt_hit = target is not None and bar.high >= target
         if stop_hit and tgt_hit:
             exit_bar, exit_raw, reason, ambiguous, alt_raw = bar, stop, "STOP", True, target
@@ -93,10 +107,11 @@ def simulate(c: StrategyCandidate, dataset, *, arm: str, segment: str, entry_pol
         exit_raw, reason = exit_bar.close, "DATA_END"
 
     def money(xr: float) -> Tuple[float, float, float, float]:
-        xf = xr * (1 - slip)
+        xf = xr * (1 - slip) if c.exit_trade else xr
         gross = (xr - entry_raw) * qty
         slippage = ((entry_fill - entry_raw) + (xr - xf)) * qty
-        fees = 2 * float(friction["commission_per_order"]) + 2 * float(friction["fee_per_share"]) * qty
+        n_tx = int(c.entry_trade) + int(c.exit_trade)                         # orders actually sent: a continuation is not an order
+        fees = n_tx * float(friction["commission_per_order"]) + n_tx * float(friction["fee_per_share"]) * qty
         return xf, gross, slippage, fees
 
     exit_fill, gross, slippage, fees = money(exit_raw)
@@ -107,8 +122,9 @@ def simulate(c: StrategyCandidate, dataset, *, arm: str, segment: str, entry_pol
         alt_net = _r(g2 - s2 - f2)
     tid = hashlib.sha256(f"{arm}|{c.candidate_id}".encode("utf-8")).hexdigest()[:24]
     return SimulatedTrade(trade_id=tid, arm=arm, candidate_id=c.candidate_id, strategy_id=c.strategy_id, strategy_version=c.strategy_version, symbol=c.symbol, direction=c.direction,
-                          segment=segment, signal_date=c.signal_date, entry_date=entry_date, entry_policy=entry_policy, entry_raw=_r(entry_raw), entry_fill=_r(entry_fill), stop=_r(stop),
+                          segment=segment, signal_date=c.signal_date, entry_date=entry_date, entry_policy=entry_policy, entry_raw=_r(entry_raw), entry_fill=_r(entry_fill),
+                          stop=None if stop is None else _r(stop),
                           target=None if target is None else _r(target), exit_date=exit_bar.date, exit_raw=_r(exit_raw), exit_fill=_r(exit_fill), exit_reason=reason, holding_bars=held,
                           max_hold_bars=c.max_hold_bars, qty=qty, size_status=status, configured_risk=_r(configured), achieved_risk=_r(achieved), gross_pnl=_r(gross),
                           slippage_cost=_r(slippage), fees=_r(fees), net_pnl=_r(net), r_gross=_r(gross / achieved), r_net=_r(net / achieved), trade_return=_r(net / (entry_fill * qty)),
-                          ambiguous_bar=ambiguous, alt_target_first_net=alt_net), None
+                          ambiguous_bar=ambiguous, alt_target_first_net=alt_net, entry_trade=c.entry_trade, exit_trade=c.exit_trade), None

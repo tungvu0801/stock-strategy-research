@@ -785,7 +785,7 @@ def _write(p, obj):
 
 def test_C02_the_cli_reports_NOT_RUN_for_downside_recovery_and_the_placeholders_and_reads_a_csv(tmp_path, capsys):
     from strategy_validation import cli
-    for sid in ("DOWNSIDE_DISLOCATION_RECOVERY", "MOMENTUM", "VALUE_QUALITY", "NOT_A_STRATEGY"):
+    for sid in ("DOWNSIDE_DISLOCATION_RECOVERY", "MOMENTUM", "MEAN_REVERSION", "NOT_A_STRATEGY"):          # Stage 6.4: VALUE_QUALITY is implemented
         assert cli.main(["validate", "--strategy", sid, "--dataset", "x.csv", "--output", str(tmp_path / f"{sid}.json")]) == 2
         assert json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))["status"] == "NOT_RUN"
     out = capsys.readouterr().out
@@ -986,6 +986,6 @@ def test_Z02_stage_63_downside_recovery_replay_readiness_and_NOT_RUN_kept():
     from strategy_registry import registry as R
     from strategy_validation.adapters import ADAPTERS, DDR_REASON, DownsideRecoveryAdapter, adapter_for
     assert adapter_for("DOWNSIDE_DISLOCATION_RECOVERY", R.get("DOWNSIDE_DISLOCATION_RECOVERY")) == (None, DDR_REASON) and "DESIGN_63_DDR_REPLAY_READINESS.md" in DDR_REASON
-    assert DownsideRecoveryAdapter.historical_replay_supported is False and list(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY"]   # no replay adapter was added
+    assert DownsideRecoveryAdapter.historical_replay_supported is False and sorted(ADAPTERS) == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY"]   # no DDR replay adapter; Stage 6.4 adds Value + Quality only
     from strategy_registry import service as SR
     assert SR.detail_view("DOWNSIDE_DISLOCATION_RECOVERY")["validation"]["validation_status"] == "NOT_RUN"

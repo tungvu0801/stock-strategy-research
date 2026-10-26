@@ -31,8 +31,9 @@ def feature_hash(features: Dict[str, Any], feature_as_of: Dict[str, str]) -> str
 
 
 def candidate_identity(strategy_id: str, strategy_version: str, symbol: str, direction: str, signal_date: str, entry_reference: float,
-                       invalidation_reference: float, feature_snapshot_hash: str) -> str:
-    blob = json.dumps([strategy_id, strategy_version, symbol, direction, signal_date, round(float(entry_reference), 8), round(float(invalidation_reference), 8),
+                       invalidation_reference, feature_snapshot_hash: str) -> str:
+    inv = "NONE" if invalidation_reference is None else round(float(invalidation_reference), 8)    # NONE: a stop-less strategy (Stage 6.4)
+    blob = json.dumps([strategy_id, strategy_version, symbol, direction, signal_date, round(float(entry_reference), 8), inv,
                        feature_snapshot_hash], separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
 
@@ -61,9 +62,10 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
             skipped.append(SkippedCandidate(**base, reason="UNSUPPORTED_DIRECTION", detail=f"{raw.direction}: Stage 6.2 simulates long candidates only"))
             continue
         missing = [f for f in adapter.critical_features if is_missing(raw.features.get(f))]
+        stopless = getattr(adapter, "stop_policy", "INVALIDATION") == "NONE"          # Stage 6.4: a periodic rebalance strategy has no stop
         if raw.entry_reference is None or not _num(raw.entry_reference):
             missing.append("entry_reference")
-        if raw.invalidation_reference is None or not _num(raw.invalidation_reference):
+        if not stopless and (raw.invalidation_reference is None or not _num(raw.invalidation_reference)):
             missing.append("invalidation_reference")
         if missing:
             skipped.append(SkippedCandidate(**base, reason="MISSING_CRITICAL_FEATURE", detail=", ".join(missing)))
@@ -71,8 +73,15 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
         if dataset.bar(sym, raw.signal_date) is None:
             skipped.append(SkippedCandidate(**base, reason="SIGNAL_BAR_NOT_IN_DATASET", detail="the signal session is not in the dataset for this symbol"))
             continue
-        if float(raw.invalidation_reference) >= float(raw.entry_reference):
+        if stopless and raw.invalidation_reference is not None:
+            skipped.append(SkippedCandidate(**base, reason="INVALID_STOP", detail="the strategy declares no stop (stop_policy NONE) but the candidate carries one"))
+            continue
+        if not stopless and float(raw.invalidation_reference) >= float(raw.entry_reference):
             skipped.append(SkippedCandidate(**base, reason="INVALID_STOP", detail="the invalidation reference is not below the entry reference (long)"))
+            continue
+        hold = raw.max_hold_bars if raw.max_hold_bars is not None else adapter.max_hold_bars
+        if not isinstance(hold, int) or isinstance(hold, bool) or hold < 1:
+            skipped.append(SkippedCandidate(**base, reason="INVALID_HOLD", detail=f"max_hold_bars {hold!r} is not a positive integer"))
             continue
         chk = check_signal(standard_signal(adapter, raw), registry)
         if not chk["valid"]:
@@ -86,7 +95,8 @@ def normalize(adapter, raws: Iterable[RawCandidate], dataset, registry=None) -> 
         seen.add(cid)
         out.append(StrategyCandidate(candidate_id=cid, strategy_id=adapter.strategy_id, strategy_version=adapter.strategy_version, symbol=sym, direction=raw.direction,
                                      signal_date=raw.signal_date, signal_basis=adapter.signal_basis, entry_reference=float(raw.entry_reference),
-                                     invalidation_reference=float(raw.invalidation_reference), target_reference=None if raw.target_reference is None else float(raw.target_reference),
-                                     max_hold_bars=int(adapter.max_hold_bars), score=raw.score, feature_snapshot_hash=fh, features=dict(raw.features), feature_as_of=dict(raw.feature_as_of)))
+                                     invalidation_reference=None if raw.invalidation_reference is None else float(raw.invalidation_reference),
+                                     target_reference=None if raw.target_reference is None else float(raw.target_reference),
+                                     max_hold_bars=int(hold), entry_trade=bool(raw.entry_trade), exit_trade=bool(raw.exit_trade), score=raw.score, feature_snapshot_hash=fh, features=dict(raw.features), feature_as_of=dict(raw.feature_as_of)))
     out.sort(key=lambda c: (c.signal_date, c.symbol, c.candidate_id))
     return tuple(out), skipped
