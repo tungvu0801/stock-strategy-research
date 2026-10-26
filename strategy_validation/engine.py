@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from strategy_validation import ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, PURGE_REASON, VERSION
+from strategy_validation import ARMS, BOUNDARY_POLICY, DEFAULT_FRICTION, DEFAULT_SIZING, DEFAULT_TRAIN_RATIO, DISCLAIMER, NEAR_ZERO_R, PURGE_REASON, VERSION
 from strategy_validation import arms as A
 from strategy_validation import integrity as IG
 from strategy_validation import audit as AU
@@ -111,10 +111,11 @@ def _segment_metrics(arm: ArmResult, seg_of: dict, equity: float) -> dict:
     return out
 
 
-def _arm_diagnostics(r: ArmResult) -> dict:
+def _arm_diagnostics(r: ArmResult, sizing: Optional[dict] = None) -> dict:
     if not r.metrics:
         return {}
-    return {"train_vs_oos": DG.train_vs_oos(r.metrics["TRAIN"], r.metrics["OOS"]), "concentration": DG.concentration(r.trades), "ambiguous": DG.ambiguous(r.trades),
+    near = 0.0 if (sizing or {}).get("mode") == "EQUAL_WEIGHT" else NEAR_ZERO_R           # Stage 6.4: notional R has no risk-unit band
+    return {"train_vs_oos": DG.train_vs_oos(r.metrics["TRAIN"], r.metrics["OOS"], nz=near), "concentration": DG.concentration(r.trades), "ambiguous": DG.ambiguous(r.trades),
             "friction": DG.friction(r.metrics["ALL"])}
 
 
@@ -162,7 +163,7 @@ def run_validation(adapter, dataset: Dataset, *, train_ratio: float = DEFAULT_TR
         if r.status == "EVALUATED" and integrity["same_candidate_set"]:          # a mismatched set is never simulated: no comparative conclusion
             _simulate_arm(r, cands, dataset, train_view, split_info, adapter, friction, sizing, cache)
             r.metrics = _segment_metrics(r, seg_of, float(sizing["equity"]))
-            r.diagnostics = _arm_diagnostics(r)
+            r.diagnostics = _arm_diagnostics(r, sizing)
     now = created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     run = ValidationRun(run_id=uuid.uuid4().hex, strategy_id=adapter.strategy_id, strategy_version=adapter.strategy_version, dataset_id=dataset.dataset_id, dataset_kind=dataset.kind,
                         dataset_start=dataset.start, dataset_end=dataset.end, train_start=split_info["train_start"], train_end=split_info["train_end"], oos_start=split_info["oos_start"],

@@ -429,6 +429,18 @@ def test_H05_arms_gated_equals_rules_and_model_is_not_evaluated():
     assert run.arms["MODEL"].status == "NOT_EVALUATED" and run.arms["MODEL"].trades == []
 
 
+def test_H06_train_vs_oos_reads_notional_R_without_the_risk_unit_band():
+    from strategy_validation import diagnostics as DG
+    tr, oo = {"trade_count": 1020, "expectancy_R": 0.017}, {"trade_count": 440, "expectancy_R": 0.021}
+    risk = DG.train_vs_oos(tr, oo)                                                                 # stop-sized trades: 0.05 R is "near zero"
+    assert risk["code"] == "CONSISTENTLY_WEAK" and risk["text"] == "TRAIN and OOS not clearly positive: no edge demonstrated."
+    assert DG.train_vs_oos(tr, oo, nz=0.0)["code"] == "CONSISTENT"                                # equal-weight legs: R is the notional return
+    assert DG.train_vs_oos(tr, {"trade_count": 440, "expectancy_R": -0.004}, nz=0.0)["code"] == "FAILURE_INSTABILITY"
+    ds, ad, run = full_run()
+    t, o = run.arms["RULES"].metrics["TRAIN"]["expectancy_R"], run.arms["RULES"].metrics["OOS"]["expectancy_R"]
+    assert 0 < t < 0.05 and 0 < o < 0.05 and run.arms["RULES"].diagnostics["train_vs_oos"]["code"] == "CONSISTENT"
+
+
 # ================================================================ U the independent strategy audit ================================================
 
 def test_U01_the_real_record_passes_every_strategy_check():

@@ -209,6 +209,9 @@ Added for Value + Quality (`value_quality/`, `DESIGN_64_VALUE_QUALITY.md`) and a
   monthly leg), instead of the default close.
 * **Transaction flags** `entry_trade` / `exit_trade`: a leg that continues a held position on one side is not an order there and pays no
   slippage, commission or fee on that side; the audit re-derives the flags (TRANSACTION_FLAGS) and the fills.
+* **Train-vs-OOS diagnostic**: its near-zero band (|mean R| <= 0.05) is in risk units; for EQUAL_WEIGHT legs, whose R is the notional return, no
+  band is applied (the sign and the degradation ratio decide). Its weakest case now reads "not clearly positive" (it said "not positive" also
+  for two small positive values).
 * **Adapter hooks**: `audit_extra(record, dataset)` (strategy-specific mechanical checks merged into the one audit; any violation fails it),
   `strategy_diagnostics(record, dataset)` (research diagnostics, never a gate) and `research_flags(dataset)` (limitations such as
   `SURVIVORSHIP_BIAS_PRESENT`, stored with the run and displayed with the verdict - never suppressed).

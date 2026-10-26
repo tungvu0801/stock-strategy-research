@@ -175,7 +175,9 @@ Standard v1 compliant, no calibration claimed).
   moved the OOS excess over the universe from +2.0 to +9.0 pp), and the audit gained source checks. A first
   attempt to handle data ending on a rebalance session (never rebalancing on the last session) was itself flagged by the harness's
   truncation-invariance check as look-ahead and reverted; the audit handles that case instead. Candidates, legs, trades and the verdict are
-  unchanged (identical candidate set hash); the final run is reproduced at the PR head.
+  unchanged (identical candidate set hash).
+8. Preview review: the Strategy Lab showed "Train vs OOS: TRAIN and OOS not positive" for two positive values - the harness's risk-unit
+  near-zero band applied to notional R (finding 28, fixed). The final run is reproduced at the PR head.
 
 ## 13. Results
 
@@ -253,6 +255,7 @@ paper record) and a period-level test of the selection edge.
 | 24 | Data ending on a rebalance | the run became VALIDATION INVALID (NO_OVERLAP: no hand-over bar exists) | LOW | fixed in the audit (test U05); the legs of that rebalance are explicit NO_ENTRY_BAR skips |
 | 25 | TTM vintages | a TTM can sum quarters from different filing vintages (a restated quarter beside unrestated year-to-date values) - point in time, but not one consistent set | LOW | documented |
 | 26 | Share-count staleness | the share count has no age limit (only the fundamentals do) | LOW | a rule change: deferred to a future version |
+| 28 | Train-vs-OOS diagnostic | the harness's 0.05 R near-zero band (risk units) was applied to equal-weight legs whose R is the monthly notional return, and its weakest case read "TRAIN and OOS not positive" for TRAIN +0.017 / OOS +0.021 (seen in the preview) | MEDIUM | fixed: no band for EQUAL_WEIGHT legs (now CONSISTENT), text "not clearly positive"; the code was not a verdict input here (PASS unchanged) (test H06) |
 | 27 | An invalid bar on a rebalance date | the ingestion removes an inconsistent all-adjusted bar; on a selected stock's rebalance date it would skip that leg (not in the real run: 0 skips) | LOW | documented |
 
 Deferred LOW items are listed in section 16.
