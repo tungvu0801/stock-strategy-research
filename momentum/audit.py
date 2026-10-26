@@ -8,7 +8,9 @@ not only its bookkeeping:
   LOOKBACK_ENDPOINTS    the recorded endpoints are sessions i - lookback and i - skip of the dataset calendar (the recent month excluded)
   NO_FUTURE_DATA        every feature dated on / before the signal; both endpoints strictly before it
   MOMENTUM_RETURN       the recorded endpoint closes and the momentum re-derived from the adjusted bars
-  SPLIT_CONSISTENCY     the momentum re-derived from RAW closes / the split ratio stays within dividends of the adjusted one (no fake split move)
+  SPLIT_CONSISTENCY     on every split session inside the lookback window the adjusted day return equals the split-adjusted raw day return (raw
+                        close / split ratio): a split can never create momentum. (The all-adjusted series also carries dividends and spin-off
+                        distributions - AT&T / WarnerMedia 2022, GE / GE HealthCare 2023, GE Vernova 2024 - which are total return, not errors.)
   ELIGIBILITY           the eligible set re-derived (price, liquidity, history, endpoint bars, one listing per issuer): its size = eligible_count
   RANK_SELECTION        the selection = the re-derived top N by momentum (ties by symbol); every rank and percentile score re-derived
   PORTFOLIO_SIZE        a leg for every selected stock at every rebalance with an eligible stock
@@ -24,7 +26,8 @@ from typing import Dict, List, Optional
 from momentum import DOLLAR_VOLUME_SESSIONS, MIN_MEDIAN_DOLLAR_VOLUME, MIN_PRICE, RESEARCH_UNIVERSE
 
 TOL = 1e-6
-SPLIT_TOL = 0.15                                  # all-adjusted (incl. dividends) vs split-adjusted momentum over ~11 months: dividends only
+SPLIT_DAY_TOL = 0.02                              # adjusted vs split-adjusted raw day return on a split session (an ex-dividend the same day at most)
+SPLIT_SESSION = 0.01                              # the stored raw / split-adjusted ratio carries rounding noise; a real split moves it by >= ~33 %
 
 
 def _schedule(sessions: List[str], lookback: int) -> List[str]:
@@ -113,10 +116,16 @@ def audit(record: dict, dataset, top_n: int, lookback: int, skip: int) -> List[d
                 or abs(float(f.get("momentum_return") or 0) - (b / a - 1.0)) > TOL:
             v(c, "MOMENTUM_RETURN", f"{sym} at {T}: recorded momentum {f.get('momentum_return')} does not re-derive from the adjusted closes")
         rr, rt = raw.get(sym) or {}, ratio.get(sym) or {}
-        if rr.get(start) and rr.get(end) and rt.get(start) and rt.get(end) and a and b:
-            m_split = (rr[end] / rt[end]) / (rr[start] / rt[start]) - 1.0
-            if abs(m_split - (b / a - 1.0)) > SPLIT_TOL * max(1.0, abs(m_split)):
-                v(c, "SPLIT_CONSISTENCY", f"{sym} at {T}: adjusted momentum {b / a - 1.0:.4f} vs split-adjusted raw {m_split:.4f}")
+        window = sessions[pos[start]:pos[end] + 1]
+        for d0, d1 in zip(window, window[1:]):
+            if rt.get(d0) and rt.get(d1) and abs(rt[d1] / rt[d0] - 1.0) > SPLIT_SESSION:       # a split session inside the lookback window
+                if not (rr.get(d0) and rr.get(d1) and cs.get(d0) and cs.get(d1)):
+                    v(c, "SPLIT_CONSISTENCY", f"{sym}: split on {d1} without both raw and adjusted bars")
+                    continue
+                adj_day = cs[d1] / cs[d0] - 1.0
+                split_day = (rr[d1] / rt[d1]) / (rr[d0] / rt[d0]) - 1.0
+                if abs(adj_day - split_day) > SPLIT_DAY_TOL:
+                    v(c, "SPLIT_CONSISTENCY", f"{sym} at {T}: split on {d1}: adjusted day return {adj_day:.4f} vs split-adjusted {split_day:.4f}")
         exp = expected.get(T) or {}
         if f.get("eligible_count") != len(exp):
             v(c, "ELIGIBILITY", f"{sym} at {T}: eligible_count {f.get('eligible_count')} != {len(exp)} re-derived")
