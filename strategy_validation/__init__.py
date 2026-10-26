@@ -9,8 +9,11 @@ is drawn). PASS means "eligible for human review for lifecycle advancement" - ne
 hypothetical. Nothing in this package places, previews or cancels an order, enables Paper Auto, touches a broker, calls a model or the network,
 or changes any strategy, risk, safety or execution setting; it imports no execution, broker, paper-order or proposal code.
 """
-VERSION = "validation_v2"                       # the methodology version: any policy change below is a new validation_version
+VERSION = "validation_v3"                       # the methodology version: any policy change below is a new validation_version
+                                                # v1 (Stage 6.2): candidates once, three arms, friction, TRAIN / OOS, audit, verdict
                                                 # v2 (Stage 6.3.1): the TRAIN / OOS boundary PURGE, the accounting invariant, the persistence integrity gate
+                                                # v3 (Stage 6.4.1): cross-sectional portfolio strategies are judged on rebalance-period excess over a
+                                                #     declared SELECTION CONTROL (strategy_validation/cross_sectional.py); event-driven strategies unchanged
 
 VERDICTS = ("INSUFFICIENT_DATA", "FAIL", "MIXED", "PASS", "INVALID")
 VERDICT_LABELS = {"INSUFFICIENT_DATA": "INSUFFICIENT DATA", "FAIL": "FAIL", "MIXED": "MIXED", "PASS": "PASS", "INVALID": "VALIDATION INVALID"}
@@ -64,6 +67,24 @@ PROVENANCE_REQUIRED = ("source", "retrieved_at", "bar_frequency", "adjustment", 
 PROVENANCE_DERIVED = ("dataset_id", "start", "end", "symbols", "sessions")                               # computed from the bars
 PROVENANCE_CONDITIONAL = ("corporate_actions", "universe", "point_in_time")                              # required when the adapter declares them
 BAR_FREQUENCY = "1Day"                          # the simulator works on completed daily sessions only
+
+# ---- Stage 6.4.1 (validation_v3): cross-sectional portfolio strategies - the SELECTION EDGE against a control (strategy_validation/cross_sectional.py) --
+# Fixed BEFORE the policy was applied to any strategy result (DESIGN_641_CROSS_SECTIONAL_VALIDATION.md section 6); never tuned to a result.
+EVALUATION_MODES = ("EVENT_DRIVEN", "CROSS_SECTIONAL_PORTFOLIO")   # declared by the adapter - never inferred from trade counts
+EDGE_STATUSES = ("NOT_APPLICABLE", "INSUFFICIENT_DATA", "NOT_ESTABLISHED", "WEAK", "ESTABLISHED", "INVALID")
+EDGE_LABELS = {"NOT_APPLICABLE": "Not applicable", "INSUFFICIENT_DATA": "Insufficient data", "NOT_ESTABLISHED": "Not established", "WEAK": "Weak",
+               "ESTABLISHED": "Established", "INVALID": "Invalid (control mismatch)"}
+CONTROL_ROLE = "SELECTION_CONTROL"              # the control that omits the selection: the edge is measured against it
+BENCHMARK_ROLE = "MARKET_BENCHMARK"             # SPY: a market comparison only, never selection-edge evidence
+CAPITAL_CONVENTION = "EQUAL_CAPITAL_BUY_AND_HOLD"   # both sides: equal capital per position at the period's entry, held to the period's exit
+CS_MIN_OOS_PERIODS = 12                         # fewer OOS rebalance periods: the selection edge is INSUFFICIENT_DATA
+CS_MIN_TOTAL_PERIODS = 24                       # fewer TRAIN + OOS periods: the edge is at most WEAK
+CS_MIN_PERIODS_T = 6                            # fewer periods in a segment: no excess t-statistic is reported for it
+CS_T_NEGLIGIBLE = 1.0                           # OOS period-excess t below this: NOT_ESTABLISHED (statistically negligible)
+CS_T_ESTABLISHED = 2.0                          # OOS period-excess t at / above this: one condition of ESTABLISHED - never the only one
+CS_TRAIN_CONTRADICTION_T = -2.0                 # TRAIN mean excess < 0 with t <= this: TRAIN and OOS strongly contradict (no ESTABLISHED)
+CS_CONCENTRATION_SHARE = 0.50                   # one period carrying > 50 % of the summed excess, or the excess vanishing without its best
+                                                # period: concentrated (a warning; no ESTABLISHED)
 
 DISCLAIMER = ("Backtest results are hypothetical. PASS means eligible for human review for lifecycle advancement; it does not mean profitable in "
               "the future and it never promotes a strategy. A failed validation is a valid research result.")
