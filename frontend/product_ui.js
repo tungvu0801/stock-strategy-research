@@ -990,6 +990,8 @@
   const OWN_CLS = { BOT_MANAGED: "ok", EXTERNAL: "warn", USER_MANAGED: "info", NEEDS_REVIEW: "bad" };
   const OWN_TXT = { BOT_MANAGED: "bot", EXTERNAL: "external", USER_MANAGED: "user managed", NEEDS_REVIEW: "needs review" };
   const usd = (x) => { const n = num(x); return n == null ? "—" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; };
+  // a per-share price for display: 2 to 4 decimals (the gateway's 6-decimal average cost, 1700.410000, reads 1700.41); quantities are never reformatted
+  const px = (x) => { const n = num(x); return n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4, useGrouping: false }); };
   function realSource(u) { return u ? (u.sources || []).find((s) => s.account_type !== "PAPER") || null : null; }
   // Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE pre-check of one READY ticker (what the gate decides now; null when the payload has none)
   function gateFor(u, sym) { const g = u && u.entry_gate; return g && sym && g.symbols ? g.symbols[sym] || null : null; }
@@ -1010,7 +1012,7 @@
       ? `<div class="pui-empty" data-pui-rh-empty="${esc(s.state)}"><b>${esc(RH_STATE[s.state] || s.state)}.</b> ${esc(s.message || "")}</div>`
       : (s.state === "STALE" ? `<div class="pui-line pui-warn" data-pui-rh-stale>${esc(s.message || "Stale")}</div>` : "") +
         (rows.length ? `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Current</th><th>Market value</th><th>Unrealized P/L</th><th>Ownership</th></tr></thead><tbody>` +
-          rows.map((r) => `<tr data-pui-rh-row="${esc(r.symbol)}"><td><b>${esc(r.symbol)}</b></td><td>${esc(r.quantity)}</td><td>${esc(r.average_entry_price || "—")}</td><td>${esc(r.current_price || "—")}</td>` +
+          rows.map((r) => `<tr data-pui-rh-row="${esc(r.symbol)}"><td><b>${esc(r.symbol)}</b></td><td>${esc(r.quantity)}</td><td>${esc(px(r.average_entry_price))}</td><td>${esc(px(r.current_price))}</td>` +
             `<td>${esc(r.market_value || "—")}</td><td>${esc(money(r.unrealized_pl))}</td><td><span class="pui-badge info" title="${esc(r.notes || "")}">${esc(r.ownership_label)}</span></td></tr>`).join("") + `</tbody></table>`
           : `<div class="pui-empty">No holdings in the Robinhood account.</div>`);
     return head + `<section class="pui-acct pui-real" data-pui-rh="${esc(s.state)}"><h3>${esc(s.label)}</h3>${meta}${body}` +

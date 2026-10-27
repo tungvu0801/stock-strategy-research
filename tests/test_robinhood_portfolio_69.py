@@ -286,6 +286,14 @@ def test_U07_a_long_and_a_short_never_cancel_into_zero_exposure():
     assert u["exposure"]["largest"] == {"symbol": "AAPL", "weight_pct": "95.24"} and u["exposure"]["total_market_value"] == "2100.00"
 
 
+def test_U08_top5_and_sector_shares_come_from_unrounded_values_never_from_rounded_strings():
+    one = US.build(alpaca([("F", "1", "12.1", "11.575", "11.575", "EXTERNAL")]), rh_view([]))           # 11.575 displays as 11.58; the share is still 100 %
+    assert one["exposure"]["top5_pct"] == "100.00" and one["exposure"]["largest"]["weight_pct"] == "100.00"   # (it read 100.04 when summed from "11.58")
+    three = US.build(alpaca([]), rh_view([("A", "1", "0.005"), ("B", "1", "0.005"), ("C", "1", "0.005")]), sector_fn=lambda s: "Technology")
+    assert three["exposure"]["top5_pct"] == "100.00" and three["exposure"]["by_sector"] == [{"sector": "Technology", "market_value": "0.02", "weight_pct": "100.00"}]
+    assert [s["symbol"] for s in three["exposure"]["by_symbol"]] == ["A", "B", "C"]                    # equal values: ranked by symbol
+
+
 # ================================================================ O ownership ====================================================================
 
 def test_O01_robinhood_holdings_are_always_user_managed_whatever_the_bot_does():

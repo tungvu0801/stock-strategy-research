@@ -34,7 +34,8 @@ NEW_691 = {"execution/exposure_gate.py", "tests/test_unified_exposure_gate_691.p
 EDITED_691 = {".github/ci/pytest_groups.json", "api/routes/execution.py", "api/routes/unified_portfolio.py", "browser_tests/flows.py", "config.py",
               "execution/activity.py", "execution/engine.py", "execution/service.py", "forward_validation/reports.py", "forward_validation/service.py",
               "frontend/product_ui.css", "frontend/product_ui.js", "trader_view/stream.py", "unified_portfolio/__init__.py", "unified_portfolio/state.py", "tests/freeze_ledger.py",
-              "tests/test_bot_activity_68.py", "tests/test_robinhood_portfolio_69.py", "tests/test_strategy_validation_62.py"}   # Stage 6.9.1: the files of main it edits
+              "tests/test_bot_activity_68.py", "tests/test_robinhood_portfolio_69.py", "tests/test_strategy_validation_62.py",
+              "tests/frontend/unified_portfolio.test.cjs"}                               # Stage 6.9.1: the files of main it edits (the last one: the display precision fix)
 SEMANTIC_691 = {                                                                         # Stage 6.9.1: the INTENTIONAL execution-semantics change, file by file
     "execution/exposure_gate.py": "new: the UNIFIED_EXTERNAL_EXPOSURE rule (duplicate symbol held in another account; projected symbol concentration; stale / unknown policy)",
     "execution/engine.py": "entry_controls() appends UNIFIED_EXTERNAL_EXPOSURE when the gate is enabled: it can BLOCK a new Alpaca PAPER entry (entry_controls_v2)",
@@ -57,7 +58,7 @@ LEDGER = {
     "forward_validation/reports.py": "829c33b3d6120250c4de8313fcb17a0ed097cf5d26e6d2d8178209c9882a053c",
     "forward_validation/service.py": "484aa0e73807606e53ab541be1f1063bfb2fed297aa407719a867e2ab57f94bb",
     "frontend/product_ui.css": "f94af406e4ff7b1855ce729a2d3be05268a20838ac8f57603e3aa1bafacb5ca8",
-    "frontend/product_ui.js": "20a41167c3d84a7bc8b12f6cb8ffeec1e9162768226662a38827f2ea16139fa1",
+    "frontend/product_ui.js": "958663d94c38b9eea6ea4f1da8de57fd55d9b80c4df8664707e7ccbc8650d8f0",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "tests/frontend/product_flow.test.cjs": "36c3b0c3729d8cab7bb009972dd9209e8ecf269648c3a14980aac3a439139306",
     "tests/frontend/product_ui.test.cjs": "929211ac8de8181d05cac3ab3c3dc8450f55c07c865b07a09f3034eb82433238",

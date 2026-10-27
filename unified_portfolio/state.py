@@ -155,7 +155,8 @@ def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca
                         "gross_market_value": _money(e["gross"]), "fully_valued": e["valued"], "weight_pct": _pct(e["gross"], total),
                         "sector": sector or "UNCLASSIFIED", "accounts": e["accounts"], "sources": srcs,
                         "duplicate": len(srcs) > 1, "ownerships": sorted({a["ownership"] for a in e["accounts"]})})
-    symbols.sort(key=lambda s: (-(_d(s["gross_market_value"]) or Decimal("0")), s["symbol"]))
+    gross = {e["symbol"]: e["gross"] for e in by_symbol.values()}                         # unrounded: shares and ranks never add rounded strings
+    symbols.sort(key=lambda s: (-gross[s["symbol"]], s["symbol"]))
 
     def total_by(key: str) -> Dict[str, str]:
         acc: Dict[str, Decimal] = {}
@@ -167,12 +168,12 @@ def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca
     sectors: Dict[str, Decimal] = {}
     unclassified = Decimal("0")
     for s in symbols:
-        mv = _d(s["gross_market_value"]) or Decimal("0")
+        mv = gross[s["symbol"]]
         if s["sector"] == "UNCLASSIFIED":
             unclassified += mv
         else:
             sectors[s["sector"]] = sectors.get(s["sector"], Decimal("0")) + mv
-    top5 = sum(((_d(s["gross_market_value"]) or Decimal("0")) for s in symbols[:5]), Decimal("0"))
+    top5 = sum((gross[s["symbol"]] for s in symbols[:5]), Decimal("0"))
     exposure = {"basis": "ALL_SOURCES" if not missing else "KNOWN_SOURCES_ONLY", "known_sources": [s["source"] for s in known],
                 "missing_sources": [s["source"] for s in missing], "stale_sources": [s["source"] for s in stale],
                 "total_market_value": _money(total), "gross_exposure": _money(total), "measure": "GROSS (sum of absolute position values; PAPER + REAL)", "by_symbol": symbols, "by_source": total_by("source"),
