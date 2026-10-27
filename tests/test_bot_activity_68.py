@@ -517,7 +517,7 @@ def test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry():
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=ROOT, capture_output=True, text=True).stdout.split())
     new = {p for p in changed if p not in in_base}
-    assert new == FL.NEW_68 | FL.NEW_69, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69), "missing_new": sorted((FL.NEW_68 | FL.NEW_69) - new)}   # + Stage 6.9
+    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691), "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691) - new)}   # + Stage 6.9 / 6.9.1
     assert changed - new == set(FL.LEDGER), {"unregistered": sorted(changed - new - set(FL.LEDGER)), "unchanged_but_registered": sorted(set(FL.LEDGER) - (changed - new))}
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel                      # the ledger restores main exactly (and the hash pins today's file)
@@ -565,6 +565,6 @@ def test_F03_the_ledger_rejects_an_unregistered_change_to_a_registered_file_and_
     assert tampered != svc
     with pytest.raises(AssertionError, match="differs from the Stage 6.8 ledger entry"):
         FL.view("execution/service.py", tampered)
-    eng = FL.now_text("execution/engine.py")                                                              # a frozen file Stage 6.8 did NOT register
-    assert "execution/engine.py" not in FL.LEDGER and eng == FL.base_text("execution/engine.py")
-    assert FL.view("execution/engine.py", eng + "# unauthorized\n") == eng + "# unauthorized\n"           # passed through: the old freeze tests compare real bytes
+    eng = FL.now_text("execution/broker.py")                                                              # a frozen file no stage registered (Stage 6.9.1 registered
+    assert "execution/broker.py" not in FL.LEDGER and eng == FL.base_text("execution/broker.py")          # engine.py as an intentional semantic change: FL.SEMANTIC_691)
+    assert FL.view("execution/broker.py", eng + "# unauthorized\n") == eng + "# unauthorized\n"           # passed through: the old freeze tests compare real bytes

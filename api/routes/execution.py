@@ -2,6 +2,7 @@
 api/routes/execution.py — Stage 6.0 AUTONOMOUS PAPER EXECUTION (reads + the two mode actions).
 
 GET  /api/execution                 overview: mode, environment proof, bot headline, cards, controls, findings, runs, intents, positions
+                                    (+ Stage 6.9.1 entry_controls: the entry-controls version and the UNIFIED_EXTERNAL_EXPOSURE gate settings)
 GET  /api/execution/status          the compact beginner view (bot headline + symbol cards + recent paper trades)
 GET  /api/execution/history         closed paper trades and entries that did not fill
 GET  /api/execution/controls        control liveness rows
@@ -43,6 +44,9 @@ def _service():
 def get_overview() -> JSONResponse:
     out = _service().overview()
     out.update({"modes": list(MODES), "mode_labels": MODE_LABELS, "exit_reasons": {r: EXIT_TEXT[r] for r in EXIT_REASONS}, "known_controls": list(CONTROLS)})
+    import config
+    from execution import exposure_gate
+    out["entry_controls"] = exposure_gate.summary(exposure_gate.from_config(config))   # Stage 6.9.1: the entry-controls version a new PAPER entry is decided under
     return JSONResponse(out)
 
 

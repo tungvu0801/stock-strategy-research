@@ -2902,6 +2902,10 @@ def product_ui(c: Ctx):
            c.js("!!document.querySelector('#pui-positions [data-pui-rh-row]')")]
     c.r.check("POSITIONS: PAPER — ALPACA and REAL — ROBINHOOD groups, Robinhood not configured (unknown, not zero, no row), unified exposure never COMPLETE without it",
               uni[0] == ["PAPER", "REAL"] and uni[1] == "NOT_CONFIGURED" and uni[2] is True and uni[3] in ("PARTIAL", "UNAVAILABLE") and uni[4] is False, uni)
+    # Stage 6.9.1: the unified section names the UNIFIED_EXTERNAL_EXPOSURE entry gate - OFF in the harness (the code default): advisory only, nothing blocked by it
+    gate = c.js("(() => { const e = document.querySelector('#pui-positions [data-pui-gate]'); return e ? [e.dataset.puiGate, e.textContent] : null; })()")
+    c.r.check("POSITIONS: the entry gate UNIFIED_EXTERNAL_EXPOSURE is shown OFF · advisory only (code default)", bool(gate) and gate[0] == "OFF" and "advisory only" in gate[1]
+              and "UNIFIED_EXTERNAL_EXPOSURE" in gate[1], gate)
     c.no_overflow("product UI, POSITIONS")
     c.shot("product_ui_positions")
     texts.append(c.js("document.body.innerText") or "")

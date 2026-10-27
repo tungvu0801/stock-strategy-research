@@ -126,6 +126,12 @@ class TerminalStream:
         self.ticks = 0
 
     # ---------------------------------------------------------------- read-only state (sync; HTTP routes + socket via a thread) -----
+    def unified_portfolio(self, refresh: bool = True) -> dict:
+        """Stage 6.9.1: this stream's UnifiedPortfolioState (GET /api/unified-portfolio without its display pre-check) - the executor's
+        UNIFIED_EXTERNAL_EXPOSURE input. Read only: the Robinhood source reads at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS (refresh=False never)."""
+        from api.routes.unified_portfolio import unified_payload
+        return unified_payload(refresh=refresh, stream_obj=self, precheck=False)
+
     def watch_symbols(self) -> List[str]:
         out: List[str] = []
         try:

@@ -5,8 +5,17 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
+
+Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
+UNIFIED_EXTERNAL_EXPOSURE, can block a new Alpaca PAPER entry when UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED=true. Its edited files are pinned here
+byte-for-byte like every other entry, so an older freeze test still checks exactly what ITS stage froze - but a registration here is NOT a claim
+that execution is unchanged. SEMANTIC_691 names every file whose change alters what the executor does, and
+tests/test_unified_exposure_gate_691.py (F tests) pins that delta explicitly against main BASE_691: the files differ from pre-6.9.1 main, every
+removed line is listed, every added line is a Stage 6.9.1 line, and the entry controls are entry_controls_v1 + exactly one control
+(entry_controls_v2). The Stage 6.1 frozen strategy-controls hash stays b5d4a56e... (its values did not move); the entry controls are versioned
+apart from it (execution/exposure_gate.py: VERSION, contract_hash).
 """
 import hashlib
 import subprocess
@@ -19,18 +28,36 @@ NEW_68 = {"execution/account_positions.py", "execution/activity.py", "tests/test
 NEW_69 = {"unified_portfolio/__init__.py", "unified_portfolio/fixture.py", "unified_portfolio/robinhood.py", "unified_portfolio/state.py",
           "api/routes/unified_portfolio.py", "tests/test_robinhood_portfolio_69.py", "tests/frontend/unified_portfolio.test.cjs",
           "DESIGN_69_ROBINHOOD_UNIFIED_PORTFOLIO.md"}                                    # Stage 6.9 (Robinhood read-only portfolio): its new files
+BASE_691 = "98c59e29e8de800226a47b1994038e902cfde0e2"                                    # main: Stage 6.9 merged (PR #32)
+NEW_691 = {"execution/exposure_gate.py", "tests/test_unified_exposure_gate_691.py", "tests/frontend/exposure_gate.test.cjs",
+           "DESIGN_691_UNIFIED_EXPOSURE_GATE.md"}                                       # Stage 6.9.1 (unified external exposure gate): its new files
+EDITED_691 = {".github/ci/pytest_groups.json", "api/routes/execution.py", "api/routes/unified_portfolio.py", "browser_tests/flows.py", "config.py",
+              "execution/activity.py", "execution/engine.py", "execution/service.py", "forward_validation/reports.py", "forward_validation/service.py",
+              "frontend/product_ui.css", "frontend/product_ui.js", "trader_view/stream.py", "unified_portfolio/__init__.py", "unified_portfolio/state.py", "tests/freeze_ledger.py",
+              "tests/test_bot_activity_68.py", "tests/test_robinhood_portfolio_69.py", "tests/test_strategy_validation_62.py"}   # Stage 6.9.1: the files of main it edits
+SEMANTIC_691 = {                                                                         # Stage 6.9.1: the INTENTIONAL execution-semantics change, file by file
+    "execution/exposure_gate.py": "new: the UNIFIED_EXTERNAL_EXPOSURE rule (duplicate symbol held in another account; projected symbol concentration; stale / unknown policy)",
+    "execution/engine.py": "entry_controls() appends UNIFIED_EXTERNAL_EXPOSURE when the gate is enabled: it can BLOCK a new Alpaca PAPER entry (entry_controls_v2)",
+    "execution/service.py": "_scan_entries() reads the unified portfolio once per Paper Auto scan when the gate is on, gives it to the entry controls, "
+                            "records the gate in the cycle summary and the entry-controls version on every entry intent",
+    "trader_view/stream.py": "TerminalStream.unified_portfolio(): the executor's read-only gate input",
+    "config.py": "UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED (default false), UNIFIED_BLOCK_DUPLICATE_SYMBOL, UNIFIED_MAX_SYMBOL_EXPOSURE_PCT, UNIFIED_STALE_SOURCE_POLICY",
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "d238c2c03d0728f7a2f3fae6245a7f48187134ccbb7a9587fe37bee3ab951e9d",
+    ".github/ci/pytest_groups.json": "8ec33756aa9a4da816ca848c9ae6d74447186a07cba92e8d226eeff62e4e2c7d",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
-    "api/routes/execution.py": "9fe4a8b3f88e015b3fa6fcbfcd149a230c504a3d5baaec312a7d5d553d1d6e00",
+    "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/server.py": "d09fe59e15c566c715039e91aed42cc19ebc75e6397e976ae3d88f98368de9f5",
-    "browser_tests/flows.py": "dd5e3daf0e584fab86df6e658b79d097942f3de9813d7700af80aa9d292d1d0e",
-    "config.py": "b2ff670e49cc6b0ba1afa218387d99b74bc762b06472333e1999b54996ebfd4d",
+    "browser_tests/flows.py": "0ebf7fcf85cb9c2d2fd5922299f90958022d4a3c2376d4b256bb3662af14f780",
+    "config.py": "aff36a2dedf3f7c992711feacb37e21702cd478321b8d5b01f58bb66da7ab5fa",
+    "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "5c09941615195dba6b50c41976b02b5a9b087c0cd3a0c805445ad2c8b91017e6",
-    "frontend/product_ui.css": "ba1285b4c1cb1fcc49380f55cb3d871323a695649c227b797ed4450212de7d5c",
-    "frontend/product_ui.js": "fabb2d402b13c1b7bebe3ae7ff7d0248b396fc198a35ba85ce7fe4ad2fe615c8",
+    "execution/service.py": "6d812ee6c39d3bd12e6b0ddfacf77c6ff1dd0dbab68958dca6effbd4ff1865fa",
+    "forward_validation/reports.py": "829c33b3d6120250c4de8313fcb17a0ed097cf5d26e6d2d8178209c9882a053c",
+    "forward_validation/service.py": "484aa0e73807606e53ab541be1f1063bfb2fed297aa407719a867e2ab57f94bb",
+    "frontend/product_ui.css": "f94af406e4ff7b1855ce729a2d3be05268a20838ac8f57603e3aa1bafacb5ca8",
+    "frontend/product_ui.js": "20a41167c3d84a7bc8b12f6cb8ffeec1e9162768226662a38827f2ea16139fa1",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "tests/frontend/product_flow.test.cjs": "36c3b0c3729d8cab7bb009972dd9209e8ecf269648c3a14980aac3a439139306",
     "tests/frontend/product_ui.test.cjs": "929211ac8de8181d05cac3ab3c3dc8450f55c07c865b07a09f3034eb82433238",
@@ -48,11 +75,11 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "1442dbf624b1806bfcdc45ec93e046ba222af5e9066498aa8b626f750a6605a8",
+    "tests/test_strategy_validation_62.py": "efb67fbf87cff8dd497b841ef87203da22a5634c85928e0472cd84566707e31d",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "trader_view/positions.py": "3765462dea8fcbb52b6c1880338a8e0e1c5151a60091ef0d11c3489a55267558",
-    "trader_view/stream.py": "63980bf7566ddbeb210c0a390348fc8672c9a5fdd31893de5803952907f7b8c3",
+    "trader_view/stream.py": "deee331b13a7ceb6fd04bfe4adbe716494db0f87c345fa8195005cb7a0cc45a5",
 }
 
 

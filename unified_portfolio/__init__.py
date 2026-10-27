@@ -31,3 +31,7 @@ COMPLETE, STALE_SOURCE, PARTIAL, UNAVAILABLE = "COMPLETE", "STALE_SOURCE", "PART
 DUPLICATE_ENTRY_POLICY = "BLOCK_NEW_BOT_ENTRY_IF_EXTERNAL_EXPOSURE"
 CURRENT_ENTRY_POLICY = ("The executor blocks a new bot entry only when the Alpaca PAPER account already holds the symbol (control BROKER_POSITION) and "
                         "counts every Alpaca position toward the open-positions limit. Robinhood holdings are not an executor input in Stage 6.9.")
+# Stage 6.9.1, when UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED=true (off by default: CURRENT_ENTRY_POLICY above stays the policy)
+CURRENT_ENTRY_POLICY_691 = ("The executor blocks a new bot entry when the Alpaca PAPER account already holds the symbol (control BROKER_POSITION, unchanged) and, "
+                            "through control UNIFIED_EXTERNAL_EXPOSURE (Stage 6.9.1), when Robinhood already holds it or the projected symbol share of the known "
+                            "invested value exceeds the limit. Robinhood holdings are a risk input only: never traded, exited or resized.")

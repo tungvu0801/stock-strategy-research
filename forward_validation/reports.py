@@ -16,7 +16,8 @@ SESSION_COLS = ("trading_date", "session_status", "notes_code", "started_at", "e
 TRADE_COLS = ("position_id", "execution_id", "proposal_id", "setup_id", "symbol", "side", "trading_date", "opened_at", "closed_at", "qty", "entry_price", "exit_price", "realized_pnl",
               "gross_pnl", "return_pct", "holding_sessions", "exit_reason", "entry_reference_price", "entry_slippage_absolute", "entry_slippage_bps", "exit_reference_price",
               "exit_slippage_absolute", "exit_slippage_bps", "mfe_pnl", "mae_pnl", "mfe_pct", "mae_pct", "marks", "stretch", "confidence", "demand", "evidence_strength", "risk_per_share",
-              "risk_budget", "proposal_qty", "invalidation_price", "entry_broker_order_id")
+              "risk_budget", "proposal_qty", "invalidation_price", "entry_broker_order_id",
+              "entry_controls_version", "unified_exposure_gate_enabled", "unified_exposure_result")   # Stage 6.9.1: the entry-control regime of each trade
 DAILY_COLS = ("trading_date", "session_status", "notes_code", "universe_scanned", "WATCH", "READY", "REVIEWABLE", "BLOCKED", "ENTRY_SUBMITTED", "ENTRY_FILLED", "ENTRY_PARTIAL", "POSITION_OPEN",
               "EXIT_REQUIRED", "EXIT_SUBMITTED", "EXIT_FILLED", "CLOSED", "ATTENTION", "rejections", "partials", "duplicates", "reconciliation_issues", "safety_fires", "realized_pnl",
               "max_drawdown", "max_drawdown_pct", "account_max_age_s", "cash_flow_max_age_s", "refresh_failures", "broker_errors", "restarts", "computed_at")
@@ -29,7 +30,10 @@ RESTART_COLS = ("at", "trading_date", "previous_owner", "previous_sample_at", "o
 
 def _flat_trade(t: dict) -> dict:
     a, es, xs, ex = t.get("attribution") or {}, t.get("entry_slippage") or {}, t.get("exit_slippage") or {}, t.get("excursions") or {}
-    return {**{k: t.get(k) for k in TRADE_COLS if k in t}, "entry_reference_price": es.get("reference_price"), "entry_slippage_absolute": es.get("slippage_absolute"),
+    ec = t.get("entry_controls") or {}
+    g = ec.get("unified_external_exposure") or {}
+    return {**{k: t.get(k) for k in TRADE_COLS if k in t}, "entry_controls_version": ec.get("version"), "unified_exposure_gate_enabled": g.get("enabled"),
+            "unified_exposure_result": g.get("result"), "entry_reference_price": es.get("reference_price"), "entry_slippage_absolute": es.get("slippage_absolute"),
             "entry_slippage_bps": es.get("slippage_bps"), "exit_reference_price": xs.get("reference_price"), "exit_slippage_absolute": xs.get("slippage_absolute"),
             "exit_slippage_bps": xs.get("slippage_bps"), "mfe_pnl": ex.get("mfe_pnl"), "mae_pnl": ex.get("mae_pnl"), "mfe_pct": ex.get("mfe_pct"), "mae_pct": ex.get("mae_pct"),
             "marks": ex.get("marks"), "stretch": a.get("stretch"), "confidence": a.get("confidence"), "demand": a.get("demand"), "evidence_strength": a.get("evidence_strength"),

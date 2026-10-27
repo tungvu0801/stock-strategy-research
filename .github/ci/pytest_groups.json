@@ -57,7 +57,8 @@
         "test_execution_60.py",
         "test_execution_safety_591.py",
         "test_proposals_59.py",
-        "test_setups_58.py"
+        "test_setups_58.py",
+        "test_unified_exposure_gate_691.py"
       ]
     },
     "account": {

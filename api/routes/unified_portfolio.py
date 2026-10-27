@@ -4,6 +4,8 @@ api/routes/unified_portfolio.py - Stage 6.9 UNIFIED PORTFOLIO (GET ONLY: there i
 GET /api/unified-portfolio            UnifiedPortfolioState: Alpaca PAPER rows (bot-managed / external) + Robinhood REAL rows (user-managed),
                                       exposure, concentration, PAPER vs REAL equity kept apart, informational warnings, advisory entry policy
 GET /api/unified-portfolio/robinhood  the Robinhood READ-ONLY source: state, freshness, user-managed holdings
+Stage 6.9.1: the unified payload adds `entry_gate` - the UNIFIED_EXTERNAL_EXPOSURE gate's settings and, per READY ticker, its decision now (display
+only); the same snapshot (without that pre-check) is the executor's gate input through TerminalStream.unified_portfolio.
 
 Robinhood is read through the loopback rh_gateway (two GETs, at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS); Alpaca PAPER positions come
 from the account-refresh snapshot (0 broker calls). Nothing here places, changes, cancels or closes an order or a position. Only normalized
@@ -32,14 +34,31 @@ def _ready(s) -> list:
         return []
 
 
-def unified_payload(refresh: bool = True, stream_obj: Optional[object] = None) -> dict:
+def _entry_gate(s, ready: list, u: dict) -> dict:
+    """Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE entry gate - its settings and, per READY ticker, what it decides NOW from this payload and the
+    current proposal (display only: the executor enforces it in Paper Auto cycles, and only when UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED=true)."""
+    import config
+    from execution import exposure_gate
+    g = exposure_gate.summary(exposure_gate.from_config(config))
+    try:
+        g["symbols"] = s.execution.exposure_precheck(ready, u)
+    except Exception as exc:  # noqa: BLE001 - display only
+        g["symbols"], g["error"] = {}, type(exc).__name__
+    return g
+
+
+def unified_payload(refresh: bool = True, stream_obj: Optional[object] = None, precheck: bool = True) -> dict:
     from api.routes.trader_view import stream
     from portfolio.sectors import default_resolver
     from unified_portfolio.robinhood import get_source
     from unified_portfolio.state import build
     s = stream_obj or stream()
     av, acct = _alpaca(s)
-    return build(av, get_source().view(refresh=refresh), alpaca_account=acct, sector_fn=default_resolver.sector_for, ready_symbols=_ready(s))
+    ready = _ready(s)
+    out = build(av, get_source().view(refresh=refresh), alpaca_account=acct, sector_fn=default_resolver.sector_for, ready_symbols=ready)
+    if precheck:                                                                       # Stage 6.9.1: the executor's own read (TerminalStream.unified_portfolio) skips it
+        out["entry_gate"] = _entry_gate(s, ready, out)
+    return out
 
 
 @router.get("")
