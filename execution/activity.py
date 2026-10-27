@@ -27,7 +27,7 @@ CONTROL_LABELS = {"PAPER_ENVIRONMENT": "Paper account proof", "EXECUTION_MODE": 
                   "SESSION_POLICY": "Market session", "DUPLICATE_ENTRY": "Duplicate entry", "MAX_OPEN_POSITIONS": "Open-positions limit", "BROKER_ACCOUNT": "Broker account",
                   "BROKER_TRADABILITY": "Tradable at the broker", "BROKER_POSITION": "Already held at the broker", "BROKER_RECONCILIATION": "Reconciliation",
                   "ENTRY_SUBMISSION": "Entry order", "POSITION_RECONCILIATION": "Position reconciliation", "EXIT_TRIGGER": "Exit check", "EXIT_SUBMISSION": "Exit order",
-                  "ENTRIES_PER_CYCLE": "Entries per cycle"}
+                  "ENTRIES_PER_CYCLE": "Entries per cycle", "UNIFIED_EXTERNAL_EXPOSURE": "Unified exposure"}   # Stage 6.9.1: the entry gate over the other accounts
 ORDER_LABELS = {RU.SUBMITTED: "Submitted (received by the broker)", RU.BROKER_ACCEPTED: "Accepted by the broker", RU.PARTIALLY_FILLED: "Partially filled",
                 RU.FILLED: "Filled", RU.CANCELED: "Canceled or expired", RU.BROKER_REJECTED: "Rejected by the broker", RU.RR: "Unrecognized broker status · reconciliation required"}
 WORKER = {"RUNNING": "Working", "IDLE": "Idle", "STANDBY": "Standby", "STARTING": "Starting", "STALE": "Stale", "ERROR": "Error", "STOPPED": "Not running", "DISABLED": "Off"}
@@ -158,7 +158,8 @@ def tickers(service, mode: str, runs: List[dict], latest_at: Optional[str] = Non
     for sym, ev in latest.items():
         if rows.get(sym, {}).get("status") in ("WAITING", "READY_MONITOR_ONLY"):
             continue                                                        # the setup left READY, or the bot is in Monitor only now: the current state wins
-        reasons = [{"control": r.get("control"), "label": CONTROL_LABELS.get(r.get("control"), r.get("control")), "text": r.get("text")} for r in ev.get("reasons") or []]
+        reasons = [{"control": r.get("control"), "label": CONTROL_LABELS.get(r.get("control"), r.get("control")), "text": r.get("text"),
+                    **({"code": r.get("code"), "detail": r.get("detail")} if r.get("code") else {})} for r in ev.get("reasons") or []]   # Stage 6.9.1: the gate's record
         text = {"BLOCKED": "Entry blocked: " + "; ".join(r["text"] for r in reasons if r["text"]), "SKIPPED": reasons[0]["text"] if reasons else "Skipped this cycle.",
                 "ENTRY_INTENT": f"Entry order: {(ev.get('intent_state') or '').replace('_', ' ').lower() or 'recorded'}"
                                 + (f" (broker status {ev['broker_status']})" if ev.get("broker_status") else "")}.get(ev["result"], ev["result"])

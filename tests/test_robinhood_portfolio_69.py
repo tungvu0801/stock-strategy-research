@@ -286,6 +286,14 @@ def test_U07_a_long_and_a_short_never_cancel_into_zero_exposure():
     assert u["exposure"]["largest"] == {"symbol": "AAPL", "weight_pct": "95.24"} and u["exposure"]["total_market_value"] == "2100.00"
 
 
+def test_U08_top5_and_sector_shares_come_from_unrounded_values_never_from_rounded_strings():
+    one = US.build(alpaca([("F", "1", "12.1", "11.575", "11.575", "EXTERNAL")]), rh_view([]))           # 11.575 displays as 11.58; the share is still 100 %
+    assert one["exposure"]["top5_pct"] == "100.00" and one["exposure"]["largest"]["weight_pct"] == "100.00"   # (it read 100.04 when summed from "11.58")
+    three = US.build(alpaca([]), rh_view([("A", "1", "0.005"), ("B", "1", "0.005"), ("C", "1", "0.005")]), sector_fn=lambda s: "Technology")
+    assert three["exposure"]["top5_pct"] == "100.00" and three["exposure"]["by_sector"] == [{"sector": "Technology", "market_value": "0.02", "weight_pct": "100.00"}]
+    assert [s["symbol"] for s in three["exposure"]["by_symbol"]] == ["A", "B", "C"]                    # equal values: ranked by symbol
+
+
 # ================================================================ O ownership ====================================================================
 
 def test_O01_robinhood_holdings_are_always_user_managed_whatever_the_bot_does():
@@ -514,9 +522,13 @@ def test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_ris
     import freeze_ledger as FL
     run = lambda *a: subprocess.run(list(a), cwd=ROOT, capture_output=True, text=True).stdout.split()  # noqa: E731
     assert subprocess.run(["git", "cat-file", "-e", f"{BASE_69}^{{commit}}"], cwd=ROOT).returncode == 0
+    stage69 = set(run("git", "diff", "--name-only", BASE_69, FL.BASE_691))                      # Stage 6.9 itself, between two fixed commits (main before / after PR #32)
+    assert stage69 == NEW_69_FILES | EDITED_69, {"unexpected": sorted(stage69 - NEW_69_FILES - EDITED_69), "missing": sorted((NEW_69_FILES | EDITED_69) - stage69)}
     changed = (set(run("git", "diff", "--name-only", BASE_69)) | set(run("git", "ls-files", "--others", "--exclude-standard")))
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == NEW_69_FILES | EDITED_69, {"unexpected": sorted(changed - NEW_69_FILES - EDITED_69), "missing": sorted((NEW_69_FILES | EDITED_69) - changed)}
+    later = FL.NEW_691 | FL.EDITED_691                                                                # Stage 6.9.1: an INTENTIONAL execution-semantics change (FL.SEMANTIC_691),
+    assert changed == NEW_69_FILES | EDITED_69 | later, {"unexpected": sorted(changed - NEW_69_FILES - EDITED_69 - later),   # pinned by tests/test_unified_exposure_gate_691.py
+                                                          "missing": sorted((NEW_69_FILES | EDITED_69 | later) - changed)}
     assert FL.NEW_69 == NEW_69_FILES and not (EDITED_69 - set(FL.LEDGER) - {"tests/freeze_ledger.py", "tests/test_bot_activity_68.py"})   # every edit is registered
     base_srv = subprocess.run(["git", "show", f"{BASE_69}:api/server.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n").splitlines()
     now_srv = (ROOT / "api" / "server.py").read_text(encoding="utf-8").replace("\r\n", "\n").splitlines()
@@ -525,7 +537,8 @@ def test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_ris
     assert (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n").startswith(base_cfg.rstrip("\n"))   # config.py: append-only
     for d in ("execution", "safety", "proposals", "setups", "forward_validation", "momentum", "value_quality", "mean_reversion", "breakout", "strategy_validation",
               "account_refresh", "cash_flow", "paper", "portfolio"):
-        assert not [p for p in changed if p.startswith(d + "/")], d                                   # no execution, risk, strategy or legacy portfolio file
+        assert not [p for p in stage69 if p.startswith(d + "/")], d                                   # Stage 6.9 changed no execution, risk, strategy or legacy portfolio file
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                           # ... and nothing but Stage 6.9.1's declared files changed one since
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO")
     out = subprocess.run([sys.executable, "-c", "import forward_validation as FV; print(FV.frozen_hash())"], cwd=ROOT, capture_output=True, text=True)

@@ -401,7 +401,7 @@
 
   // ONE consistent execution-eligibility surface ("Cannot enter · <one sentence>"): the first deterministic reason in precedence - safety gate, reconciliation, account
   // data, position cap, session, the proposal's own blocker - else "automatic entry off" (Monitor only) or allowed. Never a prediction: READY is setup eligibility.
-  function blockerModel(exec, safety, dom, terminal, limits) {
+  function blockerModel(exec, safety, dom, terminal, limits, gate) {
     const st = (safety && safety.state) || (exec && exec.safety_state) || null;
     const k = (safety && safety.kill_switch) || {};
     const acct = (exec && exec.account_data) || {};
@@ -421,6 +421,8 @@
     if (prop && prop.effective_status === "BLOCKED" && (prop.blockers || []).length) return blocked(prop.blockers[0].text || cap(words(prop.blockers[0].code)), prop.blockers[0].code);
     const el = prop && prop.execution_eligibility;
     if (el && el.allowed === false && prop.effective_status === "REVIEWABLE" && el.reason_text) return blocked(el.reason_text, (el.reason_codes || [])[0] || el.state || "NOT_ELIGIBLE");
+    // Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE entry gate (the GET /api/unified-portfolio pre-check) blocks here only when the executor enforces it
+    if (gate && gate.enforced && gate.result === "BLOCK") return blocked(`Unified exposure: ${gate.text}`, gate.reason_code || "UNIFIED_EXTERNAL_EXPOSURE");
     if (exec && exec.mode !== "PAPER_AUTO") return { level: "off", title: "Automatic entry off", reason: "Monitor only: no order is sent. Paper Auto would allow automatic paper entries.", code: "MONITOR_ONLY" };
     return { level: "ok", title: "Entry allowed when every check passes", reason: "The safety gate allows new entries; the entry controls run at order time.", code: "ALLOWED" };
   }
@@ -487,7 +489,7 @@
     const m = marketModel(dom);
     const sm = strategyModel(card, dom, ctx.registry, dom.proposalState);
     const setup = t.setup || {}, prop = t.proposal || {};
-    const bl = blockerModel(exec, safety, dom, t, limits);
+    const bl = blockerModel(exec, safety, dom, t, limits, gateFor(ctx.unified, ctx.symbol));
     const vs = (v, op, k, label) => (fz[k] == null ? `${label} ${v}` : `${label} ${v} (needs ${op} ${fz[k]})`);
     const blockers = setup.blockers && setup.blockers.length ? setup.blockers.map(words) : (dom.blockers || []);
     const question = { WATCHING: "Why is this stock WATCHING?", READY: "Why is it READY?", ENTERING: "Why is the order pending?", IN_TRADE: "Why is the position still held?", EXITING: "Why is the position exiting?",
@@ -606,7 +608,7 @@
     const note = positionNote(ctx.card, ctx.exec, ctx.safety);
     const sym = ctx.symbol || "—";
     const sm = strategyModel(ctx.card, ctx.dom, ctx.registry, ctx.dom.proposalState);
-    const bl = blockerModel(ctx.exec, ctx.safety, ctx.dom, ctx.terminal, ctx.limits);
+    const bl = blockerModel(ctx.exec, ctx.safety, ctx.dom, ctx.terminal, ctx.limits, gateFor(ctx.unified, ctx.symbol));   // + Stage 6.9.1 entry gate
     const fold = (key, open, label, body) => `<details class="pui-fold pui-why" data-pui-fold="${key}"${open ? " open" : ""}><summary data-pui="fold:${key}">${esc(label)}</summary><div class="pui-why-body">${body}</div></details>`;
     const why = fold("why", !!ctx.whyOpen, "Why?", whyHtml(whyModel(ctx), !!ctx.techOpen));
     // the strategy display (real state only): best setup / best strategy from the registry, no invented supporting strategies, no opportunity score; READY adds the execution line
@@ -988,7 +990,16 @@
   const OWN_CLS = { BOT_MANAGED: "ok", EXTERNAL: "warn", USER_MANAGED: "info", NEEDS_REVIEW: "bad" };
   const OWN_TXT = { BOT_MANAGED: "bot", EXTERNAL: "external", USER_MANAGED: "user managed", NEEDS_REVIEW: "needs review" };
   const usd = (x) => { const n = num(x); return n == null ? "—" : `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; };
+  // a per-share price for display: 2 to 4 decimals (the gateway's 6-decimal average cost, 1700.410000, reads 1700.41); quantities are never reformatted
+  const px = (x) => { const n = num(x); return n == null ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4, useGrouping: false }); };
   function realSource(u) { return u ? (u.sources || []).find((s) => s.account_type !== "PAPER") || null : null; }
+  // Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE pre-check of one READY ticker (what the gate decides now; null when the payload has none)
+  function gateFor(u, sym) { const g = u && u.entry_gate; return g && sym && g.symbols ? g.symbols[sym] || null : null; }
+  function gateLine(g) {
+    const cls = g.result === "BLOCK" ? (g.enforced ? "pui-bad" : "pui-warn") : g.result === "WARN" ? "pui-warn" : "";
+    return `<div class="pui-line ${cls}" data-pui-x="gate" data-pui-gate-result="${esc(g.result)}" data-pui-gate-code="${esc(g.reason_code || "")}" data-enforced="${g.enforced ? "1" : "0"}">` +
+      `Entry gate · Unified exposure: <b>${esc(g.label || g.result)}</b>${g.reason_code ? ` · ${esc(g.reason_code)}` : ""} · ${esc(g.text)}</div>`;
+  }
   const isReal = (s) => !!s && s.account_type === "REAL";
   function robinhoodHtml(u, error) {
     const s = realSource(u);
@@ -1001,7 +1012,7 @@
       ? `<div class="pui-empty" data-pui-rh-empty="${esc(s.state)}"><b>${esc(RH_STATE[s.state] || s.state)}.</b> ${esc(s.message || "")}</div>`
       : (s.state === "STALE" ? `<div class="pui-line pui-warn" data-pui-rh-stale>${esc(s.message || "Stale")}</div>` : "") +
         (rows.length ? `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Current</th><th>Market value</th><th>Unrealized P/L</th><th>Ownership</th></tr></thead><tbody>` +
-          rows.map((r) => `<tr data-pui-rh-row="${esc(r.symbol)}"><td><b>${esc(r.symbol)}</b></td><td>${esc(r.quantity)}</td><td>${esc(r.average_entry_price || "—")}</td><td>${esc(r.current_price || "—")}</td>` +
+          rows.map((r) => `<tr data-pui-rh-row="${esc(r.symbol)}"><td><b>${esc(r.symbol)}</b></td><td>${esc(r.quantity)}</td><td>${esc(px(r.average_entry_price))}</td><td>${esc(px(r.current_price))}</td>` +
             `<td>${esc(r.market_value || "—")}</td><td>${esc(money(r.unrealized_pl))}</td><td><span class="pui-badge info" title="${esc(r.notes || "")}">${esc(r.ownership_label)}</span></td></tr>`).join("") + `</tbody></table>`
           : `<div class="pui-empty">No holdings in the Robinhood account.</div>`);
     return head + `<section class="pui-acct pui-real" data-pui-rh="${esc(s.state)}"><h3>${esc(s.label)}</h3>${meta}${body}` +
@@ -1016,6 +1027,12 @@
       `<td>${s.weight_pct == null ? "—" : `${esc(s.weight_pct)}%`}</td><td>${s.accounts.map((a) => `${esc(a.account_type)} ${esc(a.quantity)} (${esc(OWN_TXT[a.ownership] || a.ownership)})`).join(" + ")}</td></tr>`).join("");
     const warn = (u.warnings || []).length ? `<ul class="pui-bot-list" data-pui-unified-warnings>${u.warnings.map((w) => `<li class="${esc(w.level)}" data-code="${esc(w.code)}">${esc(w.text)}</li>`).join("")}</ul>` : `<div class="pui-sub">No exposure warning.</div>`;
     const real = eq.real_external, rs = realSource(u);
+    const gate = u.entry_gate || null, gs = (gate && gate.settings) || {}, gsym = gate ? Object.values(gate.symbols || {}) : [];   // Stage 6.9.1: the entry gate and its READY pre-checks
+    const gateHtml = !gate ? "" : `<div class="pui-line ${gate.enabled ? "" : "pui-dim"}" data-pui-gate="${gate.enabled ? "ON" : "OFF"}"><b>Entry gate · ${esc(gate.control_id)}</b> · ` +
+      `${gate.enabled ? "ON · enforced: a new Alpaca PAPER entry is blocked when it says BLOCK" : "OFF · advisory only, nothing is blocked"} · symbol limit ${esc(gs.max_symbol_exposure_pct)}% (blocks above) · ` +
+      `duplicate rule ${gs.block_duplicate_symbol ? "on" : "off"} · unknown data: ${esc(words(gs.stale_source_policy || ""))} · ${esc(gate.version)}</div>` +
+      (gsym.length ? `<ul class="pui-bot-list" data-pui-gate-list>${gsym.map((x) => `<li class="${x.result === "BLOCK" ? "warn" : "info"}" data-pui-gate-sym="${esc(x.symbol)}" data-result="${esc(x.result)}">` +
+        `<b>${esc(x.symbol)}</b> · ${esc(x.label || x.result)}${x.reason_code ? ` · ${esc(x.reason_code)}` : ""} · ${esc(x.text)}</li>`).join("")}</ul>` : `<div class="pui-sub">No READY ticker to pre-check.</div>`);
     return `<section class="pui-acct pui-unified" data-pui-unified="${esc(u.state)}"><h3>Unified exposure <span class="pui-badge ${st[1]}">${esc(st[0])}</span></h3>${disc}` +
       `<div class="pui-kv pui-bot-kv"><span>Known invested value (PAPER + ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}, gross)</span><b data-pui-uni-total>${esc(usd(ex.total_market_value))}${ex.basis === "KNOWN_SOURCES_ONLY" ? " (known sources only)" : ""}</b>` +
       `<span>By account type</span><b data-pui-uni-types>${by(ex.by_account_type)}</b><span>By ownership</span><b>${by(ex.by_ownership)}</b>` +
@@ -1023,7 +1040,7 @@
       `<span>Equity · PAPER</span><b>${esc(usd(eq.paper && eq.paper.equity))}</b><span>Equity · ${isReal(rs) || !rs ? "REAL" : "SYNTHETIC"}</span><b>${real ? esc(usd(real.equity)) : "unknown (Robinhood not loaded)"}</b></div>` +
       `<div class="pui-sub">${esc(eq.note || "")}</div>` +
       (sym ? `<table class="pui-table pui-acct-table"><thead><tr><th>Symbol</th><th>Shares (all accounts, gross)</th><th>Value (gross)</th><th>Weight</th><th>Per account</th></tr></thead><tbody>${sym}</tbody></table>` : `<div class="pui-empty">No known position in any account.</div>`) +
-      `<div class="pui-sub">Warnings (informational):</div>${warn}<div class="pui-sub">${esc(u.current_entry_policy || "")}</div></section>`;
+      `<div class="pui-sub">Warnings (informational):</div>${warn}${gateHtml}<div class="pui-sub">${esc(u.current_entry_policy || "")}</div></section>`;
   }
   // TRADE › Position card: the bot's position, the Alpaca account and Robinhood stay three different things; unified exposure adds them up
   function exposureLines(u, sym) {
@@ -1031,7 +1048,8 @@
     const rows = (u.rows || []).filter((r) => r.symbol === sym);
     const rh = realSource(u), ps = (u.sources || []).find((s) => s.account_type === "PAPER") || null;
     const rhRows = rows.filter((r) => r.account_type !== "PAPER"), paper = rows.filter((r) => r.account_type === "PAPER" && r.ownership !== "BOT_MANAGED");
-    if (!rhRows.length && !paper.length) return null;
+    const g = gateFor(u, sym);                                                                       // Stage 6.9.1
+    if (!rhRows.length && !paper.length && !g) return null;
     const known = (s) => !!s && (s.state === "LOADED" || s.state === "STALE");
     const line = (t, cls, attr) => `<div class="pui-line ${cls || ""}" ${attr || ""}>${t}</div>`;
     const tot = (u.exposure && (u.exposure.by_symbol || []).find((s) => s.symbol === sym)) || null;
@@ -1040,7 +1058,8 @@
     return line(`Alpaca PAPER account: ${paper.length ? paper.map((r) => `${esc(r.quantity)} ${esc(sym)} · ${esc(r.ownership_label)}${r.ownership === "EXTERNAL" ? ` · blocks a bot entry in ${esc(sym)}` : ""}`).join("; ")
                                          : known(ps) ? "no non-bot holding" : `unknown (${esc(RH_STATE[(ps || {}).state] || "not loaded")})`}`, "", 'data-pui-x="paper"') +
       line(`${rhName}: ${rhRows.length ? rhRows.map((r) => `${esc(r.quantity)} shares · ${esc(r.ownership_label)}`).join("; ") : rh && !known(rh) ? `unknown (${esc(RH_STATE[rh.state] || rh.state)})` : "none"}`, rhRows.length ? "pui-warn" : "", 'data-pui-x="real"') +
-      (tot ? line(`Unified exposure${partial}: ${esc(tot.gross_quantity || tot.quantity)} shares · ${esc(usd(tot.gross_market_value || tot.market_value))}`, "", 'data-pui-x="unified"') : "");
+      (tot ? line(`Unified exposure${partial}: ${esc(tot.gross_quantity || tot.quantity)} shares · ${esc(usd(tot.gross_market_value || tot.market_value))}`, "", 'data-pui-x="unified"') : "") +
+      (g ? gateLine(g) : "");
   }
   function exposureCardHtml(u, sym) {
     const lines = exposureLines(u, sym);
@@ -1089,7 +1108,7 @@
       const when = scope === "LATEST_CYCLE" ? `evaluated ${hms(evAt)} · latest cycle` : scope === "EARLIER_CYCLE" ? `evaluated ${hms(evAt)} · earlier cycle, not re-evaluated since`
         : `setup checked ${hms(chAt)}`;
       return { symbol: t.symbol, status: t.status, label: t.label, cls: TICKER_CLS[t.status] || "dim", text: t.text, at: t.at, scope, when,
-               reasons: (t.reasons || []).map((r) => `${r.label || r.control}: ${r.text}`) };
+               reasons: (t.reasons || []).map((r) => `${r.label || r.control}: ${r.code ? `${r.code} · ` : ""}${r.text}`) };   // Stage 6.9.1: the gate's reason code
     });
     const work = a.latest_cycle_evaluations || tickers.filter((t) => t.scope === "LATEST_CYCLE").map((t) => ({ symbol: t.symbol, result: t.status }));
     const latestWork = !lc ? "No cycle recorded yet." : work.length ? `Latest cycle (${hms(lc.at)}) evaluated: ${work.map((x) => `${x.symbol} ${String(x.result).replace(/_/g, " ").toLowerCase()}`).join(", ")}.`
@@ -1611,5 +1630,7 @@
            // Stage 6.8
            accountPositionsHtml, accountCardHtml, botActivityModel, botActivityHtml, renderBotActivity, loadBotActivity,
            // Stage 6.9
-           robinhoodHtml, unifiedHtml, exposureLines, exposureCardHtml, loadUnified };
+           robinhoodHtml, unifiedHtml, exposureLines, exposureCardHtml, loadUnified,
+           // Stage 6.9.1
+           gateFor, gateLine };
 });

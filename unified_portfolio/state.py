@@ -10,7 +10,8 @@ unified_portfolio/state.py - UnifiedPortfolioState: one deterministic read model
   state       COMPLETE (every source loaded and fresh) | STALE_SOURCE (a source is stale; its values are included and disclosed) |
               PARTIAL (a source has no data; exposure covers the others, disclosed) | UNAVAILABLE (no source has data)
   warnings    informational only (stale / missing source, duplicate symbol, concentration, external exposure in a READY ticker, unvalued rows)
-  policy      BLOCK_NEW_BOT_ENTRY_IF_EXTERNAL_EXPOSURE, ADVISORY in Stage 6.9: computed and shown, never enforced (the executor is unchanged)
+  policy      BLOCK_NEW_BOT_ENTRY_IF_EXTERNAL_EXPOSURE, ADVISORY in Stage 6.9: computed and shown, never enforced (the executor is unchanged);
+              Stage 6.9.1: enforced = True only when UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED (the executor's UNIFIED_EXTERNAL_EXPOSURE control blocks)
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import config
-from unified_portfolio import (ACCOUNT_TYPE, AUTH_REQUIRED, BOT_MANAGED, COMPLETE, CURRENT_ENTRY_POLICY, DUPLICATE_ENTRY_POLICY, ERROR, EXTERNAL, LOADED,
+from unified_portfolio import (ACCOUNT_TYPE, AUTH_REQUIRED, BOT_MANAGED, COMPLETE, CURRENT_ENTRY_POLICY, CURRENT_ENTRY_POLICY_691, DUPLICATE_ENTRY_POLICY, ERROR, EXTERNAL, LOADED,
                                SYNTHETIC,
                                NEEDS_REVIEW, NOT_CONFIGURED, NOT_LOADED, OWNERSHIP_LABELS, PAPER, PARTIAL, REAL, SOURCE_LABELS, STALE, STALE_SOURCE,
                                UNAVAILABLE, USER_MANAGED, VERSION)
@@ -89,10 +90,20 @@ def robinhood_source(rv: Optional[dict]) -> Dict[str, Any]:
             "equity": rv.get("equity"), "cash": rv.get("cash")}
 
 
+def gate_enforced() -> bool:
+    """Stage 6.9.1: the executor's UNIFIED_EXTERNAL_EXPOSURE control blocks a held symbol (gate on and its duplicate rule on); otherwise advisory."""
+    return bool(getattr(config, "UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED", False) and getattr(config, "UNIFIED_BLOCK_DUPLICATE_SYMBOL", True))
+
+
+def current_entry_policy() -> str:
+    return CURRENT_ENTRY_POLICY_691 if getattr(config, "UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED", False) else CURRENT_ENTRY_POLICY
+
+
 def duplicate_entry_policy(symbol: str, rows: Iterable[dict], robinhood_state: str, mode: Optional[str] = None) -> Dict[str, Any]:
-    """BLOCK_NEW_BOT_ENTRY_IF_EXTERNAL_EXPOSURE, ADVISORY: would a new bot entry in `symbol` add PAPER exposure on top of a REAL holding?
-    Never enforced here (enforced = False): the executor's entry controls are unchanged in Stage 6.9."""
-    mode = (mode or config.ROBINHOOD_DUPLICATE_ENTRY_POLICY or "ADVISORY").upper()
+    """BLOCK_NEW_BOT_ENTRY_IF_EXTERNAL_EXPOSURE: would a new bot entry in `symbol` add PAPER exposure on top of a REAL holding? Advisory (enforced =
+    False) unless Stage 6.9.1's gate is on with its duplicate rule (enforced = True: the executor's UNIFIED_EXTERNAL_EXPOSURE control blocks it)."""
+    enforced = gate_enforced()
+    mode = "ENFORCED" if enforced else (mode or config.ROBINHOOD_DUPLICATE_ENTRY_POLICY or "ADVISORY").upper()
     held = [r for r in rows if r["symbol"] == symbol and r["ownership"] == USER_MANAGED]
     if mode == "OFF":
         would, why = False, "policy off (ROBINHOOD_DUPLICATE_ENTRY_POLICY=OFF)"
@@ -102,7 +113,7 @@ def duplicate_entry_policy(symbol: str, rows: Iterable[dict], robinhood_state: s
         would, why = None, f"unknown: Robinhood holdings are not loaded ({robinhood_state})"
     else:
         would, why = False, f"no Robinhood holding in {symbol}"
-    return {"policy": DUPLICATE_ENTRY_POLICY, "mode": mode, "enforced": False, "would_block": would, "reason": why, "current_policy": CURRENT_ENTRY_POLICY}
+    return {"policy": DUPLICATE_ENTRY_POLICY, "mode": mode, "enforced": enforced, "would_block": would, "reason": why, "current_policy": current_entry_policy()}
 
 
 def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca_account: Optional[dict] = None, sector_fn: Optional[Callable[[str], Optional[str]]] = None,
@@ -144,7 +155,8 @@ def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca
                         "gross_market_value": _money(e["gross"]), "fully_valued": e["valued"], "weight_pct": _pct(e["gross"], total),
                         "sector": sector or "UNCLASSIFIED", "accounts": e["accounts"], "sources": srcs,
                         "duplicate": len(srcs) > 1, "ownerships": sorted({a["ownership"] for a in e["accounts"]})})
-    symbols.sort(key=lambda s: (-(_d(s["gross_market_value"]) or Decimal("0")), s["symbol"]))
+    gross = {e["symbol"]: e["gross"] for e in by_symbol.values()}                         # unrounded: shares and ranks never add rounded strings
+    symbols.sort(key=lambda s: (-gross[s["symbol"]], s["symbol"]))
 
     def total_by(key: str) -> Dict[str, str]:
         acc: Dict[str, Decimal] = {}
@@ -156,12 +168,12 @@ def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca
     sectors: Dict[str, Decimal] = {}
     unclassified = Decimal("0")
     for s in symbols:
-        mv = _d(s["gross_market_value"]) or Decimal("0")
+        mv = gross[s["symbol"]]
         if s["sector"] == "UNCLASSIFIED":
             unclassified += mv
         else:
             sectors[s["sector"]] = sectors.get(s["sector"], Decimal("0")) + mv
-    top5 = sum(((_d(s["gross_market_value"]) or Decimal("0")) for s in symbols[:5]), Decimal("0"))
+    top5 = sum((gross[s["symbol"]] for s in symbols[:5]), Decimal("0"))
     exposure = {"basis": "ALL_SOURCES" if not missing else "KNOWN_SOURCES_ONLY", "known_sources": [s["source"] for s in known],
                 "missing_sources": [s["source"] for s in missing], "stale_sources": [s["source"] for s in stale],
                 "total_market_value": _money(total), "gross_exposure": _money(total), "measure": "GROSS (sum of absolute position values; PAPER + REAL)", "by_symbol": symbols, "by_source": total_by("source"),
@@ -198,13 +210,15 @@ def build(alpaca_view: Optional[dict], robinhood_view: Optional[dict], *, alpaca
         policies[sym] = p
         if p["would_block"]:
             warnings.append({"code": "EXTERNAL_EXPOSURE", "level": "warn", "symbol": sym,
-                             "text": f"{sym} is READY for a bot PAPER entry and {p['reason']}. Advisory only: the executor does not use Robinhood holdings in Stage 6.9."})
+                             "text": f"{sym} is READY for a bot PAPER entry and {p['reason']}. " + (
+                                 "Enforced: the executor's UNIFIED_EXTERNAL_EXPOSURE control blocks a new PAPER entry in it (Stage 6.9.1)." if p["enforced"] else
+                                 "Advisory only: the executor does not use Robinhood holdings while the Stage 6.9.1 gate is off.")})
     if unvalued:
         warnings.append({"code": "UNVALUED", "level": "info", "text": f"{len(unvalued)} position(s) without a usable price are excluded from the values (never guessed)."})
 
     disclosure = [f"{s['label']}: {s['state'].replace('_', ' ').lower()} - not included (unknown, not zero)." for s in missing] + \
                  [f"{s['label']}: STALE - included with values from {s['refreshed_at']}." for s in stale]
     return {"version": VERSION, "state": state, "sources": [{k: v for k, v in s.items() if k != "positions"} for s in sources], "rows": rows,
-            "exposure": exposure, "equity": equity, "warnings": warnings, "duplicate_entry_policy": policies, "current_entry_policy": CURRENT_ENTRY_POLICY,
+            "exposure": exposure, "equity": equity, "warnings": warnings, "duplicate_entry_policy": policies, "current_entry_policy": current_entry_policy(),
             "disclosure": disclosure, "write_capable": False,
             "note": "Read-only. Robinhood is not an execution broker: nothing here places, changes, cancels or closes anything. Alpaca PAPER is the only execution broker."}

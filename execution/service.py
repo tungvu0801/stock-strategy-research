@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import config
 from execution import (ATTENTION_ICON, ATTENTION_LABEL, COID_PREFIX, DISCLAIMER, EXIT_TEXT, INTENT_OPEN, MODE_ICONS, MODE_LABELS, STAGE, VERSION)
 from execution.broker import AlpacaPaperBroker, BrokerError
+from execution import exposure_gate                        # Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE entry control (pure; off by default)
 from execution.engine import (D, EntryContext, ExitContext, beginner, blocking, card_key, entry_controls, entry_quantity, entry_coid, execution_id_for, exit_coid, exit_decision,
                               exit_id_for, internal_state, money, pnl, position_id_for, session_policy)
 from execution.models import BotStatus, ControlEvaluation, Finding, Intent, Position, SymbolCard
@@ -632,6 +633,39 @@ class ExecutionService:
         except Exception as exc:  # noqa: BLE001
             return [f"4.6B intent store unreadable ({type(exc).__name__})"]
 
+    def _unified_portfolio(self) -> dict:
+        """Stage 6.9.1: the stream's read-only UnifiedPortfolioState, the UNIFIED_EXTERNAL_EXPOSURE input (the Alpaca PAPER account-refresh snapshot plus
+        the Robinhood read-only source, which reads at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS). Any failure is UNAVAILABLE: never an empty
+        portfolio. Data only - nothing here or in the gate can place, change or close anything in any account."""
+        fn = getattr(self.stream_fn(), "unified_portfolio", None)
+        if not callable(fn):
+            return {"state": "UNAVAILABLE", "error": "NOT_WIRED", "sources": [], "rows": []}
+        try:
+            u = fn(refresh=True)
+        except Exception as exc:  # noqa: BLE001 - unreadable data is unknown data: the gate's policy decides, never "no holdings"
+            log.warning("execution: unified portfolio unavailable (%s)", type(exc).__name__)
+            return {"state": "UNAVAILABLE", "error": type(exc).__name__, "sources": [], "rows": []}
+        return u if isinstance(u, dict) else {"state": "UNAVAILABLE", "error": "UNREADABLE", "sources": [], "rows": []}
+
+    def exposure_precheck(self, symbols: List[str], unified: Optional[dict], now: Optional[datetime] = None) -> Dict[str, dict]:
+        """Stage 6.9.1, display only (GET /api/unified-portfolio): what UNIFIED_EXTERNAL_EXPOSURE decides NOW for each symbol, from `unified` and the
+        current proposal's planned entry (the same pure rule and planned quantity as entry_controls). No broker call, no write, never an order: in
+        Monitor only this is where the decision is visible, since the executor evaluates entries in Paper Auto cycles only."""
+        now = now or self.clock()
+        gate = exposure_gate.from_config(config)
+        out: Dict[str, dict] = {}
+        for sym in symbols:
+            try:
+                pv = self.proposals.current(sym, now)
+                ok = pv.effective_status == "REVIEWABLE"
+                ev = exposure_gate.evaluate(sym, entry_quantity(pv.final_qty, self.qty_cap) if ok else 0, D(pv.reference_price) if ok else None, unified, gate,
+                                            planned_required=False)
+                out[sym] = exposure_gate.precheck_view(ev, gate, pv.effective_status)
+            except Exception as exc:  # noqa: BLE001 - display only
+                out[sym] = {"control_id": exposure_gate.CONTROL_ID, "symbol": sym, "result": "UNKNOWN", "label": "UNAVAILABLE", "enforced": gate.enabled, "would_block": None,
+                            "text": f"pre-check unavailable ({type(exc).__name__})"}
+        return out
+
     def _scan_entries(self, now: datetime, trigger: str, sv) -> dict:
         out: Dict[str, Any] = {"candidates": [], "submitted": [], "blocked": {}, "evaluations": []}
         episodes = [e for e in self.setups.store.open_episodes() if e.state == "READY"]
@@ -650,6 +684,8 @@ class ExecutionService:
         open_intents = self.store.open_intents()
         pending_entries = [i for i in open_intents if i.intent_type == "ENTRY" and self.store.position_for_execution(i.execution_id) is None]
         by_sym = {p["symbol"]: p for p in self._broker_positions}
+        gate = exposure_gate.from_config(config)                                         # Stage 6.9.1: read at every scan (off by default)
+        unified = self._unified_portfolio() if gate.enabled else None                    # Stage 6.9.1: ONE read-only snapshot per scan, only when the gate is on
         budget = self.max_entries_per_cycle
         for n, ep in enumerate(episodes, 1):
             if budget <= 0:
@@ -674,12 +710,13 @@ class ExecutionService:
                                internal_open_position=self.store.open_position(sym), legacy_intents=self._legacy_intents(sym), broker_positions_count=len(self._broker_positions),
                                pending_entries_count=len(pending_entries), max_open_positions=self.max_open_positions, reconciliation_healthy=self.recon_healthy,
                                reconciliation_reasons=self.recon_reasons, broker_clock=self._clock_cache, near_close_minutes=self.near_close_minutes, qty_cap=self.qty_cap)
+            ctx.exposure_gate, ctx.unified_portfolio = gate, unified                    # Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE inputs (off = the v1 controls)
             controls = entry_controls(ctx)
             self.store.touch_controls(controls, now)
             blocked = blocking(controls)
             if blocked:
                 out["blocked"][sym] = [c.control_id for c in blocked]
-                evaluated(sym, "BLOCKED", [{"control": c.control_id, "text": c.reason} for c in blocked])
+                evaluated(sym, "BLOCKED", [{"control": c.control_id, "text": c.reason, **exposure_gate.record(c)} for c in blocked])   # Stage 6.9.1: + the gate's record
                 continue
             xid = execution_id_for(pv.proposal_id)
             if self.store.intent(xid) is not None:
@@ -692,6 +729,7 @@ class ExecutionService:
             intent = Intent(execution_id=xid, intent_type="ENTRY", symbol=sym, side="buy", qty=qty, client_order_id=entry_coid(xid), proposal_id=pv.proposal_id, setup_id=pv.setup_id,
                             reference_price=pv.reference_price, invalidation_price=pv.invalidation_price, risk_budget=pv.risk_budget, proposal_qty=pv.final_qty, state="PENDING",
                             created_at=_iso(now), updated_at=_iso(now), created_by=self.owner, proposal_snapshot=snap, environment=dict(env))
+            intent.environment["entry_controls"] = exposure_gate.intent_record(gate, next((c for c in controls if c.control_id == exposure_gate.CONTROL_ID), None))   # Stage 6.9.1
             intent = self.store.insert_intent(intent)
             self._hook("after_intent", intent=intent)
             self._record(lambda: self._last_touch.pop("ENTRY_SUBMISSION", None))

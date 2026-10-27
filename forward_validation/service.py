@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import config
 from execution import EXIT_REASONS, EXIT_TEXT, INTENT_OPEN, POSITION_OPEN
+from execution import exposure_gate                           # Stage 6.9.1: the versioned entry-controls record of each paper entry
 from forward_validation import (ATTENTION_CODES, ATTENTION_TEXT, CONTROLS, CRITICAL_CODES, DISCLAIMER, EDGE_LABELS, FUNNEL, INSUFFICIENT_TEXT, MIN_TRADES_FOR_EDGE,
                                 PERSISTENT_MISMATCH_SESSIONS, SESSION_LABELS, STAGE, TARGET_EVENTS, TARGET_SESSIONS, VERSION, frozen_hash)
 from forward_validation import metrics as M
@@ -39,6 +40,29 @@ RESTART_GRACE_TICKS = 3
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def entry_controls_of(entry) -> Dict[str, Any]:
+    """Stage 6.9.1: the entry-controls record of a paper entry. Intents created from Stage 6.9.1 on carry it (environment.entry_controls); an older
+    intent has none and was decided, by construction, under entry_controls_v1 (no unified external exposure gate) - labelled so, never rewritten."""
+    if entry is None:
+        return {"version": None, "recorded": False, "unified_external_exposure": None, "note": "entry intent not found"}
+    rec = (entry.environment or {}).get("entry_controls")
+    if isinstance(rec, dict) and rec.get("version"):
+        return {**rec, "recorded": True}
+    return {"version": exposure_gate.PREVIOUS_VERSION, "recorded": False, "unified_external_exposure": {"enabled": False, "result": "NOT_PRESENT"},
+            "note": "entered before Stage 6.9.1: no unified external exposure gate existed (no record was written then; none is added now)"}
+
+
+def entry_controls_mix(trades: List[dict]) -> Dict[str, int]:
+    """Closed trades per entry-control regime: entry_controls_v1 | entry_controls_v2 gate off | entry_controls_v2 gate on (never pooled silently)."""
+    out: Dict[str, int] = {}
+    for t in trades:
+        ec = t.get("entry_controls") or {}
+        g = ec.get("unified_external_exposure") or {}
+        key = str(ec.get("version") or "unknown") + ("" if ec.get("version") != exposure_gate.VERSION else " gate on" if g.get("enabled") else " gate off")
+        out[key] = out.get(key, 0) + 1
+    return out
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:
@@ -698,6 +722,7 @@ class ForwardValidationService:
                 inputs = {}
         ppe, dem, evd = (prop or {}).get("ppe_snapshot") or {}, (prop or {}).get("demand_snapshot") or {}, (prop or {}).get("evidence_snapshot") or {}
         return {"position_id": p.position_id, "execution_id": p.execution_id, "proposal_id": p.proposal_id, "setup_id": p.setup_id, "symbol": p.symbol, "side": p.side,
+                "entry_controls": entry_controls_of(entry),                                     # Stage 6.9.1: which entry controls allowed this entry
                 "trading_date": (session_date(_parse(p.closed_at)) or _parse(p.closed_at).date()).isoformat() if _parse(p.closed_at) else None,
                 "opened_at": p.opened_at, "closed_at": p.closed_at, "qty": p.exit_qty or p.entry_qty, "entry_qty": p.entry_qty, "entry_price": p.average_entry_price,
                 "exit_price": p.average_exit_price, "realized_pnl": p.realized_pnl, **pnl, "fees_note": "not attributable per paper order (Alpaca posts fees as account activities; see the cash-flow ledger)",
@@ -844,7 +869,10 @@ class ForwardValidationService:
                 "strategy": {**wl, "expectancy_status": edge, "edge_status": edge["status"], "edge_label": EDGE_LABELS[edge["status"]], "insufficient": edge["status"] == "INSUFFICIENT_DATA",
                              "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None, "drawdown": dd, "exit_reasons": self.exit_reason_distribution(trades),
                              "funnel": funnel["counts"], "conversion": funnel["rates"], "unrealized": self.unrealized_pnl(), "note": "descriptive only; nothing is tuned from these numbers"},
-                "attention": att, "needs_attention": bool(att), "frozen_controls_hash": frozen_hash(), "disclaimer": DISCLAIMER}
+                "attention": att, "needs_attention": bool(att), "frozen_controls_hash": frozen_hash(), "disclaimer": DISCLAIMER,
+                "entry_controls": {**exposure_gate.summary(exposure_gate.from_config(config)), "closed_trades_by_entry_controls": entry_controls_mix(trades),   # Stage 6.9.1
+                                   "note": "frozen_controls_hash is the unchanged Stage 6.1 strategy contract; entry_controls is the separately versioned entry-control set. "
+                                           "Trades decided under different entry controls are counted apart, never mixed without this record."}}
 
     def overview(self, now: Optional[datetime] = None) -> dict:
         now = _utc(now or self.clock())

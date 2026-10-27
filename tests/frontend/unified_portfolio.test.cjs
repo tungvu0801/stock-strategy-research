@@ -93,3 +93,12 @@ test("review fixes: unknown PAPER data, known-sources-only totals, a synthetic f
   const gross = PUI.unifiedHtml({ ...LOADED, exposure: { ...LOADED.exposure, by_symbol: [{ ...LOADED.exposure.by_symbol[0], quantity: "0", gross_quantity: "20", market_value: "0.00", gross_market_value: "2000.00" }] } });
   assert.match(text(gross), /NVDA 20 \$2,000\.00/);                                                  // a long and a short never cancel into "0 exposure"
 });
+
+test("display precision: a per-share price shows 2 to 4 decimals, the quantity is never reformatted", () => {
+  const rows = [{ ...LOADED.rows[2], symbol: "SNDK", quantity: "4.277343", average_entry_price: "1700.410000", current_price: "1266.548300" },
+                { ...LOADED.rows[2], symbol: "AVGO", quantity: "3.874827", average_entry_price: "348.430000", current_price: null }];
+  const t = text(PUI.robinhoodHtml({ ...LOADED, rows: [...LOADED.rows.filter((r) => r.account_type === "PAPER"), ...rows] }));
+  assert.match(t, /SNDK 4\.277343 1700\.41 1266\.5483 /);
+  assert.match(t, /AVGO 3\.874827 348\.43 — /);
+  assert.doesNotMatch(t, /1700\.410000|1,700/);
+});

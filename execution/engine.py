@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 from execution import BEGINNER, ENTRY_PREFIX, EXIT_PREFIX, EXIT_REASONS, SETUP_TYPE
+from execution import exposure_gate                                    # Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE entry control (pure)
 from execution.models import ControlEvaluation, Intent, Position
 from setups.market_hours import CLOSE_MINUTE, is_regular_session, session_date, to_et
 
@@ -138,6 +139,8 @@ class EntryContext:
     broker_clock: Optional[dict] = None
     near_close_minutes: int = 15
     qty_cap: int = 0
+    exposure_gate: Any = None                             # Stage 6.9.1: exposure_gate.GateSettings; None or not enabled = the entry_controls_v1 set
+    unified_portfolio: Optional[dict] = None              # Stage 6.9.1: the UnifiedPortfolioState read once for this scan (None = not read)
 
 
 def entry_quantity(proposal_qty: Optional[int], qty_cap: int) -> int:
@@ -241,6 +244,10 @@ def entry_controls(c: EntryContext) -> List[ControlEvaluation]:
     out.append(ControlEvaluation(control_id="BROKER_RECONCILIATION", result="PASS" if c.reconciliation_healthy else "BLOCK",
                                  reason="reconciliation healthy" if c.reconciliation_healthy else "; ".join(c.reconciliation_reasons) or "reconciliation required",
                                  input={"healthy": c.reconciliation_healthy, "reasons": list(c.reconciliation_reasons)}))
+    # Stage 6.9.1 (entry_controls_v2): UNIFIED_EXTERNAL_EXPOSURE, only when UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED=true. The planned notional is the
+    # quantity and reference price above; the other accounts are a risk input only. PASS / WARN allow, BLOCK blocks (blocking() below) - never a resize.
+    if c.exposure_gate is not None and c.exposure_gate.enabled:
+        out.append(exposure_gate.evaluate(sym, qty, ref, c.unified_portfolio, c.exposure_gate))
     return out
 
 

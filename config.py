@@ -683,3 +683,11 @@ ROBINHOOD_PORTFOLIO_FIXTURE: str = os.getenv("ROBINHOOD_PORTFOLIO_FIXTURE", "") 
 ROBINHOOD_PORTFOLIO_TTL_SECONDS: float = float(os.getenv("ROBINHOOD_PORTFOLIO_TTL_SECONDS", "120"))           # a read older than this is refreshed on the next unified read
 ROBINHOOD_DUPLICATE_ENTRY_POLICY: str = os.getenv("ROBINHOOD_DUPLICATE_ENTRY_POLICY", "ADVISORY").strip().upper()   # ADVISORY | OFF - never enforced by the executor in Stage 6.9
 UNIFIED_CONCENTRATION_WARN_PCT: float = float(os.getenv("UNIFIED_CONCENTRATION_WARN_PCT", "20"))              # one symbol >= this % of the known invested value -> warning
+
+# Stage 6.9.1: UNIFIED EXTERNAL EXPOSURE GATE (execution/exposure_gate.py; DESIGN_691_UNIFIED_EXPOSURE_GATE.md). One deterministic entry control,
+# UNIFIED_EXTERNAL_EXPOSURE, for NEW Alpaca PAPER entries only: ALLOW or BLOCK - never a resize, never an exit. The other accounts of the unified
+# portfolio (Robinhood, read only) are a risk input only. OFF by default (advisory, as in Stage 6.9) until reviewed. Still no Robinhood execution setting.
+UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED: bool = os.getenv("UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+UNIFIED_BLOCK_DUPLICATE_SYMBOL: bool = os.getenv("UNIFIED_BLOCK_DUPLICATE_SYMBOL", "true").strip().lower() in ("1", "true", "yes", "on")   # another account holds it -> BLOCK
+UNIFIED_MAX_SYMBOL_EXPOSURE_PCT: str = os.getenv("UNIFIED_MAX_SYMBOL_EXPOSURE_PCT", "20").strip()             # Decimal text in (0, 100]: BLOCK if projected > it (100 never blocks)
+UNIFIED_STALE_SOURCE_POLICY: str = os.getenv("UNIFIED_STALE_SOURCE_POLICY", "BLOCK_DUPLICATE_ONLY_IF_KNOWN").strip().upper()   # | BLOCK_IF_UNKNOWN (fail closed while unknown)
