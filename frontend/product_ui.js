@@ -1082,6 +1082,7 @@
   const TICKER_CLS = { ENTRY_INTENT: "ok", BLOCKED: "warn", SKIPPED: "info", WAITING: "dim", READY_MONITOR_ONLY: "info", READY_PENDING: "info" };
   const EVALUATED = ["ENTRY_INTENT", "BLOCKED", "SKIPPED"];
   const MODE_TXT = { MONITOR_ONLY: "Monitor only", PAPER_AUTO: "Paper Auto" };
+  const FS_CLS = { HEALTHY: "ok", DEGRADED: "warn", INVALID: "bad", MARKET_CLOSED: "dim" };   // Stage 6.10A: the day's evidence health (operational only)
   function botActivityModel(a, conn) {
     const c = conn || {};
     const dashboard = c.okAt ? { state: c.error ? "STALE" : "CONNECTED", cls: c.error ? "warn" : "ok", text: c.error ? `Last read failed (${c.error}); showing the read from ${hms(c.okAtIso)}.` : `Connected · read at ${hms(c.okAtIso)}` }
@@ -1118,7 +1119,20 @@
       steps: (o.steps || []).map((s) => ({ at: s.at, kind: s.kind, label: s.label })) }));
     const pos = a.positions || {}, acct = pos.account || {};
     const external = acct.state === "LOADED" ? (acct.positions || []).filter((x) => !x.managed) : [];
-    return { dashboard, loaded: true, mode: md.label || MODE_TXT[md.mode] || "—", modeKey: md.mode || null, modeSince: since ? `${day(since)} ${hms(since)}` : "—",
+    // Stage 6.10A: the auto-run POLICY (when Paper Auto may be armed) - shown apart from the current mode and from the mode the last cycle ran in
+    const ar = a.auto_run || {}, pf = ar.preflight || null, fs = a.forward_session || null, fh = (fs && fs.health) || {}, fpa = (fs && fs.paper_auto) || {}, fc = (fs && fs.cycles) || {};
+    const num = (v) => (v == null ? "—" : String(v)), share = (v) => (v == null ? "—" : `${Math.round(v * 100)} %`);
+    const autoRun = { key: ar.policy || "", label: ar.label || "—", text: ar.text || "The auto-run policy was not reported by the server.",
+      preflight: pf ? `${pf.status}${pf.at ? ` at ${day(pf.at) !== day(a.generated_at) ? `${day(pf.at)} ` : ""}${hms(pf.at)}` : ""}${(pf.blocking || []).length ? ` · blocking: ${pf.blocking.join(", ")}` : ""}` : "not run in this server process yet" };   // an earlier day's check carries its date
+    const forward = !fs ? null : { status: fh.status || null, cls: FS_CLS[fh.status] || "dim",
+      label: fh.status ? `${fh.status.replace(/_/g, " ").toLowerCase()}${fh.final ? "" : " so far"}` : "not recorded yet",
+      cohort: fs.cohort ? `${fs.cohort.label} · ${fs.cohort.cohort_id}` : "—",
+      paperAuto: (fpa.spans || []).length ? fpa.spans.map((s) => `${hms(s.from)} → ${hms(s.to)}`).join(", ") : "not armed in today's session",
+      disarm: fpa.last_disarmed_at ? `${hms(fpa.last_disarmed_at)} by ${fpa.last_disarmed_by}${fpa.last_disarm_code ? ` (${fpa.last_disarm_code})` : ""}` : "—",
+      cycles: `${num(fc.recorded)} recorded · ${num(fc.errors)} errors · worker up ${share(fc.worker_coverage)}`, candidates: num(fs.candidates), ready: num(fs.ready),
+      blocked: num(fs.blocked), orders: `${num(fs.orders)} (${num(fs.fills)} filled)`, positions: `${num(fs.entered)} entered · ${num(fs.exited)} exited · ${num(fs.open_positions)} open`,
+      incidents: fs.incidents || [], text: fh.text || "" };
+    return { dashboard, loaded: true, mode: md.label || MODE_TXT[md.mode] || "—", modeKey: md.mode || null, modeSince: since ? `${day(since)} ${hms(since)}` : "—", autoRun, forward,
       lastCycleMode: lcMode ? (MODE_TXT[lcMode] || lcMode) : "—", awaiting, modeNote, latestWork, generatedAt: a.generated_at,
       worker: { state: w.state, label: w.label, cls: WORKER_CLS[w.state] || "dim", text: w.text,
         heartbeat: w.heartbeat_at ? `${hms(w.heartbeat_at)} (${w.heartbeat_age_s != null ? `${Math.round(w.heartbeat_age_s)} s ago` : "—"}${w.expected_every_s ? `, expected every ~${Math.round(w.expected_every_s)} s` : ""})` : "none yet",
@@ -1151,15 +1165,25 @@
       (m.accountState === "LOADED" ? rowsOf(m.external, (x) => `<li data-pui-external="${esc(x.symbol)}"><b>${esc(x.symbol)}</b> · ${esc(x.qty)} · <span class="pui-badge warn">${esc(x.label)}</span></li>`, "No external position in the account.")
         : `<div class="pui-sub" data-pui-external-state="${esc(m.accountState)}">Account positions: ${esc(m.accountState === "NOT_LOADED" ? "not loaded yet" : "not available")}. ${esc(m.accountMessage)}</div>`);
     const hist = rowsOf(m.history, (h) => `<li data-kind="${esc(h.kind)}" class="${esc(h.level)}">${esc(day(h.at))} ${esc(hms(h.at))} · ${esc(h.text)}${h.count > 1 ? ` <span class="pui-sub">×${esc(h.count)} since ${esc(hms(h.firstAt))}</span>` : ""}</li>`, "No activity recorded yet.");
+    const f = m.forward, ar = m.autoRun || { label: "—", key: "", text: "", preflight: "—" };   // Stage 6.10A: today's forward session (collapsed by default)
+    const fwd = !f ? `<div class="pui-sub">No forward-session data from the server.</div>` :
+      `<div class="pui-kv pui-bot-kv" data-pui-forward="${esc(f.status || "NONE")}"><span>Cohort</span><b data-pui-cohort>${esc(f.cohort)}</b>` +
+      `<span>Session health</span><b><span class="pui-badge ${f.cls}">${esc(f.label)}</span></b><span>Startup check</span><b data-pui-preflight>${esc(ar.preflight)}</b>` +
+      `<span>Paper Auto (UTC)</span><b>${esc(f.paperAuto)}</b><span>Last disarm</span><b>${esc(f.disarm)}</b><span>Cycles</span><b>${esc(f.cycles)}</b>` +
+      `<span>Candidates seen</span><b>${esc(f.candidates)}</b><span>READY</span><b>${esc(f.ready)}</b><span>Blocked</span><b>${esc(f.blocked)}</b>` +
+      `<span>Orders</span><b>${esc(f.orders)}</b><span>Positions</span><b>${esc(f.positions)}</b></div>` +
+      (f.incidents.length ? rowsOf(f.incidents, (x) => `<li class="warn" data-pui-incident>${esc(x)}</li>`, "") : `<div class="pui-line" data-pui-incidents="none">Incidents: none.</div>`) +
+      `<div class="pui-sub">${esc(f.text ? `${f.text} ` : "")}${esc(ar.text)} Operational health of the day's evidence only: not a strategy result.</div>`;
     return `<section class="pui-bot" data-pui-bot="${esc(w.state)}"><h3>Bot Activity</h3>` +
       `<div class="pui-bot-chips">${dash}${chip("Bot worker", w.cls, w.label, w.text, `data-pui-worker="${esc(w.state)}"`)}</div>` +
       `<div class="pui-kv pui-bot-kv"><span>Current mode</span><b data-pui-mode="${esc(m.modeKey || "")}">${esc(m.mode)} · since ${esc(m.modeSince)}</b>` +
       `<span>Last cycle ran in</span><b data-pui-last-cycle-mode>${esc(m.lastCycleMode)}</b>` +
+      `<span>Auto-run policy</span><b data-pui-autorun="${esc(ar.key)}" title="${esc(ar.text)}">${esc(ar.label)}</b>` +
       `<span>Heartbeat</span><b data-pui-heartbeat>${esc(w.heartbeat)}</b><span>Last cycle</span><b>${esc(w.lastStart)} → ${esc(w.lastFinish)}</b>` +
       `<span>Next run</span><b>${esc(w.next)}</b><span>Cycles this run</span><b>${esc(w.runs)}</b></div>` +
       (m.modeNote ? `<div class="pui-line ${m.awaiting ? "pui-warn" : ""}" data-pui-mode-note data-awaiting="${m.awaiting ? "1" : "0"}">${esc(m.modeNote)}</div>` : "") +
       `<div class="pui-line" data-pui-progress>Now: ${esc(m.progress)}</div><div class="pui-line" data-pui-last-cycle>Last cycle: ${esc(m.last)}</div>` +
-      fold("tickers", `Tickers (${m.tickers.length})`, tick) + fold("risk", `Risk checks · ${esc(m.gate.label)}`, risk) + fold("orders", `Orders (${m.orders.length})`, orders) +
+      fold("forward", `Forward session · ${esc(f ? f.label : "—")}`, fwd) + fold("tickers", `Tickers (${m.tickers.length})`, tick) + fold("risk", `Risk checks · ${esc(m.gate.label)}`, risk) + fold("orders", `Orders (${m.orders.length})`, orders) +
       fold("positions", `Positions (${m.bot.length} bot · ${m.external.length} external, unmanaged)`, pos) + fold("history", `Activity history (${m.history.length})`, hist) +
       `<div class="pui-sub">Times are UTC. Real backend records only: nothing is estimated, no fill is inferred from a submission, no AI narration.</div></section>`;
   }

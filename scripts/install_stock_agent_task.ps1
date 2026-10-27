@@ -5,8 +5,12 @@
 .DESCRIPTION
   The task runs scripts\start_stock_agent.ps1 -Foreground as the current user, only while that user is logged on (no admin
   rights needed). The start script supervises the server and restarts it after a crash at most 3 times; a second copy of the
-  task is ignored (MultipleInstances IgnoreNew) and the start script itself refuses a duplicate process. The server decides on
-  its own whether it may trade (Monitor only unless Paper Auto was enabled; startup reconciliation first; Alpaca PAPER only).
+  task is ignored (MultipleInstances IgnoreNew) and the start script itself refuses a duplicate process. Every start or restart
+  comes up in Monitor only (Stage 6.10A MANUAL_ARM: a person arms Paper Auto in the app; startup reconciliation first; Alpaca
+  PAPER only). Registering the same -TaskName again replaces that task: it never creates a second one.
+
+  -OverridesFile passes the instance's overrides file (applied after the shared .env) to the start script, so a scheduled
+  start runs with exactly the settings of a manual start of the same instance.
 
   Triggers:
     -Trigger Logon      at user logon (recommended for continuous use)
@@ -21,6 +25,9 @@
   .\scripts\install_stock_agent_task.ps1 -Trigger Once -Date 2026-10-23 -EasternTime 09:35 -TaskName StockAgentSmokeStart
 .EXAMPLE
   .\scripts\install_stock_agent_task.ps1 -TaskName StockAgentSmokeStart -Unregister
+.EXAMPLE
+  .\scripts\install_stock_agent_task.ps1 -Trigger Weekdays -EasternTime 09:15 -OverridesFile runtime\paper.env -PrintOnly
+  (06:15 Pacific = 09:15 New York, 15 minutes before the open; -PrintOnly registers nothing)
 #>
 [CmdletBinding()]
 param(
@@ -31,6 +38,7 @@ param(
     [string]$AppRoot = "",
     [string]$Python = "",
     [string]$EnvFile = "",
+    [string]$OverridesFile = "",
     [int]$Port = 8000,
     [string]$DbPath = "",
     [string]$RuntimeDir = "",
@@ -56,6 +64,7 @@ $envFileUsed = Resolve-SAEnvFile $AppRoot $EnvFile
 $start = Join-Path $AppRoot "scripts\start_stock_agent.ps1"
 $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "`"$start`"", "-Foreground", "-AppRoot", "`"$AppRoot`"", "-Python", "`"$py`"", "-Port", $Port)
 if ($envFileUsed) { $argList += @("-EnvFile", "`"$envFileUsed`"") }
+if ($OverridesFile) { $argList += @("-OverridesFile", "`"$((Resolve-Path -LiteralPath $OverridesFile).Path)`"") }
 if ($DbPath) { $argList += @("-DbPath", "`"$DbPath`"") }
 if ($RuntimeDir) { $argList += @("-RuntimeDir", "`"$RuntimeDir`"") }
 if ($LogDir) { $argList += @("-LogDir", "`"$LogDir`"") }
@@ -90,7 +99,7 @@ $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-$desc = "Starts the Stock Agent server (Alpaca PAPER only; it never sends an order by itself starting). Stop with scripts\stop_stock_agent.ps1."
+$desc = "Starts the Stock Agent server in Monitor only (Alpaca PAPER only; it never sends an order by itself starting). Stop with scripts\stop_stock_agent.ps1."
 $task = New-ScheduledTask -Action $action -Trigger $trig -Settings $settings -Principal $principal -Description $desc
 
 Write-Output ("Task name: {0}" -f $TaskName)

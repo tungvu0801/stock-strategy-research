@@ -691,3 +691,12 @@ UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED: bool = os.getenv("UNIFIED_EXTERNAL_EXPOS
 UNIFIED_BLOCK_DUPLICATE_SYMBOL: bool = os.getenv("UNIFIED_BLOCK_DUPLICATE_SYMBOL", "true").strip().lower() in ("1", "true", "yes", "on")   # another account holds it -> BLOCK
 UNIFIED_MAX_SYMBOL_EXPOSURE_PCT: str = os.getenv("UNIFIED_MAX_SYMBOL_EXPOSURE_PCT", "20").strip()             # Decimal text in (0, 100]: BLOCK if projected > it (100 never blocks)
 UNIFIED_STALE_SOURCE_POLICY: str = os.getenv("UNIFIED_STALE_SOURCE_POLICY", "BLOCK_DUPLICATE_ONLY_IF_KNOWN").strip().upper()   # | BLOCK_IF_UNKNOWN (fail closed while unknown)
+
+# Stage 6.10A: FORWARD PAPER AUTO-RUN (autorun/; DESIGN_610A_FORWARD_PAPER_AUTORUN.md) - WHEN Paper Auto may be armed, never how an entry is decided.
+# MANUAL_ARM (default): every start or restart is Monitor only and a person arms Paper Auto. SCHEDULED_ARM arms at most once per regular session after
+# every startup check passes, and ONLY with PAPER_AUTO_SCHEDULED_ARM_ENABLED=true as well (default false; not enabled during development).
+PAPER_AUTO_RUN_POLICY: str = os.getenv("PAPER_AUTO_RUN_POLICY", "MANUAL_ARM").strip().upper()                               # MANUAL_ARM | SCHEDULED_ARM (unknown = MANUAL_ARM)
+PAPER_AUTO_SCHEDULED_ARM_ENABLED: bool = os.getenv("PAPER_AUTO_SCHEDULED_ARM_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+PAPER_AUTO_SCHEDULED_ARM_DELAY_MINUTES: str = os.getenv("PAPER_AUTO_SCHEDULED_ARM_DELAY_MINUTES", "2").strip()                # minutes after the 09:30 ET open (integer text)
+PAPER_AUTO_DISARM_AT_SESSION_END: bool = os.getenv("PAPER_AUTO_DISARM_AT_SESSION_END", "true").strip().lower() in ("1", "true", "yes", "on")   # never carried over a close
+AUTORUN_SUPERVISOR_ENABLED: bool = os.getenv("AUTORUN_SUPERVISOR_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")   # lease renewal, preflight, automatic disarm

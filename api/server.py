@@ -78,13 +78,27 @@ async def _lifespan(_app):
         _safety_start()  # Stage 5.9.1
         from account_refresh.scheduler import start_if_enabled as _acct_start  # Stage 6.0.1: read-only account refresh for proposals / the Stage 5.9.1 gate; never in tests
         _acct_start()  # Stage 6.0.1: first action = STARTUP refresh; until it succeeds proposals / the Stage 5.9.1 gate stay paused
+        from autorun.service import startup_if_enabled as _autorun_startup  # Stage 6.10A: the single-instance lease, then Monitor only (MANUAL_ARM)
+        _autorun_startup()  # Stage 6.10A: a start never keeps Paper Auto armed; raises (no executor, no observer: fail closed) when this process may not run them
         from execution.scheduler import start_if_enabled as _exec_start  # Stage 6.0: the paper executor consumes setups / proposals / the safety gate; never in tests
         _exec_start()  # Stage 6.0: setups -> proposals -> safety gate -> PAPER execution loop (idle in MONITOR_ONLY; PAPER host only)
         from forward_validation.scheduler import start_if_enabled as _fv_start  # Stage 6.1: forward validation observer (reads the setups / proposals / execution state; never in tests)
         _fv_start()  # Stage 6.1: records session health and the setups -> proposals -> execution funnel; its only action is the early stop (Paper Auto -> Monitor only)
+        from autorun.service import mark_started as _autorun_started  # Stage 6.10A: the threads above are this process's own (no takeover on the first tick)
+        _autorun_started()  # Stage 6.10A
     except Exception as exc:  # noqa: BLE001 - the evaluator must never stop the server from starting
         logging.getLogger(__name__).warning("Setup evaluator could not start: %s", type(exc).__name__)
+    try:                                                    # Stage 6.10A: the auto-run supervisor (lease renewal, preflight, automatic disarm, opt-in scheduled arm; never in tests)
+        from autorun.scheduler import start_if_enabled as _autorun_start
+        _autorun_start()
+    except Exception as exc:  # noqa: BLE001 - the supervisor must never stop the server from starting
+        logging.getLogger(__name__).warning("Auto-run supervisor could not start: %s", type(exc).__name__)
     yield
+    try:                                                    # Stage 6.10A: stop the auto-run supervisor first (it can disarm Paper Auto)
+        from autorun.scheduler import shutdown as _autorun_shutdown
+        _autorun_shutdown()
+    except Exception as exc:  # noqa: BLE001 - shutting down regardless
+        logging.getLogger(__name__).warning("Auto-run supervisor did not stop cleanly: %s", type(exc).__name__)
     try:                                                    # Stage 5.8: stop the setup evaluator thread
         from forward_validation.scheduler import shutdown as _fv_shutdown  # Stage 6.1: stop the forward validation observer first (a setups / proposals / execution reader)
         _fv_shutdown()  # Stage 6.1 (setups / proposals / execution reader)
@@ -96,6 +110,11 @@ async def _lifespan(_app):
         _setups_shutdown()
     except Exception as exc:  # noqa: BLE001 - shutting down regardless
         logging.getLogger(__name__).warning("Setup evaluator did not stop cleanly: %s", type(exc).__name__)
+    try:                                                    # Stage 6.10A: release the instance lease last, after the executor and the observer stopped
+        from autorun.scheduler import release_lease as _autorun_release
+        _autorun_release()
+    except Exception as exc:  # noqa: BLE001 - the lease expires by itself
+        logging.getLogger(__name__).warning("Auto-run lease not released: %s", type(exc).__name__)
     try:
         from forward.automation import shutdown
         shutdown()

@@ -9,6 +9,7 @@ import io
 import json
 from typing import Any, Dict, List, Sequence, Tuple
 
+from forward_capture import EXPORT_KINDS as CAPTURE_EXPORTS   # Stage 6.10A: the forward dataset's exports share the Stage 6.1 export route
 from forward_validation import EXPORTS, INSUFFICIENT_TEXT, VERSION
 
 SESSION_COLS = ("trading_date", "session_status", "notes_code", "started_at", "ended_at", "bot_start_time", "bot_stop_time", "market_open_seen", "market_close_seen", "paper_auto_enabled",
@@ -17,7 +18,8 @@ TRADE_COLS = ("position_id", "execution_id", "proposal_id", "setup_id", "symbol"
               "gross_pnl", "return_pct", "holding_sessions", "exit_reason", "entry_reference_price", "entry_slippage_absolute", "entry_slippage_bps", "exit_reference_price",
               "exit_slippage_absolute", "exit_slippage_bps", "mfe_pnl", "mae_pnl", "mfe_pct", "mae_pct", "marks", "stretch", "confidence", "demand", "evidence_strength", "risk_per_share",
               "risk_budget", "proposal_qty", "invalidation_price", "entry_broker_order_id",
-              "entry_controls_version", "unified_exposure_gate_enabled", "unified_exposure_result")   # Stage 6.9.1: the entry-control regime of each trade
+              "entry_controls_version", "unified_exposure_gate_enabled", "unified_exposure_result",   # Stage 6.9.1: the entry-control regime of each trade
+              "candidate_id", "entry_decision_id", "cohort_id")   # Stage 6.10A: the trade's forward lineage (candidate -> decision -> intent -> position) and cohort
 DAILY_COLS = ("trading_date", "session_status", "notes_code", "universe_scanned", "WATCH", "READY", "REVIEWABLE", "BLOCKED", "ENTRY_SUBMITTED", "ENTRY_FILLED", "ENTRY_PARTIAL", "POSITION_OPEN",
               "EXIT_REQUIRED", "EXIT_SUBMITTED", "EXIT_FILLED", "CLOSED", "ATTENTION", "rejections", "partials", "duplicates", "reconciliation_issues", "safety_fires", "realized_pnl",
               "max_drawdown", "max_drawdown_pct", "account_max_age_s", "cash_flow_max_age_s", "refresh_failures", "broker_errors", "restarts", "computed_at")
@@ -51,8 +53,20 @@ def _flat_daily(d: dict) -> dict:
             "restarts": d.get("restarts"), "computed_at": d.get("computed_at")}
 
 
+def _lineage(service, t: dict) -> dict:
+    """Stage 6.10A: the forward ids of a closed trade - its candidate, the entry decision recorded at intent creation and the entry's cohort
+    (LEGACY when the entry predates the capture: no decision-time record exists and none is invented)."""
+    from forward_capture.store import fid
+    snap = service.capture.store.entry_snapshot(t["execution_id"]) if t.get("execution_id") else None
+    return {"candidate_id": fid("candidate", t["setup_id"]) if t.get("setup_id") else None, "entry_decision_id": (snap or {}).get("decision_id"),
+            "cohort_id": (snap or {}).get("cohort_id") or "LEGACY"}
+
+
 def export_rows(service, kind: str) -> Tuple[Sequence[str], List[dict]]:
     """(columns, rows) of one export. Deterministic order: by trading date / time. No secret, no credential, no raw broker description."""
+    if kind in CAPTURE_EXPORTS:                                                        # Stage 6.10A: read-only rows of the forward dataset
+        from forward_capture.exports import export_rows as capture_rows
+        return capture_rows(service.capture.store, kind)
     if kind not in EXPORTS:
         raise ValueError(f"unknown export {kind!r}; one of {', '.join(EXPORTS)}")
     st = service.store
@@ -60,7 +74,7 @@ def export_rows(service, kind: str) -> Tuple[Sequence[str], List[dict]]:
         return SESSION_COLS, [{k: s.get(k) for k in SESSION_COLS} for s in st.sessions(limit=100000, newest_first=False)]
     if kind == "trades":
         rows = sorted(service.closed_trades(limit=100000), key=lambda t: (t.get("closed_at") or "", t["position_id"]))
-        return TRADE_COLS, [_flat_trade(t) for t in rows]
+        return TRADE_COLS, [{**_flat_trade(t), **_lineage(service, t)} for t in rows]
     if kind == "daily":
         rows = st.dailies(limit=100000, newest_first=False)
         return DAILY_COLS, [_flat_daily(d) for d in rows]
@@ -120,7 +134,11 @@ def daily_report(summary: Dict[str, Any]) -> str:
             _line("Reconciliation findings (blocking / open)", f"{rec.get('findings')} ({rec.get('blocking')} / {rec.get('open')})"), _line("Broker errors", (s.get("broker_health") or {}).get("total_errors")), "",
             "P/L (descriptive, paper)", _line("Realized paper P/L", s.get("realized_pnl")), _line("Closed trades (win / loss / flat)", f"{wl.get('closed_trades')} ({wl.get('win_count')} / {wl.get('loss_count')} / {wl.get('flat_count')})"),
             _line("Unrealized paper P/L", s.get("unrealized_pnl")), _line("Max drawdown (adjusted equity)", f"{_v(dd.get('max_drawdown'))} ({_v(dd.get('max_drawdown_pct'), ' %')})"), "",
-            "OPEN POSITIONS", _line("Open at end of observation", s.get("open_positions_at_end")), "", "NOTES"]
+            "OPEN POSITIONS", _line("Open at end of observation", s.get("open_positions_at_end")), ""]
+    fc = s.get("forward_capture") or {}
+    if fc.get("summary_text"):                                                         # Stage 6.10A: the day's evidence health (operational only)
+        out += ["FORWARD EVIDENCE (operational health, not a strategy result)"] + ["  " + ln for ln in str(fc["summary_text"]).splitlines()]             + [_line("Record", "final" if fc.get("final") else "in progress"), ""]
+    out.append("NOTES")
     for a in s.get("attention") or []:
         out.append(f"  attention: {a.get('code')} at {a.get('at')}")
     out.append(f"  {INSUFFICIENT_TEXT}: one session is never a strategy conclusion.")

@@ -27,6 +27,7 @@ from forward_validation import (ATTENTION_CODES, ATTENTION_TEXT, CONTROLS, CRITI
                                 PERSISTENT_MISMATCH_SESSIONS, SESSION_LABELS, STAGE, TARGET_EVENTS, TARGET_SESSIONS, VERSION, frozen_hash)
 from forward_validation import metrics as M
 from forward_validation.store import ForwardValidationStore
+from forward_capture.capture import ForwardCapture            # Stage 6.10A: the point-in-time forward dataset this observer records (instrumentation only)
 from setups.market_hours import CLOSE_MINUTE, is_regular_session, session_date, to_et
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,7 @@ class ForwardValidationService:
         self._restart_pending: Optional[dict] = None
         self._restart_checked = False
         self._stopped_for: set = set()
+        self.capture = ForwardCapture(self)                                       # Stage 6.10A: no I/O here; the executor hands it markers, observe() records them
 
     # ---------------------------------------------------------------- collaborators (through the Trader View stream) ------------------
     @property
@@ -171,6 +173,10 @@ class ForwardValidationService:
                 self._touch(now, "observer", "UNKNOWN", "observation failed", out["error"])
             except Exception:  # noqa: BLE001
                 pass
+        try:                                                                      # Stage 6.10A: the forward evidence capture, under its own guard
+            out["capture"] = self.capture.tick(now, trigger)
+        except Exception as exc:  # noqa: BLE001 - never into the observer loop; the day's evidence health records the gap
+            out["capture"] = {"result": "ERROR", "error": type(exc).__name__}
         self.last_observation = out
         return out
 
@@ -837,7 +843,23 @@ class ForwardValidationService:
                 "order_reliability": rel, "reconciliation": {k: rec[k] for k in rec if k != "detail"}, "freshness": fr, "broker_health": {k: bh[k] for k in bh if k != "not_separately_persisted"},
                 "restarts": self.restarts_view(trading_date)["count"], "closed_trades": [{k: t[k] for k in ("position_id", "symbol", "qty", "entry_price", "exit_price", "realized_pnl", "return_pct", "exit_reason", "holding_sessions")} for t in trades],
                 "realized_pnl": wl["gross_pnl"], "win_loss": wl, "unrealized_pnl": self.unrealized_pnl()["unrealized_pnl"] if row and row["session_status"] == "OPEN" else None,
-                "drawdown": dd, "attention": [{"code": e["code"], "at": e["at"]} for e in att_events], "exit_reasons": self.exit_reason_distribution(trades), "disclaimer": DISCLAIMER}
+                "drawdown": dd, "attention": [{"code": e["code"], "at": e["at"]} for e in att_events], "exit_reasons": self.exit_reason_distribution(trades), "disclaimer": DISCLAIMER,
+                "forward_capture": self._forward_day(trading_date)}                # Stage 6.10A: the day's operational evidence health (read only)
+
+    def _forward_day(self, trading_date: str) -> Optional[dict]:
+        try:
+            from forward_capture.view import daily
+            return daily(self.capture.store, trading_date)
+        except Exception as exc:  # noqa: BLE001 - reporting only
+            return {"error": type(exc).__name__}
+
+    def _forward_evidence(self, now: datetime) -> dict:
+        """Stage 6.10A: the forward evidence per cohort (healthy capture sessions, candidate events, closed trades, the Stage 6.1 status label)."""
+        try:
+            from forward_capture.view import evidence
+            return evidence(self.capture.store, self, now)
+        except Exception as exc:  # noqa: BLE001 - reporting only
+            return {"error": type(exc).__name__}
 
     def cumulative(self, now: Optional[datetime] = None) -> dict:
         now = _utc(now or self.clock())
@@ -884,6 +906,6 @@ class ForwardValidationService:
             loop = {}
         today = (session_date(now) or now.date()).isoformat()
         return {**cum, "today": today, "today_session": self.store.session(today), "recent_sessions": self.store.sessions(limit=10), "loop": loop, "controls": self.store.controls(),
-                "counts": self.store.counts(), "last_observation": self.last_observation, "policy": {"paper_auto": "ON during intended validation sessions (regular hours, existing near-close cutoff)",
+                "counts": self.store.counts(), "last_observation": self.last_observation, "forward_evidence": self._forward_evidence(now), "policy": {"paper_auto": "ON during intended validation sessions (regular hours, existing near-close cutoff)",
                 "early_stop": "Paper Auto -> Monitor only on a critical defect (duplicate broker order, non-paper host attempt, entry under a blocked gate, persistent reconciliation mismatch); never a liquidation",
                 "no_tuning": "no threshold, rule, size or exit changes during Stage 6.1", "attention_codes": list(ATTENTION_CODES), "controls": list(CONTROLS)}}

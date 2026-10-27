@@ -332,16 +332,27 @@ def test_C01_stop_stops_only_our_process_and_shuts_down_cleanly(rig):
     assert code == 1 and "NOT RUNNING" in out
 
 
-def test_G01_restart_restores_the_persisted_mode_and_reconciles_before_any_write(rig):
+def test_G01_restart_starts_in_monitor_only_and_reconciles_before_any_write(rig):
     sys.path.insert(0, str(ROOT))
-    from execution.store import ExecutionStore
+    import sqlite3
+    from execution.models import Position
+    from execution.store import POSITION_COLS, ExecutionStore
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ExecutionStore(rig.db).set_mode("PAPER_AUTO", datetime.now(timezone.utc), "test", "restart test", {"paper": True, "simulated": False})
+    pos = Position(position_id="a" * 32, execution_id="b" * 32, symbol="SNDK", quantity=1, entry_qty=1, average_entry_price="100.00", opened_at=stamp, updated_at=stamp).model_dump()
+    conn = sqlite3.connect(str(rig.db))                                            # an open bot position: the restarted executor must still reconcile it
+    conn.execute(f"INSERT INTO paper_positions ({', '.join(POSITION_COLS)}) VALUES ({', '.join('?' * len(POSITION_COLS))})", [pos[k] for k in POSITION_COLS])
+    conn.commit()
+    conn.close()
     code, out = rig.start()
     assert code == 0, out
     log = (rig.logs / "stock_agent_stdout.log").read_text(encoding="utf-8")
     assert "execution mode at startup: PAPER_AUTO (persisted); the executor reconciles with the broker before any write" in log
+    assert "auto-run: Paper Auto was armed before this process started; it is now Monitor only (MANUAL_ARM)" in rig.log_text()   # Stage 6.10A: never kept armed
     st = rig.wait_cycle()
-    assert st["mode"] == "PAPER_AUTO" and st["mode_label"] == "Paper Auto"
+    assert st["mode"] == "MONITOR_ONLY" and st["mode_label"] == "Monitor only"
+    ev = http_get(rig.port, "/api/execution")["mode_events"][0]
+    assert (ev["from_mode"], ev["to_mode"], ev["actor"]) == ("PAPER_AUTO", "MONITOR_ONLY", "autorun_policy") and ev["reason"].startswith("MANUAL_ARM: process start")
     deadline = time.time() + 30
     while time.time() < deadline and st.get("reconciliation_healthy"):
         time.sleep(1)
@@ -352,7 +363,7 @@ def test_G01_restart_restores_the_persisted_mode_and_reconciles_before_any_write
     assert http_get(rig.port, "/api/execution/intents")["intents"] == []          # reconciliation came first; nothing was written or sent
     assert "network guard: blocked paper-api.alpaca.markets:443" in rig.log_text()   # the only outbound attempt: the paper reconciliation read
     code, out = rig.check()
-    assert "Mode: Paper Auto (needs attention)" in out and "Reconciliation: Needs attention" in out, out
+    assert "Mode: Monitor only (needs attention)" in out and "Reconciliation: Needs attention" in out, out
     code, out = rig.stop()
     assert code == 0 and "STOPPED cleanly" in out, out
     for v in FAKE.values():
