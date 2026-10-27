@@ -526,12 +526,12 @@ def test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_ris
     assert stage69 == NEW_69_FILES | EDITED_69, {"unexpected": sorted(stage69 - NEW_69_FILES - EDITED_69), "missing": sorted((NEW_69_FILES | EDITED_69) - stage69)}
     changed = (set(run("git", "diff", "--name-only", BASE_69)) | set(run("git", "ls-files", "--others", "--exclude-standard")))
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_691 | FL.EDITED_691                                                                # Stage 6.9.1: an INTENTIONAL execution-semantics change (FL.SEMANTIC_691),
+    later = FL.NEW_691 | FL.EDITED_691 | FL.NEW_610A | FL.EDITED_610A                                 # Stage 6.9.1 (FL.SEMANTIC_691) and Stage 6.10A (FL.SEMANTIC_610A),
     assert changed == NEW_69_FILES | EDITED_69 | later, {"unexpected": sorted(changed - NEW_69_FILES - EDITED_69 - later),   # pinned by tests/test_unified_exposure_gate_691.py
                                                           "missing": sorted((NEW_69_FILES | EDITED_69 | later) - changed)}
     assert FL.NEW_69 == NEW_69_FILES and not (EDITED_69 - set(FL.LEDGER) - {"tests/freeze_ledger.py", "tests/test_bot_activity_68.py"})   # every edit is registered
     base_srv = subprocess.run(["git", "show", f"{BASE_69}:api/server.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n").splitlines()
-    now_srv = (ROOT / "api" / "server.py").read_text(encoding="utf-8").replace("\r\n", "\n").splitlines()
+    now_srv = subprocess.run(["git", "show", f"{FL.BASE_610A}:api/server.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n").splitlines()   # Stage 6.10A pins its own lines
     assert [l for l in base_srv if l not in now_srv] == [] and [l for l in now_srv if l not in base_srv] == SERVER_LINES_69   # api/server.py: exactly two added lines
     base_cfg = subprocess.run(["git", "show", f"{BASE_69}:config.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")
     assert (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n").startswith(base_cfg.rstrip("\n"))   # config.py: append-only

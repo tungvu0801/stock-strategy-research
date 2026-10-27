@@ -158,6 +158,14 @@ class ExecutionService:
         except Exception as exc:  # noqa: BLE001 - display only
             log.warning("execution activity record skipped (%s)", type(exc).__name__)
 
+    def _mark(self, kind: str, **data) -> None:
+        """Stage 6.10A forward evidence (instrumentation only): hands a decision-time record to the forward-validation capture, an in-memory sink
+        (no I/O, not this executor's lock). Called only through _record, so any failure is logged and swallowed; no decision reads it back."""
+        cap = getattr(getattr(self.stream_fn(), "forward_validation", None), "capture", None)
+        if cap is not None:
+            data.setdefault("run_id", (self.progress or {}).get("run_id"))
+            cap.marker(kind, **data)
+
     def _touch(self, now: datetime, control_id: str, result: str, reason: str, inp: Optional[dict] = None, error: Optional[str] = None) -> None:
         self._record(lambda: self._last_touch.__setitem__(control_id, reason[:300]))   # display only: the per-position decision text of this cycle
         try:
@@ -287,6 +295,7 @@ class ExecutionService:
                     self._last_run_row_at = now
                 except Exception as exc:  # noqa: BLE001
                     log.warning("execution run not saved (%s)", type(exc).__name__)
+            self._record(lambda: self._mark("CYCLE_END", now=now, run_id=run_id, finished=finished, mode=mode, trigger=trigger, result=result, error=error))   # Stage 6.10A
             self.progress = None
             self.last_cycle = {"at": _iso(now), "finished_at": _iso(finished), "result": result, "trigger": trigger, "mode": mode, "run_id": run_id, "summary": summary, "error": error}
             return self.last_cycle
@@ -671,6 +680,7 @@ class ExecutionService:
         episodes = [e for e in self.setups.store.open_episodes() if e.state == "READY"]
         if not episodes:
             return out
+        self._record(lambda: self._mark("SCAN", now=now, items=[(e.setup_id, e.symbol) for e in episodes]))   # Stage 6.10A: forward evidence (instrumentation only)
         evaluated = lambda sym, result, reasons, **kw: self._record(lambda: out["evaluations"].append({"symbol": sym, "result": result, "reasons": reasons, **kw}))  # noqa: E731
         env = self._environment(now)
         try:
@@ -691,6 +701,7 @@ class ExecutionService:
             if budget <= 0:
                 for rest in episodes[n - 1:]:
                     evaluated(rest.symbol, "SKIPPED", [{"control": "ENTRIES_PER_CYCLE", "text": f"the limit of {self.max_entries_per_cycle} new entr(y/ies) per cycle was used; evaluated again next cycle"}])
+                self._record(lambda: self._mark("SKIPPED", now=now, items=[(r.setup_id, r.symbol) for r in episodes[n - 1:]]))   # Stage 6.10A
                 break
             sym = ep.symbol
             if self.progress is not None:
@@ -714,6 +725,7 @@ class ExecutionService:
             controls = entry_controls(ctx)
             self.store.touch_controls(controls, now)
             blocked = blocking(controls)
+            self._record(lambda: self._mark("EVALUATED", now=now, setup_id=ep.setup_id, symbol=sym, ctx=ctx, controls=controls))   # Stage 6.10A
             if blocked:
                 out["blocked"][sym] = [c.control_id for c in blocked]
                 evaluated(sym, "BLOCKED", [{"control": c.control_id, "text": c.reason, **exposure_gate.record(c)} for c in blocked])   # Stage 6.9.1: + the gate's record
@@ -722,6 +734,7 @@ class ExecutionService:
             if self.store.intent(xid) is not None:
                 out["blocked"][sym] = ["DUPLICATE_ENTRY"]
                 evaluated(sym, "BLOCKED", [{"control": "DUPLICATE_ENTRY", "text": "an entry for this proposal already exists"}])
+                self._record(lambda: self._mark("DUPLICATE", now=now, setup_id=ep.setup_id, symbol=sym, execution_id=xid))   # Stage 6.10A
                 continue
             qty = entry_quantity(pv.final_qty, self.qty_cap)
             snap = {k: getattr(pv, k) for k in ("proposal_id", "setup_id", "status", "effective_status", "reference_price", "price_source", "invalidation_price", "stop_rule", "risk_per_share",
@@ -732,6 +745,7 @@ class ExecutionService:
             intent.environment["entry_controls"] = exposure_gate.intent_record(gate, next((c for c in controls if c.control_id == exposure_gate.CONTROL_ID), None))   # Stage 6.9.1
             intent = self.store.insert_intent(intent)
             self._hook("after_intent", intent=intent)
+            self._record(lambda: self._mark("INTENT", now=now, setup_id=ep.setup_id, intent=intent))   # Stage 6.10A
             self._record(lambda: self._last_touch.pop("ENTRY_SUBMISSION", None))
             self._submit(intent, now, "ENTRY_SUBMISSION", recheck=lambda i=intent: self._recheck_entry(i, now))
             out["submitted"].append(sym)

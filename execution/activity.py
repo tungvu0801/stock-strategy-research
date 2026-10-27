@@ -277,6 +277,26 @@ def history(service, store, runs: List[dict], limit: int = 40) -> List[Dict[str,
     return items[:limit]
 
 
+def auto_run(service, now: datetime) -> Optional[Dict[str, Any]]:
+    """Stage 6.10A: the auto-run policy (apart from the current mode and the last cycle's mode), the latest preflight and today's arm / disarm record."""
+    try:
+        from autorun.view import activity_view
+        return activity_view(getattr(service.store, "path", None), now)
+    except Exception:  # noqa: BLE001 - display only
+        return None
+
+
+def forward_session(service, now: datetime) -> Optional[Dict[str, Any]]:
+    """Stage 6.10A: today's forward-session record - cohort, operational health, Paper Auto times, candidates, orders, incidents (read only)."""
+    try:
+        from forward_capture.capture import trading_date
+        from forward_capture.store import ForwardCaptureStore
+        from forward_capture.view import forward_session as session_view
+        return session_view(ForwardCaptureStore(service.store.path), trading_date(now.astimezone(timezone.utc).isoformat(timespec="seconds")), now)
+    except Exception:  # noqa: BLE001 - display only
+        return None
+
+
 def activity(service, *, scheduler_status: dict, enabled: bool, account: Optional[dict] = None, now: Optional[datetime] = None) -> Dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     m = service.mode()
@@ -290,5 +310,6 @@ def activity(service, *, scheduler_status: dict, enabled: bool, account: Optiona
             "mode": mode_view(m, lc, w), "worker": w, "progress": prog, "last_cycle": lc, "latest_cycle_evaluations": latest_work(lc_summary),
             "tickers": tickers(service, m["mode"], runs, (lc or {}).get("at")),
             "risk": risk(service, now), "orders": orders(service.store), "positions": positions(service, runs, account), "history": history(service, service.store, runs),
+            "auto_run": auto_run(service, now), "forward_session": forward_session(service, now),           # Stage 6.10A (display only, read only)
             "note": "Real backend records only: the scheduler heartbeat, the executor's persisted cycles, controls, broker-reported order events, position events and findings. "
                     "Nothing is estimated, no fill is inferred from a submission, and no model narrates."}

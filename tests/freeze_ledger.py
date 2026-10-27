@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -16,6 +16,14 @@ tests/test_unified_exposure_gate_691.py (F tests) pins that delta explicitly aga
 removed line is listed, every added line is a Stage 6.9.1 line, and the entry controls are entry_controls_v1 + exactly one control
 (entry_controls_v2). The Stage 6.1 frozen strategy-controls hash stays b5d4a56e... (its values did not move); the entry controls are versioned
 apart from it (execution/exposure_gate.py: VERSION, contract_hash).
+
+Stage 6.10A (forward paper auto-run + evidence capture) changes WHEN Paper Auto may enter - the ARMING and RESTART semantics - on purpose,
+and not HOW an entry or exit is decided. SEMANTIC_610A names every file of that change: a process start never keeps Paper Auto armed
+(MANUAL_ARM, superseding DESIGN_60 section 1's 'persisted mode restored after restart'), deterministic conditions disarm it (new entries stop;
+monitoring and exits continue) and an opt-in, default-off SCHEDULED_ARM may arm it once per regular session. INSTRUMENTATION_610A names the files
+that only record evidence: the executor hands decision-time records to an in-memory sink through its existing failure-swallowing _record. The
+order-decision logic is pinned unchanged by tests/test_forward_paper_610a.py (F tests): execution/engine.py is byte-identical to BASE_610A,
+every added executor line is a _record call or inside the new _mark, and the frozen and entry-contract hashes are the Stage 6.9.1 values.
 """
 import hashlib
 import subprocess
@@ -44,22 +52,48 @@ SEMANTIC_691 = {                                                                
     "trader_view/stream.py": "TerminalStream.unified_portfolio(): the executor's read-only gate input",
     "config.py": "UNIFIED_EXTERNAL_EXPOSURE_GATE_ENABLED (default false), UNIFIED_BLOCK_DUPLICATE_SYMBOL, UNIFIED_MAX_SYMBOL_EXPOSURE_PCT, UNIFIED_STALE_SOURCE_POLICY",
 }
+BASE_610A = "27926f627c5cb83a6e1b3b6a9b646ce455cfbe52"                                   # main: Stage 6.9.1 merged (PR #33)
+NEW_610A = {"autorun/__init__.py", "autorun/calendar.py", "autorun/facts.py", "autorun/policy.py", "autorun/scheduler.py", "autorun/service.py", "autorun/session.py",
+            "autorun/store.py", "autorun/view.py", "forward_capture/__init__.py", "forward_capture/capture.py", "forward_capture/cohort.py", "forward_capture/exports.py",
+            "forward_capture/health.py", "forward_capture/project.py", "forward_capture/store.py", "forward_capture/view.py", "database/autorun_migrations.py",
+            "database/forward_capture_migrations.py", "tests/test_forward_paper_610a.py", "tests/frontend/forward_session.test.cjs",
+            "DESIGN_610A_FORWARD_PAPER_AUTORUN.md"}                                      # Stage 6.10A (forward paper auto-run + evidence capture): its new files
+EDITED_610A = {".github/ci/pytest_groups.json", "api/routes/forward_validation.py", "api/server.py", "browser_tests/flows.py", "config.py", "execution/activity.py",
+               "execution/service.py", "forward_validation/reports.py", "forward_validation/service.py", "frontend/product_ui.js", "scripts/install_stock_agent_task.ps1",
+               "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_robinhood_portfolio_69.py", "tests/test_strategy_validation_62.py",
+               "tests/test_unified_exposure_gate_691.py", "tests/test_windows_runner_60.py"}   # Stage 6.10A: the files of main it edits
+SEMANTIC_610A = {                                                                        # Stage 6.10A: the INTENTIONAL arming / restart change (WHEN Paper Auto may enter)
+    "api/server.py": "the lifespan takes the single-instance lease, then demotes a persisted PAPER_AUTO to MONITOR_ONLY BEFORE the executor starts; refused = "
+                     "neither the executor nor the observer starts (fail closed)",
+    "autorun/service.py": "new: the startup demotion, the automatic disarms (Paper Auto -> Monitor only through disable_auto) and the opt-in scheduled arm "
+                          "(enable_auto at most once per regular session, only with PAPER_AUTO_SCHEDULED_ARM_ENABLED=true)",
+    "autorun/policy.py": "new: the deterministic preflight, automatic-disarm and scheduled-arm conditions (pure functions over gathered facts)",
+    "autorun/scheduler.py": "new: the supervisor thread that applies autorun/service.py every 30 s in the session / 60 s outside it and keeps the instance lease",
+    "config.py": "PAPER_AUTO_RUN_POLICY (default MANUAL_ARM), PAPER_AUTO_SCHEDULED_ARM_ENABLED (default false), PAPER_AUTO_SCHEDULED_ARM_DELAY_MINUTES, "
+                 "PAPER_AUTO_DISARM_AT_SESSION_END (default true), AUTORUN_SUPERVISOR_ENABLED",
+}
+INSTRUMENTATION_610A = {                                                                 # Stage 6.10A: evidence recording only (no decision reads it)
+    "execution/service.py": "six self._record(...) markers hand decision-time records (allowlisted) to the forward-capture sink, plus the new _mark",
+    "forward_validation/service.py": "the capture tick after the observer's own try/except (its own guard) and read-only evidence views",
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "8ec33756aa9a4da816ca848c9ae6d74447186a07cba92e8d226eeff62e4e2c7d",
+    ".github/ci/pytest_groups.json": "6721e9a2aa021f88069f5b68e1e6ff836cdecd4d7ebfe375fd01bc18bf960044",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
-    "api/server.py": "d09fe59e15c566c715039e91aed42cc19ebc75e6397e976ae3d88f98368de9f5",
-    "browser_tests/flows.py": "0ebf7fcf85cb9c2d2fd5922299f90958022d4a3c2376d4b256bb3662af14f780",
-    "config.py": "aff36a2dedf3f7c992711feacb37e21702cd478321b8d5b01f58bb66da7ab5fa",
+    "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
+    "api/server.py": "b000500e47ea55009f99841c49ccf10bc150d0036f2a0193e4a1e33251047550",
+    "browser_tests/flows.py": "80cbd224c730f8f8ed3e3988dc167b7ca2d43783559a8ddf51ebb92a31b690b7",
+    "config.py": "95763501d229f07a517b2cf0b8e6c3336e62da8ea36c6be4c132ad0898ea9e51",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "6d812ee6c39d3bd12e6b0ddfacf77c6ff1dd0dbab68958dca6effbd4ff1865fa",
-    "forward_validation/reports.py": "829c33b3d6120250c4de8313fcb17a0ed097cf5d26e6d2d8178209c9882a053c",
-    "forward_validation/service.py": "484aa0e73807606e53ab541be1f1063bfb2fed297aa407719a867e2ab57f94bb",
+    "execution/service.py": "4a21f8a69bc1e086fb89f0a225d0f47bb8ce15ebf7246b62d2079a9b0b900d01",
+    "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
+    "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
     "frontend/product_ui.css": "f94af406e4ff7b1855ce729a2d3be05268a20838ac8f57603e3aa1bafacb5ca8",
-    "frontend/product_ui.js": "958663d94c38b9eea6ea4f1da8de57fd55d9b80c4df8664707e7ccbc8650d8f0",
+    "frontend/product_ui.js": "528d4bf08e27d2741ce553c51bb3a8aab174107eb0fcd62ec5e3f93dffd87259",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
+    "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
     "tests/frontend/product_flow.test.cjs": "36c3b0c3729d8cab7bb009972dd9209e8ecf269648c3a14980aac3a439139306",
     "tests/frontend/product_ui.test.cjs": "929211ac8de8181d05cac3ab3c3dc8450f55c07c865b07a09f3034eb82433238",
     "tests/frontend/strategy_validation.test.cjs": "f3c9b1b9ff398d0deb83cf2fe90d06278ecd15fb05ef9be9d191502de6c75e59",
@@ -76,9 +110,10 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "efb67fbf87cff8dd497b841ef87203da22a5634c85928e0472cd84566707e31d",
+    "tests/test_strategy_validation_62.py": "211b9ed20cd20697ff7e589eab7d014f08be318b36033a894166f6b8af22014a",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
+    "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
     "trader_view/positions.py": "3765462dea8fcbb52b6c1880338a8e0e1c5151a60091ef0d11c3489a55267558",
     "trader_view/stream.py": "deee331b13a7ceb6fd04bfe4adbe716494db0f87c345fa8195005cb7a0cc45a5",
 }

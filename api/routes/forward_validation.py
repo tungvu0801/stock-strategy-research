@@ -11,7 +11,9 @@ GET /api/forward-validation/daily                   the persisted daily summarie
 GET /api/forward-validation/daily/{date}            one daily summary (persisted, else computed live)
 GET /api/forward-validation/report/daily[/{date}]   the deterministic daily report (text/plain)
 GET /api/forward-validation/report/weekly           the deterministic weekly aggregate (text/plain)
-GET /api/forward-validation/export/{kind}           sessions | trades | daily | control_events | samples | restarts as CSV (default) or JSON
+GET /api/forward-validation/export/{kind}           sessions | trades | daily | control_events | samples | restarts as CSV (default) or JSON, and the Stage 6.10A
+                                                    forward dataset: candidates | decisions | controls | session_health | entry_snapshots | outcomes |
+                                                    config_snapshots | cohorts | context | faults | autorun_events | autorun_preflights | autorun_days
 GET /api/forward-validation/restarts, /events, /samples, /funnel[/{date}], /frozen-controls
 
 Route words: no path may contain "trade" (tests/test_regression_isolation.py), "paper" (Stage 4.5) or "alpaca" / "broker" (Stage 4.6A), so the
@@ -22,6 +24,7 @@ import re
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from forward_capture import EXPORT_KINDS as CAPTURE_EXPORTS   # Stage 6.10A: read-only exports of the forward dataset (no new route)
 from forward_validation import EXPORTS, VERSION, frozen_controls, frozen_hash
 from forward_validation import reports as REP
 
@@ -120,8 +123,8 @@ def get_weekly_report() -> PlainTextResponse:
 
 @router.get("/export/{kind}")
 def get_export(kind: str, format: str = Query(default="csv")):
-    if kind not in EXPORTS:
-        return _bad(f"kind must be one of {', '.join(EXPORTS)}")
+    if kind not in EXPORTS and kind not in CAPTURE_EXPORTS:
+        return _bad(f"kind must be one of {', '.join(EXPORTS + CAPTURE_EXPORTS)}")
     if format not in ("csv", "json"):
         return _bad("format must be csv or json")
     cols, rows = REP.export_rows(_service(), kind)

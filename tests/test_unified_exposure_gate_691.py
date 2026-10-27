@@ -632,29 +632,38 @@ def _added(rel):
 def test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file():
     import freeze_ledger as FL
     assert FL.BASE_691 == BASE_691 and subprocess.run(["git", "cat-file", "-e", f"{BASE_691}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = set(_git("diff", "--name-only", BASE_691).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    stage691 = set(_git("diff", "--name-only", BASE_691, FL.BASE_610A).split())                # Stage 6.9.1 itself, between two fixed commits (main before / after PR #33)
     in_base = set(_git("ls-tree", "-r", "--name-only", BASE_691).split())
-    new, edited = {p for p in changed if p not in in_base}, {p for p in changed if p in in_base}
+    new, edited = {p for p in stage691 if p not in in_base}, {p for p in stage691 if p in in_base}
     assert new == FL.NEW_691, {"unexpected_new": sorted(new - FL.NEW_691), "missing_new": sorted(FL.NEW_691 - new)}
     assert edited == FL.EDITED_691, {"unexpected": sorted(edited - FL.EDITED_691), "missing": sorted(FL.EDITED_691 - edited)}
-    assert {p for p in changed if p.startswith("execution/")} == {"execution/exposure_gate.py", "execution/engine.py", "execution/service.py", "execution/activity.py"}
+    assert {p for p in stage691 if p.startswith("execution/")} == {"execution/exposure_gate.py", "execution/engine.py", "execution/service.py", "execution/activity.py"}
+    changed = set(_git("diff", "--name-only", BASE_691).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
+    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    later = FL.NEW_610A | FL.EDITED_610A                                                       # Stage 6.10A, pinned by tests/test_forward_paper_610a.py
+    assert changed == FL.NEW_691 | FL.EDITED_691 | later, {"unexpected": sorted(changed - FL.NEW_691 - FL.EDITED_691 - later),
+                                                            "missing": sorted((FL.NEW_691 | FL.EDITED_691 | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
               "cash_flow", "paper", "portfolio", "database", "scripts", "rh_gateway"):
-        assert not [p for p in changed if p.startswith(d + "/")], d                          # no risk gate, strategy, broker, legacy portfolio or database file
+        assert not [p for p in stage691 if p.startswith(d + "/")], d                         # no risk gate, strategy, broker, legacy portfolio or database file
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 6.10A's declared files
     assert set(FL.SEMANTIC_691) <= FL.NEW_691 | FL.EDITED_691 and all(len(v) > 40 for v in FL.SEMANTIC_691.values())
     assert set(FL.SEMANTIC_691) - FL.NEW_691 <= set(FL.LEDGER)                                # every edited semantic file is pinned byte-for-byte in the ledger
 
 
 def test_F02_the_execution_semantics_changed_on_purpose_and_exactly_as_declared():
+    import freeze_ledger as FL
+    post = lambda rel: subprocess.run(["git", "show", f"{FL.BASE_610A}:{rel}"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")  # noqa: E731 - main after PR #33
+    _added = lambda rel: [l for l in post(rel).splitlines() if l not in set(_base(rel).splitlines())]  # noqa: E731 - Stage 6.9.1's own lines (main after it, not the working tree)
     for rel in ("execution/engine.py", "execution/service.py", "trader_view/stream.py", "config.py"):
-        assert _now(rel) != _base(rel), f"{rel} is NOT byte-equivalent to pre-6.9.1 main, and no test may pretend it is"
-        base, now = _base(rel).splitlines(), set(_now(rel).splitlines())
+        assert post(rel) != _base(rel), f"{rel} is NOT byte-equivalent to pre-6.9.1 main, and no test may pretend it is"
+        base, now = _base(rel).splitlines(), set(post(rel).splitlines())
         assert [l for l in base if l not in now] == REPLACED_691.get(rel, []), rel           # nothing of main removed but the listed line
+        assert not [l for l in post(rel).splitlines() if l not in set(_now(rel).splitlines())], rel   # Stage 6.10A keeps every line Stage 6.9.1 left
     assert _added("execution/engine.py") == ENGINE_ADDED_691                                    # the new control, exactly
     added_stream = _added("trader_view/stream.py")
     assert added_stream[0] == "    def unified_portfolio(self, refresh: bool = True) -> dict:" and len(added_stream) == 5 and "precheck=False)" in added_stream[-1]
-    svc = _now("execution/service.py")
+    svc = post("execution/service.py")
     spans = [(n.lineno, n.end_lineno) for n in ast.walk(ast.parse(svc)) if isinstance(n, ast.FunctionDef) and n.name in ("_unified_portfolio", "exposure_precheck")]
     base = set(_base("execution/service.py").splitlines())
     assert len(spans) == 2
@@ -662,7 +671,7 @@ def test_F02_the_execution_semantics_changed_on_purpose_and_exactly_as_declared(
         if line.strip() and line not in base:
             assert "Stage 6.9.1" in line or any(a <= i <= b for a, b in spans), (i, line)     # a marked line, or inside one of the two new read-only methods
     assert 'evaluated(sym, "BLOCKED", [{"control": c.control_id, "text": c.reason, **exposure_gate.record(c)} for c in blocked])' in svc   # the replaced line keeps its fields
-    cfg_base, cfg_now = _base("config.py"), _now("config.py")
+    cfg_base, cfg_now = _base("config.py"), post("config.py")
     assert cfg_now.startswith(cfg_base.rstrip("\n"))                                          # append-only
     assert [l.split(":")[0] for l in cfg_now[len(cfg_base):].splitlines() if l and not l.startswith("#")] == GATE_SETTINGS_691
     assert not [n for n in GATE_SETTINGS_691 if re.search(r"EXECUTION|WRITE|ORDER|TRADE|SUBMIT|LIVE", n)]   # still no Robinhood execution setting

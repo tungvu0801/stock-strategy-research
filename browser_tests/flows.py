@@ -2961,6 +2961,25 @@ def product_ui(c: Ctx):
     c.r.eq("1280x720, default layout: Bot Activity right below the TRADE cards, with the worker state, the current mode and the last cycle's mode",
            [c.js("!!document.querySelector('#pui-cards + #pui-bot-activity')"), c.js("__tvVisible('#pui-bot-activity [data-pui-worker]')"), c.js("__tvVisible('#pui-bot-activity [data-pui-mode]')"),
             c.js("__tvVisible('#pui-bot-activity [data-pui-last-cycle-mode]')")], [True, True, True, True])
+    # Stage 6.10A: the auto-run POLICY is a row of its own (never the current mode or the last cycle's mode); the Forward session fold comes first, closed
+    act = c.http("GET", "/api/execution/activity")
+    c.r.eq("Bot Activity payload: the auto-run policy is Manual arm (scheduled arm off) and the forward session is a read-only block; no account number",
+           [act["auto_run"]["policy"], act["auto_run"]["scheduled_arm_enabled"], "forward_session" in act, "account_number" in json.dumps(act)], ["MANUAL_ARM", False, True, False])
+    c.r.eq("1280x720: the Auto-run policy row reads Manual arm, apart from the mode rows; the Forward session fold is the first fold and closed by default",
+           [c.js("document.querySelector('#pui-bot-activity [data-pui-autorun]').dataset.puiAutorun"), c.js("__tvText('#pui-bot-activity [data-pui-autorun]')"),
+            c.js("[...document.querySelectorAll('#pui-bot-activity [data-pui-bot-fold]')].map((d) => d.dataset.puiBotFold)[0]"),
+            c.js("document.querySelector('#pui-bot-activity [data-pui-bot-fold=\"forward\"]').open"),
+            (c.js("__tvText('#pui-bot-activity [data-pui-bot-summary=\"forward\"]')") or "").startswith("Forward session")], ["MANUAL_ARM", "Manual arm", "forward", False, True])
+    c.js("document.querySelector('#pui-bot-activity [data-pui-bot-summary=\"forward\"]').click()")
+    c.wait("document.querySelector('#pui-bot-activity [data-pui-bot-fold=\"forward\"]').open", 10, "forward session fold open")
+    for w, h in ((1920, 1080), (1440, 900), (1366, 768), (1280, 720)):
+        c.b.viewport(w, h)
+        time.sleep(0.4)
+        fold = c.js("__tvText('#pui-bot-activity [data-pui-bot-fold=\"forward\"]')") or ""
+        c.r.check(f"{w}x{h}: the open Forward session fold fits (no overflow, nothing clipped) and shows its operational record or says it is not recorded yet",
+                  c.js("__overflow()") is False and c.js("__tvClipped()") == [] and (("Cohort" in fold and "not a strategy result" in fold) or "No forward-session data" in fold), fold[:200])
+    c.shot("product_ui_forward_session")
+    c.js("document.querySelector('#pui-bot-activity [data-pui-bot-summary=\"forward\"]').click()")
     c.b.viewport(768, 1024)
     time.sleep(0.6)
     narrow = [c.js("__overflow()"), c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => Math.round(e.getBoundingClientRect().left))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')"),
