@@ -625,17 +625,29 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #35 (Stage 6.10C merged): what Stage 6.10C left, whatever a later stage changed since."""
+    out = subprocess.run(["git", "show", f"{FL.BASE_541}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {FL.BASE_541} (fetch-depth 0 is required)"
+    return out.decode("utf-8").replace("\r\n", "\n")
+
+
 def test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file():
     assert FL.BASE_610C == "fed5b3cd3d602eccd71e473046ce58ad2f7819f4" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_610C}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    stage610c = set(_git("diff", "--name-only", FL.BASE_610C, FL.BASE_541).split())          # Stage 6.10C itself, between two fixed commits (main before / after PR #35)
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_610C).split())
-    new, edited = {p for p in changed if p not in in_base}, {p for p in changed if p in in_base}
+    new, edited = {p for p in stage610c if p not in in_base}, {p for p in stage610c if p in in_base}
     assert new == FL.NEW_610C, {"unexpected_new": sorted(new - FL.NEW_610C), "missing_new": sorted(FL.NEW_610C - new)}
     assert edited == FL.EDITED_610C, {"unexpected": sorted(edited - FL.EDITED_610C), "missing": sorted(FL.EDITED_610C - edited)}
+    changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
+    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    later = FL.NEW_541 | FL.EDITED_541                                                         # Stage 5.4.1, pinned by its own F tests
+    assert changed == FL.NEW_610C | FL.EDITED_610C | later, {"unexpected": sorted(changed - FL.NEW_610C - FL.EDITED_610C - later),
+                                                              "missing": sorted((FL.NEW_610C | FL.EDITED_610C | later) - changed)}
     for d in STAGE_DIRS_NOT_TOUCHED:
-        assert not [p for p in changed if p.startswith(d + "/")], d                          # no execution, strategy, risk, broker, market-data or policy file
-    assert not changed & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "README.md", "watchlist.txt", "DESIGN_610A_FORWARD_PAPER_AUTORUN.md"}
+        assert not [p for p in stage610c if p.startswith(d + "/")], d                        # no execution, strategy, risk, broker, market-data or policy file
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 5.4.1's declared files
+    assert not stage610c & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "README.md", "watchlist.txt", "DESIGN_610A_FORWARD_PAPER_AUTORUN.md"}
     assert FL.SEMANTIC_610C == {} and FL.INSTRUMENTATION_610C == {}                     # observability only: nothing changes what the executor does
     unregistrable = FL.EDITED_610C & (FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | {"tests/freeze_ledger.py"})
     assert FL.EDITED_610C - unregistrable <= set(FL.LEDGER) and unregistrable == set(REPLAY_610C) | {"tests/freeze_ledger.py"}
@@ -645,7 +657,8 @@ def test_F02_execution_setups_auto_run_and_the_live_coverage_are_byte_identical_
     for d in ("execution", "setups", "autorun", "trader_view", "forward_capture", "safety", "proposals"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
-            assert now_text(rel) == at_base(rel), rel                                   # the executor, the strategy, startup demotion and MANUAL_ARM: untouched
+            assert post(rel) == at_base(rel), rel                                       # the executor, the strategy, startup demotion and MANUAL_ARM: untouched
+            assert now_text(rel) == post(rel) or rel in FL.SEMANTIC_541, rel               # since then: only Stage 5.4.1's declared correction
     for rel in ("scanner/watchlist.py", "watchlist.txt", "data/sector_map.py"):
         assert now_text(rel) == at_base(rel), rel                                       # live ticker coverage: watchlist.txt as before
     import execution as X
@@ -672,12 +685,12 @@ def test_F03_the_frozen_and_entry_contract_hashes_and_the_default_policy_hold_an
 def test_F04_every_edit_no_ledger_entry_can_hold_is_pinned_exactly():
     import ast
     for rel, edits in REPLAY_610C.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 6.10C (agent decision flow"):fl.index('"""', fl.index("\nStage 6.10C (agent decision flow"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_610A + NEW_610C plus this ledger.", " + NEW_610A plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_610C = "):rebuilt.index("LEDGER = {")]
@@ -686,8 +699,9 @@ def test_F04_every_edit_no_ledger_entry_can_hold_is_pinned_exactly():
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                     # no new key: every edited registered file was already registered
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == (FL.EDITED_610C & set(old))      # every re-hash is a declared Stage 6.10C edit
+    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])                                   # the ledger Stage 6.10C left (main after PR #35)
+    assert set(mine) == set(old)                                                          # no new key: every edited registered file was already registered
+    assert {k for k in old if old[k] != mine[k]} == (FL.EDITED_610C & set(old))           # every re-hash is a declared Stage 6.10C edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 
