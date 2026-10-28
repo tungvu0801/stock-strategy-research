@@ -2640,6 +2640,204 @@ def _pui_reload(c: Ctx):
     time.sleep(2.3)
 
 
+def _pui_df_fixture():
+    """Stage 6.10C: the DESIGN_610C §6 payloads of one fixed evaluation cycle (10 tickers, all five decisions, cached and missing prices, long reasons, a row whose
+    recomputed checks differ from its stored blockers), a day of history (12 cycles, newest first), a reconstructed earlier cycle and an explain answer. The harness
+    clock is outside the session, so the shell renders these through its own renderers (ProductUI.renderDecisionFixture); nothing is fetched or written."""
+    labels = {"NONE": "NO ACTIVE SETUP", "WATCH": "WATCH", "READY": "READY FOR REVIEW", "INVALIDATED": "INVALIDATED"}
+    why = {"NONE": ("NO_DOWNSIDE_STRETCH", "No downside stretch."), "WATCH": ("DOWNSIDE_STRETCH_DETECTED", "Downside stretch detected; buyer confirmation incomplete."),
+           "READY": ("READY_CONFIRMED", "Buyer confirmation complete."), "INVALIDATED": ("DEMAND_COLLAPSED", "Market Demand fell below 35 for two evaluations.")}
+    names = (("STRETCH", "Downside stretch (PPE)", "<= -40"), ("PPE_COVERAGE", "PPE coverage", ">= 0.60"), ("CONFIDENCE", "PPE confidence", ">= 40"),
+             ("DEMAND_DATA", "Market Demand data", "available, coverage >= 0.60, fresh"), ("DEMAND", "Market Demand", ">= 60"),
+             ("EVIDENCE", "Stage 5.4 evidence", "a COMPLETED packet <= 30 days old, no company-specific deterioration"))
+    ctl = (("EXECUTION_MODE", "Mode"), ("PAPER_ENVIRONMENT", "Paper account proof"), ("SAFETY_GATE", "Risk gate"), ("PROPOSAL_VALIDITY", "Proposal"), ("SESSION_POLICY", "Market session"),
+           ("BROKER_TRADABILITY", "Tradable at the broker"), ("DUPLICATE_ENTRY", "Duplicate entry"), ("BROKER_POSITION", "Already held at the broker"), ("BROKER_ACCOUNT", "Broker account"),
+           ("MAX_OPEN_POSITIONS", "Open-positions limit"), ("BROKER_RECONCILIATION", "Reconciliation"))
+    et = lambda at: f"{at[:11]}{int(at[11:13]) - 4:02d}{at[13:19]}-04:00"              # 2026-10-27 is EDT (UTC-4)
+    detail = {"ORDER_INTENT": "order intent created", "ENTRY_CONTROLS": "entry control", "ENTRIES_PER_CYCLE": "entry limit of the cycle used", "SETUP_WATCH": "confirmation incomplete",
+              "NO_SETUP": "no active setup", "INVALIDATED": "invalidated, awaiting reset", "PAUSED": "evaluation paused"}   # decision_flow DETAIL_LABELS
+
+    def risk(blocks, reasons):
+        return {"evaluated": True, "text": f"{len(blocks)} of {len(ctl)} entry controls blocked." if blocks else f"All {len(ctl)} entry controls passed.",
+                "controls": [{"id": i, "label": label, "result": "BLOCK" if i in blocks else "PASS", "reason": reasons.get(i, "ok")} for i, label in ctl], "blocked_by": list(blocks)}
+
+    def row(sym, decision, state, stretch, demand, evidence, at="2026-10-27T19:59:03+00:00", **over):
+        conf = 63 if evidence else None
+        val = {"STRETCH": (stretch, f"{stretch:+.1f}", stretch <= -40, round(stretch + 40, 1), "" if stretch <= -40 else "No downside stretch."),
+               "PPE_COVERAGE": (0.92, "0.92", True, None, ""),
+               "CONFIDENCE": (conf, None if conf is None else str(conf), conf is not None, None if conf is None else 40 - conf,
+                              "" if evidence else "Not available: no stored Stage 5.4 evidence packet, so no PPE confidence"),
+               "DEMAND_DATA": (0.85, "available · coverage 0.85 · fresh", True, None, ""),
+               "DEMAND": (demand, str(demand), demand >= 60, 60 - demand, "" if demand >= 60 else "Market Demand below 60."),
+               "EVIDENCE": ("COMPLETED" if evidence else None, "COMPLETED, 3 days old" if evidence else "none stored", evidence, None,
+                            "" if evidence else "No stored Stage 5.4 evidence packet; READY needs evidence.")}
+        checks = [{"id": k, "label": label, "value": val[k][0], "value_text": val[k][1], "threshold_text": th, "passed": val[k][2], "gap": val[k][3], "detail": val[k][4],
+                   "root_cause": None if evidence or k not in ("CONFIDENCE", "EVIDENCE") else "NO_EVIDENCE_PACKET"} for k, label, th in names]
+        failed = [c["label"] for c in checks if not c["passed"]]
+        r = {"symbol": sym, "evaluated_at": at, "evaluated_at_et": et(at), "trigger": "SCHEDULED", "origin": "SCHEDULER_CYCLE",
+             "price": {"value": None, "as_of": None, "text": "Not available (no cached quote of 60 s or less)"},
+             "setup": {"type": "DOWNSIDE_DISLOCATION_RECOVERY", "name": "Downside Dislocation Recovery", "note": "only setup type; no cross-setup ranking", "state": state, "prior_state": state,
+                       "state_label": labels[state], "evaluation": "HOLD", "reason_code": why[state][0], "reason_text": why[state][1], "setup_id": None if state == "NONE" else f"st-{sym.lower()}-1027"},
+             "score": {"value": None, "text": "Not available: the setup engine computes no composite score."},
+             "values": {"stretch": stretch, "ppe_coverage": 0.92, "confidence": conf, "confidence_status": "AVAILABLE" if evidence else "EVIDENCE_NOT_AVAILABLE", "demand": demand,
+                        "demand_status": "AVAILABLE", "demand_coverage": 0.85},
+             "checks": checks, "passed": [c["label"] for c in checks if c["passed"]], "failed": failed,
+             "distance": {"unmet": len(failed), "unmet_root_causes": len(failed) - (0 if evidence else 1), "checks": 6, "stretch_gap": round(stretch + 40, 1), "demand_gap": 60 - demand,
+                          "confidence_gap": None if conf is None else 40 - conf, "text": f"{len(failed)} of 6 checks unmet"},
+             "risk": {"evaluated": False, "text": "Not evaluated: entry controls run only for a READY setup during Paper Auto.", "controls": [], "blocked_by": []},
+             "decision": decision, "decision_detail": {"WATCH": "SETUP_WATCH", "NONE": "NO_SETUP"}.get(state), "decision_label": None, "no_trade_reason": why[state][1],
+             "consistent": True, "consistency_note": None}
+        r.update(over)
+        if r["decision_label"] is None and r["decision_detail"]:
+            r["decision_label"] = f"{decision} · {detail[r['decision_detail']]}"           # decide(): always "DECISION · detail"
+        return r
+
+    def closest(rows):
+        order = {"READY": 0, "WATCH": 1, "INVALIDATED": 2, "NONE": 3}
+        big = lambda x: 999 if x is None else x  # noqa: E731
+        ranked = sorted(rows, key=lambda r: (order[r["setup"]["state"]], big(r["distance"]["unmet"]), big(r["distance"]["stretch_gap"]), big(r["distance"]["demand_gap"]), r["symbol"]))
+        return [{"rank": i + 1, "symbol": r["symbol"], "decision": r["decision"], "state": r["setup"]["state"], "unmet": r["distance"]["unmet"], "unmet_root_causes": r["distance"]["unmet_root_causes"],
+                 "stretch_gap": r["distance"]["stretch_gap"], "demand_gap": r["distance"]["demand_gap"], "text": r["setup"]["reason_text"]} for i, r in enumerate(ranked)]
+
+    def cycle(at, counts, intents, text, top, next_at=None):
+        return {"cycle_id": "SE-" + at[:19].replace("-", "").replace(":", "") + "Z", "at": at, "at_et": et(at), "next_at": next_at, "stale": False,
+                "market": {"session": "REGULAR", "label": "Regular session", "calendar": "NYSE, holiday-aware static calendar"}, "tickers_scanned": 10,
+                "candidate_setups": counts["READY"] + counts["SKIPPED"] + counts["BLOCKED"], "counts": counts,
+                "risk": {"state": "TRADING_ALLOWED", "allowed_new_entry": True, "reason_codes": [], "reason_text": [], "evaluated_at": at,
+                         "preflight": {"status": "READY", "at": "2026-10-27T13:15:03+00:00", "failing": []}, "reconciliation": {"healthy": True, "attention": []}},
+                "paper_auto": {"mode": "PAPER_AUTO", "on": True, "label": "Paper Auto", "policy": "MANUAL_ARM", "policy_label": "Manual arm · starts in Monitor only",
+                               "since": "2026-10-27T13:35:00+00:00", "since_et": "2026-10-27 09:35:00 ET"},
+                "executor": {"runs": 2, "results": {"RUN": 2, "ERROR": 0}, "first_at": at[:17] + "10+00:00", "last_at": at[:17] + "40+00:00", "idle_note": ""},
+                "order_intents": intents, "orders_submitted": intents, "outcome": {"code": "ORDER_INTENT" if intents else "NO_TRADE", "text": text},
+                "closest": {"symbol": top["symbol"], "decision": top["decision"], "unmet": top["unmet"], "text": f"{top['symbol']} · {top['decision']} · {top['unmet']} unmet"}}
+
+    mu = row("MU", "READY", "READY", -52.4, 71, True, price={"value": 101.25, "as_of": "2026-10-27T19:58:59+00:00", "text": "101.25 · the last cached quote (19:58:59 UTC, 4 s old)"},
+             risk=risk((), {}), decision_detail="ORDER_INTENT", no_trade_reason=None)
+    mu["setup"].update(prior_state="WATCH", evaluation="TRANSITION")
+    orcl = row("ORCL", "WAIT", "NONE", 2.4, 51, False, decision_detail="PAUSED", no_trade_reason="Evaluation paused: the quote was older than 300 s, so no check was evaluated.")
+    orcl.update(checks=[{**c, "value": None, "value_text": None, "passed": None, "gap": None, "detail": "", "root_cause": None} for c in orcl["checks"]], passed=[], failed=[],
+                distance={"unmet": None, "unmet_root_causes": None, "checks": 6, "stretch_gap": None, "demand_gap": None, "confidence_gap": None, "text": "Not evaluated (paused)"})
+    orcl["setup"].update(evaluation="PAUSED", reason_code="STALE_QUOTE", reason_text="Evaluation paused: stale quote.")
+    rows = [mu,
+            row("AMD", "BLOCKED", "READY", -47.9, 66, True, price={"value": 164.8, "as_of": "2026-10-27T19:58:58+00:00", "text": "164.80 · the last cached quote (19:58:58 UTC)"},
+                risk=risk(("BROKER_POSITION", "DUPLICATE_ENTRY"), {"BROKER_POSITION": "the broker account already holds 3 AMD (external, not managed by the bot)",
+                                                                  "DUPLICATE_ENTRY": "a prior entry exists for this setup episode"}),
+                decision_detail="ENTRY_CONTROLS",
+                no_trade_reason="Blocked: the account already holds AMD outside the bot, and a prior entry exists for this setup episode (BROKER_POSITION, DUPLICATE_ENTRY)."),
+            row("AVGO", "SKIPPED", "READY", -44.0, 63, True, risk=risk((), {}), decision_detail="ENTRIES_PER_CYCLE",
+                no_trade_reason="Skipped: the per-cycle entry limit (1 entry) was already used by MU in this cycle."),
+            row("SNDK", "WATCHING", "WATCH", -45.2, 64, False, no_trade_reason="Setup WATCH: buyer confirmation incomplete; no stored Stage 5.4 evidence packet, so no PPE confidence."),
+            row("CLS", "WATCHING", "WATCH", -41.0, 52, False, consistent=False, no_trade_reason="Setup WATCH: Market Demand 52 is below 60 and no evidence packet is stored."),
+            row("NVDA", "WAIT", "NONE", -3.6, 55, False),
+            row("MRVL", "WAIT", "INVALIDATED", -21.0, 34, False, decision_detail="INVALIDATED",
+                no_trade_reason="Invalidated (Market Demand fell below 35 twice): waiting for the setup to reset before a new episode."),
+            orcl,
+            row("LLY", "WAIT", "NONE", 19.8, 53, False),
+            row("SHOP", "WAIT", "NONE", -8.3, 28, False)]
+    top = closest(rows)
+    now = cycle("2026-10-27T19:59:03+00:00", {"READY": 1, "SKIPPED": 1, "BLOCKED": 1, "WATCHING": 2, "WAIT": 5}, 1, "1 order intent created (MU); no other entry was sent.", top[0])
+    live = [r["symbol"] for r in rows]
+    legend = {"decisions": [{"code": "READY", "text": "Setup READY and Paper Auto on: awaiting the executor, or an order intent was created."},
+                            {"code": "SKIPPED", "text": "Setup READY but not sent: Paper Auto was off, or the per-cycle entry limit was used."},
+                            {"code": "BLOCKED", "text": "Setup READY and an entry control blocked it, or an entry for it already existed."},
+                            {"code": "WATCHING", "text": "Setup state WATCH: a downside dislocation was detected; confirmation is incomplete."},
+                            {"code": "WAIT", "text": "No active setup, an invalidated setup awaiting reset, or the evaluation was paused or failed."}],
+              "watching_note": "WATCHING here means setup state WATCH only. The Agent card shows WATCHING for every setup that is not READY.",
+              "ranking_rule": "Closest to READY is a display ordering of persisted values, not a score: setup state (READY, WATCH, INVALIDATED, NONE), then the fewest unmet "
+                              "checks, then the smallest stretch gap, then the smallest demand gap, then the symbol."}   # decision_flow legend(), the fields the shell reads
+    latest = {"version": "decision_flow_v1", "generated_at": "2026-10-27T20:00:00+00:00", "broker_calls": 0, "cycle": now, "tickers": rows, "closest": top, "legend": legend,
+              "universe": {"mode": "OFF", "configured_mode": "OFF", "live": {"count": 10, "symbols": live, "source": "watchlist.txt"}, "core": {"count": 79},
+                           "active": {"count": 10, "equals_live": True, "max": 25, "symbols": live},
+                           "note": "Inactive. The setup evaluator, Trader View and the paper executor still use the live watchlist (watchlist.txt) unchanged; the core universe "
+                                   "and the scanner's declared signals feed no live path. Activation is a later stage."},
+              "disclaimer": "Decision Flow explains, read only, what the agent's existing deterministic rules decided at each setup evaluation, rebuilt from rows the agent "
+                            "already stored. It changes nothing and contacts no broker. READY means a setup met its review threshold; it is not advice and not a "
+                            "probability that a stock rises."}
+    earlier = []
+    for i in range(1, 12):
+        at = f"2026-10-27T19:{59 - i:02d}:03+00:00"
+        earlier.append(cycle(at, {"READY": 0, "SKIPPED": 0, "BLOCKED": 0, "WATCHING": 3, "WAIT": 7}, 0, "No trade: no setup READY.",
+                             {"symbol": "MU", "decision": "WATCHING", "unmet": 1}, next_at=f"2026-10-27T19:{60 - i:02d}:03+00:00"))
+    history = {"date": "2026-10-27", "latest_date": "2026-10-27", "has_more": True, "cycles": [now] + earlier,
+               "day": {"date": "2026-10-27", "timezone": "America/New_York", "latest_date": "2026-10-27", "cycles": 390, "evaluations": 4156, "off_cycle_evaluations": 251,
+                       "tickers": [r["symbol"] for r in rows], "ready_transitions": 3, "ready_evaluations": 3, "watch_transitions": 5,
+                       "skipped_paper_auto_off": {"count": 0, "basis": "READY evaluations while the persisted mode was MONITOR_ONLY (execution_mode_events)"},
+                       "skipped_entry_limit": 1, "blocked": {"count": 1, "by_control": {"BROKER_POSITION": 1, "DUPLICATE_ENTRY": 1},
+                                                             "labels": {"BROKER_POSITION": "Already held at the broker", "DUPLICATE_ENTRY": "Duplicate entry"}},
+                       "closest": {"symbol": "MU", "unmet": 0, "stretch": -52.4, "at": now["at"], "at_et": now["at_et"], "text": None},
+                       "paper_auto": {"spans": [{"from": "2026-10-27T13:35:00+00:00", "to": "2026-10-27T20:00:00+00:00"}], "minutes": 385},
+                       "executor": {"runs": 533, "with_candidates": 3}, "order_intents": 1, "orders": 1, "fills": 1, "risk_states": {"TRADING_ALLOWED": 390}}}
+    at = earlier[1]["at"]
+    past = [row("SNDK", "WATCHING", "WATCH", -44.1, 61, False, at=at), row("MU", "WATCHING", "WATCH", -46.0, 58, False, at=at),
+            row("NVDA", "WAIT", "NONE", -2.9, 54, False, at=at), row("LLY", "WAIT", "NONE", 20.4, 52, False, at=at)]
+    explain = {"symbol": "MU", "asked": {"date": "2026-10-27", "time": "10:32", "tz": "ET", "utc": "2026-10-27T14:32:00+00:00", "et": "2026-10-27 10:32:00 ET"},
+               "found": True, "evaluation": row("MU", "WAIT", "NONE", -3.1, 57, False, at="2026-10-27T14:31:58+00:00"),
+               "context": {"mode": "PAPER_AUTO", "paper_auto": {"mode": "PAPER_AUTO", "on": True, "label": "Paper Auto", "since": "2026-10-27T13:35:00+00:00",
+                                                                "since_et": "2026-10-27 09:35:00 ET"},
+                           "risk": {"state": "TRADING_ALLOWED", "allowed_new_entry": True, "reason_codes": [], "reason_text": []},
+                           "executor": {"result": "RUN", "text": "Executor cycle 14:31:40 UTC: no READY candidate, nothing evaluated for entry."},
+                           "session": {"session": "REGULAR", "label": "Regular session"}},
+               "answer": "MU did not trade at 10:32 ET: its setup was NONE (no downside stretch: stretch -3.1 vs <= -40), so no entry was evaluated. "
+                         "Paper Auto was ON and the risk gate allowed new entries."}
+    return {"latest": latest, "history": history, "cycle": {"cycle": earlier[1], "tickers": past, "closest": closest(past)}, "explain": explain}
+
+
+DF_CLIPPED = ("((root) => [...document.querySelectorAll(root + ' td, ' + root + ' th, ' + root + ' .pui-df-kv > b, ' + root + ' summary, ' + root + ' .pui-card')]"
+              ".filter((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 2).map((e) => e.tagName + ':' + (e.textContent || '').trim().slice(0, 30)))")
+
+
+def _pui_decision_flow(c: Ctx):
+    """Stage 6.10C: TRADE › Decision Flow right after Bot Activity (a closed fold) and ACTIVITY › Decision history. The live reads are GET only; the harness
+    clock is outside the session, so a fixed 10-ticker payload (_pui_df_fixture) is rendered through the shell's own renderers to check the layout."""
+    c.wait("!!document.querySelector('#pui-decision [data-pui-df-fold=\"flow\"]')", 30, "Decision Flow mounted")
+    live = c.http("GET", "/api/decision-flow")
+    c.r.eq("Decision Flow payload: read only, 0 broker calls, the inactive universe equals the live watchlist, no host or account number",
+           [live["broker_calls"], live["read_only"], (live.get("universe") or {}).get("mode"), ((live.get("universe") or {}).get("active") or {}).get("equals_live"),
+            bool(re.search(r"paper-api|alpaca\.markets|account_number", json.dumps(live)))], [0, True, "OFF", True, False])
+    c.r.eq("1280x720, default layout: the Decision Flow follows Bot Activity (the pinned '#pui-cards + #pui-bot-activity' kept) and is a closed fold",
+           [c.js("!!document.querySelector('#pui-bot-activity + #pui-decision')"), c.js("!!document.querySelector('#pui-cards + #pui-bot-activity')"),
+            c.js("document.querySelector('#pui-decision [data-pui-df-fold=\"flow\"]').open")], [True, True, False])
+    fx = _pui_df_fixture()
+    c.js(f"ProductUI.renderDecisionFixture({json.dumps(fx['latest'])}, undefined)")
+    c.js("document.querySelector('#pui-decision [data-pui-df-summary=\"flow\"]').click()")
+    c.wait("document.querySelector('#pui-decision [data-pui-df-fold=\"flow\"]').open", 10, "Decision Flow open")
+    c.js("(() => { const b = document.querySelector('#pui-decision [data-pui-df-row]'); if (b) b.click(); return true; })()")
+    time.sleep(0.4)
+    got = [c.js("[...document.querySelectorAll('#pui-decision [data-pui-df-decision]')].map((e) => e.dataset.puiDfDecision).sort().join(',')"),
+           c.js("document.querySelectorAll('#pui-decision [data-pui-df-rank]').length"), c.js("!!document.querySelector('#pui-decision [data-pui-df-checks]')"),
+           c.js("!!document.querySelector('#pui-decision [data-pui-df-legend]')"), "Not available" in (c.js("__tvText('#pui-decision')") or "")]
+    c.r.eq("Decision Flow fixture: all five decisions, 10 ranked rows, an open row shows its READY checks, the legend, and Not available where nothing is computed",
+           got, ["BLOCKED,READY,SKIPPED,WAIT,WAIT,WAIT,WAIT,WAIT,WATCHING,WATCHING", 10, True, True, True])
+    for w, h in ((1920, 1080), (1440, 900), (1366, 768), (1280, 720)):
+        c.b.viewport(w, h)
+        time.sleep(0.4)
+        c.r.check(f"{w}x{h}: the open Decision Flow fits (no page overflow, no cell or summary clipped)",
+                  c.js("__overflow()") is False and c.js(DF_CLIPPED + "('#pui-decision')") == [], c.js(DF_CLIPPED + "('#pui-decision')"))
+    c.shot("product_ui_decision_flow")
+    c.js("ProductUI.renderDecisionFixture(null, undefined)")                             # the live read again
+    c.js("document.querySelector('#pui-decision [data-pui-df-summary=\"flow\"]').click()")
+    c.step("__click('#pui-nav [data-pui-nav=\"activity\"]')", "document.getElementById('tab-alerts').classList.contains('active') && !!document.querySelector('#pui-dhist [data-pui-dh-part=\"history\"]')", 30)
+    c.r.eq("ACTIVITY: Decision history is its own section right after the Activity panel, with the explain form", [c.js("!!document.querySelector('#pui-activity + #pui-dhist')"),
+           c.js("!!document.querySelector('#pui-dhist [data-pui-dx-form]')")], [True, True])
+    c.js(f"ProductUI.renderDecisionFixture(undefined, {json.dumps(fx['history'])}, {{cycle: {json.dumps(fx['cycle'])}, explain: {json.dumps(fx['explain'])}}})")
+    c.js("(() => { for (const s of ['cycles', 'explain']) { const d = document.querySelector('#pui-dhist [data-pui-dh-fold=\"' + s + '\"]'); if (d && !d.open) d.open = true; } return true; })()")
+    time.sleep(0.4)
+    hist = [c.js("document.querySelectorAll('#pui-dhist [data-pui-dh-count]').length > 0"), c.js("document.querySelector('#pui-dhist [data-pui-dh-cycles]').dataset.puiDhCycles"),
+            c.js("!!document.querySelector('#pui-dhist [data-pui-dh-detail]')"), "MU did not trade at 10:32 ET" in (c.js("__tvText('#pui-dhist')") or "")]
+    c.r.eq("Decision history fixture: the day counts, 12 recent cycles, a reconstructed cycle and the explain answer", hist, [True, "12", True, True])
+    for w, h in ((1920, 1080), (1440, 900), (1366, 768), (1280, 720)):
+        c.b.viewport(w, h)
+        time.sleep(0.4)
+        c.r.check(f"{w}x{h}: Decision history fits (no page overflow, no cell clipped)",
+                  c.js("__overflow()") is False and c.js(DF_CLIPPED + "('#pui-dhist')") == [], c.js(DF_CLIPPED + "('#pui-dhist')"))
+    c.shot("product_ui_decision_history")
+    c.js("ProductUI.renderDecisionFixture(undefined, null, {cycle: null, explain: null})")
+    c.r.check("Decision Flow and history read with GET only", not [u for u in c.js("window.__f || []") if "decision-flow" in u and not u.startswith("GET ")], c.js("window.__f || []")[-5:])
+    c.b.viewport(1280, 720)
+    c.step("__click('#pui-nav [data-pui-nav=\"trade\"]')", "document.getElementById('tab-trader').classList.contains('active') && !!document.querySelector('#pui-cards [data-pui-card=\"agent\"]')", 30)
+    time.sleep(0.4)
+
+
 def product_ui(c: Ctx):
     """Stage 6.1.1 (trading controls): the four-section product shell over the unchanged legacy page. The header reads PAPER · MARKET · SYSTEM HEALTHY /
     DEGRADED / STOPPED · AUTO; TRADE shows the Agent / Setup card (primary, Why?), the Position card and the Risk card with the Automation / Trading
@@ -2980,6 +3178,7 @@ def product_ui(c: Ctx):
                   c.js("__overflow()") is False and c.js("__tvClipped()") == [] and (("Cohort" in fold and "not a strategy result" in fold) or "No forward-session data" in fold), fold[:200])
     c.shot("product_ui_forward_session")
     c.js("document.querySelector('#pui-bot-activity [data-pui-bot-summary=\"forward\"]').click()")
+    _pui_decision_flow(c)
     c.b.viewport(768, 1024)
     time.sleep(0.6)
     narrow = [c.js("__overflow()"), c.js("[...document.querySelectorAll('#pui-cards .pui-card')].map((e) => Math.round(e.getBoundingClientRect().left))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')"),

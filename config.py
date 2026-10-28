@@ -700,3 +700,8 @@ PAPER_AUTO_SCHEDULED_ARM_ENABLED: bool = os.getenv("PAPER_AUTO_SCHEDULED_ARM_ENA
 PAPER_AUTO_SCHEDULED_ARM_DELAY_MINUTES: str = os.getenv("PAPER_AUTO_SCHEDULED_ARM_DELAY_MINUTES", "2").strip()                # minutes after the 09:30 ET open (integer text)
 PAPER_AUTO_DISARM_AT_SESSION_END: bool = os.getenv("PAPER_AUTO_DISARM_AT_SESSION_END", "true").strip().lower() in ("1", "true", "yes", "on")   # never carried over a close
 AUTORUN_SUPERVISOR_ENABLED: bool = os.getenv("AUTORUN_SUPERVISOR_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")   # lease renewal, preflight, automatic disarm
+
+# Stage 6.10C: INACTIVE dynamic universe (dynamic_universe/; DESIGN_610C_DECISION_FLOW.md section 8) - read by no live path; live coverage stays watchlist.txt.
+DYNAMIC_UNIVERSE_MODE: str = os.getenv("DYNAMIC_UNIVERSE_MODE", "OFF").strip().upper()          # OFF | SHADOW (read-only plan on demand); ACTIVE or unknown = OFF, reported
+DYNAMIC_UNIVERSE_CORE_FILE: str = os.getenv("DYNAMIC_UNIVERSE_CORE_FILE", "").strip()            # optional JSON [{"symbol", "sector"}] replacing the built-in core v1
+DYNAMIC_UNIVERSE_ACTIVE_MAX: int = _env_json("DYNAMIC_UNIVERSE_ACTIVE_MAX", 25)                   # future active-set bound, used by no live path (unreadable = 25: never stops startup)

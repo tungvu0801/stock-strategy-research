@@ -1354,20 +1354,32 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #34 (Stage 6.10A merged): what Stage 6.10A left, whatever a later stage changed since."""
+    out = subprocess.run(["git", "show", f"{FL.BASE_610C}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {FL.BASE_610C} (fetch-depth 0 is required)"
+    return out.decode("utf-8").replace("\r\n", "\n")
+
+
 def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file():
     assert FL.BASE_610A == "27926f627c5cb83a6e1b3b6a9b646ce455cfbe52" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_610A}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    stage610a = set(_git("diff", "--name-only", FL.BASE_610A, FL.BASE_610C).split())          # Stage 6.10A itself, between two fixed commits (main before / after PR #34)
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_610A).split())
-    new, edited = {p for p in changed if p not in in_base}, {p for p in changed if p in in_base}
+    new, edited = {p for p in stage610a if p not in in_base}, {p for p in stage610a if p in in_base}
     assert new == FL.NEW_610A, {"unexpected_new": sorted(new - FL.NEW_610A), "missing_new": sorted(FL.NEW_610A - new)}
     assert edited == FL.EDITED_610A, {"unexpected": sorted(edited - FL.EDITED_610A), "missing": sorted(FL.EDITED_610A - edited)}
-    assert {p for p in changed if p.startswith("execution/")} == {"execution/service.py", "execution/activity.py"}          # never engine / broker / store / scheduler
-    assert {p for p in changed if p.startswith("database/")} == {"database/autorun_migrations.py", "database/forward_capture_migrations.py"}
-    assert {p for p in changed if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
+    assert {p for p in stage610a if p.startswith("execution/")} == {"execution/service.py", "execution/activity.py"}          # never engine / broker / store / scheduler
+    assert {p for p in stage610a if p.startswith("database/")} == {"database/autorun_migrations.py", "database/forward_capture_migrations.py"}
+    assert {p for p in stage610a if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
+    changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
+    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    later = FL.NEW_610C | FL.EDITED_610C                                                       # Stage 6.10C, pinned by its own F tests
+    assert changed == FL.NEW_610A | FL.EDITED_610A | later, {"unexpected": sorted(changed - FL.NEW_610A - FL.EDITED_610A - later),
+                                                              "missing": sorted((FL.NEW_610A | FL.EDITED_610A | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
               "cash_flow", "paper", "portfolio", "rh_gateway", "trader_view", "unified_portfolio", "forward", "ppe", "demand", "evidence"):
-        assert not [p for p in changed if p.startswith(d + "/")], d                          # no strategy, risk, broker, market-data or Robinhood file
+        assert not [p for p in stage610a if p.startswith(d + "/")], d                        # no strategy, risk, broker, market-data or Robinhood file
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 6.10C's declared files
     assert not changed & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",
                           "forward_validation/metrics.py", "README.md"}
     assert set(FL.SEMANTIC_610A) <= FL.NEW_610A | FL.EDITED_610A and all(len(v) > 40 for v in FL.SEMANTIC_610A.values())
@@ -1378,8 +1390,8 @@ def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_
 
 
 def test_F02_the_order_decision_logic_is_unchanged_and_the_executor_only_gained_failure_swallowing_markers():
-    assert now_text("execution/engine.py") == at_base("execution/engine.py")             # entry controls, exits, sizing: byte-identical
-    svc, base = now_text("execution/service.py"), at_base("execution/service.py")
+    assert post("execution/engine.py") == at_base("execution/engine.py")             # entry controls, exits, sizing: byte-identical
+    svc, base = post("execution/service.py"), at_base("execution/service.py")
     base_lines = set(base.splitlines())
     assert [l for l in base.splitlines() if l not in set(svc.splitlines())] == []        # nothing of main removed
     tree = ast.parse(svc)
@@ -1401,16 +1413,18 @@ def test_F02_the_order_decision_logic_is_unchanged_and_the_executor_only_gained_
     assert not re.search(r"\.(store|broker|post_order|set_mode|enable_auto|disable_auto|insert_intent|update_intent)\b", body)   # the sink only: no I/O
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO")
-    cfg_base, cfg_now = at_base("config.py"), now_text("config.py")
+    cfg_base, cfg_now = at_base("config.py"), post("config.py")
     assert cfg_now.startswith(cfg_base.rstrip("\n"))
     assert [l.split(":")[0] for l in cfg_now[len(cfg_base):].splitlines() if l and not l.startswith("#")] == CONFIG_610A
-    srv_base, srv_now = at_base("api/server.py").splitlines(), now_text("api/server.py").splitlines()
+    srv_base, srv_now = at_base("api/server.py").splitlines(), post("api/server.py").splitlines()
     assert [l for l in srv_base if l not in srv_now] == [] and [l for l in srv_now if l not in srv_base] == SERVER_LINES_610A
-    srv = now_text("api/server.py")
+    srv = post("api/server.py")
     life = srv[srv.index("async def _lifespan"):srv.index("app = FastAPI(")]
     assert "alpaca" not in life.lower() and "rotation" not in life.lower()
     assert life.index("_autorun_startup()") < life.index("_exec_start()") < life.index("_fv_start()") < life.index("_autorun_start()") < life.index("yield")
     assert life.index("yield") < life.index("_autorun_shutdown()") < life.index("_fv_shutdown()")   # the supervisor stops first
+    for rel in ("execution/engine.py", "execution/service.py", "config.py", "api/server.py"):
+        assert not [l for l in post(rel).splitlines() if l not in set(now_text(rel).splitlines())], rel   # a later stage keeps every line Stage 6.10A left
 
 
 def test_F03_the_frozen_and_entry_contract_hashes_and_the_default_policy_hold_in_a_clean_process():
@@ -1424,12 +1438,12 @@ def test_F03_the_frozen_and_entry_contract_hashes_and_the_default_policy_hold_in
 
 def test_F04_every_edit_no_ledger_entry_can_hold_is_pinned_exactly():
     for rel, edits in REPLAY_610A.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 6.10A (forward paper auto-run"):fl.index('"""', fl.index("\nStage 6.10A (forward paper auto-run"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_691 + NEW_610A plus this ledger.", " + NEW_691 plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_610A = "):rebuilt.index("LEDGER = {")]
@@ -1438,8 +1452,9 @@ def test_F04_every_edit_no_ledger_entry_can_hold_is_pinned_exactly():
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old) | NEW_LEDGER_610A
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == (FL.EDITED_610A & set(old)) - {"tests/freeze_ledger.py"}   # every re-hash is a declared Stage 6.10A edit
+    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])                                   # the ledger Stage 6.10A left (main after PR #34)
+    assert set(mine) == set(old) | NEW_LEDGER_610A
+    assert {k for k in old if old[k] != mine[k]} == (FL.EDITED_610A & set(old)) - {"tests/freeze_ledger.py"}   # every re-hash is a declared Stage 6.10A edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

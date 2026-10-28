@@ -104,7 +104,12 @@
                   // Stage 6.8: the account's positions (POSITIONS) and the Bot Activity read (TRADE): the payload, this page's connection, the open folds
                   acctPos: null, acctPosError: null, botAct: null, botConn: null, botBusy: false, botReadAt: null, botOpen: {},
                   // Stage 6.9: the unified portfolio (Alpaca PAPER + Robinhood READ ONLY)
-                  unified: null, unifiedError: null, unifiedBusy: false, unifiedReadAt: null };
+                  unified: null, unifiedError: null, unifiedBusy: false, unifiedReadAt: null,
+                  // Stage 6.10C: TRADE › Decision Flow (the latest cycle, 15 s self-throttle) and ACTIVITY › Decision history (the day, a reconstructed cycle, the
+                  // explain form and its answer): payloads, read state, open folds and rows, the last rendered HTML, the harness fixtures
+                  df: null, dfConn: null, dfBusy: false, dfReadAt: null, dfOpen: {}, dfRows: {}, dfHtml: null, dfForced: null,
+                  dh: null, dhError: null, dhBusy: false, dhDate: null, dhOpen: {}, dhRows: {}, dhCycle: null, dhHtml: null, dhForced: null,
+                  dxForm: null, dxAnswer: null, dxSeq: 0, dxHtml: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
   function agentModel(card, setupState, safetyState, exec) {
@@ -1188,6 +1193,386 @@
       `<div class="pui-sub">Times are UTC. Real backend records only: nothing is estimated, no fill is inferred from a submission, no AI narration.</div></section>`;
   }
 
+  // ---------------------------------------------------------------- Stage 6.10C: Decision Flow + Decision history (pure; read-only GET payloads) --------
+  // Why each ticker did or did not trade in one setup-evaluation cycle, from the backend's read-only projection of persisted rows (0 broker calls): the cycle,
+  // the six READY checks per ticker (value vs threshold, recomputed by the backend from the stored inputs), the distance from READY as unmet checks and numeric
+  // gaps (never a composite), the entry controls when they ran, the final decision. A missing value reads "Not available"; nothing is estimated, scored or
+  // ranked beyond the backend's declared display order. Times are New York (ET) with UTC.
+  const NA = "Not available";
+  const DF_DECISIONS = ["READY", "SKIPPED", "BLOCKED", "WATCHING", "WAIT"];
+  const DF_CLS = { READY: "ok", SKIPPED: "info", BLOCKED: "bad", WATCHING: "warn", WAIT: "dim" };
+  const DF_MEANS = { READY: "Setup READY and Paper Auto ON: awaiting the executor, or an order intent was created.",
+                     SKIPPED: "Setup READY but not sent: Paper Auto OFF, or the per-cycle entry limit was already used.",
+                     BLOCKED: "Setup READY and an entry control blocked it, or a duplicate entry.",
+                     WATCHING: "Setup state WATCH: a downside dislocation was detected, confirmation incomplete.",
+                     WAIT: "No active setup, an invalidated setup awaiting reset, or a paused / failed evaluation." };
+  const DF_WATCH_NOTE = "Decision Flow WATCHING means setup state WATCH only. The Agent card shows WATCHING for every setup that is not READY.";
+  // the decision detail codes of decision_flow/__init__.py, for a payload that sent a code without its label
+  const DF_DETAIL = { ORDER_INTENT: "Order intent created", AWAITING_EXECUTOR: "Awaiting the executor", PAPER_AUTO_OFF: "Paper Auto OFF: monitor only, nothing sent",
+                      ENTRIES_PER_CYCLE: "Per-cycle entry limit already used", ENTRY_CONTROLS: "Entry control", DUPLICATE_ENTRY: "Duplicate entry", SETUP_WATCH: "Confirmation incomplete",
+                      NO_SETUP: "No active setup", INVALIDATED: "Invalidated, awaiting reset", PAUSED: "Evaluation paused", EVALUATION_ERROR: "Evaluation failed" };
+  const DF_NO_SCORE = "Not available: the setup engine computes no composite score.";
+  const DF_RANKING = "A display order of persisted values, not a score: setup state (READY, WATCH, INVALIDATED, NONE), then the fewest unmet checks, the smallest stretch gap, " +
+                     "the smallest demand gap, then the symbol.";
+  const DF_RISK_NOT_RUN = "Not evaluated: the entry controls run only for a READY setup during Paper Auto.";
+  const DF_GAPS = "A gap is the distance to its threshold where the value exists (stretch - (-40), 60 - demand, 40 - confidence); zero or below meets it. No composite distance is computed.";
+  const DH_MAX_ROWS = 120;                                                     // the cycles table shows at most this many rows (the newest first)
+  const DX_ZONES = ["ET", "PT", "UTC"];
+  const dfArr = (x) => (Array.isArray(x) ? x : []);
+  const dfObj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
+  const dfStr = (x) => (x == null || typeof x === "object" ? "" : String(x));
+  const dfAny = (v) => (v == null || v === "" ? NA : typeof v !== "object" ? String(v) : dfStr(v.text || v.label || v.state || v.status || v.mode || v.result) || NA);
+  // a stored instant: an offset-less stamp is UTC (the stores' convention), never the browser's own zone
+  const DF_TS = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2})?)/;
+  let dfNyFmt = null;
+  function dfDate(iso) {
+    const s = dfStr(iso).trim();
+    if (!DF_TS.test(s)) return null;
+    const d = new Date(/(Z|[+-]\d{2}:?\d{2})$/i.test(s) ? s : `${s.replace(" ", "T")}Z`);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  // New York wall time: the backend's own *_et text when it sent one, else the UTC instant converted (pure: a fixed zone, no clock is read)
+  function dfNy(et, iso) {
+    const m = DF_TS.exec(dfStr(et));
+    if (m) return { day: m[1], time: m[2] };
+    const d = dfDate(iso);
+    if (!d) return null;
+    try {
+      dfNyFmt = dfNyFmt || new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+      const p = {};
+      for (const x of dfNyFmt.formatToParts(d)) p[x.type] = x.value;
+      return { day: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}:${p.second}` };
+    } catch (e) { return null; }
+  }
+  function dfUtc(iso) { const d = dfDate(iso); return d ? d.toISOString().slice(11, 19) : null; }
+  // "15:59:03 ET · 19:59:03 UTC" (withDay: the New York date first); "Not available" when no time exists
+  function etUtc(et, iso, withDay) {
+    const n = dfNy(et, iso), u = dfUtc(iso);
+    if (!n) return u ? `${u} UTC` : dfStr(et) || NA;
+    return `${withDay ? `${n.day} ` : ""}${n.time} ET${u ? ` · ${u} UTC` : ""}`;
+  }
+  const etClock = (et, iso) => { const n = dfNy(et, iso); return n ? `${n.time} ET` : NA; };
+  // a New York time with its date whenever that date is not the reference moment's (a "since" from an earlier day never reads as a later time)
+  const etSince = (et, iso, ref) => { const n = dfNy(et, iso), r = ref || null; return !n ? NA : r && r.day === n.day ? `${n.time} ET` : `${n.day} ${n.time} ET`; };
+  const dfNum = (x) => { const n = num(x); return n == null ? null : Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10); };
+  // a gap to a threshold (DESIGN_610C §4): positive = still that far from it; zero or below = the value meets it. Below 1 it keeps two decimals (a coverage gap
+  // of 0.04 never reads 0); a check's own result, when given, decides "(met)"
+  const dfGapNum = (n) => (Math.abs(n) < 1 && !Number.isInteger(n) ? String(Math.round(n * 100) / 100) : dfNum(n));
+  const dfGap = (x, passed) => { const n = num(x); if (n == null) return null; const met = passed === true || (passed == null && n <= 0); return met ? `${dfGapNum(n)} (met)` : dfGapNum(n); };
+  const dfTexts = (x) => (typeof x === "string" ? [x] : dfArr(x).map(dfStr)).filter(Boolean);
+  function dfRisk(v) {
+    if (v == null || typeof v !== "object") return dfAny(v);
+    const st = dfStr(v.state), why = dfTexts(v.reason_text);
+    return [st ? SAFETY_TEXT[st] || cap(words(st)) : "", v.allowed_new_entry === false && st === "TRADING_ALLOWED" ? "new entries not allowed" : "",
+            (why.length ? why : dfTexts(v.reason_codes)).join(", ")].filter(Boolean).join(" · ") || dfAny(v);
+  }
+  function dfPaperAuto(v, ref) {
+    if (v == null || typeof v !== "object") return dfAny(v);
+    const on = v.on === true || (v.on == null && v.mode === "PAPER_AUTO"), off = v.on === false || (v.on == null && v.mode === "MONITOR_ONLY");
+    return [on ? "ON" : off ? "OFF" : "", dfStr(v.label) || MODE_TXT[v.mode] || "", v.since ? `since ${etSince(v.since_et, v.since, ref)}` : ""].filter(Boolean).join(" · ") || dfAny(v);
+  }
+  function dfExecutor(v) {
+    if (v == null || typeof v !== "object") return dfAny(v);
+    const runs = num(v.runs), res = Object.entries(dfObj(v.results)).filter(([, n]) => num(n)).map(([k, n]) => `${k} ${n}`), errs = dfTexts(v.error_types);
+    const span = v.first_at ? `${etClock(v.first_at_et, v.first_at)}${v.last_at && v.last_at !== v.first_at ? ` → ${etClock(v.last_at_et, v.last_at)}` : ""}` : "";
+    return [runs == null ? "" : `${runs} run${runs === 1 ? "" : "s"}${res.length ? ` (${res.join(" · ")})` : ""}`, errs.length ? `errors: ${errs.join(", ")}` : "", span,
+            dfStr(v.text || v.result)].filter(Boolean).join(" · ") || dfAny(v);
+  }
+  const dfMarket = (v) => (v == null || typeof v !== "object" ? dfAny(v) : dfStr(v.label) || cap(words(v.session)) || dfAny(v));
+
+  // one ticker of one cycle (DESIGN_610C §6.1): the stored setup, the six READY checks as the backend recomputed them (passed / failed / not evaluated), the
+  // unmet checks and gaps, the entry controls (only when they ran), the decision of the one vocabulary (READY · SKIPPED · BLOCKED · WATCHING · WAIT)
+  function decisionRowModel(t) {
+    const r = dfObj(t), s = dfObj(r.setup), dist = dfObj(r.distance), risk = dfObj(r.risk), pr = dfObj(r.price);
+    const decision = dfStr(r.decision) || NA;
+    const checks = dfArr(r.checks).map((c0) => {
+      const c = dfObj(c0), res = c.passed === true ? "passed" : c.passed === false ? "failed" : "not evaluated";
+      return { id: dfStr(c.id), label: dfStr(c.label) || cap(words(c.id)) || NA, value: dfStr(c.value_text) || (c.value == null || c.value === "" || typeof c.value === "object" ? NA : String(c.value)),
+               threshold: dfStr(c.threshold_text) || "—", result: res, cls: res === "passed" ? "ok" : res === "failed" ? "bad" : "dim", gap: dfGap(c.gap, c.passed), detail: dfStr(c.detail),
+               rootCause: dfStr(c.root_cause) };
+    });
+    const failed = r.failed ? dfArr(r.failed).map(dfStr).filter(Boolean) : checks.filter((c) => c.result === "failed").map((c) => c.label);
+    const evaluated = checks.filter((c) => c.result !== "not evaluated").length;
+    const unmet = num(dist.unmet) != null ? num(dist.unmet) : evaluated ? checks.filter((c) => c.result === "failed").length : null;
+    const total = num(dist.checks) || checks.length || 6, roots = num(dist.unmet_root_causes);
+    const controls = dfArr(risk.controls).map((x0) => {
+      const x = dfObj(x0), id = dfStr(x.id || x.control_id), res = dfStr(x.result) || NA;
+      return { id, label: dfStr(x.label) || cap(words(id)) || NA, result: res, reason: dfStr(x.reason || x.text), cls: res === "PASS" ? "ok" : res === "BLOCK" ? "bad" : res === "WARN" ? "warn" : "dim" };
+    });
+    // the backend's label is "DECISION · detail": the badge already shows the decision, so only the detail follows it
+    const code = r.decision_detail, label = dfStr(r.decision_label), own = label.startsWith(`${decision} · `) ? label.slice(decision.length + 3) : label !== decision ? label : "";
+    const detail = own ? cap(own) : Array.isArray(code) ? code.map(dfStr).filter(Boolean).join(", ") : dfStr(code) ? DF_DETAIL[code] || cap(words(code)) : "";
+    const ctl = Object.fromEntries(controls.filter((x) => x.id).map((x) => [x.id, x.label]));
+    const state = dfStr(s.state), prior = dfStr(s.prior_state);
+    return { symbol: dfStr(r.symbol) || "—", when: etUtc(r.evaluated_at_et, r.evaluated_at, false), whenFull: etUtc(r.evaluated_at_et, r.evaluated_at, true), origin: dfStr(r.origin), trigger: dfStr(r.trigger),
+             price: pr.value == null || pr.value === "" ? NA : px(pr.value), priceAsOf: pr.value != null && pr.value !== "" && pr.as_of ? dfUtc(pr.as_of) : null,
+             priceText: dfStr(pr.text) || (pr.value == null || pr.value === "" ? NA : px(pr.value)),
+             setup: { label: dfStr(s.state_label) || cap(words(state)) || NA, state, prior, change: prior && state && prior !== state ? `${prior} → ${state}` : "", evaluation: dfStr(s.evaluation),
+                      reason: dfStr(s.reason_text) || cap(words(s.reason_code)), code: s.reason_reworded === true ? "" : dfStr(s.reason_code), name: dfStr(s.name) || cap(words(s.type)) || NA,
+                      type: dfStr(s.type), note: dfStr(s.note), id: dfStr(s.setup_id) },
+             score: dfStr(dfObj(r.score).text) || DF_NO_SCORE, checks, failed, unmet, total, roots,
+             unmetText: unmet == null ? "Not evaluated" : unmet === 0 ? `All ${total} checks met` : `${unmet} of ${total} checks unmet`,
+             gaps: [["Stretch", dfGap(dist.stretch_gap)], ["Demand", dfGap(dist.demand_gap)], ["Confidence", dfGap(dist.confidence_gap)]], distanceText: dfStr(dist.text),
+             risk: { evaluated: risk.evaluated === true, text: dfStr(risk.text) || (risk.evaluated === true ? "" : DF_RISK_NOT_RUN), controls,
+                     blockedBy: dfArr(risk.blocked_by).map(dfStr).filter(Boolean).map((id) => ctl[id] || id) },
+             decision, cls: DF_CLS[decision] || "dim", detail, reason: dfStr(r.no_trade_reason), consistent: r.consistent !== false, consistencyNote: dfStr(r.consistency_note) };
+  }
+
+  // one evaluation cycle (DESIGN_610C §6.2) as its ten items: when, market, tickers scanned, candidate setups, the decision counts, the risk gate (startup check,
+  // reconciliation), Paper Auto, the executor runs, the orders, the outcome (with the cycle's Closest to READY)
+  function cycleModel(c0) {
+    // no cycle at all (none recorded, or none at or before a requested time): the backend says NO_CYCLE with no stamp; the caller shows its empty state
+    if (!c0 || typeof c0 !== "object" || Array.isArray(c0) || dfObj(c0.outcome).code === "NO_CYCLE" || c0.at === null) return null;
+    const c = c0, m = dfObj(c.market), rk = dfObj(c.risk), pf = dfObj(rk.preflight), rc = dfObj(rk.reconciliation), pa = dfObj(c.paper_auto), ex = dfObj(c.executor);
+    const oc = dfObj(c.outcome), cnt = dfObj(c.counts), cl = c.closest && typeof c.closest === "object" ? c.closest : null;
+    const n = (x) => (x == null || x === "" || typeof x === "object" ? NA : String(x));
+    const counts = DF_DECISIONS.map((d) => { const k = num(cnt[d]); return { decision: d, n: k, cls: k ? DF_CLS[d] : "dim" }; });
+    const oi = num(c.order_intents), os = num(c.orders_submitted);
+    const failing = dfArr(pf.failing).map(dfStr).filter(Boolean), attList = dfTexts(rc.attention), att = Array.isArray(rc.attention) ? attList.length : num(rc.attention);
+    const riskSub = [pf.status ? `startup check ${dfStr(pf.status)}${failing.length ? ` (failing: ${failing.join(", ")})` : ""}` : "",
+                     rc.healthy === true ? "reconciliation healthy" : rc.healthy === false ? "reconciliation needs a look" : "",
+                     att ? `${att} attention item${att === 1 ? "" : "s"}${attList.length ? `: ${attList.join("; ")}` : ""}` : "",
+                     rk.evaluated_at ? `gate read ${etClock(rk.evaluated_at_et, rk.evaluated_at)}` : ""].filter(Boolean).join(" · ");
+    const ref = dfNy(c.at_et, c.at);
+    const outcome = dfStr(oc.text) || cap(words(oc.code)) || NA;
+    const items = [
+      { key: "cycle", label: "Cycle", text: etUtc(c.at_et, c.at, true), cls: c.stale ? "warn" : "",
+        sub: [dfStr(c.cycle_id), c.stale ? "stale: no newer cycle recorded" : "", c.next_at ? `next cycle ${etClock(c.next_at_et, c.next_at)}` : ""].filter(Boolean).join(" · ") },
+      { key: "market", label: "Market", text: dfMarket(c.market), sub: dfStr(m.calendar) },
+      { key: "scanned", label: "Tickers scanned", text: n(c.tickers_scanned) },
+      { key: "candidates", label: "Candidate setups", text: n(c.candidate_setups) },
+      { key: "decisions", label: "Decisions", counts },
+      { key: "risk", label: "Risk gate", text: dfRisk(c.risk), sub: riskSub, cls: rk.allowed_new_entry === true ? "ok" : rk.allowed_new_entry === false ? "warn" : "" },
+      { key: "paper_auto", label: "Paper Auto", text: dfPaperAuto(c.paper_auto, ref),
+        sub: pa.policy_label ? `Auto-run policy (current setting): ${dfStr(pa.policy_label)}` : pa.policy ? `Auto-run policy (current setting): ${words(pa.policy)}` : "" },
+      { key: "executor", label: "Executor", text: dfExecutor(c.executor), sub: dfStr(ex.idle_note) },
+      { key: "orders", label: "Orders", text: oi == null && os == null ? NA : `${oi == null ? NA : oi} order intent${oi === 1 ? "" : "s"} · ${os == null ? NA : os} submitted` },
+      { key: "outcome", label: "Outcome", text: outcome, cls: oc.code === "ORDER_INTENT" ? "ok" : "",
+        sub: cl ? `Closest to READY: ${dfStr(cl.text) || [dfStr(cl.symbol), num(cl.unmet) != null ? `${num(cl.unmet)} unmet` : "", dfStr(cl.decision)].filter(Boolean).join(" · ")}` : "" },
+    ];
+    return { id: dfStr(c.cycle_id), at: dfStr(c.at), when: etUtc(c.at_et, c.at, false), whenFull: etUtc(c.at_et, c.at, true), stale: !!c.stale, outcome: { code: dfStr(oc.code), text: outcome },
+             counts, items };
+  }
+
+  // Closest to READY: the backend's declared display order of persisted values (never a score), kept exactly as given
+  function closestModel(list) {
+    return dfArr(list).map((c0, i) => {
+      const c = dfObj(c0), d = dfStr(c.decision);
+      return { rank: c.rank == null || typeof c.rank === "object" ? String(i + 1) : String(c.rank), symbol: dfStr(c.symbol) || "—", decision: d || NA, cls: DF_CLS[d] || "dim",
+               state: dfStr(c.state_label) || dfStr(c.state) || NA,
+               unmet: num(c.unmet), roots: num(c.unmet_root_causes), stretchGap: dfGap(c.stretch_gap), demandGap: dfGap(c.demand_gap), text: dfStr(c.text) };
+    });
+  }
+  // the legend: one line per decision in the backend's wording (decision_flow legend(): {decisions: [{code, text}], watching_note, ranking_rule}; this page's
+  // own lines only where a payload sent none) and, always, what WATCHING means here
+  function dfLegend(lg) {
+    const o = {}, l = dfObj(lg), list = Array.isArray(lg) ? lg : dfArr(l.decisions);
+    for (const x of list) { const e = dfObj(x), k = dfStr(e.code || e.decision || e.id || e.key); if (k) o[k] = dfStr(e.text || e.meaning || e.label); }
+    if (!list.length) for (const [k, v] of Object.entries(l)) if (DF_DECISIONS.includes(k)) o[k] = dfStr(v);
+    return { items: DF_DECISIONS.map((d) => ({ decision: d, cls: DF_CLS[d], text: o[d] || DF_MEANS[d] })), note: dfStr(l.watching_note) || DF_WATCH_NOTE, extra: typeof lg === "string" ? lg : "" };
+  }
+  const dfRanking = (p) => dfStr(dfObj(dfObj(p).legend).ranking_rule) || dfStr(dfObj(p).ranking_rule) || DF_RANKING;
+  // the inactive dynamic universe (dynamic_universe status()): its mode, the live coverage it leaves unchanged, the core list, its note (no closing period: the
+  // footer adds one)
+  function dfUniverse(u) {
+    if (u == null || typeof u !== "object") return dfStr(u);
+    if (u.text || u.label) return dfStr(u.text || u.label).replace(/\.+$/, "");
+    const cnt = (x, k) => (u[k] != null ? num(u[k]) : Array.isArray(x) ? x.length : num(dfObj(x).count));
+    const act = cnt(u.active, "active_count"), core = cnt(u.core, "core_count"), live = dfObj(u.live);
+    return [u.mode ? `dynamic universe ${dfStr(u.mode)}` : "", num(live.count) != null ? `live coverage ${num(live.count)} symbols${live.source ? ` (${dfStr(live.source)})` : ""}` : "",
+            act != null && dfObj(u.active).equals_live !== true ? `${act} active symbols` : "", core != null ? `core list ${core}` : "", dfStr(u.note).replace(/\.+$/, "")].filter(Boolean).join(" · ");
+  }
+
+  // TRADE › Decision Flow (GET /api/decision-flow): the latest cycle, its tickers, Closest to READY, the legend. conn = this page's last read: a failed read keeps
+  // the previous payload on screen and says so
+  function decisionFlowModel(p, conn) {
+    const k = dfObj(conn);
+    if (!p || typeof p !== "object") return { loaded: false, state: k.error ? "UNAVAILABLE" : "LOADING", outcome: k.error ? `Unavailable (${k.error}).` : "Loading…", when: "" };
+    const cyc = cycleModel(p.cycle), oc = dfObj(dfObj(p.cycle).outcome);
+    return { loaded: true, state: dfStr(oc.code) || (cyc ? "CYCLE" : "NO_CYCLE"), outcome: cyc ? cyc.outcome.text : dfStr(oc.text) || "No evaluation cycle recorded yet.",
+             when: !cyc ? "" : cyc.stale ? `${cyc.whenFull} (stale)` : cyc.when,
+             cycle: cyc, rows: dfArr(p.tickers).map(decisionRowModel), closest: closestModel(p.closest), ranking: dfRanking(p), legend: dfLegend(p.legend),
+             universe: dfUniverse(p.universe), note: dfStr(p.disclaimer || p.note), brokerCalls: num(p.broker_calls),
+             stale: k.error ? `Last read failed (${k.error}); showing the read from ${hms(k.okAtIso)} UTC.` : "" };
+  }
+
+  // ACTIVITY › Decision history (GET /api/decision-flow/history): one New York trading date - the day block (DESIGN_610C §6.3) and its cycles, newest first
+  function decisionHistoryModel(h, error) {
+    if (!h || typeof h !== "object") return { loaded: false, state: error ? "UNAVAILABLE" : "LOADING", text: error ? `Decision history unavailable (${error}).` : "Loading the decision history…" };
+    const d = dfObj(h.day), n = (x) => (x == null || x === "" || typeof x === "object" ? "—" : String(x));
+    const sk = dfObj(d.skipped_paper_auto_off), bl = dfObj(d.blocked), pa = dfObj(d.paper_auto), ex = dfObj(d.executor), cl = d.closest && typeof d.closest === "object" ? d.closest : null;
+    const strip = [["cycles", "Cycles", d.cycles], ["evaluations", "Evaluations", d.evaluations], ["tickers", "Tickers", Array.isArray(d.tickers) ? d.tickers.length : d.tickers],
+                   ["ready", "READY transitions", d.ready_transitions], ["watch", "WATCH transitions", d.watch_transitions], ["skipped_off", "Skipped · Paper Auto OFF", sk.count],
+                   ["skipped_limit", "Skipped · entry limit", d.skipped_entry_limit], ["blocked", "Blocked", bl.count], ["intents", "Order intents", d.order_intents], ["orders", "Orders", d.orders],
+                   ["fills", "Fills", d.fills]].map(([key, label, v]) => ({ key, label, value: n(v) }));
+    const ctl = dfObj(bl.labels), byCtl = Object.entries(dfObj(bl.by_control)).map(([k, v]) => `${dfStr(ctl[k]) || k} ${n(v)}`);
+    const risk = Object.entries(dfObj(d.risk_states)).map(([k, v]) => `${SAFETY_TEXT[k] || cap(words(k))} ${n(v)}`);
+    const spans = dfArr(pa.spans).map((s0) => { const s = dfObj(s0); return `${etClock(s.from_et, s.from)} → ${s.to && s.open !== true ? etClock(s.to_et, s.to) : "open"}`; });
+    const details = [["Off-cycle evaluations", n(d.off_cycle_evaluations)], ["READY evaluations", n(d.ready_evaluations)], ["Skipped (Paper Auto OFF) basis", dfStr(sk.basis) || "—"],
+                     ["Blocked by control", byCtl.join(" · ") || "—"], ["Paper Auto armed", pa.minutes == null ? NA : `${n(pa.minutes)} min${spans.length ? ` · ${spans.join(", ")}` : ""}`],
+                     ["Executor runs", ex.runs == null ? NA : `${n(ex.runs)}${ex.with_candidates != null ? ` · ${n(ex.with_candidates)} with candidates` : ""}`],
+                     ["Risk gate (rows by state)", risk.join(" · ") || NA],
+                     ["Closest to READY", !cl ? NA : dfStr(cl.text) || [dfStr(cl.symbol), num(cl.unmet) != null ? `${num(cl.unmet)} unmet` : "", num(cl.stretch) != null ? `stretch ${dfNum(cl.stretch)}` : "",
+                                                                         cl.at ? etClock(cl.at_et, cl.at) : ""].filter(Boolean).join(" · ") || NA]];
+    const cycles = dfArr(h.cycles);
+    return { loaded: true, state: "LOADED", date: dfStr(h.date || d.date) || NA, latestDate: dfStr(h.latest_date || d.latest_date), hasMore: !!h.has_more, tz: dfStr(d.timezone) || "America/New_York",
+             strip, details, cycles: cycles.slice(0, DH_MAX_ROWS).map(historyCycleModel), total: cycles.length, error: error ? `Last read failed (${error}); showing the earlier read.` : "" };
+  }
+  function historyCycleModel(c0) {
+    const c = dfObj(c0), m = cycleModel(c) || { id: "", stale: false, counts: [], items: [], outcome: { code: "", text: NA } }, rk = dfObj(c.risk), ex = dfObj(c.executor), runs = num(ex.runs);
+    return { at: dfStr(c.at), et: etClock(c.at_et, c.at), utc: dfUtc(c.at), id: m.id, stale: m.stale, market: dfMarket(c.market), scanned: c.tickers_scanned == null ? NA : dfStr(c.tickers_scanned) || NA,
+             counts: m.counts.filter((x) => x.n), paperAuto: c.paper_auto == null ? NA : dfPaperAuto(c.paper_auto, dfNy(c.at_et, c.at)), risk: rk.state ? SAFETY_TEXT[rk.state] || cap(words(rk.state)) : dfAny(c.risk),
+             executor: runs == null ? dfAny(c.executor) : `${runs} run${runs === 1 ? "" : "s"}`, outcome: m.outcome.text, code: m.outcome.code };
+  }
+
+  // the "why (not) at T" answer (GET /api/decision-flow/explain): what was asked (its UTC instant), the backend's answer, the ticker's evaluation then, and that
+  // moment's context (market session, Paper Auto, mode, risk gate, executor)
+  function explainModel(x0) {
+    const x = dfObj(x0), a = dfObj(x.asked), c = dfObj(x.context), u = dfUtc(a.utc), tz = dfStr(a.tz), ny = dfNy(a.et, a.utc);
+    const answer = Array.isArray(x.answer) ? x.answer.map(dfStr).filter(Boolean) : [dfStr(x.answer)].filter(Boolean);
+    // the asked moment in the two zones it was not asked in: New York unless asked in ET, UTC unless asked in UTC
+    const alt = [tz !== "ET" && ny ? `${ny.time} ET` : "", tz !== "UTC" && u ? `${u} UTC` : ""].filter(Boolean).join(" · ");
+    const nb = dfObj(x.nearest_before), mins = num(dfObj(x.query).max_age_s) != null ? Math.round(num(dfObj(x.query).max_age_s) / 60) : null;
+    const none = x.found === false ? `No evaluation in the ${mins != null ? `${mins} minutes` : "window"} up to that time` +
+                 `${nb.evaluated_at ? `; the last one before it was at ${etUtc(nb.evaluated_at_et, nb.evaluated_at, true)}` : ""}.` : `Evaluation: ${NA}.`;
+    return { symbol: dfStr(x.symbol || a.symbol) || "—", asked: [a.date, a.time, a.tz].map(dfStr).filter(Boolean).join(" ") || NA, askedUtc: alt, answer: answer.length ? answer : [NA],
+             row: x.evaluation && typeof x.evaluation === "object" ? decisionRowModel(x.evaluation) : null, none,
+             context: [["Market session", dfMarket(c.session)], ["Paper Auto", dfPaperAuto(c.paper_auto, ny)], ["Mode", typeof c.mode === "string" ? MODE_TXT[c.mode] || c.mode : dfAny(c.mode)],
+                       ["Risk gate", dfRisk(c.risk)], ["Executor", dfExecutor(c.executor)]] };
+  }
+  // the explain form's own check before any read: a ticker (letters, '.', '-': the API's symbol rule), a date, a 24-hour time, one of the three zones ("" = fine)
+  function explainProblem(v) {
+    const f = dfObj(v);
+    if (!/^[A-Z][A-Z.-]{0,9}$/.test(dfStr(f.symbol))) return "Enter a ticker, for example MU.";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dfStr(f.date))) return "Enter the date as YYYY-MM-DD.";
+    if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(dfStr(f.time))) return "Enter the time as HH:MM (24-hour).";
+    if (!DX_ZONES.includes(f.tz)) return "Choose ET, PT or UTC.";
+    return "";
+  }
+
+  const dfBadge = (label, cls, attr) => `<span class="pui-badge ${esc(cls)}"${attr || ""}>${esc(label)}</span>`;
+  const dfSub = (s, attr) => (s ? `<div class="pui-sub"${attr || ""}>${esc(s)}</div>` : "");
+  function cycleItemsHtml(m, empty) {
+    if (!m) return `<div class="pui-empty" data-pui-df-cycle="NONE">${esc(empty || "No evaluation cycle recorded yet.")}</div>`;
+    return `<div class="pui-kv pui-df-kv" data-pui-df-cycle="${esc(m.id)}">` + m.items.map((it) => `<span>${esc(it.label)}</span><b data-pui-df-item="${esc(it.key)}"${it.cls ? ` class="${lvl(it.cls)}"` : ""}>` +
+      (it.counts ? it.counts.map((x) => dfBadge(`${x.decision} ${x.n == null ? "—" : x.n}`, x.cls, ` data-pui-df-count="${esc(x.decision)}"`)).join(" ") : esc(it.text)) +
+      (it.sub ? `<span class="pui-sub">${esc(it.sub)}</span>` : "") + `</b>`).join("") + `</div>`;
+  }
+  // the per-ticker table: six compact columns; a row opens its READY checks, distance and risk checks below it (state-driven, kept across refreshes)
+  function tickerTableHtml(rows, open, ns) {
+    const o = open || {}, k = ns === "dh" ? "dh" : "df";
+    if (!rows.length) return `<div class="pui-sub" data-pui-${k}-tickers="0">No ticker evaluation in this cycle.</div>`;
+    return `<div class="pui-df-scroll"><table class="pui-table pui-df-table" data-pui-${k}-tickers="${rows.length}"><thead><tr><th>Ticker</th><th class="pui-df-price">Price</th><th>Setup</th>` +
+      `<th>Decision</th><th>Unmet checks</th><th>No-trade reason</th></tr></thead><tbody>` + rows.map((r) => {
+        const on = !!o[r.symbol];
+        return `<tr data-pui-${k}-ticker="${esc(r.symbol)}" data-decision="${esc(r.decision)}"${on ? ' class="pui-df-open"' : ""}>` +
+          `<td><button type="button" class="pui-df-toggle" data-pui-${k}-row="${esc(r.symbol)}" aria-expanded="${on ? "true" : "false"}" title="READY checks, distance and risk checks">` +
+          `<span class="pui-caret">${on ? "▾" : "▸"}</span> <b>${esc(r.symbol)}</b></button></td>` +
+          `<td class="pui-df-price">${esc(r.price)}${r.priceAsOf ? dfSub(`cached ${r.priceAsOf} UTC`) : ""}</td><td>${esc(r.setup.label)}${dfSub(r.setup.change)}</td>` +
+          `<td>${dfBadge(r.decision, r.cls, ` data-pui-df-decision="${esc(r.decision)}"`)}${dfSub(r.detail)}${dfSub(r.risk.blockedBy.join(" · "), " data-pui-df-blocked")}</td>` +
+          `<td>${esc(r.unmetText)}${dfSub(r.failed.join(" · "))}${r.consistent ? "" : `<div class="pui-df-note warn" data-pui-df-inconsistent>${esc(r.consistencyNote || "Differs from the stored blockers (those stand).")}</div>`}</td>` +
+          `<td>${esc(r.reason || "—")}</td></tr>` + (on ? `<tr class="pui-df-detail" data-pui-${k}-detail="${esc(r.symbol)}"><td colspan="6">${rowDetailHtml(r)}</td></tr>` : "");
+      }).join("") + `</tbody></table></div>`;
+  }
+  // a row's detail: the six READY checks (value vs threshold), the distance (unmet checks, distinct root causes, gaps), the entry controls when they ran, the setup
+  function rowDetailHtml(r) {
+    const checks = r.checks.length ? `<table class="pui-table pui-df-checks" data-pui-df-checks="${r.checks.length}"><thead><tr><th>Check</th><th>Value</th><th>Threshold</th><th>Result</th><th>Gap</th><th>Detail</th></tr></thead><tbody>` +
+      r.checks.map((c) => `<tr data-pui-df-check="${esc(c.id)}" data-result="${esc(c.result)}"><td>${esc(c.label)}</td><td>${esc(c.value)}</td><td>${esc(c.threshold)}</td><td>${dfBadge(c.result, c.cls)}</td>` +
+        `<td>${esc(c.gap == null ? "—" : c.gap)}</td><td>${esc(c.detail)}${c.rootCause ? dfSub(`root cause ${c.rootCause}`) : ""}</td></tr>`).join("") + `</tbody></table>`
+      : `<div class="pui-sub">No check evaluated (a paused or failed evaluation).</div>`;
+    const dist = `<div class="pui-df-block" data-pui-df-distance><h5>Distance from READY</h5><div>${esc(r.unmetText)}${r.roots != null ? ` · ${esc(r.roots)} distinct root cause${r.roots === 1 ? "" : "s"}` : ""}</div>` +
+      `<div>${esc(r.gaps.map(([g, v]) => `${g} gap ${v == null ? NA : v}`).join(" · "))}</div>${dfSub(r.distanceText)}${dfSub(DF_GAPS)}</div>`;
+    const risk = `<div class="pui-df-block" data-pui-df-risk="${r.risk.evaluated ? "EVALUATED" : "NOT_EVALUATED"}"><h5>Risk checks (entry controls)</h5>${r.risk.text ? `<div>${esc(r.risk.text)}</div>` : ""}` +
+      (r.risk.controls.length ? `<ul class="pui-bot-list">${r.risk.controls.map((x) => `<li data-pui-df-control="${esc(x.id)}">${dfBadge(x.result, x.cls)} ${esc(x.label)}` +
+        `${x.id && x.id !== x.label ? ` <span class="pui-sub">${esc(x.id)}</span>` : ""}${x.reason ? ` · ${esc(x.reason)}` : ""}</li>`).join("")}</ul>` : "") +
+      (r.risk.blockedBy.length ? `<div class="pui-df-note bad">Blocked by ${esc(r.risk.blockedBy.join(", "))}</div>` : "") + `</div>`;
+    const kv = [["Setup", `${r.setup.name}${r.setup.type && r.setup.type !== r.setup.name ? ` (${r.setup.type})` : ""}`], ["Stored state", [r.setup.label, r.setup.change, r.setup.evaluation].filter(Boolean).join(" · ")],
+                ["Reason", r.setup.reason ? `${r.setup.reason}${r.setup.code ? ` (${r.setup.code})` : ""}` : "—"], ["Evaluated", r.whenFull], ["Origin", [r.origin, r.trigger].filter(Boolean).join(" · ") || "—"],
+                ["Price", r.priceText], ["Score", r.score], ["Setup id", r.setup.id || "—"]];
+    const setup = `<div class="pui-df-block"><h5>Setup</h5><div class="pui-kv pui-df-kv2">${kv.map(([a, b]) => `<span>${esc(a)}</span><b>${esc(b)}</b>`).join("")}</div>${dfSub(r.setup.note)}</div>`;
+    return `<div class="pui-df-detail-body"><div class="pui-df-block pui-df-wide"><h5>READY checks (value vs threshold)</h5>${checks}</div>${dist}${risk}${setup}` +
+      (r.consistent ? "" : `<div class="pui-df-note warn pui-df-wide">${esc(r.consistencyNote || "The checks recomputed from the stored inputs differ from the stored blockers; the stored blockers stay authoritative.")}</div>`) + `</div>`;
+  }
+  function closestHtml(list, rule) {
+    const head = `<h4>Closest to READY</h4>`;
+    if (!list.length) return head + `<div class="pui-sub" data-pui-df-closest="0">No ticker to order.</div>`;
+    return head + `<div class="pui-df-scroll"><table class="pui-table pui-df-table" data-pui-df-closest="${list.length}"><thead><tr><th>#</th><th>Ticker</th><th>Decision</th><th>Setup state</th><th>Unmet checks</th>` +
+      `<th>Stretch gap</th><th>Demand gap</th><th>Note</th></tr></thead><tbody>` + list.map((c) => `<tr data-pui-df-rank="${esc(c.rank)}" data-symbol="${esc(c.symbol)}"><td>${esc(c.rank)}</td><td><b>${esc(c.symbol)}</b></td>` +
+        `<td>${dfBadge(c.decision, c.cls)}</td><td>${esc(c.state)}</td><td>${esc(c.unmet == null ? NA : c.unmet)}${c.roots != null && c.roots !== c.unmet ? dfSub(`${c.roots} root cause${c.roots === 1 ? "" : "s"}`) : ""}</td>` +
+        `<td>${esc(c.stretchGap == null ? "—" : c.stretchGap)}</td><td>${esc(c.demandGap == null ? "—" : c.demandGap)}</td><td>${esc(c.text)}</td></tr>`).join("") + `</tbody></table></div>` + dfSub(rule, " data-pui-df-ranking");
+  }
+  function dfLegendHtml(lg) {
+    return `<div class="pui-df-legend" data-pui-df-legend>${lg.items.map((x) => `<span data-pui-df-means="${esc(x.decision)}">${dfBadge(x.decision, x.cls)} ${esc(x.text)}</span>`).join("")}</div>` +
+      `<div class="pui-df-note" data-pui-df-watch-note>${esc(lg.note)}</div>${dfSub(lg.extra)}`;
+  }
+  // the TRADE section: a fold, closed by default, whose summary reads the cycle outcome; inside the ten cycle items, the tickers, the legend, Closest to READY
+  function decisionFlowHtml(m, open, rows) {
+    const o = open || {};
+    const body = !m.loaded ? `<div class="pui-empty">${esc(m.outcome)}</div>`
+      : (m.stale ? `<div class="pui-df-note warn" data-pui-df-stale>${esc(m.stale)}</div>` : "") + cycleItemsHtml(m.cycle) + `<h4>Tickers (${m.rows.length})</h4>` + tickerTableHtml(m.rows, rows, "df") +
+        dfLegendHtml(m.legend) + closestHtml(m.closest, m.ranking) +
+        `<div class="pui-sub" data-pui-df-foot>${m.universe ? `Universe: ${esc(m.universe)}. ` : ""}${m.note ? `${esc(m.note)} ` : ""}Times are New York (ET) with UTC. Persisted rows only` +
+        `${m.brokerCalls != null ? ` (${esc(m.brokerCalls)} broker calls)` : ""}: nothing is estimated.</div>`;
+    return `<div class="pui-df" data-pui-df="${esc(m.state)}"><details class="pui-fold" data-pui-df-fold="flow"${o.flow ? " open" : ""}><summary data-pui-df-summary="flow"><b>Decision Flow</b> · ` +
+      `<span data-pui-df-outcome="${esc(m.state)}">${esc(m.outcome)}</span>${m.when ? `<span class="pui-sub"> · cycle ${esc(m.when)}</span>` : ""}</summary><div class="pui-df-body">${body}</div></details></div>`;
+  }
+  // one cycle reconstructed on request (GET /api/decision-flow/cycle): the same items, tickers and Closest to READY as the latest cycle on TRADE
+  function cycleDetailHtml(sel, rows) {
+    if (!sel || typeof sel !== "object") return "";
+    const d = dfObj(sel.data), cm = cycleModel(d.cycle), list = dfArr(d.tickers).map(decisionRowModel);
+    const head = `<div class="pui-dh-cycle-head"><b>Reconstructed cycle</b> <span class="pui-sub">${cm ? "" : `${esc(etUtc(null, sel.at, true))} · `}from the persisted rows</span>` +
+      `<button type="button" class="pui-link" data-pui-dh-close>Close</button></div>`;
+    const body = sel.busy ? `<div class="pui-sub">Reading the cycle…</div>` : sel.error ? `<div class="pui-bad">Cycle unavailable (${esc(sel.error)}).</div>`
+      : !cm ? cycleItemsHtml(null, "No evaluation cycle at or before this time.")
+      : cycleItemsHtml(cm) + `<h4>Tickers (${list.length})</h4>` + tickerTableHtml(list, rows, "dh") + closestHtml(closestModel(d.closest), dfRanking(d));
+    return `<div class="pui-dh-cycle" data-pui-dh-detail="${esc(sel.at)}">${head}${body}</div>`;
+  }
+  // the ACTIVITY day block: the counts, the day's details, the cycles (newest first; a time reconstructs its cycle) and the reconstructed cycle under them
+  function decisionHistoryHtml(m, open, sel, rows) {
+    const o = open || {};
+    if (!m.loaded) return `<div class="pui-empty" data-pui-dh="${esc(m.state)}">${esc(m.text)}</div>`;
+    const strip = `<div class="pui-dh-counts" data-pui-dh-counts>${m.strip.map((x) => `<div class="pui-card" data-pui-dh-count="${esc(x.key)}"><h4>${esc(x.label)}</h4><div class="pui-big">${esc(x.value)}</div></div>`).join("")}</div>`;
+    const day = `<div class="pui-kv pui-df-kv" data-pui-dh-day>${m.details.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join("")}</div>`;
+    const latest = m.latestDate && m.latestDate !== m.date;
+    const table = !m.cycles.length ? `<div class="pui-sub" data-pui-dh-cycles="0">No evaluation cycle on ${esc(m.date)}.${latest ? ` Latest day with data: <button type="button" class="pui-link" data-pui-dh-goto="${esc(m.latestDate)}">${esc(m.latestDate)}</button>` : ""}</div>`
+      : `<div class="pui-df-scroll"><table class="pui-table pui-df-table" data-pui-dh-cycles="${m.cycles.length}"><thead><tr><th>Time</th><th>Market</th><th>Scanned</th><th>Decisions</th><th>Paper Auto</th><th>Risk gate</th>` +
+        `<th>Executor</th><th>Outcome</th></tr></thead><tbody>` + m.cycles.map((c) => {
+          const on = !!(sel && sel.at && sel.at === c.at);
+          return `<tr data-pui-dh-cycle-row="${esc(c.at)}"${on ? ' class="pui-df-open"' : ""}><td><button type="button" class="pui-df-toggle" data-pui-dh-cycle="${esc(c.at)}" aria-pressed="${on ? "true" : "false"}" ` +
+            `title="Reconstruct this cycle"><b>${esc(c.et)}</b></button>${c.utc ? dfSub(`${c.utc} UTC`) : ""}</td><td>${esc(c.market)}</td><td>${esc(c.scanned)}</td>` +
+            `<td>${c.counts.length ? c.counts.map((x) => dfBadge(`${x.decision} ${x.n}`, x.cls)).join(" ") : "—"}</td><td>${esc(c.paperAuto)}</td><td>${esc(c.risk)}</td><td>${esc(c.executor)}</td>` +
+            `<td>${esc(c.outcome)}${c.stale ? dfSub("stale") : ""}</td></tr>`;
+        }).join("") + `</tbody></table></div>` + (m.hasMore || m.total > m.cycles.length ? dfSub(`The newest ${m.cycles.length} cycles are shown; the day has more.`) : "");
+    return `<div data-pui-dh="LOADED" data-pui-dh-shown="${esc(m.date)}"><div class="pui-line">Trading date <b>${esc(m.date)}</b> <span class="pui-sub">(${esc(m.tz)})${latest ? ` · latest day with data ${esc(m.latestDate)}` : ""}</span></div>` +
+      (m.error ? `<div class="pui-df-note warn">${esc(m.error)}</div>` : "") + strip + day +
+      `<details class="pui-fold" data-pui-dh-fold="cycles"${o.cycles ? " open" : ""}><summary data-pui-dh-summary="cycles">Recent cycles (${m.cycles.length}${m.hasMore ? "+" : ""}, newest first): ` +
+      `click a time to reconstruct its cycle</summary>${table}${cycleDetailHtml(sel, rows)}</details></div>`;
+  }
+  function explainHtml(st) {
+    if (!st || typeof st !== "object") return `<div class="pui-sub" data-pui-dx="EMPTY">Why a ticker did or did not trade at a past moment, rebuilt from that moment's persisted rows.</div>`;
+    if (st.busy) return `<div class="pui-sub" data-pui-dx="BUSY">Reading the persisted rows…</div>`;
+    if (st.error) return `<div class="pui-bad" data-pui-dx="ERROR">${esc(st.error)}</div>`;
+    const m = explainModel(st.data), r = m.row;
+    return `<div class="pui-dx" data-pui-dx="ANSWER" data-symbol="${esc(m.symbol)}"><div class="pui-line"><b>${esc(m.symbol)}</b> at ${esc(m.asked)}${m.askedUtc ? ` <span class="pui-sub">(${esc(m.askedUtc)})</span>` : ""}</div>` +
+      `<div class="pui-dx-answer" data-pui-dx-answer>${m.answer.map((a) => `<div>${esc(a)}</div>`).join("")}</div>` +
+      (r ? `<div class="pui-dx-eval" data-pui-dx-eval="${esc(r.decision)}"><div class="pui-line">${dfBadge(r.decision, r.cls)}${r.detail ? ` ${esc(r.detail)} ·` : ""} evaluated ${esc(r.whenFull)} · ${esc(r.unmetText)}` +
+        `${r.reason ? ` · ${esc(r.reason)}` : ""}</div>${rowDetailHtml(r)}</div>` : `<div class="pui-sub" data-pui-dx-eval="NONE">${esc(m.none)}</div>`) +
+      `<h4>Context at that moment</h4><div class="pui-kv pui-df-kv" data-pui-dx-context>${m.context.map(([k, v]) => `<span>${esc(k)}</span><b>${esc(v)}</b>`).join("")}</div></div>`;
+  }
+  // ACTIVITY › Decision history, built once: the two forms are never rebuilt (what was typed survives the 30 s refresh); the day block with its cycles, and the
+  // explain answer, render into their own containers
+  function decisionHistoryShellHtml(f) {
+    const v = dfObj(f), tz = DX_ZONES.includes(v.tz) ? v.tz : "ET";
+    const input = (name, label, max, ph, value, more) => `<label>${label} <input name="${name}" maxlength="${max}" placeholder="${ph}" spellcheck="false" value="${esc(value || "")}"${more || ""}></label>`;
+    return `<div class="pui-dh"><div class="pui-dh-head"><h3>Decision history</h3><form class="pui-dx-form" data-pui-dh-day autocomplete="off">` +
+      input("date", "Trading date", 10, "YYYY-MM-DD", "", ' required pattern="[0-9]{4}-[0-9]{2}-[0-9]{2}"') +
+      `<button type="submit" class="pui-btn">Show day</button><button type="button" class="pui-btn" data-pui-dh-latest>Latest</button></form></div><div data-pui-dh-part="history"></div>` +
+      `<details class="pui-fold" data-pui-dh-fold="explain"><summary data-pui-dh-summary="explain">Explain a ticker at a time</summary><form class="pui-dx-form" data-pui-dx-form autocomplete="off">` +
+      input("symbol", "Ticker", 10, "MU", v.symbol) + input("date", "Date", 10, "YYYY-MM-DD", v.date) + input("time", "Time", 5, "HH:MM", v.time) +
+      `<label>Zone <select name="tz">${DX_ZONES.map((z) => `<option value="${z}"${z === tz ? " selected" : ""}>${z}</option>`).join("")}</select></label><button type="submit" class="pui-btn">Explain</button></form>` +
+      `<div data-pui-dh-part="answer"></div></details><div class="pui-sub">Times are New York (ET) with UTC. Persisted rows only, read-only: no broker call, nothing estimated.</div></div>`;
+  }
+
   // ---------------------------------------------------------------- page wiring (browser only) ---------------------------------------
   const $ = (id) => document.getElementById(id);
   const q = (sel) => document.querySelector(sel);
@@ -1397,6 +1782,7 @@
   function renderPositionDetails(d) { const host = $("pui-pos-detail"); if (host) host.innerHTML = positionDetailsHtml(d); }
 
   async function loadActivity() {
+    loadDecisionHistory();                                                       // Stage 6.10C: ACTIVITY › Decision history (its own section and read; not awaited here)
     const get = (p) => getJson(p).catch(() => ({}));
     const [tr, pr, ex, po, se, fi, fv, fve] = await Promise.all([get("/api/setups/events?limit=100"), get("/api/proposals/history?limit=50"), get("/api/execution/intents?limit=100"),
                                                                 get("/api/execution/positions?limit=100"), get("/api/execution-safety/events?limit=50"), get("/api/execution/findings?limit=50"),
@@ -1409,9 +1795,9 @@
     const host = $("pui-activity");
     if (!host || !state.actData) return;
     const today = (exec() && exec().scheduler && exec().scheduler.market && exec().scheduler.market.session_date) || new Date().toISOString().slice(0, 10);
+    const legacy = $("pui-legacy-alerts");                                       // held before the rebuild: on a re-render it sits in the old fold, which the rebuild detaches
     host.innerHTML = activityHtml(state.actData.src, exec(), state.actData.fv, today, { safety: safety(), filter: state.filter });
     const fold = host.querySelector("[data-pui-alerts-fold]");
-    const legacy = $("pui-legacy-alerts");
     if (fold && legacy) fold.appendChild(legacy);
   }
 
@@ -1543,7 +1929,7 @@
   function tick() {
     observeBot();
     renderStatus();
-    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); loadUnified(); }
+    if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); loadUnified(); if (ensureDecision()) loadDecision(); }   // + Stage 6.10C
   }
   // Stage 6.9: GET /api/unified-portfolio (Robinhood is read at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS on the server) - every 30 s on TRADE, on demand on POSITIONS
   async function loadUnified(force) {
@@ -1577,6 +1963,7 @@
       if (el.parentElement !== right || el.nextElementSibling !== last) right.insertBefore(el, last);
     } else if (cards && el.previousElementSibling !== cards) cards.insertAdjacentElement("afterend", el);
     el.classList.toggle("pui-bot-in-column", inColumn);
+    placeDecision();                                                             // Stage 6.10C: Decision Flow follows it in the default layout
   }
   function loadBotActivity(force) {
     const a = state.botAct, every = a && a.worker && a.worker.state === "RUNNING" ? 2000 : 10000;
@@ -1591,6 +1978,136 @@
     if (!el) return;
     const html = botActivityHtml(botActivityModel(state.botAct, state.botConn), state.botOpen);
     if (el.innerHTML !== html) el.innerHTML = html;
+  }
+
+  // Stage 6.10C TRADE › Decision Flow: GET /api/decision-flow every 15 s while TRADE is shown (self-throttled from tick(); a read-only projection, 0 broker
+  // calls). It sits right after Bot Activity in the default layout and is hidden in View details (product_ui.css), so the Stage 5.5 layout gains no height.
+  const DF_EVERY_MS = 15000;
+  function ensureDecision() {
+    if ($("pui-decision")) return true;
+    if (!$("pui-bot-activity") || !$("pui-cards")) return false;
+    const el = document.createElement("section"); el.id = "pui-decision"; el.className = "pui-section pui-df-host";
+    el.addEventListener("toggle", (e) => { const d = e.target; if (d && d.dataset && d.dataset.puiDfFold) state.dfOpen[d.dataset.puiDfFold] = d.open; }, true);
+    el.addEventListener("click", (e) => { const b = e.target.closest("[data-pui-df-row]"); if (b) { const k = b.dataset.puiDfRow; state.dfRows[k] = !state.dfRows[k]; renderDecision(); } });
+    placeDecision(el);
+    renderDecision();
+    return true;
+  }
+  // after Bot Activity while both share the TRADE column; in View details (Bot Activity in the detail column) after the cards, where the CSS hides it: the
+  // pinned order '#pui-cards + #pui-bot-activity' and the column's '#pui-bot-activity + .tv-panel-last' are never broken
+  function placeDecision(node) {
+    const el = node || $("pui-decision"), bot = $("pui-bot-activity"), cards = $("pui-cards");
+    if (!el || !cards) return;
+    const after = bot && bot.parentElement === cards.parentElement ? bot : cards;
+    if (!el.parentElement || el.previousElementSibling !== after) after.insertAdjacentElement("afterend", el);
+  }
+  function loadDecision(force) {
+    if (state.dfBusy || (!force && state.dfReadAt && Date.now() - state.dfReadAt < DF_EVERY_MS)) return;
+    state.dfBusy = true; state.dfReadAt = Date.now();
+    getJson("/api/decision-flow").then((d) => { state.df = d; state.dfConn = { okAtIso: new Date().toISOString(), error: null }; })
+      .catch((e) => { state.dfConn = Object.assign({}, state.dfConn, { error: (e && e.message) || "error" }); })
+      .finally(() => { state.dfBusy = false; renderDecision(); });
+  }
+  function renderDecision() {
+    const el = $("pui-decision");
+    if (!el) return;
+    let html;
+    try { html = decisionFlowHtml(decisionFlowModel(state.dfForced || state.df, state.dfForced ? null : state.dfConn), state.dfOpen, state.dfRows); }
+    catch (e) { html = `<div class="pui-df" data-pui-df="DISPLAY_FAILED"><b>Decision Flow</b> · <span class="pui-bad">could not be displayed (${esc(e && e.message)}).</span></div>`; }
+    if (state.dfHtml !== html || !el.firstChild) { el.innerHTML = html; state.dfHtml = html; }
+  }
+  // Stage 6.10C ACTIVITY › Decision history: a sibling after the Activity panel (its 30 s rebuild never touches it), read when ACTIVITY opens and with the
+  // 30 s Activity refresh (loadActivity); a cycle is reconstructed on a click, the explain answer read on the form's submit. GET only, every read caught.
+  function ensureDecisionHistory() {
+    if ($("pui-dhist")) return true;
+    const act = $("pui-activity");
+    if (!act) return false;
+    const el = document.createElement("section"); el.id = "pui-dhist"; el.className = "pui-section pui-dh-host";
+    el.innerHTML = decisionHistoryShellHtml(state.dxForm);
+    el.addEventListener("toggle", (e) => { const d = e.target; if (d && d.dataset && d.dataset.puiDhFold) state.dhOpen[d.dataset.puiDhFold] = d.open; }, true);
+    el.addEventListener("click", onDecisionHistoryClick);
+    el.addEventListener("submit", onDecisionHistorySubmit);
+    act.insertAdjacentElement("afterend", el);
+    renderDecisionHistory(); renderExplain();
+    return true;
+  }
+  function loadDecisionHistory() {
+    if (!ensureDecisionHistory() || state.dhBusy) return;
+    state.dhBusy = true;
+    const date = state.dhDate;
+    getJson("/api/decision-flow/history" + (date ? "?date=" + encodeURIComponent(date) : "")).then((d) => { state.dh = d; state.dhError = null; })
+      .catch((e) => { state.dhError = (e && e.message) || "error"; })
+      .finally(() => { state.dhBusy = false; renderDecisionHistory(); if (state.dhDate !== date) loadDecisionHistory(); });   // a day asked for meanwhile is read next
+  }
+  function loadDecisionCycle(at) {
+    if (!at) return;
+    state.dhCycle = { at, busy: true }; state.dhRows = {};
+    renderDecisionHistory();
+    getJson("/api/decision-flow/cycle" + "?at=" + encodeURIComponent(at)).then((d) => { if (state.dhCycle && state.dhCycle.at === at) state.dhCycle = { at, data: d }; })
+      .catch((e) => { if (state.dhCycle && state.dhCycle.at === at) state.dhCycle = { at, error: (e && e.message) || "error" }; })
+      .finally(() => renderDecisionHistory());
+  }
+  function explainAt(form) {
+    const val = (k) => String(((form.elements || {})[k] || {}).value || "").trim();
+    const v = { symbol: val("symbol").toUpperCase(), date: val("date"), time: val("time").replace(/^(\d):/, "0$1:"), tz: val("tz") || "ET" };   // the API takes HH:MM: 9:30 is sent as 09:30
+    state.dxForm = v;
+    const problem = explainProblem(v), seq = ++state.dxSeq;
+    if (problem) { state.dxAnswer = { error: problem }; renderExplain(); return; }
+    state.dxAnswer = { busy: true };
+    renderExplain();
+    const query = "?symbol=" + encodeURIComponent(v.symbol) + "&date=" + encodeURIComponent(v.date) + "&time=" + encodeURIComponent(v.time) + "&tz=" + encodeURIComponent(v.tz);
+    getJson("/api/decision-flow/explain" + query).then((d) => { if (seq === state.dxSeq) state.dxAnswer = { data: d }; })
+      .catch((e) => { if (seq === state.dxSeq) state.dxAnswer = { error: `No answer (${(e && e.message) || "error"}).` }; })
+      .finally(() => renderExplain());
+  }
+  function onDecisionHistoryClick(e) {
+    const row = e.target.closest("[data-pui-dh-row]");
+    if (row) { const k = row.dataset.puiDhRow; state.dhRows[k] = !state.dhRows[k]; renderDecisionHistory(); return; }
+    const cyc = e.target.closest("[data-pui-dh-cycle]");
+    if (cyc) { loadDecisionCycle(cyc.dataset.puiDhCycle); return; }
+    if (e.target.closest("[data-pui-dh-close]")) { state.dhCycle = null; state.dhRows = {}; renderDecisionHistory(); return; }
+    const day = e.target.closest("[data-pui-dh-goto]"), latest = e.target.closest("[data-pui-dh-latest]");
+    if (day || latest) { state.dhDate = day ? day.dataset.puiDhGoto : null; state.dhCycle = null; loadDecisionHistory(); }
+  }
+  function onDecisionHistorySubmit(e) {
+    const f = e.target;
+    e.preventDefault();                                                          // a form here never navigates: every read is a GET through getJson
+    if (!f || !f.dataset) return;
+    if (f.dataset.puiDxForm !== undefined) { explainAt(f); return; }
+    if (f.dataset.puiDhDay !== undefined) {
+      const v = String((f.elements.date || {}).value || "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return;                               // the input's own pattern says why
+      state.dhDate = v; state.dhCycle = null;
+      loadDecisionHistory();
+    }
+  }
+  function renderDecisionHistory() {
+    const part = document.querySelector('#pui-dhist [data-pui-dh-part="history"]');
+    if (!part) return;
+    let html;
+    try { html = decisionHistoryHtml(decisionHistoryModel(state.dhForced || state.dh, state.dhForced ? null : state.dhError), state.dhOpen, state.dhCycle, state.dhRows); }
+    catch (e) { html = `<div class="pui-bad" data-pui-dh="DISPLAY_FAILED">Decision history could not be displayed (${esc(e && e.message)}).</div>`; }
+    if (state.dhHtml !== html || !part.firstChild) { part.innerHTML = html; state.dhHtml = html; }
+  }
+  function renderExplain() {
+    const part = document.querySelector('#pui-dhist [data-pui-dh-part="answer"]');
+    if (!part) return;
+    let html;
+    try { html = explainHtml(state.dxAnswer); } catch (e) { html = `<div class="pui-bad" data-pui-dx="DISPLAY_FAILED">The answer could not be displayed (${esc(e && e.message)}).</div>`; }
+    if (state.dxHtml !== html || !part.firstChild) { part.innerHTML = html; state.dxHtml = html; }
+  }
+  // harness / tests: render fixed payloads in place of the live reads (the harness clock is outside the session, so the live cycle may be empty); null restores
+  // the live reads, undefined leaves a panel as it is; extra = { cycle, explain } fills the reconstructed cycle and the explain answer. Nothing is fetched or written.
+  function renderDecisionFixture(latest, history, extra) {
+    const x = extra || {};
+    if (latest !== undefined) state.dfForced = latest || null;
+    if (history !== undefined) state.dhForced = history || null;
+    if (x.cycle !== undefined) state.dhCycle = x.cycle ? { at: dfStr(dfObj(x.cycle.cycle).at) || "fixture", data: x.cycle } : null;
+    if (x.explain !== undefined) state.dxAnswer = x.explain ? { data: x.explain } : null;
+    if (typeof document === "undefined") return { flow: false, history: false };
+    ensureDecision(); ensureDecisionHistory();
+    renderDecision(); renderDecisionHistory(); renderExplain();
+    return { flow: !!$("pui-decision"), history: !!$("pui-dhist") };
   }
 
   function mount() {
@@ -1656,5 +2173,9 @@
            // Stage 6.9
            robinhoodHtml, unifiedHtml, exposureLines, exposureCardHtml, loadUnified,
            // Stage 6.9.1
-           gateFor, gateLine };
+           gateFor, gateLine,
+           // Stage 6.10C
+           NA, DF_DECISIONS, DF_CLS, DF_MEANS, DF_WATCH_NOTE, DF_NO_SCORE, DF_RANKING, etUtc, decisionRowModel, cycleModel, closestModel, decisionFlowModel, decisionHistoryModel, explainModel,
+           explainProblem, cycleItemsHtml, tickerTableHtml, rowDetailHtml, closestHtml, decisionFlowHtml, cycleDetailHtml, decisionHistoryHtml, explainHtml, decisionHistoryShellHtml,
+           renderDecision, renderDecisionHistory, renderExplain, loadDecision, loadDecisionHistory, renderDecisionFixture };
 });
