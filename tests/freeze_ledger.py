@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -24,6 +24,11 @@ monitoring and exits continue) and an opt-in, default-off SCHEDULED_ARM may arm 
 that only record evidence: the executor hands decision-time records to an in-memory sink through its existing failure-swallowing _record. The
 order-decision logic is pinned unchanged by tests/test_forward_paper_610a.py (F tests): execution/engine.py is byte-identical to BASE_610A,
 every added executor line is a _record call or inside the new _mark, and the frozen and entry-contract hashes are the Stage 6.9.1 values.
+
+Stage 6.10C (agent decision flow + an inactive dynamic universe) is observability only: a read-only projection of persisted rows (decision_flow/,
+GET /api/decision-flow*), the TRADE / ACTIVITY panels that show it, and an inactive dynamic_universe/ that no live path imports. It changes no
+execution, strategy, risk, Paper Auto or startup behaviour: SEMANTIC_610C and INSTRUMENTATION_610C are empty, execution/* is byte-identical to
+BASE_610C, and tests/test_decision_flow_610c.py (F tests) pins exactly that.
 """
 import hashlib
 import subprocess
@@ -76,27 +81,32 @@ INSTRUMENTATION_610A = {                                                        
     "execution/service.py": "six self._record(...) markers hand decision-time records (allowlisted) to the forward-capture sink, plus the new _mark",
     "forward_validation/service.py": "the capture tick after the observer's own try/except (its own guard) and read-only evidence views",
 }
+BASE_610C = "fed5b3cd3d602eccd71e473046ce58ad2f7819f4"                                   # main: Stage 6.10A merged (PR #34)
+NEW_610C = {'tools/evaluator_capacity.py', 'api/routes/decision_flow.py', 'decision_flow/__init__.py', 'tests/frontend/decision_flow.test.cjs', 'tests/test_dynamic_universe_610c.py', 'tools/__init__.py', 'decision_flow/conditions.py', 'dynamic_universe/core.py', 'dynamic_universe/__init__.py', 'DESIGN_610C_DECISION_FLOW.md', 'dynamic_universe/plan.py', 'dynamic_universe/signals.py', 'tests/test_decision_flow_610c.py', 'decision_flow/view.py', 'decision_flow/store.py'}
+EDITED_610C = {'tests/freeze_ledger.py', 'tests/frontend/product_flow.test.cjs', 'tests/test_product_ui_611.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_product_flow_612.py', 'tests/test_strategy_validation_62.py', 'tests/frontend/strategy_validation.test.cjs', 'tests/test_unified_exposure_gate_691.py', 'browser_tests/flows.py', '.github/ci/pytest_groups.json', 'frontend/product_ui.css', 'api/server.py', 'frontend/product_ui.js', 'tests/frontend/product_ui.test.cjs', 'tests/test_forward_paper_610a.py', 'tests/test_bot_activity_68.py', 'config.py'}
+SEMANTIC_610C: dict = {}                                                                  # Stage 6.10C: no execution semantic change
+INSTRUMENTATION_610C: dict = {}                                                           # Stage 6.10C: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "6721e9a2aa021f88069f5b68e1e6ff836cdecd4d7ebfe375fd01bc18bf960044",
+    ".github/ci/pytest_groups.json": "c44b2ce4a42110ad353d699c0987de6d62875ad4faab18fa2ee8d4429668693a",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
-    "api/server.py": "b000500e47ea55009f99841c49ccf10bc150d0036f2a0193e4a1e33251047550",
-    "browser_tests/flows.py": "80cbd224c730f8f8ed3e3988dc167b7ca2d43783559a8ddf51ebb92a31b690b7",
-    "config.py": "95763501d229f07a517b2cf0b8e6c3336e62da8ea36c6be4c132ad0898ea9e51",
+    "api/server.py": "17bd28fe17c81cd4efe5aa8c95562bbf1afe63b79876f97d6b3a16e35d699b33",
+    "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
+    "config.py": "1dc47eba4d6813162ea726d71839dde44c4b788fb15dce6114e8f5ecd9acd00b",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
     "execution/service.py": "4a21f8a69bc1e086fb89f0a225d0f47bb8ce15ebf7246b62d2079a9b0b900d01",
     "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
     "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
-    "frontend/product_ui.css": "f94af406e4ff7b1855ce729a2d3be05268a20838ac8f57603e3aa1bafacb5ca8",
-    "frontend/product_ui.js": "528d4bf08e27d2741ce553c51bb3a8aab174107eb0fcd62ec5e3f93dffd87259",
+    "frontend/product_ui.css": "615a863bc5c4918b37f831264eb30fd2b6857133fc80d38a47aba7162a0adfde",
+    "frontend/product_ui.js": "73064019c9fbf62e9a60d9a3d7c721c4ed352c1ea2f70ee90c3026458ff966dc",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
-    "tests/frontend/product_flow.test.cjs": "36c3b0c3729d8cab7bb009972dd9209e8ecf269648c3a14980aac3a439139306",
-    "tests/frontend/product_ui.test.cjs": "929211ac8de8181d05cac3ab3c3dc8450f55c07c865b07a09f3034eb82433238",
-    "tests/frontend/strategy_validation.test.cjs": "f3c9b1b9ff398d0deb83cf2fe90d06278ecd15fb05ef9be9d191502de6c75e59",
+    "tests/frontend/product_flow.test.cjs": "7828fabb3f5902ac9582f5dc429d91628742a5f8e3c7c98640230c694b618c49",
+    "tests/frontend/product_ui.test.cjs": "ab696a8b48a8d2f732f9addbe4e897bffd6a13339862ffaba28f1740f3d18743",
+    "tests/frontend/strategy_validation.test.cjs": "a1acf70be167661df5a64f515b25e498167a912c9176d34548aeb9859ba28580",
     "tests/test_account_refresh_601.py": "42aeb7db6c614d1c0cf41cc7d9c8bf8bbcabebd5301d7dea1fafba4e0eab2587",
     "tests/test_cash_flow_602.py": "15581c69f6fe12e475f7311a03652bb0e128e06eaaa7bc227eab6281eae141ec",
     "tests/test_ci_groups_603.py": "8b1b0a4659424e7fc733a275dae76e3b72ac3f7df156234a8bf8c72f3e57c477",
@@ -105,12 +115,12 @@ LEDGER = {
     "tests/test_execution_60.py": "578562ba9f96c1fa337669c91269abe011783ff54b9c08f84b20d99688bd24cf",
     "tests/test_execution_safety_591.py": "e5d2a1faefc7be7f04077f744155c2e9dbe82b2b0b35ebe2cff27f26b39f0c89",
     "tests/test_forward_validation_61.py": "d7b5260e7b70bdae9344f5d26212ac0dcf3200651b374ab72e668166a4363fe7",
-    "tests/test_product_flow_612.py": "c0fc36938250a543a3072a5138bb365f10cb2b8ca0e0091ab481cbfd7c1dc8ab",
-    "tests/test_product_ui_611.py": "e999aa905d267ffdb024a608bc2f87cc10aba679b62c0dbb49e1e955c4fd908b",
+    "tests/test_product_flow_612.py": "6864546373db260d6e4e4aeb168718c6c811bfe15b55f90401ab066a6cecdb51",
+    "tests/test_product_ui_611.py": "67f85272b938d19ab22522fd4c6481308437f953bbed2e85a86f5c35e03e90d4",
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "211b9ed20cd20697ff7e589eab7d014f08be318b36033a894166f6b8af22014a",
+    "tests/test_strategy_validation_62.py": "440497b81b4e6e5ccf0af4acabbb5ec3199d4772c944d796e24467781c2189bd",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",

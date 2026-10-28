@@ -332,3 +332,67 @@ table.pui-sv-table tr.pui-sv-note td { text-align: left; white-space: normal; bo
 .pui-acct.pui-unified h3 .pui-badge { margin-left: 6px; vertical-align: middle; }
 .pui-acct.pui-unified { overflow-wrap: anywhere; }
 .pui-acct.pui-unified .pui-line { font-size: 13px; margin: 8px 0 2px; }              /* Stage 6.9.1: the entry gate line, sized like the section */
+
+/* Stage 6.10C: TRADE › Decision Flow (the latest evaluation cycle: its ten items, a compact per-ticker table whose rows open their READY checks, distance
+   and risk checks, the legend, Closest to READY) and ACTIVITY › Decision history (day counts, recent cycles, "why not at T"). Hidden in View details: the
+   Stage 5.5 layout must gain no height above .tv-grid (the rule mirrors the collapsed .tv-right one). Tables wrap and never widen the page; the scroll
+   wrapper is only a safety net. */
+body.pui:not(.pui-collapsed) #pui-decision { display: none; }
+#pui-decision { padding: 0; }
+.pui-df, .pui-dh { margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.pui-df > details.pui-fold > summary { margin: 0; font-size: 13px; color: var(--text); }
+.pui-df > details.pui-fold > summary b { font-size: 14px; }
+.pui-df-body { padding: 8px 0 0; }
+.pui-df h4, .pui-dh h4 { margin: 12px 0 4px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
+.pui-df-kv { grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); gap: 5px 14px; font-size: 13px; }
+.pui-df-kv b { text-align: left; font-weight: 600; }
+.pui-df-kv b .pui-sub { display: block; font-weight: 400; }
+.pui-df-kv2 { grid-template-columns: max-content minmax(0, 1fr); }
+.pui-df-kv2 b { text-align: left; font-weight: 500; }
+.pui-df-scroll { overflow-x: auto; max-width: 100%; }
+.pui-df-table { margin: 4px 0; }
+.pui-df-table th, .pui-df-table td { vertical-align: top; padding: 5px 12px 5px 0; overflow-wrap: anywhere; }
+.pui-df-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.pui-df .pui-badge, .pui-dh .pui-badge { white-space: nowrap; }
+.pui-df-toggle { background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; white-space: nowrap; }
+.pui-df-toggle:hover b { color: var(--accent); }
+.pui-df-toggle .pui-caret { color: var(--text-dim); font-size: 11px; }
+.pui-df-toggle[aria-pressed="true"] b { color: var(--accent); }
+tr.pui-df-open > td { background: rgba(88, 166, 255, .06); }
+tr.pui-df-detail > td { background: var(--bg-panel); padding: 8px 10px; }
+.pui-df-detail-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 18px; }
+.pui-df-wide { grid-column: 1 / -1; }
+.pui-df-block { min-width: 0; font-size: 12px; }
+.pui-df-block h5 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.pui-df-block .pui-bot-list { margin: 4px 0 0; }
+.pui-df-checks { margin: 0; }
+.pui-df-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 4px 16px; margin: 10px 0 4px; font-size: 12px; color: var(--text-dim); }
+.pui-df-note { font-size: 12px; margin: 4px 0; color: var(--text-dim); }
+.pui-df-note.warn { color: var(--amber); }
+.pui-df-note.bad { color: var(--red); }
+#pui-dhist .pui-dh { margin-top: 4px; }
+.pui-dh-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 6px 16px; }
+.pui-dh h3 { margin: 0; }
+.pui-dh-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; margin: 8px 0 10px; }
+.pui-dh-counts .pui-card { min-height: 0; padding: 8px 10px; }
+.pui-dh-counts .pui-card h4 { margin: 0 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.pui-dh-counts .pui-big { font-size: 18px; }
+.pui-dh-cycle { margin: 10px 0 4px; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 8px; }
+.pui-dh-cycle-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.pui-dh-cycle-head .pui-link { margin-left: auto; }
+.pui-dx-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; margin: 6px 0; }
+.pui-dx-form label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-dim); }
+.pui-dx-form input, .pui-dx-form select { background: var(--bg-panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 13px; }
+.pui-dx-form input { width: 8.5em; }
+.pui-dx-form input[name="symbol"] { width: 6em; text-transform: uppercase; }
+.pui-dx-form input[name="time"] { width: 5em; }
+.pui-dx { margin-top: 8px; }
+.pui-dx-answer { margin: 6px 0 8px; padding: 6px 10px; border-left: 3px solid var(--accent); border-radius: 4px; background: var(--bg-panel); }
+.pui-dx-eval { margin: 8px 0; }
+@media (max-width: 1100px) {
+  .pui-df-kv { grid-template-columns: max-content minmax(0, 1fr); }
+  .pui-df-detail-body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 820px) {
+  .pui-df-table .pui-df-price { display: none; }
+}

@@ -42,6 +42,7 @@ from api.routes import cash_flow_status  # Stage 6.0.2: cash-flow status (GET on
 from api.routes import forward_validation  # Stage 6.1: forward paper validation (GET only) - the descriptive record of the setups -> proposals -> paper execution funnel and session health
 from api.routes import strategy_registry  # Stage 6.1.2: Strategy Lab registry + Strategy Standard v1 (GET only) - describes the setups -> proposals -> safety -> execution strategy; no order path
 from api.routes import unified_portfolio  # Stage 6.9: unified portfolio (GET only) - Alpaca PAPER + Robinhood READ-ONLY holdings, exposure; no write path
+from api.routes import decision_flow  # Stage 6.10C: agent decision flow (GET only) - read-only cycles, READY checks and decision history from persisted rows; no write path
 from database.database import get_db
 from models.schemas import HealthResponse
 
@@ -191,6 +192,7 @@ app.include_router(cash_flow_status.router)  # Stage 6.0.2: cash-flow status (GE
 app.include_router(forward_validation.router)  # Stage 6.1: forward paper validation (GET only) - session health, the setups -> proposals -> execution funnel, closed paper trades, reports, exports
 app.include_router(strategy_registry.router)  # Stage 6.1.2: strategy registry + Strategy Standard v1 (GET only) - the setups -> proposals -> safety gate -> execution strategy described, never executed
 app.include_router(unified_portfolio.router)  # Stage 6.9: unified portfolio (GET only) - Robinhood is read only and never an execution broker
+app.include_router(decision_flow.router)  # Stage 6.10C: agent decision flow (GET only) - a read-only projection of persisted rows; no write path, no broker call
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 

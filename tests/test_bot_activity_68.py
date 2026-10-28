@@ -517,8 +517,8 @@ def test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry():
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     in_base = set(subprocess.run(["git", "ls-tree", "-r", "--name-only", base], cwd=ROOT, capture_output=True, text=True).stdout.split())
     new = {p for p in changed if p not in in_base}
-    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A),
-                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A
+    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C),
+                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C
     assert changed - new == set(FL.LEDGER), {"unregistered": sorted(changed - new - set(FL.LEDGER)), "unchanged_but_registered": sorted(set(FL.LEDGER) - (changed - new))}
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel                      # the ledger restores main exactly (and the hash pins today's file)

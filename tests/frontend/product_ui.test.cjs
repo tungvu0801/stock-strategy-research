@@ -384,7 +384,8 @@ test("19 read-only wiring: GET routes only, every action delegates to a legacy b
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
                    "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
                    "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",                     // Stage 6.1.2: the registry and the frozen controls (GET)
-                   "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio"];                                                      // Stage 6.8: Bot Activity and the account positions (GET)
+                   "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio",                                                       // Stage 6.8: Bot Activity and the account positions (GET)
+                   "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain"];                              // Stage 6.10C: Decision Flow and Decision history (GET)
   assert.ok(routes.length >= 10 && routes.every((r) => allowed.includes(r)), routes);
   for (const sel of ['#tv-safety [data-safety="stop"]', '#tv-safety [data-safety="pause"]', '#tv-safety [data-safety="resume"]', '#tv-safety [data-safety="clear"]', '#tv-bot [data-bot="enable"]', '#tv-bot [data-bot="disable"]']) assert.ok(JS.includes(sel), sel);
   assert.ok(!JS.includes("data-action") && !JS.includes("Prepare Buy") && !JS.includes("Prepare Sell") && !JS.includes("Add Alert"));   // no fake primary action

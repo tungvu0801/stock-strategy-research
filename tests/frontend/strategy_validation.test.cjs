@@ -115,7 +115,8 @@ test("8 escaping and the read-only wiring: no control, no form, no new route, no
   const routes = [...JS.matchAll(/["`](\/api\/[a-z0-9_\-\/]+)/g)].map((m) => m[1]);
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
                    "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/", "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",
-                   "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio"];                                     // Stage 6.8: Bot Activity and the account positions (GET)
+                   "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio",                                      // Stage 6.8: Bot Activity and the account positions (GET)
+                   "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain"];             // Stage 6.10C: Decision Flow and Decision history (GET)
   assert.ok(routes.every((r) => allowed.includes(r)), routes);                                                          // the Stage 6.1.2 GET set, unchanged: the detail read carries the validation
   assert.ok(!/regime|retry/i.test(JS) && !/\b(profitable|winning|guaranteed)\b/i.test(JS));
 });

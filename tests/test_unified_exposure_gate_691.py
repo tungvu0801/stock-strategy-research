@@ -640,7 +640,7 @@ def test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_b
     assert {p for p in stage691 if p.startswith("execution/")} == {"execution/exposure_gate.py", "execution/engine.py", "execution/service.py", "execution/activity.py"}
     changed = set(_git("diff", "--name-only", BASE_691).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_610A | FL.EDITED_610A                                                       # Stage 6.10A, pinned by tests/test_forward_paper_610a.py
+    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C                       # Stage 6.10A / 6.10C, each pinned by its own F tests
     assert changed == FL.NEW_691 | FL.EDITED_691 | later, {"unexpected": sorted(changed - FL.NEW_691 - FL.EDITED_691 - later),
                                                             "missing": sorted((FL.NEW_691 | FL.EDITED_691 | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",

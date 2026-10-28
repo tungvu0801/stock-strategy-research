@@ -54,6 +54,8 @@
       "about": "setups -> proposals -> safety gate -> autonomous paper execution (Stages 5.8, 5.9, 5.9.1, 6.0)",
       "files": [
         "test_bot_activity_68.py",
+        "test_decision_flow_610c.py",
+        "test_dynamic_universe_610c.py",
         "test_execution_60.py",
         "test_execution_safety_591.py",
         "test_forward_paper_610a.py",
