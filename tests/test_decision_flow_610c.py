@@ -641,7 +641,7 @@ def test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_stra
     assert edited == FL.EDITED_610C, {"unexpected": sorted(edited - FL.EDITED_610C), "missing": sorted(FL.EDITED_610C - edited)}
     changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_541 | FL.EDITED_541                                                         # Stage 5.4.1, pinned by its own F tests
+    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_610D | FL.EDITED_610D                         # Stage 5.4.1 / 6.10D, each pinned by its own F tests
     assert changed == FL.NEW_610C | FL.EDITED_610C | later, {"unexpected": sorted(changed - FL.NEW_610C - FL.EDITED_610C - later),
                                                               "missing": sorted((FL.NEW_610C | FL.EDITED_610C | later) - changed)}
     for d in STAGE_DIRS_NOT_TOUCHED:

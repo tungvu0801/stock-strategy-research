@@ -43,7 +43,8 @@ GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/inte
               "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
               "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",
               "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio",   # Stage 6.8: Bot Activity and the account positions (GET only)
-              "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain"}   # Stage 6.10C: Decision Flow and Decision history (GET only)
+              "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain",   # Stage 6.10C: Decision Flow and Decision history (GET only)
+              "/api/ops/engine", "/api/unified-portfolio/robinhood"}   # Stage 6.10D: the engine fold (GET only)
 LEGACY_TABS = ("overview", "daily", "watchlist", "agent", "alerts", "setups", "history", "portfolio", "review", "strategy", "paper", "trader", "settings")
 SECTIONS = ("overview", "hypothesis", "rules", "data_requirements", "entry_logic", "invalidation", "exit_logic", "holding_horizon", "backtest", "out_of_sample", "risk_notes", "paper_results", "decision_log")
 STALE = ("never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
