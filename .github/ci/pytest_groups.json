@@ -59,6 +59,7 @@
         "test_dynamic_universe_610c.py",
         "test_engine_health_610d.py",
         "test_evidence_gate_541.py",
+        "test_evidence_refresh_542.py",
         "test_execution_60.py",
         "test_execution_safety_591.py",
         "test_forward_paper_610a.py",

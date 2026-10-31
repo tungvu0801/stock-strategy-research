@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -53,6 +53,12 @@ process facts, the runner's PID file when it names this process) and one display
 that shows what the backend already reports - the Stage 6.10A start-up outcome, the preflight and its non-PASS checks, the supervisor, the worker
 heartbeat and the Stage 6.9 Robinhood gateway state (DESIGN_610D_ENGINE_HEALTH.md). SEMANTIC_610D and INSTRUMENTATION_610D are empty: no execution,
 strategy, risk, Paper Auto, startup, Trader View or Robinhood file changes, and tests/test_engine_health_610d.py (F tests) pins exactly that.
+
+Stage 5.4.2 (automatic evidence refresh; DESIGN_542_EVIDENCE_REFRESH.md) adds the evidence_refresh package, one GET route and a default-OFF
+refresh thread wired into the server lifespan, appends its settings to config.py, and gives the SEC companyfacts request alone a larger
+byte cap (evidence/sources/sec_edgar.py, now a ledger entry so the earlier freeze tests read it as on main). Its only intentional
+semantic change is that evidence content (SEMANTIC_542); no execution, READY-threshold, PPE-scoring, startup or Paper Auto change, no
+schema change. tests/test_evidence_refresh_542.py pins behaviour and scope (BASE_542 / NEW_542 / EDITED_542).
 """
 import hashlib
 import subprocess
@@ -139,15 +145,23 @@ EDITED_610D = {"tests/test_chart_empty_state_611fix.py", "tests/test_runtime_rel
                "tests/test_product_ui_611.py", "tests/test_product_flow_612.py"}            # Stage 6.10D: the files of main it edits (the route, the fold, its CI entry, the freeze bookkeeping, the GET allow-lists)
 SEMANTIC_610D: dict = {}                                                                  # Stage 6.10D: no execution semantic change
 INSTRUMENTATION_610D: dict = {}                                                           # Stage 6.10D: no executor instrumentation
+BASE_542 = "ccee3d31f3a291f178b667f46317d58ce3267bec"                                   # main: Stage 6.10D merged (PR #38)
+NEW_542 = {"DESIGN_542_EVIDENCE_REFRESH.md", "api/routes/evidence_refresh.py", "evidence_refresh/__init__.py", "evidence_refresh/journal.py", "evidence_refresh/policy.py", "evidence_refresh/scheduler.py", "evidence_refresh/service.py", "tests/test_evidence_refresh_542.py"}   # Stage 5.4.2 (evidence refresh): its new files
+EDITED_542 = {".github/ci/pytest_groups.json", "api/server.py", "config.py", "evidence/sources/sec_edgar.py", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_forward_paper_610a.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the wiring, the settings, the SEC cap, the CI entry and the freeze bookkeeping
+SEMANTIC_542 = {                                                                          # Stage 5.4.2: the INTENTIONAL evidence-content change, file by file
+    "evidence/sources/sec_edgar.py": "the SEC companyfacts request alone may be EVIDENCE_SEC_FACTS_MAX_BYTES (25 MB) instead of EVIDENCE_MAX_BYTES (2 MB): large caps regain their XBRL fundamentals rung, which can change a packet's strength and the company_down / guidance inputs the READY evidence check already reads; the READY rule and its thresholds are unchanged",
+}
+INSTRUMENTATION_542: dict = {}                                                            # Stage 5.4.2: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "0b792db319c19118148fe4d4374786deae389a2cf4cc6d15982a931f629479af",
+    ".github/ci/pytest_groups.json": "8cc7b36fe5c713758196f6d802692b28f58bb6638bd094ec1d46c458f139a21c",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
     "api/routes/ops_status.py": "5f80dc548368809b88e47a329f51dbadbb81e9dede47ff073e681924ae0b5ec2",
-    "api/server.py": "17bd28fe17c81cd4efe5aa8c95562bbf1afe63b79876f97d6b3a16e35d699b33",
+    "api/server.py": "8af3d1f26026023dc3bd704eaafb22533d191a49b1f233ab8edf395e71bc1ea8",
     "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
-    "config.py": "1dc47eba4d6813162ea726d71839dde44c4b788fb15dce6114e8f5ecd9acd00b",
+    "config.py": "6195f294cb940db0490d68c0099e97e476035ebc03482f32074be8a142b4038b",
+    "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
@@ -176,7 +190,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "c394d84dccbd6e8a6023e6599eccc6c41acc5fd2392e621e4aac6c095fda3f34",
+    "tests/test_strategy_validation_62.py": "b9db1935a5342301a5b50c57b79ab18d39668fb508ee6ba532a187cf58d80442",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",

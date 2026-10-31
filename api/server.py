@@ -94,7 +94,21 @@ async def _lifespan(_app):
         _autorun_start()
     except Exception as exc:  # noqa: BLE001 - the supervisor must never stop the server from starting
         logging.getLogger(__name__).warning("Auto-run supervisor could not start: %s", type(exc).__name__)
+    # >>> Evidence refresh, Stage 5.4.2: rebuilds stale Stage 5.4 packets outside the regular session (default OFF; never in tests; zero model calls)
+    try:
+        from evidence_refresh.scheduler import start_if_enabled as _evr_start
+        _evr_start()
+    except Exception as exc:  # noqa: BLE001 - the refresher must never stop the server from starting
+        logging.getLogger(__name__).warning("Evidence refresh could not start: %s", type(exc).__name__)
+    # <<< Evidence refresh, Stage 5.4.2
     yield
+    # >>> Evidence refresh, Stage 5.4.2: stop the refresher first (it touches no trading state)
+    try:
+        from evidence_refresh.scheduler import shutdown as _evr_shutdown
+        _evr_shutdown()
+    except Exception as exc:  # noqa: BLE001 - shutting down regardless
+        logging.getLogger(__name__).warning("Evidence refresh did not stop cleanly: %s", type(exc).__name__)
+    # <<< Evidence refresh, Stage 5.4.2
     try:                                                    # Stage 6.10A: stop the auto-run supervisor first (it can disarm Paper Auto)
         from autorun.scheduler import shutdown as _autorun_shutdown
         _autorun_shutdown()
@@ -193,6 +207,10 @@ app.include_router(forward_validation.router)  # Stage 6.1: forward paper valida
 app.include_router(strategy_registry.router)  # Stage 6.1.2: strategy registry + Strategy Standard v1 (GET only) - the setups -> proposals -> safety gate -> execution strategy described, never executed
 app.include_router(unified_portfolio.router)  # Stage 6.9: unified portfolio (GET only) - Robinhood is read only and never an execution broker
 app.include_router(decision_flow.router)  # Stage 6.10C: agent decision flow (GET only) - a read-only projection of persisted rows; no write path, no broker call
+# >>> Evidence refresh, Stage 5.4.2
+from api.routes import evidence_refresh as _evidence_refresh_routes  # noqa: E402 - evidence refresh status (GET only): mode, thread, plan; never builds
+app.include_router(_evidence_refresh_routes.router)
+# <<< Evidence refresh, Stage 5.4.2
 app.include_router(trader_view.router)  # Stage 5.5: Trader View — read-only terminal (GET + one WebSocket); simulated or read-only market data; no order path
 
 
