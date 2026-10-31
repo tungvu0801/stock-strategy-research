@@ -1373,13 +1373,13 @@ def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_
     assert {p for p in stage610a if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
     changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541                         # Stage 6.10C / 5.4.1, each pinned by its own F tests
+    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610A | FL.EDITED_610A | later, {"unexpected": sorted(changed - FL.NEW_610A - FL.EDITED_610A - later),
                                                               "missing": sorted((FL.NEW_610A | FL.EDITED_610A | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
               "cash_flow", "paper", "portfolio", "rh_gateway", "trader_view", "unified_portfolio", "forward", "ppe", "demand", "evidence"):
         assert not [p for p in stage610a if p.startswith(d + "/")], d                        # no strategy, risk, broker, market-data or Robinhood file
-        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 6.10C's / 5.4.1's declared files
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 6.10C's / 5.4.1's / the 6.1.1 CSS fix's declared files
     assert not changed & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",
                           "forward_validation/metrics.py", "README.md"}
     assert set(FL.SEMANTIC_610A) <= FL.NEW_610A | FL.EDITED_610A and all(len(v) > 40 for v in FL.SEMANTIC_610A.values())

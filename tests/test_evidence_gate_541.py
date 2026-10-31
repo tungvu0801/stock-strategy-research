@@ -146,6 +146,13 @@ def at_base(rel):
     return out.decode("utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #36 (Stage 5.4.1 merged): what Stage 5.4.1 left, whatever a later fix changed since."""
+    out = subprocess.run(["git", "show", f"{FL.BASE_611FIX}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {FL.BASE_611FIX} (fetch-depth 0 is required)"
+    return out.decode("utf-8").replace("\r\n", "\n")
+
+
 # every Stage 5.4.1 edit of a file no ledger entry can hold (an earlier stage's own test file): (text on main, text now), replayed by F03
 REPLAY_541 = {
     'tests/test_bot_activity_68.py': [
@@ -187,9 +194,12 @@ REPLAY_541 = {
 
 def test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution():
     assert FL.BASE_541 == "a7dc4456b407458c9751ea88398cee37f3084d2f" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_541}^{{commit}}"], cwd=ROOT).returncode == 0
+    stage541 = set(_git("diff", "--name-only", FL.BASE_541, FL.BASE_611FIX).split())        # Stage 5.4.1 itself, between two fixed commits (main before / after PR #36)
+    assert stage541 == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(stage541 - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - stage541)}
     changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - changed)}
+    later = FL.NEW_611FIX | FL.EDITED_611FIX                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
+    assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later), "missing": sorted((FL.NEW_541 | FL.EDITED_541 | later) - changed)}
     assert set(FL.SEMANTIC_541) == {"trader_view/research.py"}
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio"):
         for p in sorted((ROOT / d).glob("*.py")):
@@ -203,13 +213,13 @@ def test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_ev
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     import ast
     for rel, edits in REPLAY_541.items():
-        text = (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_541) == FL.EDITED_541 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = (ROOT / "tests/freeze_ledger.py").read_text(encoding="utf-8").replace("\r\n", "\n"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 5.4.1 (evidence gate"):fl.index('"""', fl.index("\nStage 5.4.1 (evidence gate"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_610C + NEW_541 plus this ledger.", " + NEW_610C plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_541 = "):rebuilt.index("LEDGER = {")]
@@ -218,8 +228,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph, one line and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == {"trader_view/research.py"}                       # one new key: the corrected reader
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_541 & set(old)          # every re-hash is a declared Stage 5.4.1 edit
+    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])                                   # the ledger Stage 5.4.1 left (main after PR #36)
+    assert set(mine) - set(old) == {"trader_view/research.py"}                            # one new key: the corrected reader
+    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_541 & set(old)               # every re-hash is a declared Stage 5.4.1 edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

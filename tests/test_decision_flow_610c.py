@@ -641,12 +641,12 @@ def test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_stra
     assert edited == FL.EDITED_610C, {"unexpected": sorted(edited - FL.EDITED_610C), "missing": sorted(FL.EDITED_610C - edited)}
     changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_541 | FL.EDITED_541                                                         # Stage 5.4.1, pinned by its own F tests
+    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610C | FL.EDITED_610C | later, {"unexpected": sorted(changed - FL.NEW_610C - FL.EDITED_610C - later),
                                                               "missing": sorted((FL.NEW_610C | FL.EDITED_610C | later) - changed)}
     for d in STAGE_DIRS_NOT_TOUCHED:
         assert not [p for p in stage610c if p.startswith(d + "/")], d                        # no execution, strategy, risk, broker, market-data or policy file
-        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 5.4.1's declared files
+        assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 5.4.1's / the 6.1.1 CSS fix's declared files
     assert not stage610c & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "README.md", "watchlist.txt", "DESIGN_610A_FORWARD_PAPER_AUTORUN.md"}
     assert FL.SEMANTIC_610C == {} and FL.INSTRUMENTATION_610C == {}                     # observability only: nothing changes what the executor does
     unregistrable = FL.EDITED_610C & (FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | {"tests/freeze_ledger.py"})
