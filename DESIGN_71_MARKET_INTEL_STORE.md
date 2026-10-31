@@ -173,6 +173,8 @@ The same method reproduces the frozen 2026 table. For history years, sessions ar
 - `BASE_71` is main `4e2f115`. `NEW_71` covers the new modules, tests and this note. `EDITED_71` covers:
   - `market_intel/calendar.py` (`SEMANTIC_71`), the package docstring, the `DESIGN_70` note and `.gitignore` (the store's files);
   - the CI manifest, plus test bookkeeping.
+- `.gitignore` is registered as a new ledger key, following the Stage 5.4.2 `sec_edgar.py` recipe, so the earlier freeze tests read it
+  as on `main`. Stage 7.1 F03 pins the three appended lines exactly.
 - The earlier F01 sets are widened by `NEW_71 | EDITED_71`.
 - The Stage 7.0 F tests read what 7.0 left at `BASE_71`.
 - Stage 7.0's behaviour tests use 2024 instead of 2025 as the uncovered history year, with the same fail-closed assertions. 2028 is
