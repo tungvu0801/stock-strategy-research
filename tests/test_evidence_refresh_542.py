@@ -852,6 +852,13 @@ def at_base(rel):
     return run.stdout.decode("utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """The Stage 7.0 base (PR #40's head, Stage 5.4.2 complete): what Stage 5.4.2 left, whatever a later stage changed since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_70}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_70} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
@@ -865,30 +872,34 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     assert FL.BASE_542 == "ccee3d31f3a291f178b667f46317d58ce3267bec" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_542}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_542).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_542 | FL.EDITED_542, {"unexpected": sorted(changed - FL.NEW_542 - FL.EDITED_542), "missing": sorted(FL.NEW_542 | FL.EDITED_542 - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_542, FL.BASE_70).split())               # Stage 5.4.2 itself, between two fixed commits
+    assert stage == FL.NEW_542 | FL.EDITED_542, {"unexpected": sorted(stage - FL.NEW_542 - FL.EDITED_542), "missing": sorted((FL.NEW_542 | FL.EDITED_542) - stage)}
+    later = FL.NEW_70 | FL.EDITED_70                                                         # Stage 7.0, pinned by its own F tests
+    assert changed == FL.NEW_542 | FL.EDITED_542 | later, {"unexpected": sorted(changed - FL.NEW_542 - FL.EDITED_542 - later),
+                                                           "missing": sorted((FL.NEW_542 | FL.EDITED_542 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_542).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_542 and {p for p in changed if p in in_base} == FL.EDITED_542
+    assert {p for p in stage if p not in in_base} == FL.NEW_542 and {p for p in stage if p in in_base} == FL.EDITED_542
     assert set(FL.SEMANTIC_542) == {"evidence/sources/sec_edgar.py"} and FL.INSTRUMENTATION_542 == {}
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio", "trader_view",
               "scripts", "forward_validation", "account_refresh", "rh_gateway", "frontend", "browser_tests"):
         for p in sorted((ROOT / d).rglob("*")):
             rel = p.relative_to(ROOT).as_posix()
             if p.is_file() and rel in in_base and "__pycache__" not in rel and rel != "evidence/sources/sec_edgar.py":
-                assert now_text(rel) == at_base(rel), rel                               # no trading, safety, startup, UI or harness file changed
-    cfg_base, cfg_now = at_base("config.py"), now_text("config.py")
+                assert post(rel) == at_base(rel), rel                                   # no trading, safety, startup, UI or harness file changed
+    cfg_base, cfg_now = at_base("config.py"), post("config.py")
     assert cfg_now.startswith(cfg_base) and cfg_now.count("# >>> Evidence refresh, Stage 5.4.2") == 1
     assert [l.split(":")[0] for l in cfg_now[len(cfg_base):].splitlines() if l and not l.startswith("#")] == CONFIG_542   # only the new settings, appended
-    srv = now_text("api/server.py")
+    srv = post("api/server.py")
     assert srv.count("# >>> Evidence refresh, Stage 5.4.2") == 3 and _strip_blocks(srv) == at_base("api/server.py")   # three marked blocks, nothing else
     sec = at_base("evidence/sources/sec_edgar.py")
     for old, new in SEC_EDITS_542:
         assert sec.count(old) == 1, old[:60]
         sec = sec.replace(old, new)
-    assert sec == now_text("evidence/sources/sec_edgar.py")                               # the SEC cap: three exact edits
+    assert sec == post("evidence/sources/sec_edgar.py")                               # the SEC cap: three exact edits
     for rel in sorted(FL.NEW_542 | FL.EDITED_542):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel             # no marker another freeze test scans for
+            assert m61 not in post(rel) and m54 not in post(rel), rel                     # no marker another freeze test scans for
 
 
 def test_F02_ready_thresholds_ppe_scoring_and_the_frozen_hashes_are_unchanged():
@@ -910,13 +921,13 @@ def test_F02_ready_thresholds_ppe_scoring_and_the_frozen_hashes_are_unchanged():
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     import ast
     for rel, edits in REPLAY_542.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_542) == FL.EDITED_542 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 5.4.2 (automatic evidence refresh"):fl.index('"""', fl.index("\nStage 5.4.2 (automatic evidence refresh"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_OPS + NEW_610D + NEW_542 plus this ledger.", " + NEW_OPS + NEW_610D plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_542 = "):rebuilt.index("\n", rebuilt.index("INSTRUMENTATION_542: dict = {}")) + 1]
@@ -925,8 +936,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph, one line and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == {"evidence/sources/sec_edgar.py"}                 # one new key: the SEC adapter (read as on main by the earlier freeze tests)
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_542 & set(old)         # every re-hash is a declared Stage 5.4.2 edit
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 5.4.2 left
+    assert set(new_led) - set(old) == {"evidence/sources/sec_edgar.py"}                   # one new key: the SEC adapter (read as on main by the earlier freeze tests)
+    assert {k for k in old if old[k] != new_led[k]} == FL.EDITED_542 & set(old)           # every re-hash is a declared Stage 5.4.2 edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

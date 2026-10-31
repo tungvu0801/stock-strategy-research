@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -59,6 +59,12 @@ refresh thread wired into the server lifespan, appends its settings to config.py
 byte cap (evidence/sources/sec_edgar.py, now a ledger entry so the earlier freeze tests read it as on main). Its only intentional
 semantic change is that evidence content (SEMANTIC_542); no execution, READY-threshold, PPE-scoring, startup or Paper Auto change, no
 schema change. tests/test_evidence_refresh_542.py pins behaviour and scope (BASE_542 / NEW_542 / EDITED_542).
+
+Stage 7.0 (market intelligence contracts; DESIGN_70_MARKET_INTEL_CONTRACTS.md) adds the pure market_intel package (the observation
+envelope, settings, freshness policy, validation codes, session calendar and request budgets) and its tests, stacked on Stage 5.4.2
+(BASE_70 is PR #40's head). No config, server, route, thread, network, database, execution, setup, proposal, safety or UI change and
+nothing in the live path imports it (SEMANTIC_70 = {}). tests/test_market_intel_70.py pins behaviour and scope (BASE_70 / NEW_70 /
+EDITED_70).
 """
 import hashlib
 import subprocess
@@ -152,8 +158,13 @@ SEMANTIC_542 = {                                                                
     "evidence/sources/sec_edgar.py": "the SEC companyfacts request alone may be EVIDENCE_SEC_FACTS_MAX_BYTES (25 MB) instead of EVIDENCE_MAX_BYTES (2 MB): large caps regain their XBRL fundamentals rung, which can change a packet's strength and the company_down / guidance inputs the READY evidence check already reads; the READY rule and its thresholds are unchanged",
 }
 INSTRUMENTATION_542: dict = {}                                                            # Stage 5.4.2: no executor instrumentation
+BASE_70 = "836c736e014db5f9f51de6cbfcadd36b93c4a779"                                    # PR #40 head: Stage 5.4.2 complete (Stage 7.0 is stacked on it)
+NEW_70 = {"DESIGN_70_MARKET_INTEL_CONTRACTS.md", "market_intel/__init__.py", "market_intel/budget.py", "market_intel/calendar.py", "market_intel/freshness.py", "market_intel/models.py", "market_intel/settings.py", "market_intel/validate.py", "tests/test_market_intel_70.py"}   # Stage 7.0 (market intelligence contracts): its new files
+EDITED_70 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry and the freeze bookkeeping only
+SEMANTIC_70: dict = {}                                                                    # Stage 7.0: pure contracts, nothing in the live path reads them
+INSTRUMENTATION_70: dict = {}                                                             # Stage 7.0: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "8cc7b36fe5c713758196f6d802692b28f58bb6638bd094ec1d46c458f139a21c",
+    ".github/ci/pytest_groups.json": "102bda07fc3c46f0b66f92e0f05e9da725e3a1c6214b8f2986216a57a43deddc",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
@@ -190,7 +201,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "b9db1935a5342301a5b50c57b79ab18d39668fb508ee6ba532a187cf58d80442",
+    "tests/test_strategy_validation_62.py": "0566df4f337d3b738fa8b334b2f4198598f10d1cb6f532d0310671ac7eeee433",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
