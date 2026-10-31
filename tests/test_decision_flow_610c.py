@@ -641,7 +641,7 @@ def test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_stra
     assert edited == FL.EDITED_610C, {"unexpected": sorted(edited - FL.EDITED_610C), "missing": sorted(FL.EDITED_610C - edited)}
     changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
+    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610C | FL.EDITED_610C | later, {"unexpected": sorted(changed - FL.NEW_610C - FL.EDITED_610C - later),
                                                               "missing": sorted((FL.NEW_610C | FL.EDITED_610C | later) - changed)}
     for d in STAGE_DIRS_NOT_TOUCHED:
@@ -663,12 +663,12 @@ def test_F02_execution_setups_auto_run_and_the_live_coverage_are_byte_identical_
         assert now_text(rel) == at_base(rel), rel                                       # live ticker coverage: watchlist.txt as before
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO")
-    cfg_base, cfg_now = at_base("config.py"), now_text("config.py")
+    cfg_base, cfg_now = at_base("config.py"), post("config.py")
     assert cfg_now.startswith(cfg_base.rstrip("\n"))
     assert [l.split(":")[0] for l in cfg_now[len(cfg_base):].splitlines() if l and not l.startswith("#")] == CONFIG_610C
-    srv_base, srv_now = at_base("api/server.py").splitlines(), now_text("api/server.py").splitlines()
+    srv_base, srv_now = at_base("api/server.py").splitlines(), post("api/server.py").splitlines()
     assert [l for l in srv_base if l not in srv_now] == [] and [l for l in srv_now if l not in srv_base] == SERVER_LINES_610C
-    life = now_text("api/server.py")
+    life = post("api/server.py")
     life = life[life.index("async def _lifespan"):life.index("app = FastAPI(")]
     assert "decision_flow" not in life and "dynamic_universe" not in life                  # nothing new starts with the app: no thread, no loop
 
@@ -738,5 +738,5 @@ def test_S01_robinhood_stays_read_only_and_the_decision_flow_adds_no_write_route
         if "robinhood" in p or p.startswith("/api/unified-portfolio") or p.startswith("/api/decision-flow"):
             assert set(ops) == {"get"}, (p, set(ops))
     before = {p for p in at_base("api/server.py").splitlines() if "include_router" in p}
-    after = {p for p in now_text("api/server.py").splitlines() if "include_router" in p}
+    after = {p for p in post("api/server.py").splitlines() if "include_router" in p}
     assert len(after - before) == 1 and "decision_flow.router" in next(iter(after - before)) and before <= after

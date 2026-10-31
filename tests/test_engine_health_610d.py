@@ -134,6 +134,13 @@ def at_base(rel):
     return out.decode("utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #38 (Stage 6.10D merged): what Stage 6.10D left, whatever a later stage changed since."""
+    out = subprocess.run(["git", "show", f"{FL.BASE_542}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {FL.BASE_542} (fetch-depth 0 is required)"
+    return out.decode("utf-8").replace("\r\n", "\n")
+
+
 # every Stage 6.10D edit of a file no ledger entry can hold (an earlier stage's own test file): (text on main, text now), replayed by F03
 REPLAY_610D = {'tests/test_bot_activity_68.py': [('    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | '
                                     'FL.NEW_OPS, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C - '
@@ -220,14 +227,18 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_executi
     assert FL.BASE_610D == "c9e4f4522b29b5f0acb30e24b431ffda598fe2a0" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_610D}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_610D).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_610D | FL.EDITED_610D, {"unexpected": sorted(changed - FL.NEW_610D - FL.EDITED_610D), "missing": sorted(FL.NEW_610D | FL.EDITED_610D - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_610D, FL.BASE_542).split())             # Stage 6.10D itself, between two fixed commits (main before / after PR #38)
+    assert stage == FL.NEW_610D | FL.EDITED_610D, {"unexpected": sorted(stage - FL.NEW_610D - FL.EDITED_610D), "missing": sorted(FL.NEW_610D | FL.EDITED_610D - stage)}
+    later = FL.NEW_542 | FL.EDITED_542                                                      # Stage 5.4.2, pinned by its own F tests
+    assert changed == FL.NEW_610D | FL.EDITED_610D | later, {"unexpected": sorted(changed - FL.NEW_610D - FL.EDITED_610D - later),
+                                                             "missing": sorted((FL.NEW_610D | FL.EDITED_610D | later) - changed)}
     assert FL.SEMANTIC_610D == {} and FL.INSTRUMENTATION_610D == {}                                      # observability only
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio", "trader_view", "scripts", "forward_validation"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
             assert p.read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
     for rel in ("api/server.py", "config.py", "frontend/index.html", "frontend/product_ui.css", "frontend/trader_view.js", "browser_tests/flows.py", "README.md"):
-        assert (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
+        assert post(rel) == at_base(rel), rel                                               # what Stage 6.10D left (later edits: their own F tests)
     src = (ROOT / "api/routes/ops_status.py").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert src.startswith(at_base("api/routes/ops_status.py").rstrip("\n")) and src.count("# >>> Engine health visibility, Stage 6.10D") == 1    # additive: the old module text is a prefix
     assert ("# >>> " + "Stage 6.1") not in src                                                            # never a Stage 6.1 marker carrier (tests/test_forward_validation_61.py::test_Z02 scans every file)
@@ -256,13 +267,13 @@ def test_F02_ready_thresholds_ppe_scoring_and_the_frozen_hashes_are_unchanged():
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_610D.items():
-        text = (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_610D) == FL.EDITED_610D - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = (ROOT / "tests/freeze_ledger.py").read_text(encoding="utf-8").replace("\r\n", "\n"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 6.10D (engine health"):fl.index('"""', fl.index("\nStage 6.10D (engine health"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D plus this ledger.", " + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_610D = "):rebuilt.index("LEDGER = {")]
@@ -271,7 +282,8 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph, one line and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == {"api/routes/ops_status.py"}                       # one new key: the extended ops router
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_610D & set(old)         # every re-hash is a declared Stage 6.10D edit
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 6.10D left
+    assert set(new_led) - set(old) == {"api/routes/ops_status.py"}                         # one new key: the extended ops router
+    assert {k for k in old if old[k] != new_led[k]} == FL.EDITED_610D & set(old)           # every re-hash is a declared Stage 6.10D edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
