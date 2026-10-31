@@ -2,15 +2,18 @@
 Stage 7.0 - market intelligence CONTRACTS (DESIGN_70_MARKET_INTEL_CONTRACTS.md). Pure modules: no network, thread, file, database,
 route or config change.
 
-  M01-M02 the observation envelope and the fetch record: UTC times, available_at >= retrieved_at, backfill honesty, symbols, a missing
-          value is never a zero, status / freshness agreement, closed quality codes, no instruction field anywhere in the schema.
+  M01-M03 the observation envelope and the fetch record: UTC times, available_at >= retrieved_at, backfill honesty, symbols, a missing
+          value is never a zero, status / freshness agreement, closed quality codes, no instruction field anywhere in the schema, no
+          instruction key at any depth of the payload, a read-only payload.
   T01     settings: OFF by default (config declares nothing yet), SHADOW accepted, ACTIVE / junk read as OFF and are reported, budgets
           clamped to their ranges (the Alpaca live budget can never exceed 20 % of the Basic plan).
-  Q01-Q03 the pre-registered freshness policy: every state of every kind at its exact boundaries, windows, fail-closed scopes, NO_PRINTS,
-          the date-based kinds (daily bar, earnings calendar, macro, fundamentals), numbers pinned and equal to their source constants.
-  V01-V04 validation codes on fixtures (bars, series, quotes, feeds, news, events); every code is declared and accepted by the envelope.
-  K01-K02 the calendar: the Stage 6.10A classifier is the one source of truth; holidays, early closes, PRE / REG / POST, DST change days,
-          an uncovered year; the holiday rules reproduce the static 2026-2027 table.
+  Q01-Q04 the pre-registered freshness policy: every state of every kind at its exact boundaries, windows, fail-closed scopes, NO_PRINTS,
+          the date-based kinds (daily bar, earnings calendar, macro, fundamentals), numbers pinned and equal to their source constants,
+          `usable`, and a scheduled macro release that has not been observed is never usable (boundaries).
+  V01-V05 validation codes on fixtures (bars, series, quotes, feeds, news, events); every code is declared and accepted by the envelope;
+          uncovered 2025 / 2028 dates and bars on known holidays are flagged and blocked, never treated as verified sessions.
+  K01-K03 the calendar: the Stage 6.10A classifier is the one source of truth; holidays, early closes, PRE / REG / POST, DST change days,
+          an uncovered year; the holiday rules reproduce the static 2026-2027 table; uncovered weekdays are NOT_COVERED, never guessed.
   B01-B02 request budgets on an injected clock: token bucket, daily cap at New York midnight, back-off, ACCESS_DENIED per cycle, plan
           pressure, the defaults.
   I01     isolation: the package imports only pure modules, opens no file / socket / thread, and nothing outside it imports it.
@@ -95,6 +98,33 @@ def test_M02_no_field_anywhere_in_the_schema_names_an_instruction_and_fetch_reco
             FetchRecord(**{**ok.model_dump(), **over})
 
 
+def test_M03_instruction_keys_are_refused_at_any_depth_and_the_stored_payload_is_read_only():
+    nested = [{"meta": {"order_qty": 5}}, {"legs": [{"side": "BUY"}]}, {"a": {"b": {"c": {"stopPrice": 1.0}}}}, {"x": [[{"limit_price": 2}]]},
+              {"m": {"take_profit": 1}}, {"m": {"buySide": True}}, {"bars": [{"close": float("nan")}]}, {"m": {1: "not a string key"}},
+              {"t": REG_T}, {"s": {1, 2}}]
+    for payload in nested:
+        with pytest.raises(ValidationError):
+            obs(payload=payload)
+    deep = {"a": {"b": {"c": {"d": {"e": {"f": 1}}}}}}                                              # depth 6: accepted
+    assert obs(payload=deep).payload["a"]["b"]["c"]["d"]["e"]["f"] == 1
+    with pytest.raises(ValidationError):
+        obs(payload={"a": deep})                                                                    # depth 7: refused
+    o = obs(payload={"bars": [{"open": 1.0, "volume": 0, "inside_bar": True}], "source": {"name": "IEX", "bid_size": 3}})
+    for mutate in (lambda: o.payload.__setitem__("order_qty", 5), lambda: o.payload["source"].update(side="SELL"),
+                   lambda: o.payload.pop("bars"), lambda: o.payload["source"].setdefault("qty", 1), lambda: o.payload.clear()):
+        with pytest.raises(TypeError):
+            mutate()
+    with pytest.raises((TypeError, AttributeError)):
+        o.payload["bars"].append({"order": 1})                                                     # lists are stored as tuples
+    original = {"close": 1.0}
+    o2 = obs(payload={"bar": original})
+    original["order"] = 1                                                                           # the caller's dict is not the stored one
+    assert "order" not in o2.payload["bar"]
+    assert o.model_dump(mode="json")["payload"] == {"bars": [{"open": 1.0, "volume": 0, "inside_bar": True}], "source": {"name": "IEX", "bid_size": 3}}
+    assert Observation.model_validate_json(o.model_dump_json()).payload == o.payload                 # round trip, re-validated
+    assert o.model_copy(deep=True).payload == o.payload
+
+
 # ============================================================================================================ settings (T)
 def test_T01_off_by_default_shadow_only_and_budgets_clamped():
     s = ST.settings()
@@ -145,7 +175,7 @@ def test_Q01_every_age_based_kind_has_every_state_at_its_exact_boundaries():
 
 def test_Q02_the_numbers_are_pre_registered_and_equal_their_source_constants():
     assert {k: (p.fresh_s, p.aging_s, p.window, p.fail_closed_scope) for k, p in FR.POLICIES.items()} == PINNED
-    assert FR.POLICY_VERSION == "mi_freshness_v1" and FR.CLOCK_SKEW_S == 2.0 == VA.CLOCK_SKEW_S
+    assert FR.POLICY_VERSION == "mi_freshness_v2" and FR.CLOCK_SKEW_S == 2.0 == VA.CLOCK_SKEW_S and FR.MACRO_PENDING_ESCALATION_S == 86400.0
     import mean_reversion
     import setups
     import value_quality
@@ -191,6 +221,28 @@ def test_Q03_the_date_based_kinds_daily_bar_earnings_macro_fundamentals():
     assert f(date(2026, 12, 31), mon_am)["reason"] == "FUTURE_TIMESTAMP"
 
 
+def test_Q04_an_unobserved_scheduled_macro_release_is_never_usable_and_every_assessment_says_usable_explicitly():
+    rel = ny(2026, 11, 13, 8, 30)
+    m = FR.assess_macro
+    ok = m(rel, rel, rel)
+    assert (ok["status"], ok["freshness"], ok["usable"]) == ("AVAILABLE", "FRESH", True)                 # observed at the release time exactly
+    assert m(rel, rel + timedelta(seconds=1), rel + timedelta(seconds=2))["usable"] is True              # a later vintage of the release
+    for now, prev in ((rel, rel - timedelta(days=30)), (rel, None), (rel + timedelta(seconds=1), rel - timedelta(seconds=1)),
+                      (rel + timedelta(days=1), rel - timedelta(days=30))):
+        pend = m(rel, prev, now)
+        assert (pend["status"], pend["reason"], pend["usable"], pend["freshness"]) == ("UNAVAILABLE", "RELEASE_PENDING", False, None), now
+        assert pend["action"] == FR.MACRO_ACTION
+    miss = m(rel, rel - timedelta(days=30), rel + timedelta(days=1, seconds=1))
+    assert (miss["status"], miss["reason"], miss["usable"], miss["age_s"]) == ("STALE", "RELEASE_MISSING", False, 86401.0)
+    assert m(rel + timedelta(seconds=2), None, rel)["reason"] == "RELEASE_PENDING"                        # within the 2 s skew: due
+    assert m(rel + timedelta(seconds=3), None, rel)["reason"] == "FUTURE_TIMESTAMP" and m(None, rel, rel)["usable"] is False
+    assert not [r for r in (m(rel, x, rel + timedelta(hours=h)) for x in (None, rel - timedelta(days=1)) for h in (0, 1, 23, 24, 25))
+                if r["usable"]]                                                                          # no usable AGING state for MACRO
+    samples = [FR.assess(k, REG_T - timedelta(seconds=a), REG_T) for k in FR.POLICIES for a in (0, 10, 100, 10_000)]
+    samples += [FR.assess_daily_bar(date(2026, 10, 30), ny(2026, 11, 2, 10, 0)), FR.assess_fundamentals(date(2026, 1, 1), REG_T), ok, miss]
+    assert all(set(x) >= {"status", "usable"} and x["usable"] == (x["status"] == "AVAILABLE") for x in samples)
+
+
 # ============================================================================================================ validation (V)
 def test_V01_bar_and_series_codes():
     good = {"open": 10, "high": 11, "low": 9.5, "close": 10.5, "volume": 0}
@@ -212,7 +264,8 @@ def test_V01_bar_and_series_codes():
     assert d["codes"] == ["DAY_JUMP", "SESSION_HOLE"] and d["holes"] == [{"after": "2026-11-04", "before": "2026-11-09", "market_days": 2}]
     assert d["jumps"] == ["2026-11-10"] and d["blocked"] is True                                   # a hole blocks; a jump is only classified later
     hol = [date(2026, 11, 25), date(2026, 11, 27), date(2026, 11, 30)]                             # over Thanksgiving: no hole
-    assert VA.daily_series_codes([{**good, "day": x} for x in hol]) == {"codes": [], "holes": [], "jumps": [], "blocked": False}
+    assert VA.daily_series_codes([{**good, "day": x} for x in hol]) == {"codes": [], "holes": [], "jumps": [], "non_session": [], "uncovered": [],
+                                                                        "blocked": False}
 
 
 def test_V02_quote_feed_and_clock_codes():
@@ -243,10 +296,41 @@ def test_V04_every_code_is_declared_blocking_codes_are_a_subset_and_the_envelope
     produced = {"HIGH_BELOW_BODY", "LOW_ABOVE_BODY", "NEGATIVE_VOLUME", "NON_FINITE", "NON_POSITIVE_PRICE", "DUPLICATE_TS", "GAP_MINUTES",
                 "NOT_INCREASING", "OUTSIDE_SESSION", "DAY_JUMP", "SESSION_HOLE", "CROSSED", "LOCKED", "WIDE_SPREAD", "NON_POSITIVE_QUOTE",
                 "STALE_PRINT", "FEED_DIVERGENCE", "CLOCK_SKEW", "FUTURE_OBSERVED", "BACKFILLED", "DENY_HOST_LINK", "EMPTY_HEADLINE",
-                "MISSING_PUBLISHED", "FUTURE_DATED", "UNCONFIRMED_PAST", "HALTED_OPEN"}
+                "MISSING_PUBLISHED", "FUTURE_DATED", "UNCONFIRMED_PAST", "HALTED_OPEN", "NON_SESSION_DAY", "CALENDAR_NOT_COVERED"}
     assert produced == set(VA.QUALITY_CODES) and VA.BLOCKING_CODES <= VA.QUALITY_CODES
     assert obs(quality_flags=tuple(sorted(VA.QUALITY_CODES))).quality_flags
     assert VA.blocking(["DAY_JUMP", "WIDE_SPREAD"]) is False and VA.blocking(["CROSSED"]) is True
+
+
+def test_V05_uncovered_2025_and_2028_dates_and_bars_on_known_holidays_are_flagged_and_blocked():
+    good = {"open": 10, "high": 11, "low": 9.5, "close": 10.5, "volume": 1}
+    series = lambda days: VA.daily_series_codes([{**good, "day": d} for d in days])                     # noqa: E731
+    y25 = series([date(2025, 6, 30), date(2025, 7, 1), date(2025, 7, 2), date(2025, 7, 3), date(2025, 7, 7)])   # over 2025-07-04
+    assert y25["codes"] == ["CALENDAR_NOT_COVERED"] and y25["blocked"] is True and y25["holes"] == []          # never "verified complete"
+    assert "2025-07-03..2025-07-07" in y25["uncovered"] and "2025-06-30" in y25["uncovered"]
+    edge = series([date(2025, 12, 30), date(2025, 12, 31), date(2026, 1, 2)])                                # into the covered table
+    assert edge["codes"] == ["CALENDAR_NOT_COVERED"] and edge["blocked"] is True
+    assert series([date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6)])["blocked"] is False                  # covered: verified clean
+    y28 = series([date(2027, 12, 30), date(2027, 12, 31), date(2028, 1, 3)])
+    assert y28["codes"] == ["CALENDAR_NOT_COVERED"] and y28["uncovered"] == ["2028-01-03"] and y28["blocked"] is True
+    hol = series([date(2026, 11, 25), date(2026, 11, 26), date(2026, 11, 27), date(2026, 11, 28)])           # Thanksgiving, a Saturday
+    assert hol["codes"] == ["NON_SESSION_DAY"] and hol["non_session"] == ["2026-11-26", "2026-11-28"] and hol["blocked"] is True
+    assert series([date(2026, 4, 2), date(2026, 4, 6)])["codes"] == []                                       # Good Friday + weekend: no gap
+    assert series([date(2027, 6, 17), date(2027, 6, 21)])["codes"] == []                                     # Juneteenth observed 2027-06-18
+    two = series([date(2026, 11, 23), date(2026, 11, 27)])                                                   # 24th and 25th missing; 26th a holiday
+    assert two["holes"] == [{"after": "2026-11-23", "before": "2026-11-27", "market_days": 2}] and two["blocked"] is True
+    assert series([date(2026, 11, 24), date(2026, 11, 27)])["codes"] == []                                   # one missing day: below the threshold
+    for t in (ny(2025, 7, 3, 10, 0), ny(2028, 3, 1, 10, 0)):                                                  # the 6.10A classifier would say REG
+        m = VA.minute_series_codes([{**good, "ts": t}], regular_only=False)
+        assert m["codes"] == ["CALENDAR_NOT_COVERED"] and VA.blocking(m["codes"]), t
+    early = VA.minute_series_codes([{**good, "ts": ny(2026, 11, 27, 13, 30)}])                               # after the 13:00 early close
+    assert early["codes"] == ["OUTSIDE_SESSION"]
+    q = FR.assess("QUOTE_DAY", ny(2028, 3, 1, 10, 0), ny(2028, 3, 1, 10, 0))
+    assert (q["status"], q["reason"], q["usable"]) == ("UNAVAILABLE", "CALENDAR_NOT_COVERED", False)
+    assert FR.assess("NEWS_POLL", None, ny(2025, 7, 3, 7, 0))["reason"] == "CALENDAR_NOT_COVERED"
+    assert FR.assess("QUOTE_DAY", ny(2028, 3, 4, 10, 0), ny(2028, 3, 4, 10, 0))["status"] == "NOT_APPLICABLE"   # a 2028 Saturday is still a weekend
+    assert FR.assess_daily_bar(date(2025, 7, 3), ny(2025, 7, 7, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"
+    assert FR.assess_daily_bar(date(2025, 12, 31), ny(2026, 1, 2, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"   # the expected session is in 2025
 
 
 # ============================================================================================================ calendar (K)
@@ -279,6 +363,25 @@ def test_K02_the_holiday_rules_reproduce_the_static_2026_2027_table():
     for y in AC.COVERED_YEARS:
         assert CAL.rule_holidays(y) == {d for d in AC.HOLIDAYS if d.year == y}, y
     assert date(2027, 12, 31) not in CAL.rule_holidays(2027) and date(2028, 1, 1) not in CAL.rule_holidays(2028)   # a Saturday New Year is not moved
+
+
+def test_K03_uncovered_weekdays_are_not_covered_never_guessed_and_known_holidays_are_holidays():
+    st = CAL.market_day_status
+    assert [st(d) for d in (date(2025, 7, 4), date(2025, 1, 9), date(2028, 1, 3), date(2025, 7, 5), date(2028, 1, 1))] == [
+        "NOT_COVERED", "NOT_COVERED", "NOT_COVERED", "WEEKEND", "WEEKEND"]                       # 2025-01-09 (a closure no rule derives) stays unknown
+    assert [st(d) for d in (date(2026, 11, 26), date(2026, 4, 3), date(2027, 6, 18), date(2026, 7, 3), date(2027, 12, 24))] == ["HOLIDAY"] * 5
+    assert st(date(2026, 11, 27)) == "MARKET_DAY" and st(date(2026, 11, 2)) == "MARKET_DAY" and st(None) == "NOT_COVERED"
+    with pytest.raises(CAL.CalendarNotCovered):
+        CAL.is_market_day(date(2025, 7, 3))
+    with pytest.raises(CAL.CalendarNotCovered):
+        CAL.is_market_day(date(2028, 1, 3))
+    assert CAL.is_market_day(date(2028, 1, 1)) is False and CAL.is_market_day(date(2026, 11, 26)) is False
+    assert CAL.previous_market_day(date(2026, 1, 2)) is None                                       # 2026-01-01 holiday, then 2025: unknown
+    assert CAL.next_market_day(date(2027, 12, 31)) is None and CAL.next_market_day(date(2027, 12, 23)) == date(2027, 12, 27)
+    assert CAL.regular_minutes(date(2025, 7, 3)) is None and CAL.regular_minutes(date(2025, 7, 5)) == 0
+    assert CAL.last_completed_session(ny(2026, 1, 2, 10, 0)) is None and CAL.last_completed_session(ny(2028, 3, 1, 19, 0)) is None
+    s25 = CAL.session(ny(2025, 7, 3, 10, 0))
+    assert (s25["session"], s25["day_status"], s25["market_day"], s25["covered"]) == ("REG", "NOT_COVERED", None, False)   # never claimed
 
 
 # ============================================================================================================ budgets (B)
@@ -349,7 +452,7 @@ def test_B02_provider_budgets_daily_cap_back_off_cycle_block_and_plan_pressure()
 
 
 # ============================================================================================================ isolation (I)
-ALLOWED_IMPORTS = {"__future__", "math", "re", "datetime", "typing", "dataclasses", "collections", "urllib.parse", "pydantic", "market_intel",
+ALLOWED_IMPORTS = {"__future__", "math", "re", "datetime", "typing", "dataclasses", "collections", "collections.abc", "urllib.parse", "pydantic", "market_intel",
                    "market_intel.calendar", "market_intel.settings", "market_intel.validate", "autorun", "autorun.calendar", "autorun.session",
                    "api.validation", "config", "zoneinfo"}
 
@@ -403,7 +506,7 @@ def now_text(rel):
 
 
 def test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited():
-    assert FL.BASE_70 == "836c736e014db5f9f51de6cbfcadd36b93c4a779" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_70}^{{commit}}"], cwd=ROOT).returncode == 0
+    assert FL.BASE_70 == "13c1635ca77bcd028d3e0aa9bf821376e4860905" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_70}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_70).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     assert changed == FL.NEW_70 | FL.EDITED_70, {"unexpected": sorted(changed - FL.NEW_70 - FL.EDITED_70), "missing": sorted((FL.NEW_70 | FL.EDITED_70) - changed)}

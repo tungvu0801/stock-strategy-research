@@ -27,8 +27,11 @@ It fixes the vocabulary and the policies before any data exists, so later stages
 * An `UNAVAILABLE` or `INSUFFICIENT_DATA` observation carries no payload. A missing value is never a zero.
 * A `STALE` status has `STALE` freshness, and a `STALE` value is never `AVAILABLE`.
 * Quality flags are the closed set `validate.QUALITY_CODES`.
-* No field or payload key names an order, quantity, side, signal, target or price instruction. Words are matched as whole
-  snake_case or camelCase tokens.
+* No field or payload key names an order, quantity, side, signal, target or price instruction, **at any depth**: keys inside nested
+  objects and lists are checked too. Words are matched as whole snake_case or camelCase tokens.
+* Payload values are JSON-like only: strings, integers, finite floats, booleans, null, objects and lists, at most 6 levels deep.
+* The stored payload is read-only. Objects become `ReadOnlyDict` and lists become tuples, so `o.payload["order_qty"] = 5` raises after
+  validation. A frozen model alone would not prevent it. The caller's own dict is copied, not kept.
 
 ## 3. Freshness policy (pinned by `test_Q02`)
 
@@ -43,22 +46,36 @@ It fixes the vocabulary and the policies before any data exists, so later stages
 | `SEC_POLL` | ≤ 15 min | ≤ 30 min | weekdays 06:00–22:00 ET | filing flag `UNAVAILABLE` |
 | `EARNINGS_CALENDAR` | refreshed today (NY date) | ≤ 36 h | always | swing candidates without a known date blocked |
 | `BAR_1DAY` | the last completed session is present | — | from 18:00 ET on a market day | no swing signal for that symbol |
-| `MACRO` | the latest scheduled release observed | ≤ release + 1 day | — | regime `UNKNOWN`, the pre-registered default |
+| `MACRO` | the latest scheduled release observed | none: no usable aging state | — | regime `UNKNOWN`, the pre-registered default |
 | `FUNDAMENTALS` | quarter end ≤ 200 days (= `value_quality.MAX_FUNDAMENTAL_AGE_DAYS`) | — | — | fundamental filter `INSUFFICIENT_DATA` |
+
+Every assessment carries `usable`, which is True only when the status is `AVAILABLE`. A consumer that needs the value requires
+`usable`. An aging freshness, a reported age or a previous vintage never makes a value usable.
+
+**MACRO** is stricter than the C.5 draft (second review). From the scheduled release time until that release is observed, the series has
+no current value:
+* the status is `UNAVAILABLE` (`RELEASE_PENDING`), not usable;
+* one day later it escalates to `STALE` (`RELEASE_MISSING`);
+* the previous vintage stays history and is never presented as current.
 
 The following rules apply to every key:
 * Nothing seen gives `UNAVAILABLE` (`NEVER_OBSERVED`).
 * A reference time more than 2 s in the future gives `UNAVAILABLE` (`FUTURE_TIMESTAMP`).
 * Outside the window gives `NOT_APPLICABLE`, with the age reported.
-* An uncovered calendar year gives `UNAVAILABLE` (`CALENDAR_NOT_COVERED`) for the daily bar.
+* A weekday outside the calendar table gives `UNAVAILABLE` (`CALENDAR_NOT_COVERED`) for the REG and extended-hours windows and for
+  the daily bar, including when the session the bar must come from is uncovered.
 
 ## 4. Validation codes
 
 The codes are pre-registered, with thresholds pinned by `test_Q02`:
 * **Bar shape:** `HIGH_BELOW_BODY`, `LOW_ABOVE_BODY`, `NEGATIVE_VOLUME`, `NON_FINITE`, `NON_POSITIVE_PRICE`.
 * **Bar series:** `DUPLICATE_TS`, `NOT_INCREASING`, `OUTSIDE_SESSION`, `GAP_MINUTES`.
-* **Daily series:** `SESSION_HOLE` (a hole of 2 or more market days blocks the dataset) and `DAY_JUMP` (above 25 %, equal to
-  `mean_reversion.NORMAL_DAY`). A jump is classified later; it is never fixed here.
+* **Daily series:**
+  - `SESSION_HOLE`: a hole of 2 or more market days blocks the dataset.
+  - `DAY_JUMP`: above 25 %, equal to `mean_reversion.NORMAL_DAY`. A jump is classified later; it is never fixed here.
+  - `NON_SESSION_DAY`: a bar dated on a weekend or a table holiday. It is blocking.
+  - `CALENDAR_NOT_COVERED`: a bar, or a gap between two bars, on a weekday outside the table. The series cannot be verified, so it is
+    blocked; it is never assumed complete. Minute bars on an uncovered weekday get the same code.
 * **Quotes:**
   - `CROSSED` and `LOCKED`.
   - `WIDE_SPREAD`: wider than 50 bps of the mid.
@@ -82,7 +99,24 @@ The codes are pre-registered, with thresholds pinned by `test_Q02`:
 AFTER_HOURS becomes POST and CLOSED stays CLOSED. `test_K01` sweeps a whole early-close day minute by minute to prove the two agree.
 
 `rule_holidays(year)` encodes the NYSE holiday rules. It exists only to cross-check the static 2026–2027 table (`test_K02`).
-2028 is `NOT_COVERED` until the table is extended from the NYSE published schedule.
+
+**Coverage.** A weekend is a weekend in every year. A weekday outside the table is `NOT_COVERED` and is never guessed:
+* `market_day_status` says so;
+* `is_market_day` raises `CalendarNotCovered`;
+* the previous- and next-market-day walkers return None;
+* validation flags `CALENDAR_NOT_COVERED`, a blocking code;
+* freshness fails closed.
+
+A 2025 backfill or a 2028 date can therefore never be read as verified sessions (`test_K03`, `test_V05`).
+
+**Coverage strategy (proposed; extending coverage is its own approved change):**
+1. Years are added to a versioned table from the NYSE published schedule, never derived from rules.
+2. Each added year is pinned by a test. The test cross-checks `rule_holidays` and lists the exceptional closures that rules cannot
+   derive. For 2025 that is the 2025-01-09 national day of mourning, plus the early closes of 2025-07-03, 2025-11-28 and 2025-12-24.
+3. History (2025 and earlier) goes into a `market_intel`-owned table. It never goes into `autorun/calendar.py`, which is frozen and used
+   by the executor's session health.
+4. A live year (2028) is a separate, declared change to `autorun/calendar.py`, made before 2028.
+5. Stage 7.1 accepts a backfill only for covered years. Any uncovered dataset stays blocked.
 
 One fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.
 

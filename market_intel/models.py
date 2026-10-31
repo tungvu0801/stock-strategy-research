@@ -9,12 +9,17 @@ Invariants enforced here (each is a test):
 * an UNAVAILABLE or INSUFFICIENT_DATA observation carries no payload: a missing value is never a zero;
 * status and freshness agree: a STALE status has STALE freshness, and a STALE value is never presented as AVAILABLE;
 * quality flags are only the declared validation codes (validate.QUALITY_CODES);
-* no field or payload key names an order, a quantity, a side or a price instruction (tested over the whole schema).
+* no field or payload key - at ANY depth, inside nested objects and lists - names an order, a quantity, a side or a price
+  instruction (tested over the whole schema). Payload values are JSON-like scalars, objects and lists only, at most MAX_PAYLOAD_DEPTH
+  deep, finite numbers only;
+* the stored payload is read-only: objects become ReadOnlyDict and lists tuples, so it cannot be changed after validation (the model
+  being frozen alone would not stop `o.payload["order_qty"] = 5`).
 """
 from __future__ import annotations
 
 import math
 import re
+from collections.abc import Mapping
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -46,6 +51,52 @@ def forbidden_key(key: str) -> bool:
     snake = re.sub("([a-z0-9])([A-Z])", lambda m: m.group(1) + "_" + m.group(2), str(key)).lower()
     tokens = [t for t in re.split("[^a-z0-9]+", snake) if t]
     return any(t in FORBIDDEN_WORDS for t in tokens) or any(p in snake for p in FORBIDDEN_PHRASES)
+
+
+MAX_PAYLOAD_DEPTH = 6
+
+
+class ReadOnlyDict(dict):
+    """A dict that refuses every mutation after construction (pydantic serializes it as a plain dict)."""
+
+    def _refuse(self, *a, **k):
+        raise TypeError("an observation payload is read-only")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = __ior__ = _refuse
+
+    def __deepcopy__(self, memo):
+        return self                                      # immutable: a copy is itself
+
+    def __copy__(self):
+        return self
+
+    def __reduce__(self):
+        return (ReadOnlyDict, (dict(self),))
+
+
+def _freeze_payload(v: Any, path: str, depth: int) -> Any:
+    """Every key at every depth is checked; values must be JSON-like; the result is read-only."""
+    if depth > MAX_PAYLOAD_DEPTH:
+        raise ValueError(f"payload is nested deeper than {MAX_PAYLOAD_DEPTH} levels at {path or 'payload'}")
+    if isinstance(v, Mapping):
+        out = {}
+        for k, x in v.items():
+            if not isinstance(k, str):
+                raise ValueError(f"payload key {k!r} at {path or 'payload'} is not a string")
+            where = f"{path}.{k}" if path else k
+            if forbidden_key(k):
+                raise ValueError(f"payload key {where} names an instruction, not an observation")
+            out[k] = _freeze_payload(x, where, depth + 1)
+        return ReadOnlyDict(out)
+    if isinstance(v, (list, tuple)):
+        return tuple(_freeze_payload(x, f"{path}[{i}]", depth + 1) for i, x in enumerate(v))
+    if isinstance(v, bool) or v is None or isinstance(v, (str, int)):
+        return v
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError(f"payload value {path} is not finite")
+        return v
+    raise ValueError(f"payload value {path} is a {type(v).__name__}; only JSON-like values are stored")
 
 
 def _one_of(v: str, allowed: tuple, name: str) -> str:
@@ -158,13 +209,7 @@ class Observation(_M):
     @field_validator("payload")
     @classmethod
     def _payload(cls, v):
-        bad = [k for k in v if forbidden_key(str(k))]
-        if bad:
-            raise ValueError(f"payload keys {bad} name an instruction, not an observation")
-        for k, x in v.items():
-            if isinstance(x, float) and not math.isfinite(x):
-                raise ValueError(f"payload value {k} is not finite")
-        return v
+        return _freeze_payload(v, "", 0)                  # every depth checked; the stored payload is read-only
 
     @model_validator(mode="after")
     def _invariants(self):

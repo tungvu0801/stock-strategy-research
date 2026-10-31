@@ -5,7 +5,9 @@ re-ordered here. A later stage stores the codes beside the value (models.Observa
 Codes (QUALITY_CODES is the closed set the envelope accepts):
   bars    NON_FINITE, NON_POSITIVE_PRICE, NEGATIVE_VOLUME, HIGH_BELOW_BODY, LOW_ABOVE_BODY, NOT_INCREASING, DUPLICATE_TS, OUTSIDE_SESSION,
           GAP_MINUTES, SESSION_HOLE (a hole of >= 2 market days blocks a daily dataset, the Stage 3.2 rule), DAY_JUMP (> 25 %, the
-          Stage 6.6 NORMAL_DAY: a corporate action to classify with the split-integrity contract, never "fixed" here)
+          Stage 6.6 NORMAL_DAY: a corporate action to classify with the split-integrity contract, never "fixed" here),
+          NON_SESSION_DAY (a daily bar dated on a weekend or a table holiday), CALENDAR_NOT_COVERED (a bar, or a gap between two bars,
+          on a weekday outside the calendar table: the series cannot be verified, so it is blocked - never assumed complete)
   quotes  NON_POSITIVE_QUOTE, CROSSED, LOCKED, WIDE_SPREAD, STALE_PRINT
   feeds   FEED_DIVERGENCE (IEX vs SIP close > 10 bps: a report, never a correction), CLOCK_SKEW
   news    EMPTY_HEADLINE, MISSING_PUBLISHED, FUTURE_DATED, DENY_HOST_LINK (stored as metadata only)
@@ -15,7 +17,7 @@ Codes (QUALITY_CODES is the closed set the envelope accepts):
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import urlsplit
 
@@ -24,7 +26,7 @@ from market_intel import calendar as CAL
 
 QUALITY_CODES = frozenset((
     "NON_FINITE", "NON_POSITIVE_PRICE", "NEGATIVE_VOLUME", "HIGH_BELOW_BODY", "LOW_ABOVE_BODY", "NOT_INCREASING", "DUPLICATE_TS", "OUTSIDE_SESSION",
-    "GAP_MINUTES", "SESSION_HOLE", "DAY_JUMP",
+    "GAP_MINUTES", "SESSION_HOLE", "DAY_JUMP", "NON_SESSION_DAY", "CALENDAR_NOT_COVERED",
     "NON_POSITIVE_QUOTE", "CROSSED", "LOCKED", "WIDE_SPREAD", "STALE_PRINT",
     "FEED_DIVERGENCE", "CLOCK_SKEW",
     "EMPTY_HEADLINE", "MISSING_PUBLISHED", "FUTURE_DATED", "DENY_HOST_LINK",
@@ -32,7 +34,8 @@ QUALITY_CODES = frozenset((
     "FUTURE_OBSERVED", "BACKFILLED",
 ))
 BLOCKING_CODES = frozenset(("NON_FINITE", "NON_POSITIVE_PRICE", "HIGH_BELOW_BODY", "LOW_ABOVE_BODY", "NOT_INCREASING", "DUPLICATE_TS",
-                            "SESSION_HOLE", "NON_POSITIVE_QUOTE", "CROSSED", "FUTURE_DATED", "FUTURE_OBSERVED"))   # never usable as-is
+                            "SESSION_HOLE", "NON_SESSION_DAY", "CALENDAR_NOT_COVERED", "NON_POSITIVE_QUOTE", "CROSSED", "FUTURE_DATED",
+                            "FUTURE_OBSERVED"))   # never usable as-is
 
 # pre-registered thresholds (pinned by tests)
 DAY_JUMP = 0.25                     # mean_reversion.NORMAL_DAY (pinned equal by a test)
@@ -87,8 +90,11 @@ def minute_series_codes(bars: Sequence[Dict[str, Any]], *, regular_only: bool = 
             c.append("DUPLICATE_TS")
         elif prev is not None and ts < prev:
             c.append("NOT_INCREASING")
-        s = CAL.session(ts)["session"]
-        if s == CLOSED or (regular_only and s != "REG"):
+        ses = CAL.session(ts)
+        s = ses["session"]
+        if ses["day_status"] == CAL.NOT_COVERED:
+            c.append("CALENDAR_NOT_COVERED")              # the classifier would call an uncovered weekday a session: never trusted
+        elif s == CLOSED or (regular_only and s != "REG"):
             c.append("OUTSIDE_SESSION")
         if prev is not None and ts > prev and CAL.session(ts)["session_date"] == CAL.session(prev)["session_date"]:
             gaps += max(0, int((ts - prev).total_seconds() // 60) - 1)
@@ -102,22 +108,35 @@ def minute_series_codes(bars: Sequence[Dict[str, Any]], *, regular_only: bool = 
 
 
 def daily_series_codes(bars: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """Daily bars of one symbol (`day` is a date): {"codes", "holes", "jumps", "blocked"}. A hole of >= 2 market days blocks the dataset."""
+    """Daily bars of one symbol (`day` is a date): {"codes", "holes", "jumps", "non_session", "uncovered", "blocked"}.
+    A hole of >= 2 market days blocks the dataset. A bar on a weekend / table holiday is NON_SESSION_DAY. A bar, or a gap between two
+    bars, on a weekday outside the calendar table is CALENDAR_NOT_COVERED: its sessions cannot be verified, so the dataset is blocked."""
     codes: List[str] = []
     holes: List[dict] = []
     jumps: List[str] = []
+    non_session: List[str] = []
+    uncovered: List[str] = []
     prev = None
     for b in bars:
         d = b["day"]
         codes.extend(bar_codes(b))
+        st = CAL.market_day_status(d)
+        if st == CAL.NOT_COVERED:
+            uncovered.append(d.isoformat())
+        elif st != CAL.MARKET_DAY:
+            non_session.append(d.isoformat())
         if prev is not None:
             if d <= prev["day"]:
                 codes.append("DUPLICATE_TS" if d == prev["day"] else "NOT_INCREASING")
             else:
-                missing, x = 0, CAL.next_market_day(prev["day"])
+                missing, unknown, x = 0, 0, prev["day"] + timedelta(days=1)
                 while x < d:
-                    missing += 1
-                    x = CAL.next_market_day(x)
+                    sx = CAL.market_day_status(x)
+                    missing += sx == CAL.MARKET_DAY
+                    unknown += sx == CAL.NOT_COVERED
+                    x += timedelta(days=1)
+                if unknown:
+                    uncovered.append(f"{prev['day'].isoformat()}..{d.isoformat()}")
                 if missing >= SESSION_HOLE_DAYS:
                     holes.append({"after": prev["day"].isoformat(), "before": d.isoformat(), "market_days": missing})
                 pc, cc = _num(prev.get("close")), _num(b.get("close"))
@@ -128,7 +147,12 @@ def daily_series_codes(bars: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         codes.append("SESSION_HOLE")
     if jumps:
         codes.append("DAY_JUMP")
-    return {"codes": sorted(set(codes)), "holes": holes, "jumps": jumps, "blocked": bool(holes) or bool(set(codes) & BLOCKING_CODES)}
+    if non_session:
+        codes.append("NON_SESSION_DAY")
+    if uncovered:
+        codes.append("CALENDAR_NOT_COVERED")
+    return {"codes": sorted(set(codes)), "holes": holes, "jumps": jumps, "non_session": non_session, "uncovered": uncovered,
+            "blocked": bool(set(codes) & BLOCKING_CODES)}
 
 
 def quote_codes(q: Dict[str, Any], *, wide_spread_bps: float = WIDE_SPREAD_BPS) -> List[str]:

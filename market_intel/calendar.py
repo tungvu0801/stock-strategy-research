@@ -5,9 +5,16 @@ One source of truth: the Stage 6.10A classifier (autorun/session.py) and its sta
 (autorun/calendar.py), both read only and pure. PRE is 04:00-09:30, REG 09:30 to the close (16:00, or 13:00 on an early-close day),
 POST the close to 20:00, CLOSED otherwise, on weekends and on holidays. Daylight-saving changes are handled by zoneinfo.
 
-A date outside the table is NOT_COVERED. The classifier then treats a weekday as a normal session, and the data layer says so
-(`covered: False`): freshness checks that depend on "was today a market day?" fail closed on an uncovered date (freshness.py). The table
-must be extended (from the NYSE published schedule) before 2028; `rule_holidays` exists only to cross-check the static table.
+A WEEKDAY outside the table is NOT_COVERED (a weekend is a weekend in every year). The 6.10A classifier would treat it as a normal
+session; this layer never does: market_day_status() says NOT_COVERED, is_market_day() raises CalendarNotCovered, the walkers
+(previous / next market day, last completed session) return None instead of guessing, validate.py flags CALENDAR_NOT_COVERED (a blocking
+code) and freshness.py fails closed. So an uncovered historical year (a 2025 backfill) or a future one (2028) is never silently treated as
+verified sessions.
+
+Coverage strategy (DESIGN_70 section 5): years are added to a versioned table from the NYSE published schedule, each pinned by a test
+that cross-checks the holiday rules and lists the exceptional closures rules cannot derive (e.g. 2025-01-09, the national day of
+mourning). History (2025 and earlier) goes into a market_intel-owned table, never into autorun/calendar.py (frozen, used by the
+executor's session health); a live year (2028) is a separate, declared change to autorun/calendar.py. `rule_holidays` only cross-checks.
 """
 from __future__ import annotations
 
@@ -20,6 +27,12 @@ from autorun import session as SES
 from market_intel import CLOSED, POST, PRE, REG
 
 _MAP = {PREMARKET: PRE, REGULAR: REG, AFTER_HOURS: POST, A_CLOSED: CLOSED}
+MARKET_DAY, HOLIDAY, WEEKEND, NOT_COVERED = "MARKET_DAY", "HOLIDAY", "WEEKEND", "NOT_COVERED"
+WALK_LIMIT_DAYS = 15
+
+
+class CalendarNotCovered(ValueError):
+    """A weekday outside the static table: whether it was a session is unknown."""
 CALENDAR_VERSION = CAL.CALENDAR_VERSION
 DAILY_BAR_CUTOFF_MINUTE = 18 * 60          # a market day's daily bar is expected from 18:00 New York time (design C.5)
 
@@ -32,9 +45,23 @@ def covered(d: date) -> bool:
     return CAL.covered(d)
 
 
+def market_day_status(d: Optional[date]) -> str:
+    """MARKET_DAY | HOLIDAY | WEEKEND | NOT_COVERED (a weekday outside the table, or no date at all)."""
+    if d is None:
+        return NOT_COVERED
+    if d.weekday() >= 5:
+        return WEEKEND
+    if not covered(d):
+        return NOT_COVERED
+    return MARKET_DAY if CAL.close_minute(d) is not None else HOLIDAY
+
+
 def is_market_day(d: date) -> bool:
-    """A weekday that is not a table holiday (an uncovered year: every weekday, reported by covered())."""
-    return CAL.close_minute(d) is not None
+    """True / False for a covered date or any weekend; CalendarNotCovered for an uncovered weekday (never a guess)."""
+    st = market_day_status(d)
+    if st == NOT_COVERED:
+        raise CalendarNotCovered(f"{d} is outside the calendar table ({CALENDAR_VERSION})")
+    return st == MARKET_DAY
 
 
 def session(now: datetime) -> Dict[str, Any]:
@@ -43,45 +70,53 @@ def session(now: datetime) -> Dict[str, Any]:
     d = date.fromisoformat(c["trading_date"]) if c.get("trading_date") else None
     et = c.get("et_time")
     minute = int(et[:2]) * 60 + int(et[3:5]) if et else None
-    return {"session": _MAP[c["session"]], "session_date": d, "et_minute": minute, "market_day": c.get("market_day"),
-            "close_minute": c.get("close_minute"), "covered": bool(d and covered(d)), "calendar": c.get("calendar")}
+    status = market_day_status(d)
+    return {"session": _MAP[c["session"]], "session_date": d, "et_minute": minute, "day_status": status,
+            "market_day": None if status == NOT_COVERED else status == MARKET_DAY, "close_minute": c.get("close_minute"),
+            "covered": bool(d and covered(d)), "calendar": c.get("calendar")}
 
 
 def session_of(now: datetime) -> str:
     return session(now)["session"]
 
 
-def previous_market_day(d: date) -> date:
-    x = d - timedelta(days=1)
-    for _ in range(15):
-        if is_market_day(x):
+def _walk(d: date, step: int) -> Optional[date]:
+    x = d + timedelta(days=step)
+    for _ in range(WALK_LIMIT_DAYS):
+        st = market_day_status(x)
+        if st == MARKET_DAY:
             return x
-        x -= timedelta(days=1)
-    raise AssertionError("no market day in 15 days")
+        if st == NOT_COVERED:
+            return None                                   # the answer lies outside the table: unknown, never guessed
+        x += timedelta(days=step)
+    return None
 
 
-def next_market_day(d: date) -> date:
-    x = d + timedelta(days=1)
-    for _ in range(15):
-        if is_market_day(x):
-            return x
-        x += timedelta(days=1)
-    raise AssertionError("no market day in 15 days")
+def previous_market_day(d: date) -> Optional[date]:
+    """The previous market day, or None when the walk reaches an uncovered weekday first."""
+    return _walk(d, -1)
+
+
+def next_market_day(d: date) -> Optional[date]:
+    """The next market day, or None when the walk reaches an uncovered weekday first."""
+    return _walk(d, 1)
 
 
 def last_completed_session(now: datetime) -> Optional[date]:
     """The latest market day whose daily bar is expected by `now`: today from 18:00 New York time on a market day, else the previous one."""
     s = session(now)
     d = s["session_date"]
-    if d is None:
+    if d is None or s["day_status"] == NOT_COVERED:
         return None
-    if is_market_day(d) and s["et_minute"] is not None and s["et_minute"] >= DAILY_BAR_CUTOFF_MINUTE:
+    if s["day_status"] == MARKET_DAY and s["et_minute"] is not None and s["et_minute"] >= DAILY_BAR_CUTOFF_MINUTE:
         return d
     return previous_market_day(d)
 
 
-def regular_minutes(d: date) -> int:
-    """Minutes in the regular session of `d` (390, 210 on an early close, 0 on a weekend or holiday)."""
+def regular_minutes(d: date) -> Optional[int]:
+    """Minutes in the regular session of `d` (390, 210 on an early close, 0 on a weekend or holiday; None when not covered)."""
+    if market_day_status(d) == NOT_COVERED:
+        return None
     close = CAL.close_minute(d)
     return 0 if close is None else close - (9 * 60 + 30)
 
