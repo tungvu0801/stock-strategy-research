@@ -4,6 +4,14 @@ Stage 5.4.2 - automatic evidence refresh (DESIGN_542_EVIDENCE_REFRESH.md).
   P01-P04 the pure policy: states and dates by the READY rule's own age formula, the Stage 5.4.1 packet choice, back-off, order, budgets.
   S01-S08 one refresh run: sequential builds, duplicate prevention, leases, gates (mode, session, network), DRY_RUN, failure recovery,
           the real engine + an append-only store end to end, zero model calls and no broker, the thread never starting in tests.
+  J01-J04 bounded retries: an attempt that raised before any packet was stored is journaled (durable, survives a restart) and backs off
+          like a FAILED packet; consecutive errors or a refusing source open a durable circuit; errors spend the daily budget; an
+          unreadable store waits; the journal never touches the evidence tables.
+  C01-C04 a manual Build racing the refresh: the check and the insert are one write transaction; a packet stored while the refresh was
+          fetching wins (nothing duplicated); a concurrent insert waits and is kept; an identical packet is never inserted twice; the
+          guarded insert writes exactly the store's own rows; append-only.
+  D01-D02 the production decision path on real stored DUE / STALE / MISSING / FRESH / backing-off packets, through the scheduler thread:
+          DRY_RUN names exactly what ON then builds, the read-only preview agrees, ON appends only and converges run by run.
   R01-R02 GET /api/evidence-refresh is read-only and builds nothing.
   E01-E02 the SEC companyfacts request alone gets EVIDENCE_SEC_FACTS_MAX_BYTES; a large file is used, a larger one is still TOO_LARGE.
   F01-F03 scope: the change set is exactly the declared files; READY thresholds, PPE scoring and the frozen hashes are unchanged; every
@@ -12,12 +20,16 @@ Stage 5.4.2 - automatic evidence refresh (DESIGN_542_EVIDENCE_REFRESH.md).
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import sqlite3
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,8 +39,9 @@ import freeze_ledger as FL
 from evidence import engine as EN
 from evidence import net
 from evidence.store import EvidenceStore
-from evidence_refresh import (A_BUILT, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_WOULD_BUILD, BACKOFF, BUILD, DUE, FAILURE_CAP, FRESH, LEASE_NAME,
-                              MISSING, RETRY_WAIT, STALE, WAIT)
+from evidence_refresh import (A_BUILT, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_SUPERSEDED, A_WOULD_BUILD, BACKOFF, BUILD, DUE, FAILURE_CAP, FRESH,
+                              LEASE_NAME, MISSING, R_CIRCUIT_OPEN, READ_ERROR, RETRY_WAIT, STALE, SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL, WAIT)
+from evidence_refresh import journal as J
 from evidence_refresh import policy as P
 from evidence_refresh import scheduler as SCH
 from evidence_refresh import service as SV
@@ -37,6 +50,15 @@ from evidence_refresh.service import EvidenceRefresher
 ROOT = Path(__file__).resolve().parents[1]
 T0 = datetime(2026, 10, 31, 6, 8, 56, tzinfo=timezone.utc)           # the Phase C build time of the live packets
 S = P.RefreshSettings()                                               # defaults: refresh at 7 days, stale after 30, retry 6 h, 2 failures / 24 h
+PRODUCTION_JOURNAL_PATH = J.default_path                              # kept before the autouse fixture redirects it
+
+
+@pytest.fixture(autouse=True)
+def journal_file(tmp_path, monkeypatch):
+    """Every test's default (durable) journal is its own file: nothing leaks between tests or into a real data directory."""
+    path = tmp_path / J.JOURNAL_FILE
+    monkeypatch.setattr(J, "default_path", lambda: path)
+    return path
 
 
 def row(sym, at, status="COMPLETED", pid=None, code=None):
@@ -161,10 +183,12 @@ class World:
         return {"status": status, "packet_id": r["packet_id"], "failure_code": code, "strength": r["strength"], "refused_hosts": list(refused)}
 
 
-def refresher(world, *, mode="ON", symbols=("NVDA", "AMD", "MU"), build=None, lease=None, regular=lambda t: False, network=lambda: True, **kw):
+def refresher(world, *, mode="ON", symbols=("NVDA", "AMD", "MU"), build=None, lease=None, regular=lambda t: False, network=lambda: True,
+              journal=None, **kw):
     return EvidenceRefresher(mode_fn=lambda: mode, settings_fn=lambda: S, symbols_fn=lambda: list(symbols), rows_fn=world.rows_fn,
                              build_fn=build or world.build, regular_session_fn=regular, network_fn=network,
-                             lease_store_fn=(lambda: lease) if lease is not None else None, clock=world.clock, sleep_fn=world.sleep, spacing_s=20, **kw)
+                             lease_store_fn=(lambda: lease) if lease is not None else None, clock=world.clock, sleep_fn=world.sleep, spacing_s=20,
+                             journal=journal if journal is not None else J.AttemptJournal.memory(), **kw)
 
 
 def test_S01_a_run_builds_the_due_symbols_one_by_one_with_spacing_and_holds_the_lease():
@@ -292,7 +316,7 @@ def test_S06_the_real_engine_appends_a_packet_and_never_touches_the_existing_one
     later = F.NOW + timedelta(days=8)
     r = EvidenceRefresher(mode_fn=lambda: "ON", settings_fn=lambda: S, symbols_fn=lambda: ["SNDK"], rows_fn=lambda s: store.packets(100, s),
                           build_fn=engine_build, regular_session_fn=lambda t: False, network_fn=lambda: True, lease_store_fn=None,
-                          clock=lambda: later, sleep_fn=lambda s: False, spacing_s=0)
+                          clock=lambda: later, sleep_fn=lambda s: False, spacing_s=0, journal=J.AttemptJournal.memory())
     assert r.plan()["to_build"] == ["SNDK"]
     out = r.run_once()
     assert [a["outcome"] for a in out["attempts"]] == [A_BUILT]
@@ -320,13 +344,16 @@ def test_S07_zero_model_calls_no_broker_and_only_evidence_hosts(live, tmp_path, 
     real_build = EN.build_packet
 
     def fake_build_packet(req, *, adapters=None, now_fn=None, store=None, persist=True):
-        captured.update(ticker=req.ticker, adapters=adapters, store_type=type(store).__name__, sources=dict(req.sources))
-        return real_build(req, adapters=F.adapters(), now_fn=F.now_fn, store=tmp_store)          # the production request itself; fixture data, a temp store
+        captured.update(ticker=req.ticker, adapters=adapters, store_type=type(store).__name__, sources=dict(req.sources), persist=persist)
+        return real_build(req, adapters=F.adapters(), now_fn=F.now_fn, store=store, persist=persist)   # the production request itself; fixture data
 
     monkeypatch.setattr(EN, "build_packet", fake_build_packet)
+    monkeypatch.setattr(SV, "_default_store", lambda: tmp_store)                       # a temp store instead of the app database
     out = SV.default_build("SNDK", F.NOW)                                              # the production build function itself
-    assert captured == {"ticker": "SNDK", "adapters": None, "store_type": "EvidenceStore", "sources": {"internal": True, "sec": True, "ir": True, "news": True, "manual": True}}
+    assert captured == {"ticker": "SNDK", "adapters": None, "store_type": "EvidenceStore", "persist": False,
+                        "sources": {"internal": True, "sec": True, "ir": True, "news": True, "manual": True}}   # built in memory, then the guarded insert
     assert out["status"] == "COMPLETED" and out["model_requests"] == 0 and out["refused_hosts"] == []
+    assert out["written"] is True and out["packet_id"] == out["built_packet_id"] and [r_["packet_id"] for r_ in tmp_store.packets(10, "SNDK")] == [out["packet_id"]]
     hosts = {net.host_of(c["url"]) for c in live.calls}
     assert hosts == {"www.sec.gov", "data.sec.gov"}                                  # the production request: SEC only (no IR URLs, no manual URLs configured)
     forbidden = ("evidence.explain", "ai_explain", "anthropic", "openai", "llm", "execution", "paper", "broker", "robinhood", "rh_gateway",
@@ -367,6 +394,375 @@ def test_S08_the_thread_never_starts_in_tests_and_stops_promptly(monkeypatch):
     assert sch.status()["running"] is False
 
 
+# ============================================================================================================ bounded retries (J)
+TABLES_542 = ("evidence_packets", "evidence_items", "evidence_source_fetches")
+
+
+def snapshot(store):
+    c = sqlite3.connect(store.path)
+    try:
+        return {t: sorted((tuple(r_) for r_ in c.execute(f"SELECT * FROM {t}")), key=repr) for t in TABLES_542}
+    finally:
+        c.close()
+
+
+def unchanged(store, before) -> bool:
+    """Every row that existed is still there, byte-identical (rows may only have been added)."""
+    now = snapshot(store)
+    return all(set(before[t]) <= set(now[t]) for t in TABLES_542)
+
+
+def raising(calls, exc=None):
+    def build(sym, t):
+        calls.append((sym, t))
+        raise exc or RuntimeError("raised before any packet was stored")
+    return build
+
+
+def test_J01_an_attempt_that_raised_before_any_packet_was_stored_backs_off_durably_across_runs_and_restarts(journal_file):
+    start = T0 + timedelta(days=8)                                                     # NVDA is DUE
+    w = World({"NVDA": [row("NVDA", T0)]}, start)
+    calls = []
+
+    def run_at(t, journal_factory):
+        w.now = t
+        return refresher(w, symbols=("NVDA",), build=raising(calls), journal=journal_factory()).run_once()   # a new refresher each run: a restart
+
+    first = run_at(start, J.AttemptJournal)
+    assert [(a["outcome"], a["error"], a["journaled"]) for a in first["attempts"]] == [(A_ERROR, "RuntimeError", True)]
+    saved = json.loads(journal_file.read_text(encoding="utf-8"))
+    assert saved["version"] == J.JOURNAL_VERSION and [(e["symbol"], e["error"], e["stage"]) for e in saved["errors"]] == [("NVDA", "RuntimeError", "build")]
+    nv = refresher(w, symbols=("NVDA",), journal=J.AttemptJournal()).plan(start + timedelta(minutes=15))["items"][0]
+    assert (nv["state"], nv["decision"], nv["reason"], nv["errors_24h"], nv["last_failure"]["error"]) == (DUE, BACKOFF, RETRY_WAIT, 1, "RuntimeError")
+    for k in range(1, 4 * 48):                                                         # every 15 minutes for 48 hours, a fresh process each time
+        run_at(start + timedelta(minutes=15 * k), J.AttemptJournal)
+    assert [round((t - start).total_seconds() / 3600, 2) for _, t in calls] == [0.0, 6.0, 24.0, 30.0]   # 6 h apart, 2 per trailing 24 h: 4, not 192
+    assert w.rows["NVDA"] == [row("NVDA", T0)]                                        # nothing was stored; the old packet stays in use
+    calls.clear()
+    for k in range(8):                                                                 # the original behaviour (no durable record): every run tries again
+        run_at(start + timedelta(minutes=15 * k), J.AttemptJournal.memory)
+    assert len(calls) == 8
+
+
+def test_J02_consecutive_errors_or_a_refusing_source_open_a_durable_circuit_and_errors_spend_the_daily_budget(journal_file):
+    now = T0 + timedelta(days=8)
+    w = World({s: [row(s, T0)] for s in ("NVDA", "AMD", "MU")}, now)
+    calls = []
+    out = refresher(w, build=raising(calls), journal=J.AttemptJournal()).run_once()
+    assert out["stop_reason"] == "CONSECUTIVE_ERRORS" and [c[0] for c in calls] == ["AMD", "MU"]           # equally due: alphabetical
+    opened = now + timedelta(seconds=20)                                                                    # after the one spacing wait
+    assert out["circuit"] == {"until": (opened + timedelta(hours=6)).isoformat(timespec="seconds"), "reason": "CONSECUTIVE_ERRORS"}
+    assert json.loads(journal_file.read_text(encoding="utf-8"))["circuit"]["reason"] == "CONSECUTIVE_ERRORS"
+    for minutes in (15, 60, 6 * 60):                                                   # a restart each time: the circuit is read from the file
+        w.now = now + timedelta(minutes=minutes)
+        res = refresher(w, build=raising(calls), journal=J.AttemptJournal()).run_once()
+        assert (res["result"], res["reason"]) == (R_CIRCUIT_OPEN, "CONSECUTIVE_ERRORS")
+    assert [c[0] for c in calls] == ["AMD", "MU"]                                      # NVDA was never tried while the circuit was open
+    w.now = now + timedelta(hours=6, minutes=15)                                       # closed, and AMD / MU waited out their retry
+    res = refresher(w, journal=J.AttemptJournal()).run_once()
+    assert [(a["symbol"], a["outcome"]) for a in res["attempts"]] == [("AMD", A_BUILT), ("MU", A_BUILT), ("NVDA", A_BUILT)]
+    w5 = World({s: [row(s, T0)] for s in ("NVDA", "AMD", "MU")}, now)
+    j5 = J.AttemptJournal.memory()
+    out5 = refresher(w5, build=lambda s_, t: w5.build(s_, t, status="FAILED", code="NO_MARKET_DATA", refused=("data.sec.gov",)), journal=j5).run_once()
+    assert out5["stop_reason"] == "SOURCE_REFUSED" and out5["circuit"]["reason"] == "SOURCE_REFUSED" and w5.builds == ["AMD"]
+    w5.now += timedelta(minutes=15)
+    assert refresher(w5, journal=j5).run_once()["result"] == R_CIRCUIT_OPEN and w5.builds == ["AMD"]          # SEC is not asked again for 6 h
+    errs = {s_: [{"symbol": s_, "at": (now - timedelta(hours=h)).isoformat(), "error": "OperationalError"} for h in range(1, 7)] for s_ in ("AAA", "BBB")}
+    p = P.plan(["AAA", "BBB", "CCC"], {}, now, S, errors_by_symbol=errs)
+    assert (p["errors_last_24h"], p["builds_last_24h"], p["budget"], p["to_build"]) == (12, 0, 0, [])      # 12 attempts that stored nothing spend the day
+    assert P.plan(["CCC"], {}, now, S, circuit={"until": (now + timedelta(minutes=1)).isoformat(), "reason": "X"})["to_build"] == []
+    bad = refresher(World({}, now), symbols=("NVDA",))
+    bad.rows_fn = lambda s_: (_ for _ in ()).throw(sqlite3.OperationalError("locked"))
+    bp = bad.plan()
+    assert bp["read_errors"] == ["NVDA: OperationalError"] and (bp["items"][0]["decision"], bp["items"][0]["reason"]) == (WAIT, READ_ERROR)
+    assert bp["to_build"] == []                                                        # an unreadable store is never read as MISSING (which would build)
+
+
+def test_J03_with_the_real_engine_an_exception_after_the_fetches_or_during_the_insert_stores_nothing_and_is_journaled(live, tmp_path, monkeypatch, journal_file):
+    store = EvidenceStore(tmp_path / "ev.db")
+    EN.build_packet(F.request(), adapters=F.adapters(), now_fn=F.now_fn, store=store)
+    before = snapshot(store)
+    later = F.NOW + timedelta(days=8)
+
+    def make(journal):
+        return EvidenceRefresher(mode_fn=lambda: "ON", settings_fn=lambda: S, symbols_fn=lambda: ["SNDK"], rows_fn=lambda s_: store.packets(100, s_),
+                                 build_fn=lambda s_, t: SV.default_build(s_, t, adapters=F.adapters(), now_fn=lambda: later, store=store, settings_fn=lambda: S),
+                                 regular_session_fn=lambda t: False, network_fn=lambda: True, lease_store_fn=None, clock=lambda: later,
+                                 sleep_fn=lambda s_: False, spacing_s=0, journal=journal)
+
+    with monkeypatch.context() as m:                                                   # the engine's post-processing raises after every fetch
+        m.setattr(EN.R, "strength", lambda ladder: (_ for _ in ()).throw(KeyError("rung")))
+        r = make(J.AttemptJournal())
+        out = r.run_once()
+        assert [(a["outcome"], a["error"], a["journaled"]) for a in out["attempts"]] == [(A_ERROR, "KeyError", True)]
+        assert r.run_once()["result"] == "NOTHING_DUE" and len(live.calls) > 0     # the next run backs off (nothing fetched again)
+        n_calls = len(live.calls)
+        assert make(J.AttemptJournal()).run_once()["result"] == "NOTHING_DUE" and len(live.calls) == n_calls   # nor after a restart
+    assert snapshot(store) == before                                                   # nothing stored, nothing changed
+    with monkeypatch.context() as m:                                                   # the insert itself fails (a locked database)
+        m.setattr(SV, "persist_unless_superseded", lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")))
+        out2 = make(J.AttemptJournal.memory()).run_once()
+        assert [(a["outcome"], a["error"]) for a in out2["attempts"]] == [(A_ERROR, "OperationalError")]
+    assert snapshot(store) == before
+    assert [e["error"] for e in json.loads(journal_file.read_text(encoding="utf-8"))["errors"]] == ["KeyError"]
+
+
+def test_J04_the_journal_is_operational_state_reading_never_writes_and_a_bad_file_never_unbounds_a_process(tmp_path, journal_file):
+    j = J.AttemptJournal()
+    assert j.state(T0) == {"errors": [], "circuit": None} and not journal_file.exists()                  # reading never creates the file
+    journal_file.write_text("{not json", encoding="utf-8")
+    assert j.state(T0) == {"errors": [], "circuit": None} and j.read_error == "JSONDecodeError"            # unreadable: empty, reported
+    assert j.record_error("NVDA", T0, "RuntimeError") is True                                              # the next write replaces it
+    assert [e["symbol"] for e in json.loads(journal_file.read_text(encoding="utf-8"))["errors"]] == ["NVDA"]
+    assert len(j.state(T0)["errors"]) == 1 and j.read_error is None
+    blocked = tmp_path / "a_file"
+    blocked.write_text("x", encoding="utf-8")
+    jw = J.AttemptJournal(path_fn=lambda: blocked / "journal.json")                    # cannot be written (its parent is a file)
+    assert jw.record_error("AMD", T0, "OperationalError") is False and jw.write_error
+    st = P.symbol_state("AMD", [row("AMD", T0 - timedelta(days=9))], T0 + timedelta(minutes=15), S, jw.errors_by_symbol(T0)["AMD"])
+    assert (st["decision"], st["reason"]) == (BACKOFF, RETRY_WAIT)                    # the in-memory copy still bounds this process
+    j2 = J.AttemptJournal(path_fn=lambda: tmp_path / "j2.json")
+    j2.record_error("MU", T0, "X")
+    j2.record_error("MU", T0 + timedelta(hours=J.KEEP_HOURS + 1), "Y")
+    assert [e["error"] for e in json.loads((tmp_path / "j2.json").read_text(encoding="utf-8"))["errors"]] == ["Y"]   # pruned after KEEP_HOURS
+    src = (ROOT / "evidence_refresh/journal.py").read_text(encoding="utf-8")
+    assert "sqlite3" not in src and "evidence_packets" not in src and "CREATE TABLE" not in src                    # never the evidence tables, no schema
+    prod = PRODUCTION_JOURNAL_PATH()
+    assert prod == Path(config.PROJECT_ROOT) / "runtime" / J.JOURNAL_FILE                                         # beside account_refresh.fault
+    assert subprocess.run(["git", "check-ignore", "-q", "runtime/" + J.JOURNAL_FILE], cwd=ROOT).returncode == 0   # git-ignored: never committed
+
+
+# ============================================================================================================ a manual Build racing the refresh (C)
+def any_bars(symbols, lookback_days):
+    base = F.fake_bars(["SNDK", "SPY", "SOXX"], lookback_days)
+    return {s_: base.get(s_, base["SNDK"]) for s_ in symbols}
+
+
+def test_C01_a_manual_build_stored_while_the_refresh_is_fetching_wins_and_nothing_is_duplicated(live, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from api.server import app
+    from api.routes import evidence as EVR
+    from fit import readonly as RO
+    from trader_view.research import pick
+    db = tmp_path / "stock_agent.db"
+    monkeypatch.setattr(RO, "db_path", lambda: db)
+    store = EvidenceStore(db)
+    old = EN.build_packet(EN.EvidenceRequest(ticker="SNDK"), adapters=F.adapters(), now_fn=lambda: F.NOW, store=store)["packet"]
+    before = snapshot(store)
+    later = F.NOW + timedelta(days=8)
+    clock = {"t": later}
+    monkeypatch.setattr(EVR, "NOW_FN", lambda: clock["t"])
+    monkeypatch.setitem(EVR.BUILD, "adapters", F.adapters())
+    fetching, release = threading.Event(), threading.Event()
+
+    def slow_news(symbol, limit):                                                      # the refresh build is mid-fetch until released
+        fetching.set()
+        assert release.wait(20)
+        return F.fake_news(symbol, limit)
+
+    r = EvidenceRefresher(mode_fn=lambda: "ON", settings_fn=lambda: S, symbols_fn=lambda: ["SNDK"], rows_fn=lambda s_: store.packets(100, s_),
+                          build_fn=lambda s_, t: SV.default_build(s_, t, adapters=F.adapters(news=slow_news), now_fn=lambda: clock["t"], store=store,
+                                                                  settings_fn=lambda: S),
+                          regular_session_fn=lambda t: False, network_fn=lambda: True, lease_store_fn=None, clock=lambda: clock["t"],
+                          sleep_fn=lambda s_: False, spacing_s=0, journal=J.AttemptJournal.memory())
+    result = {}
+    th = threading.Thread(target=lambda: result.update(r.run_once()))
+    th.start()
+    assert fetching.wait(20)                                                           # past its re-check (SNDK was DUE), now fetching
+    clock["t"] = later + timedelta(seconds=30)
+    res = TestClient(app).post("/api/evidence/packets", json={"ticker": "SNDK"})       # a person presses Build: the real route
+    assert res.status_code == 201
+    manual_id = res.json()["packet_id"]
+    clock["t"] = later + timedelta(seconds=60)
+    release.set()
+    th.join(20)
+    assert [(a["outcome"], a["reason"], a["packet_id"], a["built_status"]) for a in result["attempts"]] == [(A_SUPERSEDED, SUPERSEDED_FRESH, manual_id, "COMPLETED")]
+    rows = store.packets(100, "SNDK")
+    assert sorted(x["packet_id"] for x in rows) == sorted([old["packet_id"], manual_id])           # one new packet: the person's
+    assert unchanged(store, before) and pick(rows, clock["t"])["packet_id"] == manual_id
+    assert r.plan(clock["t"])["items"][0]["state"] == FRESH and r.run_once()["result"] == "NOTHING_DUE"
+
+
+def test_C02_the_check_and_the_insert_are_one_write_transaction_a_concurrent_insert_waits_and_both_packets_are_kept(live, tmp_path):
+    db = tmp_path / "ev.db"
+    entered, proceed = threading.Event(), threading.Event()
+
+    class HeldStore(EvidenceStore):                                                    # pauses inside the refresh's write transaction
+        @contextmanager
+        def write(self):
+            with EvidenceStore.write(self) as c:
+                entered.set()
+                assert proceed.wait(20)
+                yield c
+
+    base = EvidenceStore(db)
+    old = EN.build_packet(EN.EvidenceRequest(ticker="SNDK"), adapters=F.adapters(), now_fn=lambda: F.NOW, store=base)["packet"]
+    before = snapshot(base)
+    later = F.NOW + timedelta(days=8)
+    out = {}
+    th = threading.Thread(target=lambda: out.update(SV.default_build("SNDK", later, adapters=F.adapters(), now_fn=lambda: later, store=HeldStore(db),
+                                                                     settings_fn=lambda: S)))
+    th.start()
+    assert entered.wait(20)                                                            # the refresh holds BEGIN IMMEDIATE
+    manual = EN.build_packet(EN.EvidenceRequest(ticker="SNDK"), adapters=F.adapters(news=lambda s_, n: F.fake_news(s_, n)[:2]),
+                             now_fn=lambda: later + timedelta(seconds=5), persist=False)    # the Build button's packet (different news: its own hash)
+    done = threading.Event()
+    mt = threading.Thread(target=lambda: (base.insert_packet(manual["packet"], manual["items"], manual["fetches"]), done.set()))
+    mt.start()
+    assert not done.wait(0.5)                                                          # the manual insert waits for the refresh's transaction
+    proceed.set()
+    th.join(20)
+    mt.join(20)
+    assert done.is_set() and out["written"] is True
+    assert {x["packet_id"] for x in base.packets(100, "SNDK")} == {old["packet_id"], out["packet_id"], manual["packet"]["packet_id"]}
+    assert unchanged(base, before)                                                     # a person's Build is never refused; nothing lost or changed
+
+
+def test_C03_an_identical_stored_packet_is_never_inserted_twice_and_the_attempt_is_bounded(live, tmp_path):
+    store = EvidenceStore(tmp_path / "ev.db")
+    built = EN.build_packet(F.request(), adapters=F.adapters(), now_fn=F.now_fn, persist=False)
+    twin = EN.build_packet(F.request(), adapters=F.adapters(), now_fn=F.now_fn, persist=False)
+    assert twin["packet"]["packet_hash"] == built["packet"]["packet_hash"] and twin["packet"]["packet_id"] != built["packet"]["packet_id"]
+    store.insert_packet(built["packet"], built["items"], built["fetches"])
+    before = snapshot(store)
+    later = F.NOW + timedelta(days=8)                                                  # the stored twin is DUE: only the hash check stops this one
+    assert SV.persist_unless_superseded(store, twin, "SNDK", S, later) == {"written": False, "reason": SUPERSEDED_IDENTICAL,
+                                                                            "existing_packet_id": built["packet"]["packet_id"]}
+    assert snapshot(store) == before
+    with pytest.raises(sqlite3.IntegrityError):
+        store.insert_packet(twin["packet"], twin["items"], twin["fetches"])           # what a plain insert would have done (rolled back)
+    assert snapshot(store) == before
+    w = World({"NVDA": [row("NVDA", T0)]}, T0 + timedelta(days=8))
+    j = J.AttemptJournal.memory()
+    same = {"status": "COMPLETED", "written": False, "superseded": SUPERSEDED_IDENTICAL, "existing_packet_id": "x", "refused_hosts": []}
+    out = refresher(w, symbols=("NVDA",), build=lambda s_, t: same, journal=j).run_once()
+    assert [(a["outcome"], a["reason"]) for a in out["attempts"]] == [(A_SUPERSEDED, SUPERSEDED_IDENTICAL)]
+    w.now += timedelta(minutes=15)
+    assert refresher(w, symbols=("NVDA",), journal=j).plan()["items"][0]["reason"] == RETRY_WAIT   # bounded like an error, not every 15 minutes
+
+
+def test_C04_the_guarded_insert_writes_exactly_the_stores_own_rows_and_the_tables_stay_append_only(live, tmp_path):
+    built = EN.build_packet(F.request(), adapters=F.adapters(), now_fn=F.now_fn, persist=False)
+    a, b = EvidenceStore(tmp_path / "a.db"), EvidenceStore(tmp_path / "b.db")
+    a.insert_packet(built["packet"], built["items"], built["fetches"])
+    assert SV.persist_unless_superseded(b, built, "SNDK", S, F.NOW)["written"] is True
+    assert snapshot(a) == snapshot(b) and len(snapshot(b)["evidence_items"]) == built["packet"]["n_items"] > 0
+    c = sqlite3.connect(b.path)
+    with pytest.raises(sqlite3.DatabaseError):
+        c.execute("UPDATE evidence_packets SET strength = 'STRONG' WHERE packet_id = ?", (built["packet"]["packet_id"],))
+    with pytest.raises(sqlite3.DatabaseError):
+        c.execute("DELETE FROM evidence_items WHERE packet_id = ?", (built["packet"]["packet_id"],))
+    c.close()
+    src = inspect.getsource(SV.persist_unless_superseded)
+    assert "UPDATE " not in src and "DELETE " not in src and src.count("INSERT INTO") == 3 and "store.write()" in src
+
+
+# ============================================================================================================ the production decision path (D)
+D_NOW = datetime(2026, 11, 14, 8, 0, tzinfo=timezone.utc)                            # a Saturday, 03:00 New York: outside the session
+D_WATCH = ["AAPL", "SNDK", "MU", "LRCX", "NVDA", "AMD"]
+
+
+@pytest.fixture
+def seeded(live, tmp_path, monkeypatch):
+    """Real packets from the real engine at backdated times in a temp app database: FRESH, DUE (2), STALE, MISSING, and STALE + a FAILED
+    build 2 hours ago. The watchlist, store, settings, mode, session calendar, lease store and network flag are the production defaults."""
+    from fit import readonly as RO
+    import scanner.watchlist as WL
+    from forward.automation import AutomationStore
+    db = tmp_path / "stock_agent.db"
+    monkeypatch.setattr(RO, "db_path", lambda: db)
+    monkeypatch.setattr(WL, "load_watchlist", lambda *a, **k: list(D_WATCH))
+    store = EvidenceStore(db)
+    ad = F.adapters(bars=any_bars)
+
+    def seed(sym, at, ok=True):
+        return EN.build_packet(EN.EvidenceRequest(ticker=sym), adapters=ad if ok else F.adapters(bars=lambda syms, lb: {}), now_fn=lambda: at,
+                               store=store)["packet"]
+
+    packets = {"AAPL": seed("AAPL", D_NOW - timedelta(days=2)), "SNDK": seed("SNDK", D_NOW - timedelta(days=10)), "MU": seed("MU", D_NOW - timedelta(days=8)),
+               "LRCX": seed("LRCX", D_NOW - timedelta(days=35)), "AMD": seed("AMD", D_NOW - timedelta(days=40))}
+    failed = seed("AMD", D_NOW - timedelta(hours=2), ok=False)
+    assert all(p_["status"] == "COMPLETED" for p_ in packets.values()) and (failed["status"], failed["failure_code"]) == ("FAILED", "NO_MARKET_DATA")
+    live.calls.clear()
+    return SimpleNamespace(db=db, store=store, packets=packets, failed=failed, leases=AutomationStore(db), adapters=ad)
+
+
+def _one_scheduler_run(r):
+    sch = SCH.EvidenceRefreshScheduler(r, interval_s=3600, startup_delay_s=0)          # the real thread and loop
+    assert sch.start() is True
+    deadline = time.time() + 60
+    while r.runs < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    assert sch.stop() is True and r.runs == 1                                          # one run, then the hour-long wait is interrupted
+    return r.last_result
+
+
+def test_D01_the_scheduler_dry_run_on_stored_due_stale_and_missing_packets_names_exactly_what_on_builds(seeded, live, monkeypatch):
+    from fastapi.testclient import TestClient
+    from api.server import app
+    from api.routes import evidence_refresh as ER
+    monkeypatch.setattr(config, "EVIDENCE_REFRESH_MODE", "DRY_RUN")
+    before = snapshot(seeded.store)
+    r = EvidenceRefresher(clock=lambda: D_NOW, lease_store_fn=lambda: seeded.leases, sleep_fn=lambda s_: False,
+                          build_fn=lambda *a: (_ for _ in ()).throw(AssertionError("DRY_RUN must not build")))   # every other input: the production default
+    assert _one_scheduler_run(r) == {"result": "DRY_RUN", "mode": "DRY_RUN", "would_build": ["LRCX", "NVDA", "SNDK"]}   # STALE, MISSING, oldest DUE
+    plan = r.plan(D_NOW)
+    assert {i["symbol"]: (i["state"], i["decision"], i["reason"]) for i in plan["items"]} == {
+        "AAPL": (FRESH, WAIT, None), "SNDK": (DUE, BUILD, None), "MU": (DUE, BUILD, None), "LRCX": (STALE, BUILD, None), "NVDA": (MISSING, BUILD, None),
+        "AMD": (STALE, BACKOFF, RETRY_WAIT)}                                           # AMD's FAILED build 2 h ago: retry at +4 h
+    assert (plan["wanted"], plan["budget"], plan["builds_last_24h"], plan["errors_last_24h"]) == (4, 3, 1, 0)   # MU waits for the next run
+    by = {i["symbol"]: i for i in plan["items"]}
+    assert by["SNDK"]["packet_id"] == seeded.packets["SNDK"]["packet_id"] and by["AMD"]["packet_id"] == seeded.packets["AMD"]["packet_id"]
+    assert by["AMD"]["retry_at"] == (D_NOW + timedelta(hours=4)).isoformat(timespec="seconds") and by["LRCX"]["age_days"] == 35
+    assert [h["outcome"] for h in r.status()["history"]] == [A_WOULD_BUILD] * 3
+    assert snapshot(seeded.store) == before and live.calls == []                       # nothing built, nothing fetched
+    assert sqlite3.connect(seeded.db).execute("SELECT COUNT(*) FROM app_leases WHERE name = ?", (LEASE_NAME,)).fetchone()[0] == 0   # held, then released
+    # the same decision path through the read-only route, without a running thread, at that instant and a week later
+    monkeypatch.setattr(SCH, "_SCHEDULER", None)
+    monkeypatch.setattr(ER, "_utcnow", lambda: D_NOW - timedelta(hours=1))
+    client = TestClient(app)
+    at_now = client.get("/api/evidence-refresh", params={"at": D_NOW.isoformat()}).json()
+    assert at_now["preview_at"] == D_NOW.isoformat(timespec="seconds") and at_now["plan"]["to_build"] == ["LRCX", "NVDA", "SNDK"]
+    week = client.get("/api/evidence-refresh", params={"at": (D_NOW + timedelta(days=7)).isoformat()}).json()["plan"]
+    assert week["to_build"] == ["AMD", "LRCX", "NVDA"] and {i["symbol"]: i["state"] for i in week["items"]}["AAPL"] == DUE
+    for bad in ("tomorrow", (D_NOW - timedelta(days=1)).isoformat(), (D_NOW + timedelta(days=ER.PREVIEW_MAX_DAYS + 1)).isoformat()):
+        assert client.get("/api/evidence-refresh", params={"at": bad}).status_code == 422
+    assert snapshot(seeded.store) == before and live.calls == [] and SCH._SCHEDULER is None
+
+
+def test_D02_on_through_the_scheduler_builds_exactly_the_planned_packets_appends_only_and_converges(seeded, live, monkeypatch):
+    from trader_view.research import pick
+    monkeypatch.setattr(config, "EVIDENCE_REFRESH_MODE", "ON")
+    before = snapshot(seeded.store)
+    clock = {"t": D_NOW}
+
+    def sleep(sec):
+        clock["t"] += timedelta(seconds=sec)
+        return False
+
+    def make():                                                                        # production store, settings, watchlist, session, network
+        return EvidenceRefresher(clock=lambda: clock["t"], lease_store_fn=lambda: seeded.leases, sleep_fn=sleep,
+                                 build_fn=lambda s_, t: SV.default_build(s_, t, adapters=seeded.adapters, now_fn=lambda: clock["t"]))
+
+    first = _one_scheduler_run(make())
+    assert first["result"] == "COMPLETED" and [(a["symbol"], a["outcome"]) for a in first["attempts"]] == [("LRCX", A_BUILT), ("NVDA", A_BUILT), ("SNDK", A_BUILT)]
+    assert clock["t"] == D_NOW + timedelta(seconds=2 * config.EVIDENCE_REFRESH_SPACING_SECONDS)   # sequential, spaced
+    for a in first["attempts"]:
+        rows = seeded.store.packets(100, a["symbol"])
+        assert pick(rows, clock["t"])["packet_id"] == a["packet_id"]                   # the READY gate now reads the new packet
+        assert P.symbol_state(a["symbol"], rows, clock["t"], SV.settings())["state"] == FRESH
+    assert unchanged(seeded.store, before) and {net.host_of(c["url"]) for c in live.calls} <= {"www.sec.gov", "data.sec.gov"}
+    clock["t"] = D_NOW + timedelta(hours=1)                                            # later runs: a fresh process each time (state is the store)
+    assert [(a["symbol"], a["outcome"]) for a in make().run_once()["attempts"]] == [("MU", A_BUILT)]     # the budget left MU; AMD still backs off
+    clock["t"] = D_NOW + timedelta(hours=4, minutes=1)
+    assert [(a["symbol"], a["outcome"]) for a in make().run_once()["attempts"]] == [("AMD", A_BUILT)]    # its retry wait is over
+    clock["t"] += timedelta(minutes=15)
+    assert make().run_once()["result"] == "NOTHING_DUE"
+    assert all(P.symbol_state(s_, seeded.store.packets(100, s_), clock["t"], SV.settings())["state"] == FRESH for s_ in D_WATCH)
+    n = {t: len(v) for t, v in snapshot(seeded.store).items()}
+    assert n["evidence_packets"] == len(before["evidence_packets"]) + 5 and unchanged(seeded.store, before)   # five appended, none changed
+
+
 # ============================================================================================================ route
 def test_R01_get_evidence_refresh_reports_the_plan_and_builds_nothing(monkeypatch):
     from fastapi.testclient import TestClient
@@ -380,8 +776,8 @@ def test_R01_get_evidence_refresh_reports_the_plan_and_builds_nothing(monkeypatc
     res = TestClient(app).get("/api/evidence-refresh")
     assert res.status_code == 200
     d = res.json()
-    assert set(d) == {"version", "read_only", "mode", "checked_at", "scheduler", "plan", "model_requests", "broker_calls", "disclaimer"}
-    assert d["read_only"] is True and d["model_requests"] == 0 and d["broker_calls"] == 0 and d["mode"] == "OFF"
+    assert set(d) == {"version", "read_only", "mode", "checked_at", "preview_at", "scheduler", "plan", "model_requests", "broker_calls", "disclaimer"}
+    assert d["read_only"] is True and d["model_requests"] == 0 and d["broker_calls"] == 0 and d["mode"] == "OFF" and d["preview_at"] is None
     assert [i["symbol"] for i in d["plan"]["items"]] == ["NVDA", "AMD"] and d["plan"]["to_build"] == ["AMD", "NVDA"]
     assert d["scheduler"]["running"] is False and d["scheduler"]["lease"] == LEASE_NAME and w.builds == []
     assert TestClient(app).post("/api/evidence-refresh").status_code == 405

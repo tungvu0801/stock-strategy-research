@@ -24,8 +24,9 @@ MODES = ("OFF", "DRY_RUN", "ON")             # OFF: no thread. DRY_RUN: the thre
 FRESH, DUE, STALE, MISSING = "FRESH", "DUE", "STALE", "MISSING"
 # per-symbol decisions
 WAIT, BUILD, BACKOFF = "WAIT", "BUILD", "BACKOFF"
-# back-off reasons
+# back-off / wait reasons
 RETRY_WAIT, FAILURE_CAP = "RETRY_WAIT", "FAILURE_CAP"
+READ_ERROR = "READ_ERROR"                    # the symbol's packets could not be read: wait (never read as MISSING)
 
 # run results (service.EvidenceRefresher.run_once)
 R_OFF = "OFF"
@@ -38,13 +39,18 @@ R_DRY_RUN = "DRY_RUN"
 R_COMPLETED = "COMPLETED"
 R_STOPPED = "STOPPED"
 R_ERROR = "ERROR"
+R_CIRCUIT_OPEN = "CIRCUIT_OPEN"              # a recent run stopped on consecutive errors or a refusing source: no build until it closes
 
 # per-attempt outcomes
 A_BUILT, A_FAILED, A_ERROR, A_SKIPPED_FRESH, A_WOULD_BUILD = "BUILT", "FAILED", "ERROR", "SKIPPED_ALREADY_FRESH", "WOULD_BUILD"
+A_SUPERSEDED = "SKIPPED_SUPERSEDED"          # built, but at the insert a fresh packet (e.g. a manual Build) or the identical packet was already stored
+# why a built packet was not stored (service.persist_unless_superseded, decided inside the store's write transaction)
+SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL = "FRESH_PACKET_STORED", "IDENTICAL_PACKET_STORED"
 
 # a run stops (circuit open) on these: the source refused us, so asking again now is impolite and useless
 CIRCUIT_FETCH_STATUSES = ("ACCESS_DENIED",)
 MAX_CONSECUTIVE_ERRORS = 2
+CIRCUIT_STOP_REASONS = ("CONSECUTIVE_ERRORS", "SOURCE_REFUSED")   # these stops open the circuit for retry_hours (journal.py, durable)
 
 DISCLAIMER = ("Evidence refresh rebuilds the stored Stage 5.4 research packets on a schedule, outside the regular session, through the "
               "same engine as the Build button. It makes no model call, no broker call and no order, and changes no READY rule or threshold.")
