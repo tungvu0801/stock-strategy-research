@@ -11,7 +11,7 @@ route or config change.
           the date-based kinds (daily bar, earnings calendar, macro, fundamentals), numbers pinned and equal to their source constants,
           `usable`, and a scheduled macro release that has not been observed is never usable (boundaries).
   V01-V05 validation codes on fixtures (bars, series, quotes, feeds, news, events); every code is declared and accepted by the envelope;
-          uncovered 2025 / 2028 dates and bars on known holidays are flagged and blocked, never treated as verified sessions.
+          uncovered 2024 / 2028 dates and bars on known holidays are flagged and blocked, never treated as verified sessions.
   K01-K03 the calendar: the Stage 6.10A classifier is the one source of truth; holidays, early closes, PRE / REG / POST, DST change days,
           an uncovered year; the holiday rules reproduce the static 2026-2027 table; uncovered weekdays are NOT_COVERED, never guessed.
   B01-B02 request budgets on an injected clock: token bucket, daily cap at New York midnight, back-off, ACCESS_DENIED per cycle, plan
@@ -302,13 +302,13 @@ def test_V04_every_code_is_declared_blocking_codes_are_a_subset_and_the_envelope
     assert VA.blocking(["DAY_JUMP", "WIDE_SPREAD"]) is False and VA.blocking(["CROSSED"]) is True
 
 
-def test_V05_uncovered_2025_and_2028_dates_and_bars_on_known_holidays_are_flagged_and_blocked():
+def test_V05_uncovered_2024_and_2028_dates_and_bars_on_known_holidays_are_flagged_and_blocked():
     good = {"open": 10, "high": 11, "low": 9.5, "close": 10.5, "volume": 1}
     series = lambda days: VA.daily_series_codes([{**good, "day": d} for d in days])                     # noqa: E731
-    y25 = series([date(2025, 6, 30), date(2025, 7, 1), date(2025, 7, 2), date(2025, 7, 3), date(2025, 7, 7)])   # over 2025-07-04
-    assert y25["codes"] == ["CALENDAR_NOT_COVERED"] and y25["blocked"] is True and y25["holes"] == []          # never "verified complete"
-    assert "2025-07-03..2025-07-07" in y25["uncovered"] and "2025-06-30" in y25["uncovered"]
-    edge = series([date(2025, 12, 30), date(2025, 12, 31), date(2026, 1, 2)])                                # into the covered table
+    y24 = series([date(2024, 6, 28), date(2024, 7, 1), date(2024, 7, 2), date(2024, 7, 3), date(2024, 7, 5)])   # over 2024-07-04
+    assert y24["codes"] == ["CALENDAR_NOT_COVERED"] and y24["blocked"] is True and y24["holes"] == []          # never "verified complete"
+    assert "2024-07-03..2024-07-05" in y24["uncovered"] and "2024-06-28" in y24["uncovered"]
+    edge = series([date(2024, 12, 30), date(2024, 12, 31), date(2025, 1, 2)])                                # into the covered history
     assert edge["codes"] == ["CALENDAR_NOT_COVERED"] and edge["blocked"] is True
     assert series([date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6)])["blocked"] is False                  # covered: verified clean
     y28 = series([date(2027, 12, 30), date(2027, 12, 31), date(2028, 1, 3)])
@@ -320,17 +320,17 @@ def test_V05_uncovered_2025_and_2028_dates_and_bars_on_known_holidays_are_flagge
     two = series([date(2026, 11, 23), date(2026, 11, 27)])                                                   # 24th and 25th missing; 26th a holiday
     assert two["holes"] == [{"after": "2026-11-23", "before": "2026-11-27", "market_days": 2}] and two["blocked"] is True
     assert series([date(2026, 11, 24), date(2026, 11, 27)])["codes"] == []                                   # one missing day: below the threshold
-    for t in (ny(2025, 7, 3, 10, 0), ny(2028, 3, 1, 10, 0)):                                                  # the 6.10A classifier would say REG
+    for t in (ny(2024, 7, 3, 10, 0), ny(2028, 3, 1, 10, 0)):                                                  # the 6.10A classifier would say REG
         m = VA.minute_series_codes([{**good, "ts": t}], regular_only=False)
         assert m["codes"] == ["CALENDAR_NOT_COVERED"] and VA.blocking(m["codes"]), t
     early = VA.minute_series_codes([{**good, "ts": ny(2026, 11, 27, 13, 30)}])                               # after the 13:00 early close
     assert early["codes"] == ["OUTSIDE_SESSION"]
     q = FR.assess("QUOTE_DAY", ny(2028, 3, 1, 10, 0), ny(2028, 3, 1, 10, 0))
     assert (q["status"], q["reason"], q["usable"]) == ("UNAVAILABLE", "CALENDAR_NOT_COVERED", False)
-    assert FR.assess("NEWS_POLL", None, ny(2025, 7, 3, 7, 0))["reason"] == "CALENDAR_NOT_COVERED"
+    assert FR.assess("NEWS_POLL", None, ny(2024, 7, 3, 7, 0))["reason"] == "CALENDAR_NOT_COVERED"
     assert FR.assess("QUOTE_DAY", ny(2028, 3, 4, 10, 0), ny(2028, 3, 4, 10, 0))["status"] == "NOT_APPLICABLE"   # a 2028 Saturday is still a weekend
-    assert FR.assess_daily_bar(date(2025, 7, 3), ny(2025, 7, 7, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"
-    assert FR.assess_daily_bar(date(2025, 12, 31), ny(2026, 1, 2, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"   # the expected session is in 2025
+    assert FR.assess_daily_bar(date(2024, 7, 3), ny(2024, 7, 8, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"
+    assert FR.assess_daily_bar(date(2024, 12, 31), ny(2025, 1, 2, 10, 0))["reason"] == "CALENDAR_NOT_COVERED"   # the expected session is in 2024
 
 
 # ============================================================================================================ calendar (K)
@@ -367,21 +367,21 @@ def test_K02_the_holiday_rules_reproduce_the_static_2026_2027_table():
 
 def test_K03_uncovered_weekdays_are_not_covered_never_guessed_and_known_holidays_are_holidays():
     st = CAL.market_day_status
-    assert [st(d) for d in (date(2025, 7, 4), date(2025, 1, 9), date(2028, 1, 3), date(2025, 7, 5), date(2028, 1, 1))] == [
-        "NOT_COVERED", "NOT_COVERED", "NOT_COVERED", "WEEKEND", "WEEKEND"]                       # 2025-01-09 (a closure no rule derives) stays unknown
+    assert [st(d) for d in (date(2024, 7, 4), date(2024, 1, 9), date(2028, 1, 3), date(2024, 7, 6), date(2028, 1, 1))] == [
+        "NOT_COVERED", "NOT_COVERED", "NOT_COVERED", "WEEKEND", "WEEKEND"]                       # 2024: outside every verified table
     assert [st(d) for d in (date(2026, 11, 26), date(2026, 4, 3), date(2027, 6, 18), date(2026, 7, 3), date(2027, 12, 24))] == ["HOLIDAY"] * 5
     assert st(date(2026, 11, 27)) == "MARKET_DAY" and st(date(2026, 11, 2)) == "MARKET_DAY" and st(None) == "NOT_COVERED"
     with pytest.raises(CAL.CalendarNotCovered):
-        CAL.is_market_day(date(2025, 7, 3))
+        CAL.is_market_day(date(2024, 7, 3))
     with pytest.raises(CAL.CalendarNotCovered):
         CAL.is_market_day(date(2028, 1, 3))
     assert CAL.is_market_day(date(2028, 1, 1)) is False and CAL.is_market_day(date(2026, 11, 26)) is False
-    assert CAL.previous_market_day(date(2026, 1, 2)) is None                                       # 2026-01-01 holiday, then 2025: unknown
+    assert CAL.previous_market_day(date(2025, 1, 2)) is None                                       # 2025-01-01 holiday, then 2024: unknown
     assert CAL.next_market_day(date(2027, 12, 31)) is None and CAL.next_market_day(date(2027, 12, 23)) == date(2027, 12, 27)
-    assert CAL.regular_minutes(date(2025, 7, 3)) is None and CAL.regular_minutes(date(2025, 7, 5)) == 0
-    assert CAL.last_completed_session(ny(2026, 1, 2, 10, 0)) is None and CAL.last_completed_session(ny(2028, 3, 1, 19, 0)) is None
-    s25 = CAL.session(ny(2025, 7, 3, 10, 0))
-    assert (s25["session"], s25["day_status"], s25["market_day"], s25["covered"]) == ("REG", "NOT_COVERED", None, False)   # never claimed
+    assert CAL.regular_minutes(date(2024, 7, 3)) is None and CAL.regular_minutes(date(2024, 7, 6)) == 0
+    assert CAL.last_completed_session(ny(2025, 1, 2, 10, 0)) is None and CAL.last_completed_session(ny(2028, 3, 1, 19, 0)) is None
+    s24 = CAL.session(ny(2024, 7, 3, 10, 0))
+    assert (s24["session"], s24["day_status"], s24["market_day"], s24["covered"]) == ("REG", "NOT_COVERED", None, False)   # never claimed
 
 
 # ============================================================================================================ budgets (B)
@@ -454,7 +454,7 @@ def test_B02_provider_budgets_daily_cap_back_off_cycle_block_and_plan_pressure()
 # ============================================================================================================ isolation (I)
 ALLOWED_IMPORTS = {"__future__", "math", "re", "datetime", "typing", "dataclasses", "collections", "collections.abc", "urllib.parse", "pydantic", "market_intel",
                    "market_intel.calendar", "market_intel.settings", "market_intel.validate", "autorun", "autorun.calendar", "autorun.session",
-                   "api.validation", "config", "zoneinfo"}
+                   "api.validation", "config", "zoneinfo", "market_intel.calendar_history", "setups.market_hours"}
 
 
 def _imports(path: Path):
@@ -469,8 +469,9 @@ def _imports(path: Path):
 
 
 def test_I01_pure_contracts_only_pure_imports_no_io_and_nothing_imports_them():
-    files = sorted((ROOT / "market_intel").glob("*.py"))
-    assert [f.name for f in files] == ["__init__.py", "budget.py", "calendar.py", "freshness.py", "models.py", "settings.py", "validate.py"]
+    files = [ROOT / "market_intel" / n for n in ("__init__.py", "budget.py", "calendar.py", "freshness.py", "models.py", "settings.py", "validate.py",
+                                                 "calendar_history.py")]            # the pure contracts; the Stage 7.1 store: its own tests
+    assert all(f.is_file() for f in files)
     for f in files:
         assert _imports(f) <= ALLOWED_IMPORTS, (f.name, sorted(_imports(f) - ALLOWED_IMPORTS))
         src = f.read_text(encoding="utf-8")
@@ -505,13 +506,24 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #41 (Stage 7.0 merged; the Stage 7.1 base): what Stage 7.0 left, whatever a later stage changed since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_71}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_71} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 def test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited():
     assert FL.BASE_70 == "13c1635ca77bcd028d3e0aa9bf821376e4860905" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_70}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_70).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_70 | FL.EDITED_70, {"unexpected": sorted(changed - FL.NEW_70 - FL.EDITED_70), "missing": sorted((FL.NEW_70 | FL.EDITED_70) - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_70, FL.BASE_71).split())                # Stage 7.0 itself, between two fixed commits
+    assert stage == FL.NEW_70 | FL.EDITED_70, {"unexpected": sorted(stage - FL.NEW_70 - FL.EDITED_70), "missing": sorted((FL.NEW_70 | FL.EDITED_70) - stage)}
+    later = FL.NEW_71 | FL.EDITED_71                                                         # Stage 7.1, pinned by its own F tests
+    assert changed == FL.NEW_70 | FL.EDITED_70 | later, {"unexpected": sorted(changed - FL.NEW_70 - FL.EDITED_70 - later),
+                                                         "missing": sorted((FL.NEW_70 | FL.EDITED_70 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_70).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_70 and {p for p in changed if p in in_base} == FL.EDITED_70
+    assert {p for p in stage if p not in in_base} == FL.NEW_70 and {p for p in stage if p in in_base} == FL.EDITED_70
     assert FL.NEW_70 == {"DESIGN_70_MARKET_INTEL_CONTRACTS.md", "tests/test_market_intel_70.py"} | {f"market_intel/{n}" for n in (
         "__init__.py", "budget.py", "calendar.py", "freshness.py", "models.py", "settings.py", "validate.py")}
     assert {p for p in FL.EDITED_70 if not p.startswith("tests/")} == {".github/ci/pytest_groups.json"}     # no application file is edited
@@ -519,7 +531,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the
     for rel in sorted(FL.NEW_70 | FL.EDITED_70):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel
+            assert m61 not in post(rel) and m54 not in post(rel), rel
 
 
 def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_config_declares_no_market_intel_setting():
@@ -537,13 +549,13 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_config_declares_no
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_70.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_70) == FL.EDITED_70 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}     # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nStage 7.0 (market intelligence contracts")
     para = fl[start:fl.index('"""', start)]                                                 # the paragraph and the blank line before it
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_542 + NEW_70 plus this ledger.", " + NEW_542 plus this ledger.", 1)
@@ -553,8 +565,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                       # no new ledger key
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_70 & set(old)
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 7.0 left
+    assert set(new_led) == set(old)                                                         # no new ledger key
+    assert {k for k in old if old[k] != new_led[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_70 & set(old)
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

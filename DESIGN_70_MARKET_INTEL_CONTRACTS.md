@@ -118,6 +118,10 @@ A 2025 backfill or a 2028 date can therefore never be read as verified sessions 
 4. A live year (2028) is a separate, declared change to `autorun/calendar.py`, made before 2028.
 5. Stage 7.1 accepts a backfill only for covered years. Any uncovered dataset stays blocked.
 
+**Stage 7.1 implemented the 2025 step** (`market_intel/calendar_history.py`, `DESIGN_71` section 5). It was verified against the NYSE
+2025 calendar release, the NYSE notice of the 2025-01-09 closure, and the archived IEX daily bars of 82 symbols (250 sessions, the
+11 closures exactly). 2024 and earlier, and 2028 onward, remain `NOT_COVERED`.
+
 One fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.
 
 ## 6. Budgets (design C.8)

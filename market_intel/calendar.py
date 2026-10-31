@@ -15,16 +15,23 @@ Coverage strategy (DESIGN_70 section 5): years are added to a versioned table fr
 that cross-checks the holiday rules and lists the exceptional closures rules cannot derive (e.g. 2025-01-09, the national day of
 mourning). History (2025 and earlier) goes into a market_intel-owned table, never into autorun/calendar.py (frozen, used by the
 executor's session health); a live year (2028) is a separate, declared change to autorun/calendar.py. `rule_holidays` only cross-checks.
+
+Stage 7.1: 2025 is covered by the market_intel-owned, verified history table (calendar_history.py: the NYSE publications plus an
+empirical cross-check). For a history year the session is classified here with the 6.10A classifier's own thresholds (PRE from 04:00,
+REG from 09:30 to the close, POST to 20:00) and the history table's closes; 2026-2027 still come from the 6.10A classifier itself. Every
+other year (2024 and earlier, 2028 and later) stays NOT_COVERED.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from autorun import AFTER_HOURS, CLOSED as A_CLOSED, PREMARKET, REGULAR
+from autorun import AFTER_HOURS, AFTER_HOURS_END_MINUTE, CLOSED as A_CLOSED, PREMARKET, PREMARKET_MINUTE, REGULAR
 from autorun import calendar as CAL
 from autorun import session as SES
 from market_intel import CLOSED, POST, PRE, REG
+from market_intel import calendar_history as HIST
+from setups.market_hours import OPEN_MINUTE, to_et
 
 _MAP = {PREMARKET: PRE, REGULAR: REG, AFTER_HOURS: POST, A_CLOSED: CLOSED}
 MARKET_DAY, HOLIDAY, WEEKEND, NOT_COVERED = "MARKET_DAY", "HOLIDAY", "WEEKEND", "NOT_COVERED"
@@ -42,7 +49,38 @@ def _utc(now: datetime) -> datetime:
 
 
 def covered(d: date) -> bool:
-    return CAL.covered(d)
+    return CAL.covered(d) or HIST.covered(d)
+
+
+def _close_minute(d: date) -> Optional[int]:
+    """The regular close of a covered date (None on a weekend or a holiday): the history table for its years, else the 6.10A table."""
+    return HIST.close_minute(d) if HIST.covered(d) else CAL.close_minute(d)
+
+
+def calendar_version(d: Optional[date]) -> str:
+    if d is None:
+        return "UNAVAILABLE"
+    if HIST.covered(d):
+        return HIST.HISTORY_VERSION
+    return CAL.CALENDAR_VERSION if CAL.covered(d) else "NOT_COVERED"
+
+
+def _classify_history(now: datetime) -> Dict[str, Any]:
+    """A history-year moment, with the 6.10A classifier's own thresholds and the history table's close."""
+    et = to_et(_utc(now))
+    d = et.date()
+    m = et.hour * 60 + et.minute + et.second / 60.0
+    close = HIST.close_minute(d)
+    if close is None or m < PREMARKET_MINUTE or m >= AFTER_HOURS_END_MINUTE:
+        cls = A_CLOSED
+    elif m < OPEN_MINUTE:
+        cls = PREMARKET
+    elif m < close:
+        cls = REGULAR
+    else:
+        cls = AFTER_HOURS
+    return {"session": cls, "trading_date": d.isoformat(), "et_time": et.strftime("%H:%M:%S"), "close_minute": close,
+            "calendar": HIST.HISTORY_VERSION}
 
 
 def market_day_status(d: Optional[date]) -> str:
@@ -53,7 +91,7 @@ def market_day_status(d: Optional[date]) -> str:
         return WEEKEND
     if not covered(d):
         return NOT_COVERED
-    return MARKET_DAY if CAL.close_minute(d) is not None else HOLIDAY
+    return MARKET_DAY if _close_minute(d) is not None else HOLIDAY
 
 
 def is_market_day(d: date) -> bool:
@@ -67,6 +105,8 @@ def is_market_day(d: date) -> bool:
 def session(now: datetime) -> Dict[str, Any]:
     """{session, session_date, et_minute, market_day, close_minute, covered, calendar} for `now` (no broker clock: this layer reads none)."""
     c = SES.classify(_utc(now))
+    if c.get("trading_date") and HIST.covered(date.fromisoformat(c["trading_date"])):
+        c = _classify_history(now)                         # 2025: the verified history table, never the weekday assumption
     d = date.fromisoformat(c["trading_date"]) if c.get("trading_date") else None
     et = c.get("et_time")
     minute = int(et[:2]) * 60 + int(et[3:5]) if et else None
@@ -117,7 +157,7 @@ def regular_minutes(d: date) -> Optional[int]:
     """Minutes in the regular session of `d` (390, 210 on an early close, 0 on a weekend or holiday; None when not covered)."""
     if market_day_status(d) == NOT_COVERED:
         return None
-    close = CAL.close_minute(d)
+    close = _close_minute(d)
     return 0 if close is None else close - (9 * 60 + 30)
 
 

@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -65,6 +65,13 @@ envelope, settings, freshness policy, validation codes, session calendar and req
 (BASE_70 is PR #40's head). No config, server, route, thread, network, database, execution, setup, proposal, safety or UI change and
 nothing in the live path imports it (SEMANTIC_70 = {}). tests/test_market_intel_70.py pins behaviour and scope (BASE_70 / NEW_70 /
 EDITED_70).
+
+Stage 7.1 (market intelligence store; DESIGN_71_MARKET_INTEL_STORE.md) adds the append-only, point-in-time store in its own SQLite file
+(created lazily, never at import), its migrations, the raw archive, the parse-only Alpaca bars adapter and the offline backfill planner
+/ CLI (a real backfill stays unapproved and impossible from the CLI), plus the verified 2025 NYSE history calendar owned by market_intel.
+Its one intentional semantic change: market_intel/calendar.py covers 2025 (SEMANTIC_71); autorun/calendar.py is untouched. No config,
+server, route, thread, network, execution, setup, proposal, safety or UI change. tests/test_market_intel_store_71.py pins behaviour
+and scope (BASE_71 / NEW_71 / EDITED_71).
 """
 import hashlib
 import subprocess
@@ -163,8 +170,15 @@ NEW_70 = {"DESIGN_70_MARKET_INTEL_CONTRACTS.md", "market_intel/__init__.py", "ma
 EDITED_70 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry and the freeze bookkeeping only
 SEMANTIC_70: dict = {}                                                                    # Stage 7.0: pure contracts, nothing in the live path reads them
 INSTRUMENTATION_70: dict = {}                                                             # Stage 7.0: no executor instrumentation
+BASE_71 = "4e2f115dd9826647c38474506984f89546e3d9e0"                                    # main: Stage 7.0 merged (PR #41)
+NEW_71 = {"DESIGN_71_MARKET_INTEL_STORE.md", "market_intel/archive.py", "market_intel/calendar_history.py", "market_intel/ingest.py", "market_intel/migrations.py", "market_intel/sources/__init__.py", "market_intel/sources/alpaca_bars.py", "market_intel/store.py", "tests/test_market_intel_store_71.py"}   # Stage 7.1 (market intelligence store): its new files
+EDITED_71 = {".github/ci/pytest_groups.json", ".gitignore", "DESIGN_70_MARKET_INTEL_CONTRACTS.md", "market_intel/__init__.py", "market_intel/calendar.py", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # calendar coverage, docs, .gitignore, the CI entry and the freeze bookkeeping
+SEMANTIC_71 = {                                                                           # Stage 7.1: the INTENTIONAL behaviour change, file by file
+    "market_intel/calendar.py": "2025 is covered by the verified market_intel history table (calendar_history.py: NYSE publications + an empirical cross-check): 2025 weekdays read MARKET_DAY / HOLIDAY instead of NOT_COVERED; 2024 and earlier and 2028 onward stay NOT_COVERED; autorun/calendar.py and the 2026-2027 behaviour are unchanged",
+}
+INSTRUMENTATION_71: dict = {}                                                             # Stage 7.1: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "102bda07fc3c46f0b66f92e0f05e9da725e3a1c6214b8f2986216a57a43deddc",
+    ".github/ci/pytest_groups.json": "861d3f2f633e9a3e44446abc1ec4ea92d2a4d0afb6de917cba184f0f6e348dba",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
@@ -201,7 +215,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "0566df4f337d3b738fa8b334b2f4198598f10d1cb6f532d0310671ac7eeee433",
+    "tests/test_strategy_validation_62.py": "7542451bb20ed1969ab0e89aa95b44dc8a2e2d05edec233d8419cf06437f6bde",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
