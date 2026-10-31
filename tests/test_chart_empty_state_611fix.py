@@ -31,6 +31,13 @@ def at_base(rel):
     return run.stdout.decode("utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """PR #37's merged result, before the separately pinned ops changes."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_OPS}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, rel
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
@@ -56,14 +63,16 @@ def test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file():
     assert FL.BASE_611FIX == "2fe29f3a48359a365a1506c9f70093129be72602" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_611FIX}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_611FIX).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS
+    changed = set(_git("diff", "--name-only", FL.BASE_611FIX, FL.BASE_OPS).split())
     assert changed == FL.NEW_611FIX | FL.EDITED_611FIX, {"unexpected": sorted(changed - FL.NEW_611FIX - FL.EDITED_611FIX), "missing": sorted((FL.NEW_611FIX | FL.EDITED_611FIX) - changed)}
     assert FL.SEMANTIC_611FIX == {} and {p for p in changed if not p.startswith((".github/", "tests/"))} == {CSS}   # one production file, CSS only
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_611FIX).split())
     dirs = ("api/", "autorun/", "execution/", "safety/", "setups/", "ppe/", "proposals/", "evidence/", "decision_flow/", "dynamic_universe/", "unified_portfolio/", "trader_view/", "scripts/")
     for rel in sorted(p for p in in_base if p.startswith(dirs) and p.endswith((".py", ".ps1", ".json"))):
-        assert now_text(rel) == at_base(rel), rel                                                # no execution, strategy, risk, broker, startup or policy file changed
+        assert post(rel) == at_base(rel), rel                                                # no execution, strategy, risk, broker, startup or policy file changed
     for rel in ("config.py", "frontend/product_ui.js", "frontend/index.html", "frontend/trader_view.js", "browser_tests/flows.py"):
-        assert now_text(rel) == at_base(rel), rel
+        assert post(rel) == at_base(rel), rel
 
 
 def test_F02_ready_thresholds_ppe_scoring_and_the_frozen_hashes_are_unchanged():
@@ -144,13 +153,13 @@ REPLAY_611FIX = {'tests/test_bot_activity_68.py': [('    assert new == FL.NEW_68
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_rehashes_only_the_declared_entries():
     import ast
     for rel, edits in REPLAY_611FIX.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_611FIX) == FL.EDITED_611FIX - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 6.1.1 CSS fix (chart empty state)"):fl.index('"""', fl.index("\nStage 6.1.1 CSS fix (chart empty state)"))]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_541 + NEW_611FIX plus this ledger.", " + NEW_541 plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_611FIX = "):rebuilt.index("LEDGER = {")]
@@ -159,7 +168,8 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_rehashes_on
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the declarations, the paragraph, one line and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                     # no new key: every edited registered file was already registered
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_611FIX & set(old) == {CSS, ".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}
+    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])
+    assert set(mine) == set(old)                                                     # no new key: every edited registered file was already registered
+    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_611FIX & set(old) == {CSS, ".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
