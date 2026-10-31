@@ -7,6 +7,10 @@ the lease, re-read that symbol's packets and journal and build only if it is STI
 added one), then the same engine call as POST /api/evidence/packets, built in memory and stored by persist_unless_superseded, which
 decides inside the store's write transaction (so a concurrent manual Build can never be duplicated by the refresh).
 
+Session rule (DESIGN_542 section 2, step 3): no run or build starts during the regular session or within PRE_OPEN_MARGIN_S of the open
+(default_session_blocked), and the insert itself re-checks the session inside the write transaction: a build that finishes after the open
+is discarded, never stored (A_DISCARDED), and the run stops.
+
 Bounded retries: a FAILED packet, or an attempt that raised before any packet was stored (recorded in journal.py, durable), backs that
 symbol off for retry_hours, at most max_failures_per_day per symbol per 24 h, and spends the daily build budget. A refused source
 (ACCESS_DENIED) or two errors in a row stop the run AND open the circuit for retry_hours (durable): no build at all until it closes.
@@ -22,10 +26,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, List, Optional
 
 import config
-from evidence_refresh import (A_BUILT, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_SUPERSEDED, A_WOULD_BUILD, BUILD, CIRCUIT_FETCH_STATUSES,
-                              CIRCUIT_STOP_REASONS, DISCLAIMER, FRESH, LEASE_NAME, MAX_CONSECUTIVE_ERRORS, MODES, R_CIRCUIT_OPEN, R_COMPLETED,
-                              R_DRY_RUN, R_ERROR, R_LEASE_HELD, R_NOTHING_DUE, R_OFF, R_RUN_IN_PROGRESS, R_SKIPPED_NETWORK, R_SKIPPED_SESSION,
-                              R_STOPPED, SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL, VERSION)
+from evidence_refresh import (A_BUILT, A_DISCARDED, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_SUPERSEDED, A_WOULD_BUILD, BUILD,
+                              CIRCUIT_FETCH_STATUSES, CIRCUIT_STOP_REASONS, DISCLAIMER, FRESH, LEASE_NAME, MAX_CONSECUTIVE_ERRORS, MODES,
+                              PRE_OPEN_MARGIN_S, R_CIRCUIT_OPEN, R_COMPLETED, R_DRY_RUN, R_ERROR, R_LEASE_HELD, R_NOTHING_DUE, R_OFF,
+                              R_RUN_IN_PROGRESS, R_SKIPPED_NETWORK, R_SKIPPED_SESSION, R_STOPPED, SESSION_OPEN, SUPERSEDED_FRESH,
+                              SUPERSEDED_IDENTICAL, VERSION)
 from evidence_refresh import policy as P
 from evidence_refresh.journal import AttemptJournal
 
@@ -85,17 +90,22 @@ def _wall() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def persist_unless_superseded(store, built: dict, symbol: str, s: P.RefreshSettings, now: datetime) -> dict:
+def persist_unless_superseded(store, built: dict, symbol: str, s: P.RefreshSettings, now: datetime,
+                              in_session: Optional[Callable[[datetime], bool]] = None) -> dict:
     """Store one refresh build unless, at this moment, it is no longer wanted - decided INSIDE the store's own write transaction.
 
     EvidenceStore.write() opens BEGIN IMMEDIATE, so every other writer (a manual Build's insert included, in any process) waits until this
-    commits: nothing can land between the check and the insert. The build is not stored when the symbol already has a FRESH gate packet
-    (someone built one while this build was fetching) or when the identical packet (same packet_hash, UNIQUE) is already stored. Only
-    INSERTs, through the store's own column lists and encoder - the rows EvidenceStore.insert_packet writes; no existing row is touched."""
+    commits: nothing can land between the check and the insert. The build is not stored when the regular session is open at `now`
+    (in_session; default: the regular-session calendar), when the symbol already has a FRESH gate packet (someone built one while this
+    build was fetching) or when the identical packet (same packet_hash, UNIQUE) is already stored. Only INSERTs, through the store's own
+    column lists and encoder - the rows EvidenceStore.insert_packet writes; no existing row is touched."""
     from evidence.store import FETCH_COLS, ITEM_COLS, PACKET_COLS
     packet, items, fetches = built["packet"], built["items"], built["fetches"]
     sym = symbol.upper()
+    session_open = in_session or default_regular_session
     with store.write() as c:
+        if session_open(now):                              # evidence never changes under an open session (checked under the write lock)
+            return {"written": False, "reason": SESSION_OPEN, "existing_packet_id": None}
         rows = [dict(r) for r in c.execute("SELECT packet_id, ticker, status, created_at, failure_code, strength FROM evidence_packets "
                                            "WHERE ticker = ? ORDER BY created_at DESC, packet_id LIMIT ?", (sym, PACKETS_PER_SYMBOL))]
         st = P.symbol_state(sym, rows, now, s)
@@ -114,7 +124,8 @@ def persist_unless_superseded(store, built: dict, symbol: str, s: P.RefreshSetti
 
 
 def default_build(symbol: str, now: datetime, *, adapters: Optional[dict] = None, now_fn: Optional[Callable[[], datetime]] = None,
-                  store=None, settings_fn: Optional[Callable[[], P.RefreshSettings]] = None) -> dict:
+                  store=None, settings_fn: Optional[Callable[[], P.RefreshSettings]] = None,
+                  in_session: Optional[Callable[[datetime], bool]] = None) -> dict:
     """The engine call of POST /api/evidence/packets with only a ticker (default sources, lookback and adapters). The one difference from
     the Build button: the packet is built in memory (persist=False) and stored by persist_unless_superseded, so a packet someone stored
     while this build was fetching is never duplicated. Any exception propagates: the refresher records it in the attempt journal."""
@@ -123,7 +134,7 @@ def default_build(symbol: str, now: datetime, *, adapters: Optional[dict] = None
     st = store if store is not None else _default_store()
     out = EN.build_packet(EN.EvidenceRequest(ticker=symbol), adapters=adapters, now_fn=clock, store=st, persist=False)
     p = out["packet"]
-    w = persist_unless_superseded(st, out, symbol, (settings_fn or settings)(), _utc(clock()))
+    w = persist_unless_superseded(st, out, symbol, (settings_fn or settings)(), _utc(clock()), in_session=in_session)
     refused = sorted({f.get("host") for f in out.get("fetches", []) if f.get("status") in CIRCUIT_FETCH_STATUSES and f.get("host")})
     return {"status": p["status"], "packet_id": p["packet_id"] if w["written"] else None, "built_packet_id": p["packet_id"],
             "written": w["written"], "superseded": w["reason"], "existing_packet_id": w["existing_packet_id"], "failure_code": p.get("failure_code"),
@@ -132,8 +143,19 @@ def default_build(symbol: str, now: datetime, *, adapters: Optional[dict] = None
 
 
 def default_regular_session(now: datetime) -> bool:
+    """The regular session itself (the evaluator's calendar): the persistence check."""
     from setups.market_hours import is_regular_session
     return bool(is_regular_session(now))
+
+
+def default_session_blocked(now: datetime) -> bool:
+    """The start gate: the regular session, or the open is less than PRE_OPEN_MARGIN_S away (setups.market_hours.next_session_open treats
+    every weekday as a session, so on a holiday the margin is merely conservative)."""
+    from setups.market_hours import next_session_open
+    if default_regular_session(now):
+        return True
+    nxt = next_session_open(now)
+    return nxt is not None and (nxt - _utc(now)).total_seconds() < PRE_OPEN_MARGIN_S
 
 
 def _lease_store():
@@ -144,7 +166,7 @@ def _lease_store():
 class EvidenceRefresher:
     def __init__(self, *, mode_fn: Callable[[], str] = mode, settings_fn: Callable[[], P.RefreshSettings] = settings,
                  symbols_fn: Callable[[], List[str]] = default_symbols, rows_fn: Callable[[str], List[dict]] = default_rows,
-                 build_fn: Callable[[str, datetime], dict] = default_build, regular_session_fn: Callable[[datetime], bool] = default_regular_session,
+                 build_fn: Callable[[str, datetime], dict] = default_build, regular_session_fn: Callable[[datetime], bool] = default_session_blocked,
                  network_fn: Callable[[], bool] = lambda: bool(config.EVIDENCE_NETWORK_ENABLED), lease_store_fn: Optional[Callable[[], object]] = _lease_store,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc), sleep_fn: Optional[Callable[[float], bool]] = None,
                  spacing_s: Optional[float] = None, owner: Optional[str] = None, journal: Optional[AttemptJournal] = None):
@@ -161,7 +183,7 @@ class EvidenceRefresher:
         self.last_run_at: Optional[str] = None
         self.last_result: Optional[dict] = None
         self.last_error: Optional[str] = None
-        self.totals = {A_BUILT: 0, A_FAILED: 0, A_ERROR: 0, A_SKIPPED_FRESH: 0, A_SUPERSEDED: 0, A_WOULD_BUILD: 0}
+        self.totals = {A_BUILT: 0, A_FAILED: 0, A_ERROR: 0, A_SKIPPED_FRESH: 0, A_SUPERSEDED: 0, A_DISCARDED: 0, A_WOULD_BUILD: 0}
 
     # ------------------------------------------------------------------------------------------------ read-only
     def plan(self, now: Optional[datetime] = None) -> dict:
@@ -285,7 +307,11 @@ class EvidenceRefresher:
                     break
                 continue
             errors_in_row = 0
-            if out.get("written") is False:                       # built, but someone stored a packet first: nothing written
+            if out.get("written") is False and out.get("superseded") == SESSION_OPEN:   # finished after the open: discarded, not a failure
+                attempts.append(self._record(t, sym, A_DISCARDED, reason=SESSION_OPEN, built_status=out.get("status")))
+                log.info("evidence refresh: %s built but not stored (the regular session opened); rebuilt after the close", sym)
+                stop_reason = "SESSION_OPENED"
+            elif out.get("written") is False:                     # built, but someone stored a packet first: nothing written
                 attempts.append(self._record(t, sym, A_SUPERSEDED, reason=out.get("superseded"), packet_id=out.get("existing_packet_id"),
                                              built_status=out.get("status")))
                 if out.get("superseded") == SUPERSEDED_IDENTICAL:  # the gate may still want a build: bounded like an error
@@ -300,6 +326,8 @@ class EvidenceRefresher:
             if out.get("refused_hosts"):
                 stop_reason = "SOURCE_REFUSED"
                 log.warning("evidence refresh: %s refused the requests; stopping this run", ", ".join(out["refused_hosts"]))
+                break
+            if stop_reason == "SESSION_OPENED":
                 break
         circuit = None
         if stop_reason in CIRCUIT_STOP_REASONS and s.retry_hours > 0:

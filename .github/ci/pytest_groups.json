@@ -113,7 +113,8 @@
         "test_momentum_65.py",
         "test_universe_integrity_651.py",
         "test_mean_reversion_66.py",
-        "test_breakout_67.py"
+        "test_breakout_67.py",
+        "test_market_intel_70.py"
       ]
     },
     "campaign": {

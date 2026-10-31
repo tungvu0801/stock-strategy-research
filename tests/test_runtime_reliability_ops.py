@@ -176,7 +176,7 @@ def test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_tra
     assert FL.BASE_OPS == "1bd7542dd392035e445ae0c93ecb503a934fcf53" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_OPS}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_OPS).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542
+    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70
     changed = set(_git("diff", "--name-only", FL.BASE_OPS, FL.BASE_610D).split())
     assert changed == FL.NEW_OPS | FL.EDITED_OPS, {"unexpected": sorted(changed - FL.NEW_OPS - FL.EDITED_OPS), "missing": sorted((FL.NEW_OPS | FL.EDITED_OPS) - changed)}
     assert FL.SEMANTIC_OPS == {}
