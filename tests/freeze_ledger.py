@@ -132,7 +132,7 @@ LEDGER = {
     "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
     "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
     "frontend/product_ui.css": "615a863bc5c4918b37f831264eb30fd2b6857133fc80d38a47aba7162a0adfde",
-    "frontend/product_ui.js": "4a71ac0d195edbb20c1495ac155a8bcc78a96b906e8272a81a48a9a5856cc0bb",
+    "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
     "tests/frontend/product_flow.test.cjs": "5c4afa63a3510be05030dfce4b72d29f0eab2757a2be1f6ee8ccc593ad58229e",

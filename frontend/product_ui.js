@@ -2160,7 +2160,7 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
-  // >>> Stage 6.10D engine health visibility (DESIGN_610D_ENGINE_HEALTH.md): one fold under the diagnostics line with what an operator otherwise reads
+  // >>> Engine health visibility, Stage 6.10D (DESIGN_610D_ENGINE_HEALTH.md): one fold under the diagnostics line with what an operator otherwise reads
   // from raw GETs - the deployed commit (GET /api/ops/engine, read once per page), the Stage 6.10A start-up outcome, the preflight with its non-PASS
   // checks, the supervisor's lease / last error, the worker heartbeat and its staleness, auto-run problems, and the Stage 6.9 Robinhood gateway state
   // (read-only, user managed). Display only: every row is a value the backend already reports (GET /api/execution/activity, polled by the Stage 6.8
@@ -2248,7 +2248,7 @@
     const html = engineHtml(engineModel(state.botAct, state.engine, state.rh), !!state.engineOpen);
     if (el.innerHTML !== html) el.innerHTML = html;
   }
-  // <<< Stage 6.10D engine health visibility
+  // <<< Engine health visibility, Stage 6.10D
 
   return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,

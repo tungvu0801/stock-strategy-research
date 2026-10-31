@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -216,7 +217,9 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_executi
     assert ("# >>> " + "Stage 6.1") not in src                                                            # never a Stage 6.1 marker carrier (tests/test_forward_validation_61.py::test_Z02 scans every file)
     js = (ROOT / "frontend/product_ui.js").read_text(encoding="utf-8").replace("\r\n", "\n")
     base_js = at_base("frontend/product_ui.js")
-    stripped = js[:js.index("  // >>> Stage 6.10D")] + js[js.index("  // <<< Stage 6.10D engine health visibility\n") + len("  // <<< Stage 6.10D engine health visibility\n") + 1:]
+    end_marker = "  // <<< Engine health visibility, Stage 6.10D\n"
+    stripped = js[:js.index("  // >>> Engine health visibility, Stage 6.10D")] + js[js.index(end_marker) + len(end_marker) + 1:]
+    assert not re.search(r"(//|#|<!--) *>>> *Stage 6\.1", js)                                            # a block marker never starts with Stage 6.1 (the Stage 6.1 freeze tests scan for that prefix)
     stripped = stripped.replace("    renderEngine();                                                                                      // Stage 6.10D: the engine fold sits under the diagnostics line\n", "", 1)
     stripped = stripped.replace(",\n           // Stage 6.10D\n           ENGINE_KEYS, ENGINE_NOT_LOADED, engineClock, engineAge, engineModel, engineHtml, renderEngine, loadEngine, loadRobinhood };", " };", 1)
     assert stripped == base_js                                                                            # the block, one call and the export line: nothing else

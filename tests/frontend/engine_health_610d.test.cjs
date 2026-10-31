@@ -138,7 +138,8 @@ test("9 helpers and wiring: UTC clock and ages, the marked block, the diagnostic
   assert.equal(PUI.engineAge("2026-10-31T05:40:40+00:00", NOW), "4 min ago");
   assert.equal(PUI.engineAge("2026-10-31T02:00:00+00:00", NOW), "4 h ago");
   assert.equal(PUI.engineAge("bad", NOW), "—");
-  const begin = JS.indexOf("// >>> Stage 6.10D engine health visibility"), end = JS.indexOf("// <<< Stage 6.10D engine health visibility");
+  const begin = JS.indexOf("// >>> Engine health visibility, Stage 6.10D"), end = JS.indexOf("// <<< Engine health visibility, Stage 6.10D");
+  assert.ok(!/(\/\/|#|<!--) *>>> *Stage 6\.1/.test(JS), "a block marker must never start with Stage 6.1 (the Stage 6.1 freeze tests scan for that prefix)");
   assert.ok(begin > 0 && end > begin);
   const block = JS.slice(begin, end);
   for (const fn of ["function engineModel(", "function engineHtml(", "function renderEngine(", "function loadEngine(", "function loadRobinhood("]) assert.ok(block.includes(fn), fn);

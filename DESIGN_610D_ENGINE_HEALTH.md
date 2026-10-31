@@ -8,13 +8,14 @@ preflight transition DEGRADED → READY and its non-PASS checks (`auto_run.prefl
 
 **What.** Two display-only additions, nothing decided and no POST:
 
-1. `GET /api/ops/engine` (api/routes/ops_status.py, marked block "Stage 6.10D"): `deployed` — the commit the running process was imported
+1. `GET /api/ops/engine` (api/routes/ops_status.py, marked block "Engine health visibility, Stage 6.10D"; the marker never starts with
+   "Stage 6.1", which the Stage 6.1 freeze tests scan for as a prefix): `deployed` — the commit the running process was imported
    from, read once at import from `.git` without running git (plain repo, a worktree whose `.git` is a `gitdir:` file with `commondir`,
    symbolic or detached HEAD, loose or packed refs; `sha` is `None` with a `source` reason when it cannot be read); `tree_now` — the same
    read now, and `tree_matches_running`; `process` — pid, start time, interpreter, working directory; `runner` — the runner's PID file
    (scripts/run_stock_agent.py) **only** when it names this process, otherwise `None`. No subprocess, no network, no broker, no Robinhood.
-2. The **ENGINE fold** under the diagnostics line of the TRADE section (frontend/product_ui.js, marked block "Stage 6.10D engine health
-   visibility"): `engineModel(activity, engine, robinhood)` turns values the backend already reports into rows — Deployed (sha, branch,
+2. The **ENGINE fold** under the diagnostics line of the TRADE section (frontend/product_ui.js, marked block "Engine health visibility,
+   Stage 6.10D"): `engineModel(activity, engine, robinhood)` turns values the backend already reports into rows — Deployed (sha, branch,
    start time; a differing checked-out tree is a warning asking for a restart), Start-up (Monitor only / demoted with its code / still
    starting), Preflight (status, blocking codes, every non-PASS check; INFO checks are information, not a degradation), Supervisor (error /
    running / lease / last run), Worker (state, heartbeat age, STALE past `stale_after_s`, next run), Auto-run problems, and Robinhood
