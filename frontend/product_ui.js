@@ -1668,6 +1668,7 @@
     if (!el) { el = document.createElement("div"); el.id = "pui-diag"; const line = $("tv-status-line"); if (line) line.insertAdjacentElement("afterend", el); else center.appendChild(el); }
     const html = diagHtml(diagModel(readChips()), state.diagOpen);
     if (el.innerHTML !== html) el.innerHTML = html;
+    renderEngine();                                                                                      // Stage 6.10D: the engine fold sits under the diagnostics line
   }
   function ensureTradeCards() {
     const grid = q("#tv-body .tv-grid");
@@ -2159,6 +2160,96 @@
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
   }
+  // >>> Engine health visibility, Stage 6.10D (DESIGN_610D_ENGINE_HEALTH.md): one fold under the diagnostics line with what an operator otherwise reads
+  // from raw GETs - the deployed commit (GET /api/ops/engine, read once per page), the Stage 6.10A start-up outcome, the preflight with its non-PASS
+  // checks, the supervisor's lease / last error, the worker heartbeat and its staleness, auto-run problems, and the Stage 6.9 Robinhood gateway state
+  // (read-only, user managed). Display only: every row is a value the backend already reports (GET /api/execution/activity, polled by the Stage 6.8
+  // block; GET /api/unified-portfolio/robinhood, read when the fold is open); nothing is decided or inferred here and no POST exists.
+  const ENGINE_KEYS = ["deployed", "tree", "startup", "preflight", "supervisor", "worker", "problems", "robinhood"];
+  const ENGINE_NOT_LOADED = "Engine status not loaded";
+  function engineClock(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return "—";
+    return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
+  }
+  function engineAge(iso, nowMs) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d.getTime())) return "—";
+    const s = Math.max(0, Math.round(((nowMs || Date.now()) - d.getTime()) / 1000));
+    return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+  }
+  function engineModel(act, engine, rh, nowMs) {
+    const now = nowMs || Date.now();
+    const items = [];
+    if (engine === undefined || engine === null) items.push({ key: "deployed", level: "unknown", text: "Deployed commit not loaded" });
+    else {
+      const dep = engine.deployed || {}, sha = dep.sha ? String(dep.sha).slice(0, 7) : null, ref = dep.ref ? String(dep.ref).replace(/^refs\/heads\//, "") : "";
+      const started = engine.process && engine.process.started_at ? ` · started ${engineClock(engine.process.started_at)}` : "";
+      items.push({ key: "deployed", level: sha ? "ok" : "warn", text: sha ? `Deployed ${sha}${ref ? ` (${ref})` : ""}${started}` : `Deployed commit unknown (${words(dep.source || "no git data")})${started}` });
+      const tn = engine.tree_now && engine.tree_now.sha ? String(engine.tree_now.sha) : null;
+      if (sha && tn && tn.slice(0, 7) !== sha) items.push({ key: "tree", level: "warn", text: `Checked-out tree ${tn.slice(0, 7)} differs from the running code ${sha} · restart to deploy it` });
+    }
+    if (!act) items.push({ key: "startup", level: "unknown", text: ENGINE_NOT_LOADED });
+    else {
+      const ar = act.auto_run || {}, su = ar.startup, pf = ar.preflight, sv = ar.supervisor, w = act.worker;
+      if (su) items.push({ key: "startup", level: su.pending || su.demoted ? "warn" : "ok",
+                           text: su.pending ? "Start-up: components still starting"
+                               : su.demoted ? `Start-up: Paper Auto demoted to Monitor only${su.code ? ` (${words(su.code)})` : ""}${su.at ? ` at ${engineClock(su.at)}` : ""}`
+                               : `Start-up: Monitor only${su.at ? ` at ${engineClock(su.at)}` : ""}${ar.policy ? ` · policy ${words(ar.policy)}` : ""}` });
+      if (pf) {
+        const non = (pf.checks || []).filter((c) => c && c.status !== "PASS"), blocking = pf.blocking || [];
+        const level = pf.status === "READY" ? (non.some((c) => c.status !== "INFO") ? "warn" : "ok") : pf.status ? "warn" : "unknown";
+        items.push({ key: "preflight", level, text: `Preflight ${pf.status || "—"}${pf.at ? ` (${engineAge(pf.at, now)})` : ""}${blocking.length ? ` · blocking: ${blocking.map(words).join(", ")}` : ""}${non.length ? ` · ${non.map((c) => `${words(c.id)}: ${c.text || words(c.status)}`).join(" · ")}` : ""}` });
+      }
+      if (sv) items.push({ key: "supervisor", level: sv.last_error ? "bad" : sv.running ? "ok" : "warn",
+                           text: sv.last_error ? `Supervisor error: ${sv.last_error}`
+                               : `Supervisor ${sv.running ? "running" : "not running"}${sv.last_result && sv.last_result.lease ? ` · lease ${words(sv.last_result.lease)}` : ""}${sv.last_run_at ? ` · last run ${engineAge(sv.last_run_at, now)}` : ""}` });
+      if (w) {
+        const stale = w.heartbeat_age_s != null && w.stale_after_s != null && Number(w.heartbeat_age_s) > Number(w.stale_after_s);
+        items.push({ key: "worker", level: !w.running || stale ? "bad" : "ok",
+                     text: `Worker ${w.running ? (w.label || words(w.state) || "running") : "not running"}${w.heartbeat_age_s != null ? ` · heartbeat ${Math.round(Number(w.heartbeat_age_s))} s ago${stale ? " (STALE)" : ""}` : ""}${w.next_at ? ` · next run ${engineClock(w.next_at)}` : ""}` });
+      }
+      if (Array.isArray(ar.problems) && ar.problems.length) items.push({ key: "problems", level: "bad", text: `Auto-run problems: ${ar.problems.map((p) => (typeof p === "string" ? words(p) : (p && (p.text || p.code)) || "problem")).join("; ")}` });
+    }
+    if (rh) items.push({ key: "robinhood", level: rh.state === "ERROR" ? "warn" : rh.state ? "ok" : "unknown",
+                         text: `Robinhood${rh.write_capable === false ? " read-only" : ""}${rh.account_type ? ` · ${words(rh.account_type)} account` : ""} · ${rh.state === "ERROR" ? `${words(rh.reason || "error")}${rh.message ? `: ${rh.message}` : ""}` : (rh.state ? words(rh.state) : "—")}` });
+    const bad = items.filter((i) => i.level === "bad"), warn = items.filter((i) => i.level === "warn"), known = items.filter((i) => i.level !== "unknown");
+    const level = bad.length ? "bad" : warn.length ? "warn" : known.length ? "ok" : "unknown";
+    const summary = bad.length ? `⚠ ${bad[0].text}` : warn.length ? `⚠ ${warn[0].text}` : known.length ? known[0].text : ENGINE_NOT_LOADED;
+    return { level, summary, items, count: items.length };
+  }
+  function engineHtml(m, open) {
+    if (!m || !m.count) return "";
+    return `<details class="pui-fold pui-diag pui-engine ${esc(m.level)}" data-pui-engine="${esc(m.level)}"${open ? " open" : ""}><summary data-pui="engine"><span class="pui-diag-summary">ENGINE · ${esc(m.summary)}</span></summary>` +
+      `<ul>${m.items.map((i) => `<li class="${esc(i.level)}" data-pui-engine-item="${esc(i.key)}">${esc(i.text)}</li>`).join("")}</ul></details>`;
+  }
+  function loadEngine() {
+    if (state.engine !== undefined || state.engineLoading) return;
+    state.engineLoading = true;
+    getJson("/api/ops/engine").then((d) => { state.engine = d; }).catch(() => { state.engine = null; }).then(() => { state.engineLoading = false; renderEngine(); });
+  }
+  function loadRobinhood() {
+    if (state.rhLoading || (state.rhAt && Date.now() - state.rhAt < 60000)) return;
+    state.rhLoading = true;
+    getJson("/api/unified-portfolio/robinhood").then((d) => { state.rh = d; }).catch(() => {}).then(() => { state.rhLoading = false; state.rhAt = Date.now(); renderEngine(); });
+  }
+  function renderEngine() {
+    const center = q("#tv-body .tv-center");
+    if (!center) return;
+    let el = $("pui-engine");
+    if (!el) {
+      el = document.createElement("div"); el.id = "pui-engine";
+      const after = $("pui-diag") || $("tv-status-line");
+      if (after) after.insertAdjacentElement("afterend", el); else center.prepend(el);
+      el.addEventListener("toggle", (e) => { const d = e.target; if (d && d.dataset && d.dataset.puiEngine !== undefined) { state.engineOpen = d.open; if (d.open) loadRobinhood(); } }, true);
+    }
+    loadEngine();
+    if (state.engineOpen) loadRobinhood();
+    const html = engineHtml(engineModel(state.botAct, state.engine, state.rh), !!state.engineOpen);
+    if (el.innerHTML !== html) el.innerHTML = html;
+  }
+  // <<< Engine health visibility, Stage 6.10D
+
   return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,
            activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart, renderDiag, renderPositions, renderActivity, renderMore, state,
@@ -2177,5 +2268,7 @@
            // Stage 6.10C
            NA, DF_DECISIONS, DF_CLS, DF_MEANS, DF_WATCH_NOTE, DF_NO_SCORE, DF_RANKING, etUtc, decisionRowModel, cycleModel, closestModel, decisionFlowModel, decisionHistoryModel, explainModel,
            explainProblem, cycleItemsHtml, tickerTableHtml, rowDetailHtml, closestHtml, decisionFlowHtml, cycleDetailHtml, decisionHistoryHtml, explainHtml, decisionHistoryShellHtml,
-           renderDecision, renderDecisionHistory, renderExplain, loadDecision, loadDecisionHistory, renderDecisionFixture };
+           renderDecision, renderDecisionHistory, renderExplain, loadDecision, loadDecisionHistory, renderDecisionFixture,
+           // Stage 6.10D
+           ENGINE_KEYS, ENGINE_NOT_LOADED, engineClock, engineAge, engineModel, engineHtml, renderEngine, loadEngine, loadRobinhood };
 });

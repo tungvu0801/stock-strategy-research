@@ -42,7 +42,8 @@ GET_ROUTES = {"/api/execution", "/api/execution/positions", "/api/execution/inte
               "/api/proposals/history", "/api/forward-validation", "/api/forward-validation/events", "/api/account-refresh", "/api/terminal/state/",
               "/api/strategy-registry", "/api/strategy-registry/", "/api/forward-validation/frozen-controls",   # Stage 6.1.2: the strategy registry and the frozen controls (GET only)
               "/api/execution/activity", "/api/account-refresh/positions", "/api/unified-portfolio",   # Stage 6.8: Bot Activity and the account positions (GET only)
-              "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain"}   # Stage 6.10C: Decision Flow and Decision history (GET only)
+              "/api/decision-flow", "/api/decision-flow/history", "/api/decision-flow/cycle", "/api/decision-flow/explain",   # Stage 6.10C: Decision Flow and Decision history (GET only)
+              "/api/ops/engine", "/api/unified-portfolio/robinhood"}   # Stage 6.10D: the engine fold (GET only)
 # the exact in-place edits of tests/test_forward_validation_61.py (each `old` occurs once in the base; applied in order they produce the current file)
 EDITS_61 = [
     ('OPEN_61, CLOSE_61 = "# >>> " + "Stage 6.1", "# <<< " + "Stage 6.1"                   # built, not literal: this file must not read as a marked-block carrier\n',

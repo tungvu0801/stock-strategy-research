@@ -58,6 +58,13 @@ def at_base(rel):
     return out.decode("utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """PR #39's merged result; later stages have their own exact scope checks."""
+    result = subprocess.run(["git", "show", f"{FL.BASE_610D}:{rel}"], cwd=ROOT, capture_output=True)
+    assert result.returncode == 0, rel
+    return result.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 def now(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
@@ -169,6 +176,8 @@ def test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_tra
     assert FL.BASE_OPS == "1bd7542dd392035e445ae0c93ecb503a934fcf53" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_OPS}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_OPS).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
+    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D
+    changed = set(_git("diff", "--name-only", FL.BASE_OPS, FL.BASE_610D).split())
     assert changed == FL.NEW_OPS | FL.EDITED_OPS, {"unexpected": sorted(changed - FL.NEW_OPS - FL.EDITED_OPS), "missing": sorted((FL.NEW_OPS | FL.EDITED_OPS) - changed)}
     assert FL.SEMANTIC_OPS == {}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_OPS).split())
@@ -263,13 +272,13 @@ REPLAY_OPS = {'tests/test_bot_activity_68.py': [('    assert new == FL.NEW_68 | 
 def test_F02_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     import ast
     for rel, edits in REPLAY_OPS.items():
-        text = now(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_OPS) == FL.EDITED_OPS - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = now("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nOps runtime reliability (after Stage 5.4.1)")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS plus this ledger.", " + NEW_610C + NEW_541 + NEW_611FIX plus this ledger.", 1)
@@ -279,8 +288,9 @@ def test_F02_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                # the paragraph, the declarations, one line and the ledger - nothing else
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == {"scripts/check_stock_agent.ps1", "scripts/run_stock_agent.py"}   # two new keys: the two edited ops scripts
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_OPS & set(old) == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}
+    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])
+    assert set(mine) - set(old) == {"scripts/check_stock_agent.ps1", "scripts/run_stock_agent.py"}   # two new keys: the two edited ops scripts
+    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_OPS & set(old) == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
     assert json.loads(now(".github/ci/pytest_groups.json"))["groups"]["runner"]["files"].count("test_runtime_reliability_ops.py") == 1

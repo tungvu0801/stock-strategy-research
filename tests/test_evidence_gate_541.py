@@ -198,16 +198,18 @@ def test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_ev
     assert stage541 == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(stage541 - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - stage541)}
     changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
+    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
     assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later), "missing": sorted((FL.NEW_541 | FL.EDITED_541 | later) - changed)}
     assert set(FL.SEMANTIC_541) == {"trader_view/research.py"}
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
-            assert p.read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
+            assert post(rel) == at_base(rel), rel
+            assert p.read_text(encoding="utf-8").replace("\r\n", "\n") == post(rel), rel      # since then: Stage 6.10D touches none of these
     for rel in sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "trader_view").glob("*.py")):
         if rel != "trader_view/research.py":
-            assert (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
+            assert post(rel) == at_base(rel), rel
+            assert (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == post(rel), rel
 
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
