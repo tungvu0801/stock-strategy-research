@@ -179,6 +179,7 @@ SEMANTIC_71 = {                                                                 
 INSTRUMENTATION_71: dict = {}                                                             # Stage 7.1: no executor instrumentation
 LEDGER = {
     ".github/ci/pytest_groups.json": "861d3f2f633e9a3e44446abc1ec4ea92d2a4d0afb6de917cba184f0f6e348dba",
+    ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",

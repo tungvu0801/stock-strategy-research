@@ -753,17 +753,15 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                       # no new ledger key
+    assert set(FL.LEDGER) - set(old) == {".gitignore"}                                     # one new key: the store's ignore lines (read as on main earlier)
     assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_71 & set(old)
+    gi_base, gi_now = at_base(".gitignore"), now_text(".gitignore")
+    assert gi_now.startswith(gi_base) and gi_now[len(gi_base):] == "data/market_intel.db\ndata/market_intel.db-wal\ndata/market_intel.db-shm\n"
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 
 
 REPLAY_71 = {
-    '.gitignore': [
-        ('runtime/\n',
-         'runtime/\ndata/market_intel.db\ndata/market_intel.db-wal\ndata/market_intel.db-shm\n'),
-    ],
     'DESIGN_70_MARKET_INTEL_CONTRACTS.md': [
         ('\nOne fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.\n',
          '\n**Stage 7.1 implemented the 2025 step** (`market_intel/calendar_history.py`, `DESIGN_71` section 5). It was verified against the NYSE\n2025 calendar release, the NYSE notice of the 2025-01-09 closure, and the archived IEX daily bars of 82 symbols (250 sessions, the\n11 closures exactly). 2024 and earlier, and 2028 onward, remain `NOT_COVERED`.\n\nOne fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.\n'),
