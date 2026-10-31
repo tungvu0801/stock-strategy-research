@@ -17,11 +17,13 @@ reconciliation and the Stage 5.9.1 safety gate, on the Alpaca PAPER host only. `
 from __future__ import annotations
 
 import argparse
+import atexit
 import io
 import json
 import logging
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -34,6 +36,44 @@ SECRET_NAME = re.compile(r"(KEY|SECRET|TOKEN|PASSWORD|PASSWD|AUTH|COOKIE|SESSION
 INFO_LOGGERS = ("stock_agent.runner", "execution", "setups.scheduler", "safety.service", "uvicorn.error")
 MAX_LOG_BYTES = 20 * 1024 * 1024
 LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+SUSPEND_GAP_S = 120.0                                                # ops reliability: a wall-clock jump above this between two ~1 s ticks is a suspend
+
+
+class SuspendDetector:
+    """Ops reliability, log only: notices when the wall clock jumped between two ticks of a loop that sleeps about a second - the
+    process was suspended (machine sleep or hibernation) or stalled. It changes nothing; the runner only logs the gap so a log that
+    stops and resumes can be told apart from a process that died."""
+
+    def __init__(self, threshold_s: float = SUSPEND_GAP_S):
+        self.threshold_s = float(threshold_s)
+        self.last = None
+
+    def tick(self, now: float):
+        prev, self.last = self.last, float(now)
+        if prev is None:
+            return None
+        gap = self.last - prev
+        return gap if gap > self.threshold_s else None
+
+
+def install_exit_logging(server, log=None) -> None:
+    """Ops reliability, log only: one line naming the signal uvicorn is about to act on (its own handler then runs, unchanged - it is
+    what sets should_exit) and one line when the interpreter exits. A log that ends without either line was killed from outside."""
+    log = log or LOG
+    original = server.handle_exit
+
+    def handle_exit(sig, frame):
+        try:
+            name = signal.Signals(sig).name
+        except (ValueError, AttributeError):
+            name = str(sig)
+        log.info("runner: shutting down (signal %s)", name)
+        return original(sig, frame)
+
+    server.handle_exit = handle_exit
+    atexit.register(lambda: log.info("runner: interpreter exit (atexit, pid %s)", os.getpid()))
 EXIT_OK, EXIT_FAILED, EXIT_DUPLICATE = 0, 1, 3
 
 
@@ -345,7 +385,11 @@ def _run(a, app_root: Path, runtime: Path, pid_path: Path, stop_path: Path, out_
             except Exception as exc:  # noqa: BLE001
                 LOG.warning("runner: scheduler status unavailable (%s)", type(exc).__name__)
         last_beat = time.time()
+        suspend = SuspendDetector()
         while not server.should_exit:
+            gap = suspend.tick(time.time())
+            if gap:
+                LOG.info("runner: resumed after %.0f s (wall clock jumped while the process slept; the loops and leases continue)", gap)
             if stop_requested(stop_path, a.instance_id):
                 LOG.info("runner: stop requested by scripts/stop_stock_agent.ps1 - shutting down")
                 server.should_exit = True
@@ -367,6 +411,7 @@ def _run(a, app_root: Path, runtime: Path, pid_path: Path, stop_path: Path, out_
             time.sleep(1.0)
 
     threading.Thread(target=watcher, name="stock-agent-runner-watcher", daemon=True).start()
+    install_exit_logging(server)
     server.run()
     if not server.started:
         LOG.error("runner: the server did not start (port %s busy or startup failed; see %s)", a.port, err_path)

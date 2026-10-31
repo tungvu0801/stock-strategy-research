@@ -134,6 +134,7 @@
         "test_aapl_smoke_60.py",
         "test_db_bootstrap_busy.py",
         "test_notifications_44.py",
+        "test_runtime_reliability_ops.py",
         "test_windows_runner_60.py"
       ]
     }
