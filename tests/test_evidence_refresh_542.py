@@ -12,6 +12,8 @@ Stage 5.4.2 - automatic evidence refresh (DESIGN_542_EVIDENCE_REFRESH.md).
           guarded insert writes exactly the store's own rows; append-only.
   D01-D02 the production decision path on real stored DUE / STALE / MISSING / FRESH / backing-off packets, through the scheduler thread:
           DRY_RUN names exactly what ON then builds, the read-only preview agrees, ON appends only and converges run by run.
+  O01-O02 the outside-session rule governs both ends of a build: no build starts in the session or within PRE_OPEN_MARGIN_S of the
+          open; a build that finishes after the open is discarded inside the write transaction (never stored, not a failure).
   R01-R02 GET /api/evidence-refresh is read-only and builds nothing.
   E01-E02 the SEC companyfacts request alone gets EVIDENCE_SEC_FACTS_MAX_BYTES; a large file is used, a larger one is still TOO_LARGE.
   F01-F03 scope: the change set is exactly the declared files; READY thresholds, PPE scoring and the frozen hashes are unchanged; every
@@ -39,8 +41,9 @@ import freeze_ledger as FL
 from evidence import engine as EN
 from evidence import net
 from evidence.store import EvidenceStore
-from evidence_refresh import (A_BUILT, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_SUPERSEDED, A_WOULD_BUILD, BACKOFF, BUILD, DUE, FAILURE_CAP, FRESH,
-                              LEASE_NAME, MISSING, R_CIRCUIT_OPEN, READ_ERROR, RETRY_WAIT, STALE, SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL, WAIT)
+from evidence_refresh import (A_BUILT, A_DISCARDED, A_ERROR, A_FAILED, A_SKIPPED_FRESH, A_SUPERSEDED, A_WOULD_BUILD, BACKOFF, BUILD, DUE,
+                              FAILURE_CAP, FRESH, LEASE_NAME, MISSING, PRE_OPEN_MARGIN_S, R_CIRCUIT_OPEN, READ_ERROR, RETRY_WAIT, SESSION_OPEN, STALE,
+                              SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL, WAIT)
 from evidence_refresh import journal as J
 from evidence_refresh import policy as P
 from evidence_refresh import scheduler as SCH
@@ -349,6 +352,7 @@ def test_S07_zero_model_calls_no_broker_and_only_evidence_hosts(live, tmp_path, 
 
     monkeypatch.setattr(EN, "build_packet", fake_build_packet)
     monkeypatch.setattr(SV, "_default_store", lambda: tmp_store)                       # a temp store instead of the app database
+    monkeypatch.setattr(SV, "default_regular_session", lambda t: False)                # the wall clock may be inside the session when CI runs
     out = SV.default_build("SNDK", F.NOW)                                              # the production build function itself
     assert captured == {"ticker": "SNDK", "adapters": None, "store_type": "EvidenceStore", "persist": False,
                         "sources": {"internal": True, "sec": True, "ir": True, "news": True, "manual": True}}   # built in memory, then the guarded insert
@@ -761,6 +765,62 @@ def test_D02_on_through_the_scheduler_builds_exactly_the_planned_packets_appends
     assert all(P.symbol_state(s_, seeded.store.packets(100, s_), clock["t"], SV.settings())["state"] == FRESH for s_ in D_WATCH)
     n = {t: len(v) for t, v in snapshot(seeded.store).items()}
     assert n["evidence_packets"] == len(before["evidence_packets"]) + 5 and unchanged(seeded.store, before)   # five appended, none changed
+
+
+# ============================================================================================================ the session rule (O)
+OPEN_UTC = datetime(2026, 11, 2, 14, 30, tzinfo=timezone.utc)                         # Monday 09:30 New York (EST)
+
+
+def test_O01_no_build_starts_in_the_session_or_within_the_pre_open_margin():
+    from evidence import LIMITS
+    assert PRE_OPEN_MARGIN_S == LIMITS["build_s"] + 60 == 180
+    blocked = SV.default_session_blocked
+    assert blocked(OPEN_UTC - timedelta(seconds=180)) is False and blocked(OPEN_UTC - timedelta(seconds=179)) is True
+    assert blocked(OPEN_UTC) is True and blocked(OPEN_UTC + timedelta(hours=6, minutes=29)) is True        # 15:59 New York
+    assert blocked(OPEN_UTC + timedelta(hours=6, minutes=30)) is False                                    # 16:00: closed, next open tomorrow
+    assert blocked(datetime(2026, 10, 31, 14, 28, tzinfo=timezone.utc)) is False                          # Saturday
+    assert blocked(datetime(2026, 11, 1, 14, 28, tzinfo=timezone.utc)) is False                           # Sunday: the open is a day away
+    assert EvidenceRefresher().regular_session_fn is SV.default_session_blocked                            # the production start gate
+    w = World({"NVDA": [row("NVDA", T0)]}, OPEN_UTC - timedelta(seconds=150))
+    assert refresher(w, symbols=("NVDA",), regular=blocked).run_once()["result"] == "SKIPPED_REGULAR_SESSION" and w.builds == []
+    w2 = World({"NVDA": [row("NVDA", T0 - timedelta(days=8))], "AMD": [row("AMD", T0 - timedelta(days=8))]}, OPEN_UTC - timedelta(seconds=190))
+    out = refresher(w2, symbols=("NVDA", "AMD"), regular=blocked).run_once()                               # 190 s before: one build, then
+    assert out["stop_reason"] == "SESSION_OPENED" and w2.builds == ["AMD"]                                 # 20 s spacing reaches the margin
+
+
+def test_O02_a_build_that_finishes_after_the_open_is_discarded_inside_the_write_transaction_and_rebuilt_after_the_close(live, tmp_path, journal_file):
+    store = EvidenceStore(tmp_path / "ev.db")
+    EN.build_packet(EN.EvidenceRequest(ticker="SNDK"), adapters=F.adapters(), now_fn=lambda: F.NOW, store=store)
+    before = snapshot(store)
+    clock = {"t": OPEN_UTC - timedelta(seconds=200)}
+
+    def slow_news(symbol, limit):                                                       # this build overruns the margin: it ends at 09:30:05
+        clock["t"] = OPEN_UTC + timedelta(seconds=5)
+        return F.fake_news(symbol, limit)
+
+    def make(news=None):
+        return EvidenceRefresher(mode_fn=lambda: "ON", settings_fn=lambda: S, symbols_fn=lambda: ["SNDK"], rows_fn=lambda s_: store.packets(100, s_),
+                                 build_fn=lambda s_, t: SV.default_build(s_, t, adapters=F.adapters(news=news or F.fake_news), now_fn=lambda: clock["t"],
+                                                                         store=store, settings_fn=lambda: S),       # the production session check at the insert
+                                 regular_session_fn=SV.default_session_blocked, network_fn=lambda: True, lease_store_fn=None,
+                                 clock=lambda: clock["t"], sleep_fn=lambda s_: False, spacing_s=0, journal=J.AttemptJournal())
+
+    out = make(slow_news).run_once()                                                    # started 200 s before the open: allowed
+    assert out["stop_reason"] == "SESSION_OPENED" and [(a["outcome"], a["reason"], a["built_status"]) for a in out["attempts"]] == [
+        (A_DISCARDED, SESSION_OPEN, "COMPLETED")]
+    assert snapshot(store) == before                                                    # nothing stored during the session
+    assert not journal_file.exists()                                                    # not a failure: no back-off, no budget spent
+    clock["t"] = OPEN_UTC + timedelta(minutes=30)
+    assert make().run_once()["result"] == "SKIPPED_REGULAR_SESSION"
+    clock["t"] = OPEN_UTC + timedelta(hours=6, minutes=35)                              # 16:05 New York
+    late = make().run_once()
+    assert [a["outcome"] for a in late["attempts"]] == [A_BUILT] and len(snapshot(store)["evidence_packets"]) == len(before["evidence_packets"]) + 1
+    built = EN.build_packet(EN.EvidenceRequest(ticker="SNDK"), adapters=F.adapters(), now_fn=lambda: F.NOW + timedelta(days=1), persist=False)
+    in_session = OPEN_UTC + timedelta(hours=1)
+    assert SV.persist_unless_superseded(store, built, "SNDK", S, in_session) == {"written": False, "reason": SESSION_OPEN, "existing_packet_id": None}
+    assert SV.persist_unless_superseded(store, built, "SNDK", S, in_session, in_session=lambda t: True)["reason"] == SESSION_OPEN
+    src = inspect.getsource(SV.persist_unless_superseded)
+    assert src.index("session_open(now)") < src.index("INSERT INTO") and src.index("with store.write() as c:") < src.index("session_open(now)")
 
 
 # ============================================================================================================ route

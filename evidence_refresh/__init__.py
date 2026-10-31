@@ -44,8 +44,18 @@ R_CIRCUIT_OPEN = "CIRCUIT_OPEN"              # a recent run stopped on consecuti
 # per-attempt outcomes
 A_BUILT, A_FAILED, A_ERROR, A_SKIPPED_FRESH, A_WOULD_BUILD = "BUILT", "FAILED", "ERROR", "SKIPPED_ALREADY_FRESH", "WOULD_BUILD"
 A_SUPERSEDED = "SKIPPED_SUPERSEDED"          # built, but at the insert a fresh packet (e.g. a manual Build) or the identical packet was already stored
+A_DISCARDED = "DISCARDED_SESSION_OPEN"       # built, but the regular session had opened by the insert: never stored (evidence is fixed in-session)
 # why a built packet was not stored (service.persist_unless_superseded, decided inside the store's write transaction)
 SUPERSEDED_FRESH, SUPERSEDED_IDENTICAL = "FRESH_PACKET_STORED", "IDENTICAL_PACKET_STORED"
+SESSION_OPEN = "REGULAR_SESSION_OPEN"        # persist_unless_superseded: the session opened while the build was fetching
+
+# The outside-session rule (DESIGN_542 section 2, step 3: evidence never changes under an open session) governs BOTH ends of a build:
+# * start: no run and no build starts during the regular session or within PRE_OPEN_MARGIN_S before the open (the engine's own
+#   build-time limit plus a minute), so a build the refresh starts is expected to finish, fetches included, before 09:30 New York time;
+# * persistence: the insert re-checks the session inside the store's write transaction; a build finishing at or after the open is
+#   discarded (A_DISCARDED), never stored, never counted as a failure, and the run stops. The symbol is rebuilt after the close.
+# Fetches already in flight at the open (a build that overran the margin) finish inside the engine, which cannot be interrupted.
+PRE_OPEN_MARGIN_S = 180
 
 # a run stops (circuit open) on these: the source refused us, so asking again now is impolite and useless
 CIRCUIT_FETCH_STATUSES = ("ACCESS_DENIED",)
