@@ -138,10 +138,10 @@ body.pui:not(.pui-collapsed) #pui-diag { display: none; }
 #pui-diag li.bad { color: #ffd6d2; }
 /* the chart empty state: compact, centred, intentional (market closed is informational, not an error) */
 #pui-chart-empty:empty { display: none; }
-.pui-chart-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 16px; z-index: 2; }
-.pui-chart-empty h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--text); }
-.pui-chart-empty.warn h3 { color: var(--amber); }
-.pui-chart-empty p { margin: 0; max-width: 440px; font-size: 13px; color: var(--text-dim); }
+#pui-chart-empty .pui-chart-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; padding: 16px; z-index: 2; }   /* the overlay only: body carries the same class name as a state flag */
+#pui-chart-empty .pui-chart-empty h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--text); }
+#pui-chart-empty .pui-chart-empty.warn h3 { color: var(--amber); }
+#pui-chart-empty .pui-chart-empty p { margin: 0; max-width: 440px; font-size: 13px; color: var(--text-dim); }
 body.pui.pui-chart-empty .tv-grid { height: auto; }
 body.pui.pui-chart-empty .tv-left, body.pui.pui-chart-empty .tv-right { max-height: 60vh; }
 body.pui.pui-chart-empty .tv-chart-wrap { flex: 0 0 auto; height: 250px; min-height: 250px; }

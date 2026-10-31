@@ -147,9 +147,9 @@ def at_base(rel):
 
 
 def post(rel):
-    """main after PR #36 (Stage 5.4.1 merged): what Stage 5.4.1 left, whatever a later change set changed since."""
-    out = subprocess.run(["git", "show", f"{FL.BASE_OPS}:{rel}"], cwd=ROOT, capture_output=True).stdout
-    assert out, f"{rel} is not in {FL.BASE_OPS} (fetch-depth 0 is required)"
+    """main after PR #36 (Stage 5.4.1 merged): what Stage 5.4.1 left, whatever a later fix changed since."""
+    out = subprocess.run(["git", "show", f"{FL.BASE_611FIX}:{rel}"], cwd=ROOT, capture_output=True).stdout
+    assert out, f"{rel} is not in {FL.BASE_611FIX} (fetch-depth 0 is required)"
     return out.decode("utf-8").replace("\r\n", "\n")
 
 
@@ -194,11 +194,12 @@ REPLAY_541 = {
 
 def test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution():
     assert FL.BASE_541 == "a7dc4456b407458c9751ea88398cee37f3084d2f" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_541}^{{commit}}"], cwd=ROOT).returncode == 0
+    stage541 = set(_git("diff", "--name-only", FL.BASE_541, FL.BASE_611FIX).split())        # Stage 5.4.1 itself, between two fixed commits (main before / after PR #36)
+    assert stage541 == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(stage541 - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - stage541)}
     changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_OPS | FL.EDITED_OPS                                                         # ops runtime reliability, pinned by its own F tests
-    assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later),
-                                                            "missing": sorted((FL.NEW_541 | FL.EDITED_541 | later) - changed)}
+    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
+    assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later), "missing": sorted((FL.NEW_541 | FL.EDITED_541 | later) - changed)}
     assert set(FL.SEMANTIC_541) == {"trader_view/research.py"}
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio"):
         for p in sorted((ROOT / d).glob("*.py")):
@@ -229,7 +230,7 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
     mine = ast.literal_eval(led(fl)[len("LEDGER = "):])                                   # the ledger Stage 5.4.1 left (main after PR #36)
     assert set(mine) - set(old) == {"trader_view/research.py"}                            # one new key: the corrected reader
-    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_541 & set(old)              # every re-hash is a declared Stage 5.4.1 edit
+    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_541 & set(old)               # every re-hash is a declared Stage 5.4.1 edit
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 
