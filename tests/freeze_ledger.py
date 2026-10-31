@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -34,6 +34,11 @@ Stage 5.4.1 (evidence gate reliability) corrects one reader: the setup's evidenc
 (the newest COMPLETED packet created at or before now), so a newer FAILED build can no longer hide a valid packet and block READY with
 READY_BLOCKED_NO_EVIDENCE. SEMANTIC_541 names that one file; no threshold, PPE rule, setup-engine rule or execution file changes, and
 tests/test_evidence_gate_541.py pins the fix and its scope.
+
+Stage 6.1.1 CSS fix (chart empty state) scopes the four chart empty-state overlay rules of frontend/product_ui.css to
+`#pui-chart-empty .pui-chart-empty`: the bare `.pui-chart-empty` selector also matched the body state class of the same name (set while
+the chart has no candles, e.g. market closed) and centred / narrowed the whole page. CSS only: no script, backend, threshold or
+execution change; tests/test_chart_empty_state_611fix.py pins the fix and its scope.
 """
 import hashlib
 import subprocess
@@ -101,8 +106,14 @@ SEMANTIC_541 = {                                                                
                                "ppe/evidence_context.py) instead of the newest packet of any status: a newer FAILED build no longer reads as no evidence "
                                "in the setup's evidence gate (DESIGN_58 section 5); with no COMPLETED packet it is read exactly as before",
 }
+BASE_611FIX = "2fe29f3a48359a365a1506c9f70093129be72602"                                # main: Stage 5.4.1 merged (PR #36)
+NEW_611FIX = {"tests/test_chart_empty_state_611fix.py"}                                   # Stage 6.1.1 CSS fix (chart empty state): its new file
+EDITED_611FIX = {"frontend/product_ui.css", ".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py",
+                 "tests/test_robinhood_portfolio_69.py", "tests/test_unified_exposure_gate_691.py", "tests/test_forward_paper_610a.py",
+                 "tests/test_decision_flow_610c.py", "tests/test_strategy_validation_62.py", "tests/test_evidence_gate_541.py"}   # the CSS fix, its CI entry, the freeze bookkeeping
+SEMANTIC_611FIX: dict = {}                                                                # Stage 6.1.1 CSS fix: no execution semantic change (display only)
 LEDGER = {
-    ".github/ci/pytest_groups.json": "641a6e0dfc68d3b5304a7b20091c65631aacadd8456bc17688ad15330b86d726",
+    ".github/ci/pytest_groups.json": "86bfb983d2f74311696144c9fe5e2fd93b7bd44e4077888e6c082fc52c647386",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
@@ -115,7 +126,7 @@ LEDGER = {
     "execution/service.py": "4a21f8a69bc1e086fb89f0a225d0f47bb8ce15ebf7246b62d2079a9b0b900d01",
     "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
     "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
-    "frontend/product_ui.css": "615a863bc5c4918b37f831264eb30fd2b6857133fc80d38a47aba7162a0adfde",
+    "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "73064019c9fbf62e9a60d9a3d7c721c4ed352c1ea2f70ee90c3026458ff966dc",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
     "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
@@ -135,7 +146,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "ded917192efa854765dfacda761cbb9a988bf22651aeb83fd57fec53313f775f",
+    "tests/test_strategy_validation_62.py": "e5a740117bad62e4d147d7809e930c97c4836520ee0cf0295dd489b69342b325",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
