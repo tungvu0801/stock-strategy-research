@@ -19,8 +19,16 @@ One daemon thread per process (`evidence_refresh/scheduler.py`), started from th
 
 1. **Mode** `OFF` → nothing. `DRY_RUN` → plan and log "would build", build nothing. `ON` → build.
 2. **One run at a time** (in-process lock → `RUN_IN_PROGRESS`).
-3. **Outside the regular session only** (`setups.market_hours.is_regular_session`, the evaluator's own calendar) → otherwise
-   `SKIPPED_REGULAR_SESSION`; evidence never changes under an open session. A run that reaches 09:30 ET stops (`SESSION_OPENED`).
+3. **Outside the regular session only** (`setups.market_hours`, the evaluator's own calendar); evidence never changes under an open
+   session. The rule governs **both ends of a build**:
+   - *Start.* No run and no build starts during the regular session or less than `PRE_OPEN_MARGIN_S` (180 s: the engine's
+     `build_s` limit plus a minute) before the open (`default_session_blocked`). Otherwise the result is `SKIPPED_REGULAR_SESSION`;
+     a run that reaches the margin stops (`SESSION_OPENED`).
+   - *Persistence.* The insert re-checks the regular session inside the store's write transaction (`persist_unless_superseded`). A
+     build that finishes at or after the open is discarded (`DISCARDED_SESSION_OPEN`): nothing is stored, it is not a failure (no
+     back-off, no journal entry, no budget spent) and the run stops. The symbol is rebuilt after the close.
+   - *In-flight fetches.* A build that overruns the margin keeps fetching until the engine returns (the engine is frozen and cannot be
+     interrupted). Its result is then discarded. At most one such build per open, because the run stops.
 4. **Evidence network enabled** (`EVIDENCE_NETWORK_ENABLED`) → otherwise `SKIPPED_NETWORK_OFF`.
 5. **The shared lease** `evidence_refresher` (`app_leases`, 15 min, renewed before every build) → one refresher per database
    whatever the number of processes; `LEASE_HELD` otherwise, `LEASE_LOST` mid-run stops it.
