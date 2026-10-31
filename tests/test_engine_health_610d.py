@@ -110,7 +110,7 @@ def test_R04_the_ops_router_stays_get_only_and_the_route_is_registered():
     spec = app.openapi()["paths"]
     assert set(spec["/api/ops/engine"]) == {"get"} and set(spec["/api/ops/status"]) == {"get"}
     src = (ROOT / "api/routes/ops_status.py").read_text(encoding="utf-8")
-    block = src[src.index("# >>> Stage 6.10D"):src.index("# <<< Stage 6.10D")]
+    block = src[src.index("# >>> Engine health visibility, Stage 6.10D"):src.index("# <<< Engine health visibility, Stage 6.10D")]
     assert "subprocess" not in block and "urllib" not in block and "requests" not in block and "@router.post" not in block
     assert "execution" not in block.replace("executor,", "") and "robinhood" not in block.lower().replace("broker or robinhood", "")
 
@@ -212,7 +212,8 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_executi
     for rel in ("api/server.py", "config.py", "frontend/index.html", "frontend/product_ui.css", "frontend/trader_view.js", "browser_tests/flows.py", "README.md"):
         assert (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
     src = (ROOT / "api/routes/ops_status.py").read_text(encoding="utf-8").replace("\r\n", "\n")
-    assert src.startswith(at_base("api/routes/ops_status.py").rstrip("\n")) and src.count("# >>> Stage 6.10D") == 1    # additive: the old module text is a prefix
+    assert src.startswith(at_base("api/routes/ops_status.py").rstrip("\n")) and src.count("# >>> Engine health visibility, Stage 6.10D") == 1    # additive: the old module text is a prefix
+    assert ("# >>> " + "Stage 6.1") not in src                                                            # never a Stage 6.1 marker carrier (tests/test_forward_validation_61.py::test_Z02 scans every file)
     js = (ROOT / "frontend/product_ui.js").read_text(encoding="utf-8").replace("\r\n", "\n")
     base_js = at_base("frontend/product_ui.js")
     stripped = js[:js.index("  // >>> Stage 6.10D")] + js[js.index("  // <<< Stage 6.10D engine health visibility\n") + len("  // <<< Stage 6.10D engine health visibility\n") + 1:]

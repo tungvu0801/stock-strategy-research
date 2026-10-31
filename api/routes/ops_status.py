@@ -45,7 +45,7 @@ def get_ops_status() -> JSONResponse:
     })
 
 
-# >>> Stage 6.10D engine health visibility (DESIGN_610D_ENGINE_HEALTH.md). GET only, read only: the commit the running code was started from,
+# >>> Engine health visibility, Stage 6.10D (DESIGN_610D_ENGINE_HEALTH.md). GET only, read only: the commit the running code was started from,
 # read from .git without running git (a plain repo, a worktree whose .git is a 'gitdir:' file, a symbolic or detached HEAD, loose or packed refs),
 # the process facts (pid, start time, interpreter, working directory) and the runner's PID file when it names this process. Nothing here touches
 # the executor, the safety gate, Paper Auto, a broker or Robinhood, and nothing is cached across restarts: a tree checked out under a running
@@ -137,4 +137,4 @@ def engine_descriptor(root: Optional[Path] = None) -> dict:
 @router.get("/engine")
 def get_engine() -> JSONResponse:
     return JSONResponse(engine_descriptor())
-# <<< Stage 6.10D engine health visibility
+# <<< Engine health visibility, Stage 6.10D
