@@ -56,6 +56,7 @@
         "test_bot_activity_68.py",
         "test_decision_flow_610c.py",
         "test_dynamic_universe_610c.py",
+        "test_evidence_gate_541.py",
         "test_execution_60.py",
         "test_execution_safety_591.py",
         "test_forward_paper_610a.py",

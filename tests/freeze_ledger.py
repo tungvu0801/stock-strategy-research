@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -29,6 +29,11 @@ Stage 6.10C (agent decision flow + an inactive dynamic universe) is observabilit
 GET /api/decision-flow*), the TRADE / ACTIVITY panels that show it, and an inactive dynamic_universe/ that no live path imports. It changes no
 execution, strategy, risk, Paper Auto or startup behaviour: SEMANTIC_610C and INSTRUMENTATION_610C are empty, execution/* is byte-identical to
 BASE_610C, and tests/test_decision_flow_610c.py (F tests) pins exactly that.
+
+Stage 5.4.1 (evidence gate reliability) corrects one reader: the setup's evidence check now resolves the same Stage 5.4 packet as PPE Confidence
+(the newest COMPLETED packet created at or before now), so a newer FAILED build can no longer hide a valid packet and block READY with
+READY_BLOCKED_NO_EVIDENCE. SEMANTIC_541 names that one file; no threshold, PPE rule, setup-engine rule or execution file changes, and
+tests/test_evidence_gate_541.py pins the fix and its scope.
 """
 import hashlib
 import subprocess
@@ -86,8 +91,18 @@ NEW_610C = {'tools/evaluator_capacity.py', 'api/routes/decision_flow.py', 'decis
 EDITED_610C = {'tests/freeze_ledger.py', 'tests/frontend/product_flow.test.cjs', 'tests/test_product_ui_611.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_product_flow_612.py', 'tests/test_strategy_validation_62.py', 'tests/frontend/strategy_validation.test.cjs', 'tests/test_unified_exposure_gate_691.py', 'browser_tests/flows.py', '.github/ci/pytest_groups.json', 'frontend/product_ui.css', 'api/server.py', 'frontend/product_ui.js', 'tests/frontend/product_ui.test.cjs', 'tests/test_forward_paper_610a.py', 'tests/test_bot_activity_68.py', 'config.py'}
 SEMANTIC_610C: dict = {}                                                                  # Stage 6.10C: no execution semantic change
 INSTRUMENTATION_610C: dict = {}                                                           # Stage 6.10C: no executor instrumentation
+BASE_541 = "a7dc4456b407458c9751ea88398cee37f3084d2f"                                   # main: Stage 6.10C merged (PR #35)
+NEW_541 = {"tests/test_evidence_gate_541.py"}                                             # Stage 5.4.1 (evidence gate reads the valid packet): its new file
+EDITED_541 = {"trader_view/research.py", ".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_robinhood_portfolio_69.py",
+              "tests/test_unified_exposure_gate_691.py", "tests/test_forward_paper_610a.py", "tests/test_decision_flow_610c.py",
+              "tests/test_strategy_validation_62.py"}                                    # Stage 5.4.1: the files of main it edits (the fix, its CI entry, the freeze bookkeeping)
+SEMANTIC_541 = {                                                                          # Stage 5.4.1: the INTENTIONAL correction, file by file
+    "trader_view/research.py": "EvidenceResearchAdapter.latest() returns the newest COMPLETED packet created at or before now (PPE Confidence's rule, "
+                               "ppe/evidence_context.py) instead of the newest packet of any status: a newer FAILED build no longer reads as no evidence "
+                               "in the setup's evidence gate (DESIGN_58 section 5); with no COMPLETED packet it is read exactly as before",
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "c44b2ce4a42110ad353d699c0987de6d62875ad4faab18fa2ee8d4429668693a",
+    ".github/ci/pytest_groups.json": "641a6e0dfc68d3b5304a7b20091c65631aacadd8456bc17688ad15330b86d726",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
@@ -120,11 +135,12 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "440497b81b4e6e5ccf0af4acabbb5ec3199d4772c944d796e24467781c2189bd",
+    "tests/test_strategy_validation_62.py": "ded917192efa854765dfacda761cbb9a988bf22651aeb83fd57fec53313f775f",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
     "trader_view/positions.py": "3765462dea8fcbb52b6c1880338a8e0e1c5151a60091ef0d11c3489a55267558",
+    "trader_view/research.py": "01c27bfe8c4d852a2be425a1258760af5d1c5bd3b175531e24cf5f49be1551f6",
     "trader_view/stream.py": "deee331b13a7ceb6fd04bfe4adbe716494db0f87c345fa8195005cb7a0cc45a5",
 }
 
