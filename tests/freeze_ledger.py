@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_610D plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -34,6 +34,19 @@ Stage 5.4.1 (evidence gate reliability) corrects one reader: the setup's evidenc
 (the newest COMPLETED packet created at or before now), so a newer FAILED build can no longer hide a valid packet and block READY with
 READY_BLOCKED_NO_EVIDENCE. SEMANTIC_541 names that one file; no threshold, PPE rule, setup-engine rule or execution file changes, and
 tests/test_evidence_gate_541.py pins the fix and its scope.
+
+Stage 6.1.1 CSS fix (chart empty state) scopes the four chart empty-state overlay rules of frontend/product_ui.css to
+`#pui-chart-empty .pui-chart-empty`: the bare `.pui-chart-empty` selector also matched the body state class of the same name (set while
+the chart has no candles, e.g. market closed) and centred / narrowed the whole page. CSS only: no script, backend, threshold or
+execution change; tests/test_chart_empty_state_611fix.py pins the fix and its scope.
+
+Ops runtime reliability (after Stage 5.4.1) is operations only. The weekday start wrapper comes under version control
+(scripts/start_market_morning.ps1: every live path a parameter defaulting to today's value, a launch line written before any other
+work, a trap that always logs a RESULT), a task installer adds at-logon and on-resume triggers with a restart policy
+(scripts/install_market_morning_task.ps1; -PrintOnly registers nothing), the runner logs a detected suspend/resume gap and the signal
+it shuts down on (log only, no behaviour change), and the check script shows the scheduled tasks' last results, whether Task Scheduler
+history is on and the last resume. No execution, strategy, risk, Paper Auto, startup-demotion or broker behaviour changes: SEMANTIC_OPS
+is empty, scripts/start_stock_agent.ps1 / stop / common are byte-identical, and tests/test_runtime_reliability_ops.py pins the change set.
 
 Stage 6.10D (engine health visibility) is observability only: GET /api/ops/engine (the deployed commit read from .git without running git, the
 process facts, the runner's PID file when it names this process) and one display-only fold under the diagnostics line (frontend/product_ui.js)
@@ -107,9 +120,19 @@ SEMANTIC_541 = {                                                                
                                "ppe/evidence_context.py) instead of the newest packet of any status: a newer FAILED build no longer reads as no evidence "
                                "in the setup's evidence gate (DESIGN_58 section 5); with no COMPLETED packet it is read exactly as before",
 }
-BASE_610D = "2fe29f3a48359a365a1506c9f70093129be72602"                                  # main: Stage 5.4.1 merged (PR #36)
+BASE_611FIX = "2fe29f3a48359a365a1506c9f70093129be72602"                                # main: Stage 5.4.1 merged (PR #36)
+NEW_611FIX = {"tests/test_chart_empty_state_611fix.py"}                                   # Stage 6.1.1 CSS fix (chart empty state): its new file
+EDITED_611FIX = {"frontend/product_ui.css", ".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py",
+                 "tests/test_robinhood_portfolio_69.py", "tests/test_unified_exposure_gate_691.py", "tests/test_forward_paper_610a.py",
+                 "tests/test_decision_flow_610c.py", "tests/test_strategy_validation_62.py", "tests/test_evidence_gate_541.py"}   # the CSS fix, its CI entry, the freeze bookkeeping
+SEMANTIC_611FIX: dict = {}                                                                # Stage 6.1.1 CSS fix: no execution semantic change (display only)
+BASE_OPS = "1bd7542dd392035e445ae0c93ecb503a934fcf53"                                   # main: chart empty-state CSS fix merged (PR #37)
+NEW_OPS = {"scripts/install_market_morning_task.ps1", "scripts/start_market_morning.ps1", "tests/test_runtime_reliability_ops.py"}   # ops runtime reliability: its new files
+EDITED_OPS = {"tests/test_chart_empty_state_611fix.py", ".github/ci/pytest_groups.json", "scripts/check_stock_agent.ps1", "scripts/run_stock_agent.py", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_decision_flow_610c.py", "tests/test_evidence_gate_541.py", "tests/test_forward_paper_610a.py", "tests/test_robinhood_portfolio_69.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # ops runtime reliability: the files of main it edits
+SEMANTIC_OPS: dict = {}                                                                    # ops runtime reliability: no execution, strategy, risk or startup semantics change
+BASE_610D = "c9e4f4522b29b5f0acb30e24b431ffda598fe2a0"                                  # main: ops reliability merged (PR #39)
 NEW_610D = {"tests/test_engine_health_610d.py", "tests/frontend/engine_health_610d.test.cjs", "DESIGN_610D_ENGINE_HEALTH.md"}   # Stage 6.10D (engine health visibility): its new files
-EDITED_610D = {"api/routes/ops_status.py", "frontend/product_ui.js", ".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py",
+EDITED_610D = {"tests/test_chart_empty_state_611fix.py", "tests/test_runtime_reliability_ops.py", "api/routes/ops_status.py", "frontend/product_ui.js", ".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py",
                "tests/test_robinhood_portfolio_69.py", "tests/test_unified_exposure_gate_691.py", "tests/test_forward_paper_610a.py", "tests/test_decision_flow_610c.py",
                "tests/test_strategy_validation_62.py", "tests/test_evidence_gate_541.py",
                "tests/frontend/product_ui.test.cjs", "tests/frontend/product_flow.test.cjs", "tests/frontend/strategy_validation.test.cjs",
@@ -117,7 +140,7 @@ EDITED_610D = {"api/routes/ops_status.py", "frontend/product_ui.js", ".github/ci
 SEMANTIC_610D: dict = {}                                                                  # Stage 6.10D: no execution semantic change
 INSTRUMENTATION_610D: dict = {}                                                           # Stage 6.10D: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "654c651ec5782cb3934aeeb53e28bdb3d3b4bb762108611b793a0013d8ebb3b8",
+    ".github/ci/pytest_groups.json": "0b792db319c19118148fe4d4374786deae389a2cf4cc6d15982a931f629479af",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
@@ -131,10 +154,12 @@ LEDGER = {
     "execution/service.py": "4a21f8a69bc1e086fb89f0a225d0f47bb8ce15ebf7246b62d2079a9b0b900d01",
     "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
     "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
-    "frontend/product_ui.css": "615a863bc5c4918b37f831264eb30fd2b6857133fc80d38a47aba7162a0adfde",
+    "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
+    "scripts/check_stock_agent.ps1": "f4dab15027feb15457f2107e04702de4e5bd595b45d570eb74f8de5768c4a677",
     "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
+    "scripts/run_stock_agent.py": "1090690982d115e1f268738ebdb2b797e4f79b88be2c5d58e5f042010ff710c3",
     "tests/frontend/product_flow.test.cjs": "5c4afa63a3510be05030dfce4b72d29f0eab2757a2be1f6ee8ccc593ad58229e",
     "tests/frontend/product_ui.test.cjs": "6d33db33f0cad805ff76ae8557c134ca1ed1bf98b20eeb826f111cd2e34159d7",
     "tests/frontend/strategy_validation.test.cjs": "fce1fdf90474dbeeb8881a6469d9d8bb0a0b6ad612455eea099cc5611e92a1e4",
@@ -151,7 +176,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "6b2f544cf40a2432f49820eb16ec28abfad5142ec422a472eae68a03c3982f62",
+    "tests/test_strategy_validation_62.py": "c394d84dccbd6e8a6023e6599eccc6c41acc5fd2392e621e4aac6c095fda3f34",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",

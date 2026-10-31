@@ -16,6 +16,7 @@
         "test_batch_27g2.py",
         "test_brief_delivery_43.py",
         "test_browser_harness_39.py",
+        "test_chart_empty_state_611fix.py",
         "test_ci_groups_603.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
@@ -135,6 +136,7 @@
         "test_aapl_smoke_60.py",
         "test_db_bootstrap_busy.py",
         "test_notifications_44.py",
+        "test_runtime_reliability_ops.py",
         "test_windows_runner_60.py"
       ]
     }

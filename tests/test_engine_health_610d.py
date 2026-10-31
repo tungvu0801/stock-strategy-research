@@ -135,73 +135,89 @@ def at_base(rel):
 
 
 # every Stage 6.10D edit of a file no ledger entry can hold (an earlier stage's own test file): (text on main, text now), replayed by F03
-REPLAY_610D = {'tests/test_bot_activity_68.py': [('    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 '
-                                    '- FL.NEW_610A - FL.NEW_610C - FL.NEW_541),\n'
-                                    '                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | '
-                                    'FL.NEW_541) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1\n',
-                                    '    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_610D, {"unexpected_new": sorted(new - FL.NEW_68 - '
-                                    'FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C - FL.NEW_541 - FL.NEW_610D),\n'
-                                    '                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | '
-                                    'FL.NEW_541 | FL.NEW_610D) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1 / 6.10D\n')],
- 'tests/test_decision_flow_610c.py': [('    later = FL.NEW_541 | FL.EDITED_541                                                         # Stage 5.4.1, pinned by its own F tests\n',
-                                       '    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_610D | FL.EDITED_610D                         # Stage 5.4.1 / 6.10D, each pinned by its own F tests\n')],
- 'tests/test_evidence_gate_541.py': [('    return out.decode("utf-8").replace("\\r\\n", "\\n")\n\n\n# every Stage 5.4.1 edit of a file',
-                                      '    return out.decode("utf-8").replace("\\r\\n", "\\n")\n'
-                                      '\n'
-                                      '\n'
-                                      'def post(rel):\n'
-                                      '    """main after PR #36 (Stage 5.4.1 merged): what Stage 5.4.1 left, whatever a later stage changed since."""\n'
-                                      '    out = subprocess.run(["git", "show", f"{FL.BASE_610D}:{rel}"], cwd=ROOT, capture_output=True).stdout\n'
-                                      '    assert out, f"{rel} is not in {FL.BASE_610D} (fetch-depth 0 is required)"\n'
-                                      '    return out.decode("utf-8").replace("\\r\\n", "\\n")\n'
-                                      '\n'
-                                      '\n'
-                                      '# every Stage 5.4.1 edit of a file'),
-                                     ('    changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())\n'
-                                      '    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}\n'
-                                      '    assert changed == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - '
-                                      'changed)}\n',
-                                      '    stage541 = set(_git("diff", "--name-only", FL.BASE_541, FL.BASE_610D).split())              # Stage 5.4.1 itself, between two fixed commits (main before / '
-                                      'after PR #36)\n'
-                                      '    assert stage541 == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(stage541 - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - '
-                                      'stage541)}\n'
-                                      '    changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())\n'
-                                      '    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}\n'
-                                      '    later = FL.NEW_610D | FL.EDITED_610D                                                         # Stage 6.10D, pinned by its own F tests\n'
-                                      '    assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later), "missing": sorted((FL.NEW_541 | '
-                                      'FL.EDITED_541 | later) - changed)}\n'),
+REPLAY_610D = {'tests/test_bot_activity_68.py': [('    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | '
+                                    'FL.NEW_OPS, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C - '
+                                    'FL.NEW_541 - FL.NEW_611FIX - FL.NEW_OPS),\n'
+                                    '                                                                     "missing_new": sorted((FL.NEW_68 | '
+                                    'FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS) - new)}   # + '
+                                    'Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1\n',
+                                    '    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | '
+                                    'FL.NEW_OPS | FL.NEW_610D, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - '
+                                    'FL.NEW_610C - FL.NEW_541 - FL.NEW_611FIX - FL.NEW_OPS - FL.NEW_610D),\n'
+                                    '                                                                     "missing_new": sorted((FL.NEW_68 | '
+                                    'FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS | FL.NEW_610D) - '
+                                    'new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1\n')],
+ 'tests/test_chart_empty_state_611fix.py': [('    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS\n',
+                                             '    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | '
+                                             'FL.EDITED_610D\n')],
+ 'tests/test_decision_flow_610c.py': [('    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | '
+                                       'FL.EDITED_OPS                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n',
+                                       '    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | '
+                                       'FL.NEW_610D | FL.EDITED_610D                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F '
+                                       'tests\n')],
+ 'tests/test_evidence_gate_541.py': [('    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | '
+                                      'FL.EDITED_OPS                                                  # the Stage 6.1.1 CSS fix, pinned by its own F '
+                                      'tests\n',
+                                      '    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | '
+                                      'FL.EDITED_610D                                                  # the Stage 6.1.1 CSS fix, pinned by its own '
+                                      'F tests\n'),
                                      ('            assert p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == at_base(rel), rel\n',
                                       '            assert post(rel) == at_base(rel), rel\n'
-                                      '            assert p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel), rel      # since then: Stage 6.10D touches none of these\n'),
+                                      '            assert p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel), rel      # since '
+                                      'then: Stage 6.10D touches none of these\n'),
                                      ('            assert (ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n") == at_base(rel), rel\n',
-                                      '            assert post(rel) == at_base(rel), rel\n            assert (ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel), rel\n'),
-                                     ('    for rel, edits in REPLAY_541.items():\n        text = (ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n")\n',
-                                      '    for rel, edits in REPLAY_541.items():\n'
-                                      '        text = post(rel)                                                                     # what Stage 5.4.1 left; later edits are pinned by their own '
-                                      'stage\n'),
-                                     ('    fl, base = (ROOT / "tests/freeze_ledger.py").read_text(encoding="utf-8").replace("\\r\\n", "\\n"), at_base("tests/freeze_ledger.py")\n',
-                                      '    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")\n'),
-                                     ('    old = ast.literal_eval(led(base)[len("LEDGER = "):])\n'
-                                      '    assert set(FL.LEDGER) - set(old) == {"trader_view/research.py"}                       # one new key: the corrected reader\n'
-                                      '    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_541 & set(old)          # every re-hash is a declared Stage 5.4.1 edit\n',
-                                      '    old = ast.literal_eval(led(base)[len("LEDGER = "):])\n'
-                                      '    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])                                   # the ledger Stage 5.4.1 left (main after PR #36)\n'
-                                      '    assert set(mine) - set(old) == {"trader_view/research.py"}                            # one new key: the corrected reader\n'
-                                      '    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_541 & set(old)               # every re-hash is a declared Stage 5.4.1 edit\n')],
- 'tests/test_forward_paper_610a.py': [('    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541                         # Stage 6.10C / 5.4.1, each pinned by its own F tests\n',
-                                       '    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_610D | FL.EDITED_610D   # Stage 6.10C / 5.4.1 / 6.10D, each pinned by its own F '
-                                       'tests\n')],
- 'tests/test_robinhood_portfolio_69.py': [('| FL.NEW_541 | FL.EDITED_541   # Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), Stage 6.10C, Stage 5.4.1 (FL.SEMANTIC_541),\n',
-                                           '| FL.NEW_541 | FL.EDITED_541 | FL.NEW_610D | FL.EDITED_610D   # Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), Stage 6.10C, Stage 5.4.1 '
-                                           '(FL.SEMANTIC_541), Stage 6.10D,\n')],
- 'tests/test_unified_exposure_gate_691.py': [('    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541   # Stage 6.10A / 6.10C / 5.4.1, each pinned by '
-                                              'its own F tests\n',
-                                              '    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_610D | FL.EDITED_610D   # Stage 6.10A / '
-                                              '6.10C / 5.4.1 / 6.10D, each pinned by its own F tests\n')]}
+                                      '            assert post(rel) == at_base(rel), rel\n'
+                                      '            assert (ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel), rel\n')],
+ 'tests/test_forward_paper_610a.py': [('    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | '
+                                       'FL.NEW_OPS | FL.EDITED_OPS   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n',
+                                       '    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | '
+                                       'FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each '
+                                       'pinned by its own F tests\n')],
+ 'tests/test_robinhood_portfolio_69.py': [('    later = FL.NEW_691 | FL.EDITED_691 | FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | '
+                                           'FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS   # the 6.1.1 '
+                                           'CSS fix, Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), Stage 6.10C, Stage 5.4.1 '
+                                           '(FL.SEMANTIC_541),\n',
+                                           '    later = FL.NEW_691 | FL.EDITED_691 | FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | '
+                                           'FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D '
+                                           '| FL.EDITED_610D   # the 6.1.1 CSS fix, Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), '
+                                           'Stage 6.10C, Stage 5.4.1 (FL.SEMANTIC_541),\n')],
+ 'tests/test_runtime_reliability_ops.py': [('    return out.decode("utf-8").replace("\\r\\n", "\\n")\n',
+                                            '    return out.decode("utf-8").replace("\\r\\n", "\\n")\n'
+                                            '\n'
+                                            '\n'
+                                            'def post(rel):\n'
+                                            '    """PR #39\'s merged result; later stages have their own exact scope checks."""\n'
+                                            '    result = subprocess.run(["git", "show", f"{FL.BASE_610D}:{rel}"], cwd=ROOT, capture_output=True)\n'
+                                            '    assert result.returncode == 0, rel\n'
+                                            '    return result.stdout.decode("utf-8").replace("\\r\\n", "\\n")\n'),
+                                           ('    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", '
+                                            '"browser_tests/artifacts/")) and (ROOT / p).exists()}\n',
+                                            '    changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", '
+                                            '"browser_tests/artifacts/")) and (ROOT / p).exists()}\n'
+                                            '    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D\n'
+                                            '    changed = set(_git("diff", "--name-only", FL.BASE_OPS, FL.BASE_610D).split())\n'),
+                                           ('        text = now(rel)\n', '        text = post(rel)\n'),
+                                           ('    fl, base = now("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")\n',
+                                            '    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")\n'),
+                                           ('    assert set(FL.LEDGER) - set(old) == {"scripts/check_stock_agent.ps1", '
+                                            '"scripts/run_stock_agent.py"}   # two new keys: the two edited ops scripts\n'
+                                            '    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_OPS & set(old) == '
+                                            '{".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}\n',
+                                            '    mine = ast.literal_eval(led(fl)[len("LEDGER = "):])\n'
+                                            '    assert set(mine) - set(old) == {"scripts/check_stock_agent.ps1", "scripts/run_stock_agent.py"}   # '
+                                            'two new keys: the two edited ops scripts\n'
+                                            '    assert {k for k in old if old[k] != mine[k]} == FL.EDITED_OPS & set(old) == '
+                                            '{".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}\n')],
+ 'tests/test_unified_exposure_gate_691.py': [('    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 '
+                                              '| FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS   # Stage 6.10A / 6.10C / 5.4.1 / the '
+                                              '6.1.1 CSS fix, each pinned by its own F tests\n',
+                                              '    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 '
+                                              '| FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D   # '
+                                              'Stage 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n')]}
 
 
 def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file():
-    assert FL.BASE_610D == SHA40 and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_610D}^{{commit}}"], cwd=ROOT).returncode == 0
+    assert FL.BASE_610D == "c9e4f4522b29b5f0acb30e24b431ffda598fe2a0" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_610D}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_610D).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     assert changed == FL.NEW_610D | FL.EDITED_610D, {"unexpected": sorted(changed - FL.NEW_610D - FL.EDITED_610D), "missing": sorted(FL.NEW_610D | FL.EDITED_610D - changed)}
@@ -248,7 +264,7 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     assert set(REPLAY_610D) == FL.EDITED_610D - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
     fl, base = (ROOT / "tests/freeze_ledger.py").read_text(encoding="utf-8").replace("\r\n", "\n"), at_base("tests/freeze_ledger.py")
     para = fl[fl.index("\nStage 6.10D (engine health"):fl.index('"""', fl.index("\nStage 6.10D (engine health"))]
-    rebuilt = fl.replace(para, "", 1).replace(" + NEW_610C + NEW_541 + NEW_610D plus this ledger.", " + NEW_610C + NEW_541 plus this ledger.", 1)
+    rebuilt = fl.replace(para, "", 1).replace(" + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D plus this ledger.", " + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS plus this ledger.", 1)
     decl = rebuilt[rebuilt.index("BASE_610D = "):rebuilt.index("LEDGER = {")]
     rebuilt = rebuilt.replace(decl, "", 1)
     led = lambda t: t[t.index("LEDGER = {"):t.index("}\n", t.index("LEDGER = {")) + 2]  # noqa: E731
