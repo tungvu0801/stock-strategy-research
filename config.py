@@ -705,3 +705,16 @@ AUTORUN_SUPERVISOR_ENABLED: bool = os.getenv("AUTORUN_SUPERVISOR_ENABLED", "true
 DYNAMIC_UNIVERSE_MODE: str = os.getenv("DYNAMIC_UNIVERSE_MODE", "OFF").strip().upper()          # OFF | SHADOW (read-only plan on demand); ACTIVE or unknown = OFF, reported
 DYNAMIC_UNIVERSE_CORE_FILE: str = os.getenv("DYNAMIC_UNIVERSE_CORE_FILE", "").strip()            # optional JSON [{"symbol", "sector"}] replacing the built-in core v1
 DYNAMIC_UNIVERSE_ACTIVE_MAX: int = _env_json("DYNAMIC_UNIVERSE_ACTIVE_MAX", 25)                   # future active-set bound, used by no live path (unreadable = 25: never stops startup)
+
+# >>> Evidence refresh, Stage 5.4.2 (evidence_refresh/; DESIGN_542_EVIDENCE_REFRESH.md) - default OFF; zero model calls, no broker call
+EVIDENCE_REFRESH_MODE: str = os.getenv("EVIDENCE_REFRESH_MODE", "OFF").strip().upper()                         # OFF | DRY_RUN (plan + log, build nothing) | ON
+EVIDENCE_REFRESH_AGE_DAYS: int = int(os.getenv("EVIDENCE_REFRESH_AGE_DAYS", "7"))                               # rebuild a COMPLETED packet this many whole days old (READY needs <= 30)
+EVIDENCE_REFRESH_CHECK_SECONDS: float = float(os.getenv("EVIDENCE_REFRESH_CHECK_SECONDS", "900"))               # one refresh run every 15 min (most runs find nothing due)
+EVIDENCE_REFRESH_STARTUP_DELAY_SECONDS: float = float(os.getenv("EVIDENCE_REFRESH_STARTUP_DELAY_SECONDS", "120"))   # start-up work (account refresh, preflight) first
+EVIDENCE_REFRESH_MAX_BUILDS_PER_RUN: int = int(os.getenv("EVIDENCE_REFRESH_MAX_BUILDS_PER_RUN", "3"))
+EVIDENCE_REFRESH_MAX_BUILDS_PER_DAY: int = int(os.getenv("EVIDENCE_REFRESH_MAX_BUILDS_PER_DAY", "12"))          # every packet of the in-scope symbols in the trailing 24 h counts
+EVIDENCE_REFRESH_SPACING_SECONDS: float = float(os.getenv("EVIDENCE_REFRESH_SPACING_SECONDS", "20"))            # between two builds of one run (SEC politeness)
+EVIDENCE_REFRESH_RETRY_HOURS: float = float(os.getenv("EVIDENCE_REFRESH_RETRY_HOURS", "6"))                     # after a FAILED build, before that symbol is tried again
+EVIDENCE_REFRESH_MAX_FAILURES_PER_DAY: int = int(os.getenv("EVIDENCE_REFRESH_MAX_FAILURES_PER_DAY", "2"))       # FAILED packets per symbol per trailing 24 h
+EVIDENCE_SEC_FACTS_MAX_BYTES: int = int(os.getenv("EVIDENCE_SEC_FACTS_MAX_BYTES", "25000000"))                  # SEC companyfacts JSON only (large caps exceed EVIDENCE_MAX_BYTES)
+# <<< Evidence refresh, Stage 5.4.2

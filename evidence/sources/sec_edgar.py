@@ -60,14 +60,15 @@ class SecAdapter:
         self._last = None
 
     # ---------------------------------------------------------------- transport --------------------------------------------
-    def _get(self, res: AdapterResult, url: str, purpose: str) -> Optional[net.FetchResult]:
+    def _get(self, res: AdapterResult, url: str, purpose: str, max_bytes: Optional[int] = None) -> Optional[net.FetchResult]:
         if res.requests >= self.max_requests:
             res.notes.append(f"SEC request budget ({self.max_requests}) exhausted before {purpose}: {url}")
             return None
         if self._last is not None and self.min_interval_s > 0:
             self.sleep_fn(self.min_interval_s)
         self._last = True
-        fr = self.fetch_fn(url, purpose=purpose, allowed_hosts=HOSTS, headers={"User-Agent": self.user_agent}, now_fn=self.now_fn)
+        cap = {} if max_bytes is None else {"max_bytes": int(max_bytes)}      # Evidence refresh, Stage 5.4.2: a per-endpoint cap (companyfacts only)
+        fr = self.fetch_fn(url, purpose=purpose, allowed_hosts=HOSTS, headers={"User-Agent": self.user_agent}, now_fn=self.now_fn, **cap)
         res.add_fetch(fr)
         return fr
 
@@ -135,7 +136,8 @@ class SecAdapter:
         return {"text": text, "title": title, "hash": fr.content_hash, "url": fr.final_url, "fetch_index": len(res.fetches) - 1}
 
     def fundamentals(self, res: AdapterResult, ticker: str, cik10: str, as_of: date) -> Optional[dict]:
-        fr = self._get(res, companyfacts_url(cik10), f"{ticker} company facts (XBRL)")
+        fr = self._get(res, companyfacts_url(cik10), f"{ticker} company facts (XBRL)",
+                       max_bytes=config.EVIDENCE_SEC_FACTS_MAX_BYTES)   # Evidence refresh, Stage 5.4.2: large caps' companyfacts exceed EVIDENCE_MAX_BYTES
         data = self._json(fr)
         if not isinstance(data, dict):
             return None
