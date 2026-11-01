@@ -1856,7 +1856,7 @@ ALLOWED_71 = {"__future__", "argparse", "gzip", "hashlib", "json", "math", "re",
 
 def test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or_a_model():
     present = {q.relative_to(ROOT / "market_intel").as_posix() for q in (ROOT / "market_intel").rglob("*.py")}
-    later = {p[len("market_intel/"):] for p in FL.NEW_72 | FL.NEW_73 if p.startswith("market_intel/") and p.endswith(".py")}   # Stages 7.2, 7.3: their own S01
+    later = {p[len("market_intel/"):] for p in FL.NEW_72 | FL.NEW_73 | FL.NEW_731 if p.startswith("market_intel/") and p.endswith(".py")}   # 7.2, 7.3, 7.3.1: own S01
     assert present == set(PURE_70) | set(NEW_MODULES) | later, sorted(present ^ (set(PURE_70) | set(NEW_MODULES) | later))   # declared, or it fails
     for rel in sorted(present - later):
         tree = ast.parse((ROOT / "market_intel" / rel).read_text(encoding="utf-8"))
@@ -1912,7 +1912,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_71, FL.BASE_72).split())                # Stage 7.1 itself, between two fixed commits
     assert stage == FL.NEW_71 | FL.EDITED_71, {"unexpected": sorted(stage - FL.NEW_71 - FL.EDITED_71), "missing": sorted((FL.NEW_71 | FL.EDITED_71) - stage)}
-    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73                             # Stages 7.2, 7.3: pinned by their own F tests
+    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731                             # Stages 7.2, 7.3: pinned by their own F tests
     assert changed == FL.NEW_71 | FL.EDITED_71 | later, {"unexpected": sorted(changed - FL.NEW_71 - FL.EDITED_71 - later),
                                                          "missing": sorted((FL.NEW_71 | FL.EDITED_71 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_71).split())
