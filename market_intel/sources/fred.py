@@ -13,7 +13,10 @@ Mapping:
 * FRED's "." (no value) is an ABSENCE: status UNAVAILABLE, no payload - never a zero;
 * paging: offset + limit < count -> the next page's offset is the token.
 Response validation: an object with integer count / offset / limit and an `observations` list; FRED's error envelope (error_code /
-error_message) is ERROR_ENVELOPE; an observation is exactly {realtime_start, realtime_end, date, value} with ISO dates and a numeric
+error_message) is ERROR_ENVELOPE. The paging metadata must be CONSISTENT, or the page is UNEXPECTED_SHAPE (detail pagination) - never a
+legitimate empty result: count >= 0, offset >= 0, 1 <= limit <= PAGE_LIMIT, offset <= count, offset + rows <= count, rows <= limit (else
+PAGE_TOO_LARGE), a page short of `limit` must end the series (offset + rows == count), and an empty page is legitimate only at the end
+(offset == count); when the caller passes the offset it asked for, the response's offset must equal it; an observation is exactly {realtime_start, realtime_end, date, value} with ISO dates and a numeric
 string value or ".", else MALFORMED_ROW / BAD_TIME.
 """
 from __future__ import annotations
@@ -49,7 +52,8 @@ def request(series_id: str, *, observation_start: date, observation_end: date, r
 
 
 @C.never_raises
-def parse(body, *, series_id: str, retrieved_at: datetime, backfilled: bool = False, dataset_id: Optional[str] = None) -> C.Parsed:
+def parse(body, *, series_id: str, retrieved_at: datetime, backfilled: bool = False, dataset_id: Optional[str] = None,
+          expected_offset: Optional[int] = None) -> C.Parsed:
     doc, bad = C.load_json(body)
     if bad:
         return C.page_problem(bad)
@@ -58,11 +62,15 @@ def parse(body, *, series_id: str, retrieved_at: datetime, backfilled: bool = Fa
     if not (isinstance(doc, dict) and isinstance(doc.get("observations"), list)
             and all(isinstance(doc.get(k), int) and not isinstance(doc.get(k), bool) for k in ("count", "offset", "limit"))):
         return C.page_problem("UNEXPECTED_SHAPE")
-    obs = doc["observations"]
-    if len(obs) > doc["limit"] or len(obs) > PAGE_LIMIT:
+    obs, count, offset, limit = doc["observations"], doc["count"], doc["offset"], doc["limit"]
+    if count < 0 or offset < 0 or not 1 <= limit <= PAGE_LIMIT or offset > count or (expected_offset is not None and offset != expected_offset):
+        return C.page_problem("UNEXPECTED_SHAPE", detail="pagination")
+    if len(obs) > limit:
         return C.page_problem("PAGE_TOO_LARGE", observations=len(obs))
-    nxt = doc["offset"] + len(obs)
-    token = str(nxt) if (obs and nxt < doc["count"]) else None
+    nxt = offset + len(obs)
+    if nxt > count or (len(obs) < limit and nxt != count):                 # more rows than exist, or a short page that does not end the series
+        return C.page_problem("UNEXPECTED_SHAPE", detail="pagination")
+    token = str(nxt) if nxt < count else None
     out: List[Observation] = []
     problems: List[dict] = []
     for i, r in enumerate(obs):

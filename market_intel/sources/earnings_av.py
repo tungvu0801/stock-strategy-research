@@ -16,7 +16,8 @@ Mapping:
 * quality code: validate.earnings_codes (UNCONFIRMED_PAST for a report date already past without an 8-K item 2.02).
 Response validation: Alpha Vantage answers errors and limits with HTTP 200 and a JSON body ({"Information" / "Note" / "Error Message"})
 - ERROR_ENVELOPE; the CSV header must be exactly COLUMNS (optionally + timeOfTheDay) - else UNEXPECTED_SHAPE; a row needs a valid
-symbol, ISO dates and a numeric or empty estimate - else MALFORMED_ROW / BAD_TIME.
+symbol, ISO dates and a FINITE numeric or empty estimate (NaN / Infinity / an overflow such as 1e999 are MALFORMED_ROW, never a value)
+- else MALFORMED_ROW / BAD_TIME.
 
 StoreEarningsProvider implements data/events/earnings.EarningsEventProvider over the store (latest snapshot per fiscal period, and
 SEC 8-K item 2.02 filings as confirmations). It is NOT wired into get_earnings_provider(): that changes the Stage 2.6 event context and
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 from datetime import date, datetime, timezone
 from typing import Iterable, List, Optional
 
@@ -101,7 +103,9 @@ def parse(body, *, retrieved_at: datetime, symbols: Optional[Iterable[str]] = No
             try:
                 estimate = float(row["estimate"])
             except ValueError:
-                problems.append({"problem": "MALFORMED_ROW", "index": i})
+                estimate = math.nan
+            if not math.isfinite(estimate):                          # "nan", "inf", "-inf", "Infinity", "1e999": not an estimate
+                problems.append({"problem": "MALFORMED_ROW", "index": i, "detail": "estimate"})
                 continue
         flags = VA.earnings_codes(report, snapshot, confirmed_by_8k_202=False)
         try:

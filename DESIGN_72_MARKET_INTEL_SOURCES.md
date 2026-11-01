@@ -67,6 +67,13 @@ refuses facts observed after their retrieval.
 - **Snapshots:** a map with requested symbols only.
 - **SEC:** the requested CIK, and equal-length `filings.recent` columns.
 - **FRED:** integer `count` / `offset` / `limit`; `error_code` / `error_message` is an error envelope.
+  - **Consistent paging metadata, or `UNEXPECTED_SHAPE` (detail `pagination`) — never a legitimate empty page:**
+    - `count >= 0`, `offset >= 0`, and `1 <= limit <= 100000`;
+    - `offset <= count` and `offset + rows <= count`;
+    - a page short of `limit` must end the series;
+    - an empty page is valid only at `offset == count`;
+    - the response offset must equal the offset the caller asked for (`expected_offset`).
+- **Alpha Vantage estimates:** an estimate must be finite or empty. NaN, ±Infinity and overflows (`1e999`) are `MALFORMED_ROW`.
 - **Halts:** RSS `channel` / `item` with `ndaq:` fields.
 - **Alpha Vantage:** the exact CSV header. Its HTTP 200 JSON notices (`Information`, `Note`, `Error Message`) are `ERROR_ENVELOPE`.
 
@@ -112,8 +119,12 @@ unusable body, 3 fetch refused.
 **Provider facts to verify on the first approved run.** The parsers fail closed on any deviation, so a wrong assumption surfaces as a
 page problem, never as data.
 - **SEC `acceptanceDateTime`.** It carries a "Z" but is read as **New York wall-clock time**. The EDGAR filing index shows the same
-  digits as Eastern time, and the later reading is the conservative one for availability. Each filing records `acceptance_raw`,
-  `acceptance_tz` and a filing-date consistency check.
+  digits as Eastern time, and the later reading is the conservative one for availability. Each filing records `acceptance_raw`
+  (verbatim), `acceptance_tz` and a filing-date consistency check. **Still unresolved.** The assumption is explicit and tested
+  (`test_H04`):
+  - **It decides the session.** A raw `16:30:12Z` is POST, at 16:30 New York; read literally as UTC it would be REG, at 12:30 New York.
+  - **It decides the chronology.** An acceptance that, read as New York time, falls after our retrieval is `FUTURE_OBSERVED`, and the
+    store refuses it (`OBSERVED_AFTER_RETRIEVAL`). It is never silently re-read as UTC.
 - **Alpaca news:** the page limit (50), history depth, and whether `next_page_token` is stable.
 - **Alpaca snapshots:** the response shape (a top-level symbol map) and the symbol cap per request; 100 is a self-imposed cap.
 - **SEC companyfacts:** size per CIK; `MAX_FACTS` = 50 000 rows selected.

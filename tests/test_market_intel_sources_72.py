@@ -16,6 +16,8 @@ tmp_path.
   X01-X04 invariants: no adapter ever raises (fuzzed bodies); every row has explicit times and available_at == retrieved_at; no request
           carries a credential; the evidence tripwire is never hit and no socket is opened.
   C01     the CLI: offline, read-only; fetch always refused.
+  H01-H04 pre-merge hardening: finite earnings estimates; consistent FRED paging metadata (never a false empty page); SEC facts that
+          differ only by period end stay distinct facts in the store; the SEC acceptance-time assumption, explicit and fail-closed.
   S01     isolation: a closed registry of the 7.2 modules and their imports; nothing outside market_intel imports them.
   F01-F03 scope (freeze bookkeeping).
 """
@@ -51,7 +53,7 @@ from market_intel.sources import fred as FRED
 from market_intel.sources import halts as HALTS
 from market_intel.sources import sec_facts as FACTS
 from market_intel.sources import sec_filings as FILINGS
-from market_intel.store import DatasetSpec, FeedRequired, MarketIntelStore, content_hash, natural_key, ts
+from market_intel.store import ChronologyError, DatasetSpec, FeedRequired, MarketIntelStore, content_hash, natural_key, ts
 from value_quality import pit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -573,6 +575,67 @@ def test_C01_the_cli_is_offline_and_read_only_and_fetch_is_always_refused(tmp_pa
     assert (code, json.loads(text)["fetched"]) == (3, False)
     assert run("request", "--source", "nope")[0] == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == before and not (ROOT / "data" / "market_intel.db").exists()
+
+# ============================================================================================================ hardening (H)
+def test_H01_an_earnings_estimate_must_be_finite_or_empty():
+    head = "symbol,name,reportDate,fiscalDateEnding,estimate,currency\n"
+    for est in ("nan", "NaN", "inf", "-inf", "Infinity", "-Infinity", "1e999", "-1e999", "n/a"):
+        obs, _, problems = EARN.parse(f"{head}AAPL,Apple,2026-01-29,2025-12-31,{est},USD\n".encode(), retrieved_at=RET)
+        assert obs == [] and problems == [{"problem": "MALFORMED_ROW", "index": 0, "detail": "estimate"}], est      # never a value
+    ok = EARN.parse(f"{head}AAPL,Apple,2026-01-29,2025-12-31,-0.15,USD\nMSFT,M,2026-01-28,2025-12-31,,USD\n".encode(), retrieved_at=RET)[0]
+    assert [o.payload["estimate"] for o in ok] == [-0.15, None]                                                   # a negative or no estimate: legitimate
+
+
+def test_H02_fred_paging_metadata_must_be_consistent_or_the_page_is_unusable_never_empty():
+    def page(obs=(), **kw):
+        d = json.loads(fred_page(list(obs)))
+        d.update(kw)
+        return json.dumps(d).encode()
+    one = [fobs("2025-12-01", "4.1", "2025-12-02")]
+    bad = [({}, dict(count=-1)), ({}, dict(offset=-1)), ({}, dict(limit=0)), ({}, dict(limit=-5)), ({}, dict(limit=FRED.PAGE_LIMIT + 1)),
+           ({}, dict(count=5)),                                                 # 5 rows exist, none returned: not an empty series
+           ({}, dict(count=2, offset=5)), ({"obs": one}, dict(count=0)), ({"obs": one}, dict(count=3, limit=1000)), ({"obs": one * 2}, dict(count=1, limit=2))]
+    for extra, kw in bad:
+        parsed = FRED.parse(page(extra.get("obs", ()), **kw), series_id="DGS10", retrieved_at=RET)
+        assert (parsed[0], parsed[1], parsed[2]) == ([], None, [{"problem": "UNEXPECTED_SHAPE", "detail": "pagination"}]), kw
+    assert codes(FRED.parse(page(one, count=1, limit=1), series_id="DGS10", retrieved_at=RET, expected_offset=3)) == ["UNEXPECTED_SHAPE"]   # not the page asked for
+    for kw in (dict(count=0), dict(count=7, offset=7)):
+        assert FRED.parse(page((), **kw), series_id="DGS10", retrieved_at=RET) == ([], None, []), kw            # a real end of the series
+    mid = FRED.parse(page(one, count=3, offset=1, limit=1), series_id="DGS10", retrieved_at=RET, expected_offset=1)
+    assert (len(mid[0]), mid[1], mid[2]) == (1, "2", [])                                                           # a full page in the middle
+
+
+def test_H03_sec_facts_that_differ_only_by_period_end_are_distinct_facts_in_the_store(tmp_path):
+    rows = [fact(val=100, end="2025-06-28", fp="Q3", form="10-Q", filed="2025-08-01"), fact(val=200, end="2025-09-27", fp="Q3", form="10-Q", filed="2025-08-01")]
+    obs = [o for o in FACTS.parse(companyfacts(rows), ticker="AAPL", cik="320193", retrieved_at=RET)[0] if o.payload["concept"] == CONCEPT]
+    a, b = obs
+    assert a.source_identifier == b.source_identifier                                         # same accession, concept, unit, fy, fp and start ...
+    assert a.observed_at != b.observed_at and natural_key(a) != natural_key(b)                # ... the period end (observed_at) tells them apart
+    s = MarketIntelStore(tmp_path / "facts.db", clock=Clock(RET), approvals_root=tmp_path / "approvals")
+    res = s.ingest(fixture_dataset(s, "FACT", symbols=["AAPL"]), obs)
+    assert (res.inserted, res.revised, res.duplicates, res.rejected) == (2, 0, 0, 0)          # two facts: no revision, no in-dataset conflict
+    assert [len(s.revisions(natural_key(o))) for o in obs] == [1, 1]
+    assert sorted(r["payload"]["value"] for r in s.history("FACT", symbol="AAPL", as_of=RET)) == [100, 200]
+
+
+def test_H04_the_sec_acceptance_time_assumption_is_explicit_decides_the_session_and_fails_closed(tmp_path):
+    raw = "2025-10-30T16:30:12.000Z"
+    o = FILINGS.parse(submissions([frow(accepted=raw)]), ticker="AAPL", cik="320193", retrieved_at=RET)[0][0]
+    assert (o.payload["acceptance_raw"], o.payload["acceptance_tz"], FILINGS.ACCEPTANCE_TZ) == (raw, "ASSUMED_AMERICA_NEW_YORK", "ASSUMED_AMERICA_NEW_YORK")
+    assert o.observed_at == o.published_at == datetime(2025, 10, 30, 20, 30, 12, tzinfo=UTC)                     # 16:30:12 New York (EDT)
+    assert (o.session, o.session_date) == ("POST", date(2025, 10, 30))
+    assert CAL.session(datetime(2025, 10, 30, 16, 30, 12, tzinfo=UTC))["session"] == "REG"                        # the literal-UTC reading: 12:30 New York
+    tue = datetime(2025, 12, 2, 15, 0, tzinfo=UTC)                                                                 # retrieved Tuesday 10:00 New York
+    early = FILINGS.parse(submissions([frow(accepted="2025-12-02T09:00:00.000Z", filed="2025-12-02")]), ticker="AAPL", cik="320193", retrieved_at=tue)[0][0]
+    late = FILINGS.parse(submissions([frow(accepted="2025-12-02T12:00:00.000Z", filed="2025-12-02")]), ticker="AAPL", cik="320193", retrieved_at=tue)[0][0]
+    assert early.observed_at == datetime(2025, 12, 2, 14, 0, tzinfo=UTC) <= tue and "FUTURE_OBSERVED" not in early.quality_flags
+    assert late.observed_at == datetime(2025, 12, 2, 17, 0, tzinfo=UTC) > tue and "FUTURE_OBSERVED" in late.quality_flags   # 12:00 NY: after us
+    assert late.payload["acceptance_raw"] == "2025-12-02T12:00:00.000Z"                                            # kept verbatim, never re-read as UTC
+    s = MarketIntelStore(tmp_path / "filings.db", clock=Clock(tue), approvals_root=tmp_path / "approvals")
+    did = fixture_dataset(s, "FILING", symbols=["AAPL"])
+    with pytest.raises(ChronologyError, match="OBSERVED_AFTER_RETRIEVAL"):
+        s.ingest(did, [late])                                                                                      # refused: fail closed
+    assert s.ingest(did, [early]).inserted == 1
 
 
 # ============================================================================================================ isolation (S)
