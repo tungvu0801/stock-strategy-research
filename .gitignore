@@ -10,3 +10,6 @@ data/stock_agent.db-shm
 
 logs/
 runtime/
+data/market_intel.db
+data/market_intel.db-wal
+data/market_intel.db-shm

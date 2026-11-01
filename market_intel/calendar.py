@@ -15,16 +15,28 @@ Coverage strategy (DESIGN_70 section 5): years are added to a versioned table fr
 that cross-checks the holiday rules and lists the exceptional closures rules cannot derive (e.g. 2025-01-09, the national day of
 mourning). History (2025 and earlier) goes into a market_intel-owned table, never into autorun/calendar.py (frozen, used by the
 executor's session health); a live year (2028) is a separate, declared change to autorun/calendar.py. `rule_holidays` only cross-checks.
+
+Stage 7.1: 2025 is covered by the market_intel-owned, verified history table (calendar_history.py: the NYSE publications plus an
+empirical cross-check). For a history year the session is classified here with the 6.10A classifier's own thresholds (PRE from 04:00,
+REG from 09:30 to the close, POST to the late-trading end) and the history table's closes; 2026-2027 still come from the 6.10A classifier
+itself. Every other year (2024 and earlier, 2028 and later) stays NOT_COVERED.
+
+THE ONE DECLARED EXCEPTION to "one source of truth" (Stage 7.1, operator-approved): on an NYSE early-close day the late trading session
+ends at 17:00 New York time, not 20:00 (the NYSE release). For 2025 the history table says so; for 2026-2027 a market_intel-owned,
+versioned override (calendar_history.LATE_TRADING_EARLY_CLOSES, nyse_late_trading_2026_2027_v1) turns the 6.10A classifier's AFTER_HOURS
+into CLOSED from 17:00 on those three dates only. autorun/calendar.py and the executor's session health are untouched.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from autorun import AFTER_HOURS, CLOSED as A_CLOSED, PREMARKET, REGULAR
+from autorun import AFTER_HOURS, AFTER_HOURS_END_MINUTE, CLOSED as A_CLOSED, PREMARKET, PREMARKET_MINUTE, REGULAR
 from autorun import calendar as CAL
 from autorun import session as SES
 from market_intel import CLOSED, POST, PRE, REG
+from market_intel import calendar_history as HIST
+from setups.market_hours import OPEN_MINUTE, to_et
 
 _MAP = {PREMARKET: PRE, REGULAR: REG, AFTER_HOURS: POST, A_CLOSED: CLOSED}
 MARKET_DAY, HOLIDAY, WEEKEND, NOT_COVERED = "MARKET_DAY", "HOLIDAY", "WEEKEND", "NOT_COVERED"
@@ -42,7 +54,50 @@ def _utc(now: datetime) -> datetime:
 
 
 def covered(d: date) -> bool:
-    return CAL.covered(d)
+    return CAL.covered(d) or HIST.covered(d)
+
+
+def _close_minute(d: date) -> Optional[int]:
+    """The regular close of a covered date (None on a weekend or a holiday): the history table for its years, else the 6.10A table."""
+    return HIST.close_minute(d) if HIST.covered(d) else CAL.close_minute(d)
+
+
+def calendar_version(d: Optional[date]) -> str:
+    if d is None:
+        return "UNAVAILABLE"
+    if HIST.covered(d):
+        return HIST.HISTORY_VERSION
+    return CAL.CALENDAR_VERSION if CAL.covered(d) else "NOT_COVERED"
+
+
+def post_market_end_minute(d: Optional[date]) -> Optional[int]:
+    """When the late (post-market) session of a market day ends, minutes after midnight New York time; None on a non-session or uncovered
+    day: 17:00 on an NYSE early close (the 2025 history table; the 2026-2027 late-trading override), else 20:00."""
+    if d is None or market_day_status(d) != MARKET_DAY:
+        return None
+    if HIST.covered(d):
+        return HIST.post_market_end_minute(d)
+    return HIST.EARLY_CLOSE_LATE_TRADING_END_MINUTE if d in HIST.LATE_TRADING_EARLY_CLOSES else AFTER_HOURS_END_MINUTE
+
+
+def _classify_history(now: datetime) -> Dict[str, Any]:
+    """A history-year moment, with the 6.10A classifier's own thresholds, the history table's close and its late-trading end (17:00 on
+    an early-close day: the NYSE release)."""
+    et = to_et(_utc(now))
+    d = et.date()
+    m = et.hour * 60 + et.minute + et.second / 60.0
+    close = HIST.close_minute(d)
+    late_end = HIST.post_market_end_minute(d) if close is not None else None
+    if close is None or m < PREMARKET_MINUTE or m >= late_end:
+        cls = A_CLOSED
+    elif m < OPEN_MINUTE:
+        cls = PREMARKET
+    elif m < close:
+        cls = REGULAR
+    else:
+        cls = AFTER_HOURS
+    return {"session": cls, "trading_date": d.isoformat(), "et_time": et.strftime("%H:%M:%S"), "close_minute": close,
+            "calendar": HIST.HISTORY_VERSION}
 
 
 def market_day_status(d: Optional[date]) -> str:
@@ -53,7 +108,7 @@ def market_day_status(d: Optional[date]) -> str:
         return WEEKEND
     if not covered(d):
         return NOT_COVERED
-    return MARKET_DAY if CAL.close_minute(d) is not None else HOLIDAY
+    return MARKET_DAY if _close_minute(d) is not None else HOLIDAY
 
 
 def is_market_day(d: date) -> bool:
@@ -67,13 +122,18 @@ def is_market_day(d: date) -> bool:
 def session(now: datetime) -> Dict[str, Any]:
     """{session, session_date, et_minute, market_day, close_minute, covered, calendar} for `now` (no broker clock: this layer reads none)."""
     c = SES.classify(_utc(now))
+    if c.get("trading_date") and HIST.covered(date.fromisoformat(c["trading_date"])):
+        c = _classify_history(now)                         # 2025: the verified history table, never the weekday assumption
     d = date.fromisoformat(c["trading_date"]) if c.get("trading_date") else None
     et = c.get("et_time")
     minute = int(et[:2]) * 60 + int(et[3:5]) if et else None
+    if c["session"] == AFTER_HOURS and d in HIST.LATE_TRADING_EARLY_CLOSES and minute is not None and minute >= HIST.EARLY_CLOSE_LATE_TRADING_END_MINUTE:
+        c = {**c, "session": A_CLOSED, "late_trading_override": HIST.LATE_TRADING_OVERRIDE_VERSION}   # 2026-2027 early close: late trading ended 17:00
     status = market_day_status(d)
     return {"session": _MAP[c["session"]], "session_date": d, "et_minute": minute, "day_status": status,
             "market_day": None if status == NOT_COVERED else status == MARKET_DAY, "close_minute": c.get("close_minute"),
-            "covered": bool(d and covered(d)), "calendar": c.get("calendar")}
+            "covered": bool(d and covered(d)), "calendar": c.get("calendar"),
+            **({"late_trading_override": c["late_trading_override"]} if "late_trading_override" in c else {})}
 
 
 def session_of(now: datetime) -> str:
@@ -117,7 +177,7 @@ def regular_minutes(d: date) -> Optional[int]:
     """Minutes in the regular session of `d` (390, 210 on an early close, 0 on a weekend or holiday; None when not covered)."""
     if market_day_status(d) == NOT_COVERED:
         return None
-    close = CAL.close_minute(d)
+    close = _close_minute(d)
     return 0 if close is None else close - (9 * 60 + 30)
 
 

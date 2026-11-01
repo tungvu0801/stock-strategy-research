@@ -15,6 +15,16 @@ vocabulary and the policies every later stage (7.1 store and backfill, 7.2 sourc
 
 Display-only and read-only: nothing in the live path imports this package, and it imports no model provider, broker, executor,
 proposal, safety or setup service (tests/test_market_intel_70.py).
+
+Stage 7.1 (DESIGN_71_MARKET_INTEL_STORE.md) adds, still with nothing in the live path importing them:
+
+  calendar_history.py  the verified 2025 NYSE history (holidays, the 2025-01-09 closure, early closes); 2024 / 2028 stay NOT_COVERED
+  migrations.py        the versioned schema of the store's own SQLite file (data/market_intel.db), append-only triggers on every table
+  store.py             the point-in-time store: lazy creation, idempotent ingestion, revisions, feed separation, PIT queries, quality reports
+  archive.py           the raw-response archive (gzip + SHA-256 manifest under runtime/market_intel/raw)
+  sources/alpaca_bars.py  Alpaca bars -> envelopes, parse-only (no network code)
+  ingest.py            the offline backfill planner and CLI; the gated runner a future approved backfill will use
+  approvals.py         the fail-closed operator approval that runner needs (a file in runtime/; no code writes one)
 """
 VERSION = "market_intel_v0"
 STAGE = "7.0"

@@ -118,7 +118,18 @@ A 2025 backfill or a 2028 date can therefore never be read as verified sessions 
 4. A live year (2028) is a separate, declared change to `autorun/calendar.py`, made before 2028.
 5. Stage 7.1 accepts a backfill only for covered years. Any uncovered dataset stays blocked.
 
+**Stage 7.1 implemented the 2025 step** (`market_intel/calendar_history.py`, `DESIGN_71` section 5). It was verified against the NYSE
+2025 calendar release, the NYSE notice of the 2025-01-09 closure, and the archived IEX daily bars of 82 symbols (250 sessions, the
+11 closures exactly). 2024 and earlier, and 2028 onward, remain `NOT_COVERED`.
+
 One fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.
+
+**Stage 7.1 resolved that fact, as the one declared exception to the single-source rule** (operator-approved 2026-10-31; `DESIGN_71`
+section 5). The NYSE release footnotes every 2025-2027 early-close date: the late trading sessions "will close at 5:00 p.m." So
+`market_intel` ends POST at 17:00 New York time on those dates. For 2025 the history table does this. For 2026-2027 a versioned,
+`market_intel`-owned override (`nyse_late_trading_2026_2027_v1`) turns the 6.10A classifier's AFTER_HOURS into CLOSED from 17:00 on
+exactly 2026-11-27, 2026-12-24 and 2027-11-26. `autorun/calendar.py`, the 6.10A classifier and the executor are unchanged, and every
+holiday and 13:00 close still comes from them.
 
 ## 6. Budgets (design C.8)
 
