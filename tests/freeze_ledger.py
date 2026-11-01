@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -72,6 +72,12 @@ Stage 7.1 (market intelligence store; DESIGN_71_MARKET_INTEL_STORE.md) adds the 
 Its one intentional semantic change: market_intel/calendar.py covers 2025 (SEMANTIC_71); autorun/calendar.py is untouched. No config,
 server, route, thread, network, execution, setup, proposal, safety or UI change. tests/test_market_intel_store_71.py pins behaviour
 and scope (BASE_71 / NEW_71 / EDITED_71).
+
+Stage 7.2 (market intelligence event and reference adapters; DESIGN_72_MARKET_INTEL_SOURCES.md) adds parse-only adapters - Alpaca news
+and snapshots, SEC filings and company facts, FRED / ALFRED, the Nasdaq halt RSS, the Alpha Vantage earnings calendar - plus deterministic
+news attribution, deduplication and entity matching, and an offline CLI whose fetch is always refused. They emit Stage 7.0 envelopes into
+the unchanged Stage 7.1 store. No transport, key, config, server, route, thread, network, execution, setup, proposal, safety or UI change;
+the earnings provider is not wired. tests/test_market_intel_sources_72.py pins behaviour and scope (BASE_72 / NEW_72 / EDITED_72).
 """
 import hashlib
 import subprocess
@@ -177,8 +183,13 @@ SEMANTIC_71 = {                                                                 
     "market_intel/calendar.py": "2025 is covered by the verified market_intel history table (calendar_history.py: NYSE publications + an empirical cross-check): 2025 weekdays read MARKET_DAY / HOLIDAY instead of NOT_COVERED; 2024 and earlier and 2028 onward stay NOT_COVERED; on every NYSE early-close day the post-market ends at 17:00 New York time (the NYSE release), so 17:00-20:00 reads CLOSED: the 2025 history table, and for 2026-2027 the versioned market_intel late-trading override (nyse_late_trading_2026_2027_v1, operator-approved: the one declared exception to the Stage 7.0 single-source rule); post_market_end_minute() is new; autorun/calendar.py is unchanged",
 }
 INSTRUMENTATION_71: dict = {}                                                             # Stage 7.1: no executor instrumentation
+BASE_72 = "05358cb0f617697cc760de4e53cda107841a352b"                                    # main: Stage 7.1 merged (PR #42)
+NEW_72 = {"DESIGN_72_MARKET_INTEL_SOURCES.md", "market_intel/news/__init__.py", "market_intel/news/attribution.py", "market_intel/news/dedup.py", "market_intel/news/entities.py", "market_intel/sources/alpaca_news.py", "market_intel/sources/alpaca_snapshots.py", "market_intel/sources/cli.py", "market_intel/sources/common.py", "market_intel/sources/earnings_av.py", "market_intel/sources/fred.py", "market_intel/sources/halts.py", "market_intel/sources/sec_facts.py", "market_intel/sources/sec_filings.py", "tests/test_market_intel_sources_72.py"}   # Stage 7.2 (market intelligence adapters): its new files
+EDITED_72 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier stages' F01 unions, the 7.1 registry / F tests, bookkeeping
+SEMANTIC_72: dict = {}                                                                    # Stage 7.2: no behaviour change of an existing file
+INSTRUMENTATION_72: dict = {}                                                             # Stage 7.2: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "861d3f2f633e9a3e44446abc1ec4ea92d2a4d0afb6de917cba184f0f6e348dba",
+    ".github/ci/pytest_groups.json": "1067639817f6919d4cb9abae5dedc56279febdff69d37d30bf2ec6559144c9ec",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
@@ -216,7 +227,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "7542451bb20ed1969ab0e89aa95b44dc8a2e2d05edec233d8419cf06437f6bde",
+    "tests/test_strategy_validation_62.py": "c3e6f2dfee97f9c1914bfa551c98a008f3ef3899d8471702c5326adb1f5b76a4",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",

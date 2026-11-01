@@ -31,7 +31,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-from freeze_ledger import NEW_68, NEW_69, NEW_691, NEW_610A, NEW_610C, NEW_541, NEW_611FIX, NEW_OPS, NEW_610D, NEW_542, NEW_70, NEW_71, unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import NEW_68, NEW_69, NEW_691, NEW_610A, NEW_610C, NEW_541, NEW_611FIX, NEW_OPS, NEW_610D, NEW_542, NEW_70, NEW_71, NEW_72, unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -80,7 +80,7 @@ NEW_66 = {"mean_reversion/__init__.py", "mean_reversion/adapter.py", "mean_rever
 NEW_67 = {"breakout/__init__.py", "breakout/adapter.py", "breakout/audit.py", "breakout/core.py", "breakout/data.py", "breakout/diagnostics.py",
           "strategy_registry/breakout.py", "DESIGN_67_BREAKOUT.md", "tests/test_breakout_67.py", "tests/breakout_fixtures.py",
           "tests/frontend/breakout.test.cjs"}                                                     # Stage 6.7: the Breakout strategy
-NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67 | NEW_68 | NEW_69 | NEW_691 | NEW_610A | NEW_610C | NEW_541 | NEW_611FIX | NEW_OPS | NEW_610D | NEW_542 | NEW_70 | NEW_71   # Stage 6.8 / 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix: + their new files (tests/freeze_ledger.py); every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
+NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67 | NEW_68 | NEW_69 | NEW_691 | NEW_610A | NEW_610C | NEW_541 | NEW_611FIX | NEW_OPS | NEW_610D | NEW_542 | NEW_70 | NEW_71 | NEW_72   # Stage 6.8 / 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix: + their new files (tests/freeze_ledger.py); every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else
 CHANGED_62 = {".github/ci/pytest_groups.json", "README.md", "api/routes/strategy_registry.py", "browser_tests/flows.py", "frontend/product_ui.css", "frontend/product_ui.js",
               "strategy_registry/service.py", "tests/test_forward_validation_61.py", "tests/test_product_ui_611.py", "tests/test_product_flow_612.py", "tests/test_db_bootstrap_busy.py",
               "strategy_registry/registry.py"}   # + Stage 6.4 (VALUE_QUALITY implemented)

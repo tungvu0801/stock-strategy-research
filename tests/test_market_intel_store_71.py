@@ -1856,8 +1856,9 @@ ALLOWED_71 = {"__future__", "argparse", "gzip", "hashlib", "json", "math", "re",
 
 def test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or_a_model():
     present = {q.relative_to(ROOT / "market_intel").as_posix() for q in (ROOT / "market_intel").rglob("*.py")}
-    assert present == set(PURE_70) | set(NEW_MODULES), sorted(present ^ (set(PURE_70) | set(NEW_MODULES)))   # a new module must be declared here
-    for rel in sorted(present):
+    later = {p[len("market_intel/"):] for p in FL.NEW_72 if p.startswith("market_intel/") and p.endswith(".py")}   # Stage 7.2: its own S01
+    assert present == set(PURE_70) | set(NEW_MODULES) | later, sorted(present ^ (set(PURE_70) | set(NEW_MODULES) | later))   # declared, or it fails
+    for rel in sorted(present - later):
         tree = ast.parse((ROOT / "market_intel" / rel).read_text(encoding="utf-8"))
         names = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module} | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
                                                                                                     for a in n.names}
@@ -1892,6 +1893,13 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #42 (Stage 7.1 merged; the Stage 7.2 base): what Stage 7.1 left, whatever a later stage changed since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_72}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_72} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 APP_EDITS_71 = {".github/ci/pytest_groups.json", ".gitignore", "DESIGN_70_MARKET_INTEL_CONTRACTS.md", "market_intel/__init__.py", "market_intel/calendar.py"}
 FROZEN_DIRS_71 = ("setups", "ppe", "evidence", "evidence_refresh", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe",
                   "unified_portfolio", "trader_view", "scripts", "forward_validation", "account_refresh", "rh_gateway", "frontend", "browser_tests", "api",
@@ -1902,9 +1910,13 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     assert FL.BASE_71 == "4e2f115dd9826647c38474506984f89546e3d9e0" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_71}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_71).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_71 | FL.EDITED_71, {"unexpected": sorted(changed - FL.NEW_71 - FL.EDITED_71), "missing": sorted((FL.NEW_71 | FL.EDITED_71) - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_71, FL.BASE_72).split())                # Stage 7.1 itself, between two fixed commits
+    assert stage == FL.NEW_71 | FL.EDITED_71, {"unexpected": sorted(stage - FL.NEW_71 - FL.EDITED_71), "missing": sorted((FL.NEW_71 | FL.EDITED_71) - stage)}
+    later = FL.NEW_72 | FL.EDITED_72                                                         # Stage 7.2, pinned by its own F tests
+    assert changed == FL.NEW_71 | FL.EDITED_71 | later, {"unexpected": sorted(changed - FL.NEW_71 - FL.EDITED_71 - later),
+                                                         "missing": sorted((FL.NEW_71 | FL.EDITED_71 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_71).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_71 and {p for p in changed if p in in_base} == FL.EDITED_71
+    assert {p for p in stage if p not in in_base} == FL.NEW_71 and {p for p in stage if p in in_base} == FL.EDITED_71
     assert FL.NEW_71 == {"DESIGN_71_MARKET_INTEL_STORE.md", "tests/test_market_intel_store_71.py"} | {f"market_intel/{n}" for n in (
         "approvals.py", "archive.py", "calendar_history.py", "ingest.py", "migrations.py", "sources/__init__.py", "sources/alpaca_bars.py", "store.py")}
     assert {p for p in FL.EDITED_71 if not p.startswith("tests/")} == APP_EDITS_71
@@ -1919,7 +1931,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     for rel in sorted(FL.NEW_71 | FL.EDITED_71):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel
+            assert m61 not in post(rel) and m54 not in post(rel), rel
 
 
 def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_market_intel():
@@ -1938,13 +1950,13 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_ma
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_71.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_71) == FL.EDITED_71 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}     # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nStage 7.1 (market intelligence store")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_542 + NEW_70 + NEW_71 plus this ledger.", " + NEW_542 + NEW_70 plus this ledger.", 1)
@@ -1954,9 +1966,10 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == {".gitignore"}                                     # one new key: the store's ignore lines (read as on main earlier)
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_71 & set(old)
-    gi_base, gi_now = at_base(".gitignore"), now_text(".gitignore")
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 7.1 left
+    assert set(new_led) - set(old) == {".gitignore"}                                       # one new key: the store's ignore lines (read as on main earlier)
+    assert {k for k in old if old[k] != new_led[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_71 & set(old)
+    gi_base, gi_now = at_base(".gitignore"), post(".gitignore")
     assert gi_now.startswith(gi_base) and gi_now[len(gi_base):] == "data/market_intel.db\ndata/market_intel.db-wal\ndata/market_intel.db-shm\n"
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
