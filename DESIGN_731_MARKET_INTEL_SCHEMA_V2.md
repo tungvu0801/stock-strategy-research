@@ -44,8 +44,8 @@ Base: main `ad60a02` (PR #44 merged).
 
 1. **Refusals before anything is written:**
    - `SOURCE_IS_PRODUCTION` or `TARGET_IS_PRODUCTION`: the store's default path, or anything under the project's `data/`;
-   - `TARGET_EXISTS` or `SAME_FILE`;
-   - `INTERRUPTED_MIGRATION_PRESENT`: a `<target>.partial` left by an earlier, interrupted run;
+   - `TARGET_EXISTS`, `REPORT_EXISTS` (a `<target>.migration.json` already there) or `SAME_FILE`;
+   - `INTERRUPTED_MIGRATION_PRESENT`: a `<target>.partial` or `<target>.migration.json.partial` left by an earlier, interrupted run;
    - `NO_ANCHORS`: the archive anchors are required.
 2. **Snapshot.** The SQLite backup API copies the source, opened read-only, into `<target>.partial`. The source is never opened for
    writing, and a concurrent writer cannot make the copy inconsistent. The `.partial` file is claimed **exclusively**: a second
@@ -72,13 +72,40 @@ Base: main `ad60a02` (PR #44 merged).
    - **every v1 table's row digest equals its pre-migration digest** (`mi_schema_migrations` adds exactly one row);
    - the v2 store's `verify_integrity(anchors)` is VERIFIED.
 
-   Only then is `.partial` renamed to the target, and a migration report (`<target>.migration.json`) is written beside it. The target is
-   checked again immediately before the rename. A file that appeared meanwhile is **never overwritten**: the run refuses
-   `TARGET_EXISTS` and keeps its verified copy.
-6. **Failure handling.**
-   - A refusal discards the tool's own `.partial` copy (never the source).
-   - A crash or a `KeyboardInterrupt` leaves `.partial` in place, and the next run refuses (`INTERRUPTED_MIGRATION_PRESENT`) until an
-     operator removes it.
+   Only then is the copy promoted (step 6).
+6. **Promotion: a new name or nothing.** Checking that the target is absent and then renaming over it is not atomic: a file
+   created between the check and an `os.replace` would be overwritten (found by the operator's independent review of `75b3051`).
+   Promotion therefore never uses a call that can replace a file:
+   - The copy is flushed to disk (`fsync`), then **hard-linked** to the target name (`os.link`). The call creates the name or fails
+     when the name exists. Neither POSIX `link(2)` nor Windows `CreateHardLinkW` has a replacing mode, so no file system that
+     accepts the call can overwrite. A file that appeared at any moment before the call is left byte for byte: `TARGET_EXISTS`.
+   - **Fail closed.** A file system without hard links (FAT, exFAT, some network shares) fails the call: `ATOMIC_PROMOTION_UNSUPPORTED`.
+     Nothing else is ever tried: no rename, replace or copy.
+   - After the link, the target must be **this very file** (`samefile`) holding **the verified bytes** (SHA-256), else
+     `PROMOTION_NOT_VERIFIED`. On POSIX the directory is flushed, so the new name is durable before the next step; Windows offers no
+     directory flush through `os`, and NTFS records the name in its metadata log. Then the second name, `.partial`, is removed.
+   - **The report is published the same way, last.** It is written to `<target>.migration.json.partial` (created exclusively and
+     flushed), then hard-linked to `<target>.migration.json` (`REPORT_EXISTS` if that name appeared meanwhile, which is never
+     overwritten). It records `target_sha256`, the bytes read back through the promoted name, and the promotion method.
+   - **A migration is complete exactly when its report exists and its `target_sha256` equals the target's SHA-256.** A target
+     without its report is not a migration.
+7. **Failure handling.**
+   - A refusal **before** promotion discards the tool's own `.partial` copy (never the source).
+   - A refusal **during** promotion, a crash or a `KeyboardInterrupt` leaves every file in place. The next run refuses before
+     writing anything, until an operator inspects the files and removes them.
+   - The states a crash can leave, each tested by killing a real process at that step (test V05):
+
+     | Crash point | Files left | Next run | Recovery |
+     |---|---|---|---|
+     | before the link | `.partial` | `INTERRUPTED_MIGRATION_PRESENT` | remove it, run again |
+     | after the link | target and `.partial`: one file, two names, no report | `INTERRUPTED_MIGRATION_PRESENT` | remove both, run again |
+     | after `.partial` is removed | the target, no report | `TARGET_EXISTS` | remove it, run again |
+     | before the report's link | the target and `.migration.json.partial` | `INTERRUPTED_MIGRATION_PRESENT` | remove both, run again |
+     | after the report's link | target, report, `.migration.json.partial` | `INTERRUPTED_MIGRATION_PRESENT` | complete: remove the `.migration.json.partial` only |
+
+     The source is never touched, so running again is always safe and carries the same v1 rows, hashes and seals (test M01).
+   - Concurrent migrations to one target (threads, test V02; separate processes, test V04): exactly one completes. A loser is refused
+     before copying, or, if it copied after the winner's promotion, its link fails and it keeps its own copy as `.partial`.
 
 **Unknown versions fail closed.** `user_version` above 2 is `SchemaTooNew`. A populated file at version 0, migration rows that disagree
 with `user_version`, or a missing, extra or altered object is `SchemaMismatch`.
@@ -198,7 +225,8 @@ no default.
   `recover_pending` (which the 7.3 collector's `recover()` calls) seals abandoned datasets and anchors sealed ones; it works unchanged
   on v2.
 - **Crash during a migration.** The rollback leaves `.partial` at v1 or absent, and the next run refuses until an operator removes it.
-  The source is never touched.
+  A crash during promotion leaves one of the five states in section 1, step 7, each refused by the next run. The source is never
+  touched.
 - **Concurrent first creation.** Writers racing to create a brand-new file can fail the switch to WAL with `database is locked`,
   because SQLite does not wait for that lock. The v2 store switches only when the file is not in WAL yet, and retries within the busy
   timeout. The Stage 7.1 store sets WAL on every open and keeps this race; it is frozen, so it is recorded here (section 11), not
@@ -283,7 +311,8 @@ future wiring stage can refuse runs below a free-space threshold (`disk_status`)
 
 | Area | Finding | Resolution |
 |---|---|---|
-| Migration safety | Two migrations to one target could share one `.partial` (a check-then-write race), and the final rename could replace a target created meanwhile | Fixed: the `.partial` is claimed exclusively, and the target is re-checked before promotion, never overwritten (test V02) |
+| Migration safety | Two migrations to one target could share one `.partial` (a check-then-write race) | Fixed: the `.partial` is claimed exclusively (test V02) |
+| Migration safety (operator review of `75b3051`) | Promotion re-checked the target and then called `os.replace`: a file created between the check and the call was overwritten. The report was written with an overwriting call too | Fixed: promotion and the report use a hard link, which creates a name or fails and has no replacing mode, with no fallback (`ATOMIC_PROMOTION_UNSUPPORTED`). The linked name is verified to be the same file with the verified bytes, and the report records `target_sha256`. Tests V03 (another process creating the target, the report or the report's copy immediately before or after the call; no hard links; a swapped or changed file), V04 (concurrent processes), V05 (a crash at every step, and recovery). The earlier V02 check ran before the window, so it never reached the race |
 | Migration safety | The backup carries the source's WAL mode into `.partial`, so promotion relied on an implicit checkpoint and left orphan `-wal`/`-shm` files | Fixed: the copy is switched to a rollback journal before any work, and promotion refuses any side file (`POST_SIDE_FILES`). The migrated target is one file (test M01) |
 | Test harness | With a production guard mutated away, the production-path tests could write into the repository's `data/` (seen once, in this worktree only; removed) | Fixed: those tests use stand-in production paths under `tmp_path`, and the mutation harness stops if any file appears in `data/` |
 | Authorization | A COLLECT dataset could keep recording fetches and rows after its authorization expired | Fixed: refused by the store and by schema triggers; sealing and recovery still work (test V01) |

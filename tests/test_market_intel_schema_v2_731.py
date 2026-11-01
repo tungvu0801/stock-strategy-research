@@ -10,14 +10,18 @@ every store, archive, copy and export lives under tmp_path; the production paths
           ticker associations recomputed (tampered ones caught); closed runs and dangling references refused by the schema.
   L01-L02 lifecycle: retention classes cover every table; inventory, archive candidates and copy-only export; disk status with an explicit
           threshold; nothing is ever deleted.
-  V01-V02 self-review: a COLLECT dataset outliving its authorization; recovery on v2; concurrent migrations to one target.
+  V01-V05 self-review: a COLLECT dataset outliving its authorization; recovery on v2; concurrent migrations to one target. The operator's
+          review: promotion never overwrites (another process creating the target or report just before it; no hard links, no fallback;
+          a swapped or changed file), concurrent migration processes, a crash at every promotion step and recovery.
   X01-X02 isolation: no network, broker, trading or model import; nothing outside market_intel imports the new modules; existing gates.
   F01-F03 scope (freeze bookkeeping).
 """
 from __future__ import annotations
 
 import ast
+import errno
 import gzip
+import os
 import hashlib
 import json
 import shutil
@@ -153,6 +157,7 @@ def test_M01_migration_preserves_every_row_hash_seal_and_anchor_and_never_touche
     v1_reads = reads(e.store)
     rep = SV.migrate_copy(src, tmp_path / "m" / "v2.db", anchors=anchors, clock=e.clk)
     assert rep["source_unchanged"] and sha_file(src) == before and not (tmp_path / "m" / "v2.db.partial").exists()
+    assert (rep["target"], rep["target_sha256"], rep["promotion"]) == (str(tmp_path / "m" / "v2.db"), sha_file(tmp_path / "m" / "v2.db"), SV.PROMOTION)
     assert sorted(x.name for x in (tmp_path / "m").iterdir()) == ["v2.db", "v2.db.migration.json"]                     # one file: no WAL left behind
     assert {t for t, v in rep["tables"].items() if v["before"] != v["after"]} == {"mi_schema_migrations"}               # every other row, byte for byte
     assert rep["tables"]["mi_schema_migrations"]["after"]["rows"] == 2 and rep["tables"]["mi_observations"]["before"]["rows"] >= 5
@@ -869,6 +874,188 @@ def test_V02_two_migrations_to_one_target_never_share_a_copy_and_a_target_is_nev
     assert other.read_bytes() == b"not ours" and Path(str(other) + ".partial").exists()                                 # never overwritten; the copy kept
 
 
+def names(d: Path) -> list:
+    return sorted(x.name for x in d.iterdir())
+
+
+def by_another_process(path: Path, data: str) -> None:
+    """A separate process creates `path` (exclusively: it must be a new file) holding `data`."""
+    subprocess.run([sys.executable, "-I", "-c", "import sys; open(sys.argv[1], 'xb').write(sys.argv[2].encode())", str(path), data], check=True, timeout=60)
+
+
+def test_V03_promotion_never_overwrites_what_another_process_creates_just_before_it_and_never_falls_back(tmp_path, monkeypatch):
+    """Operator review of 75b3051: the target was checked and then os.replace'd, so a file created in between was overwritten. Here
+    another process creates the name immediately before the promotion call, whichever call that is (link, replace or rename)."""
+    e = v1_world(tmp_path / "w")
+    src, anchors = e.store.path, e.archive.anchors()
+    real = {n: getattr(SV.os, n) for n in ("link", "replace", "rename")}
+    calls = []
+
+    def racing(at, data, after=False):
+        def wrap(n):
+            def call(a, b, *k, **kw):
+                calls.append((n, Path(b).name))
+                if not after and Path(b) == at:
+                    by_another_process(at, data)                                                                         # just before the call
+                out = real[n](a, b, *k, **kw)
+                if after and Path(b).name == "v2.db":
+                    by_another_process(at, data)                                                                         # just after the target's
+                return out
+            return call
+        for n in real:
+            monkeypatch.setattr(SV.os, n, wrap(n))
+    t1 = tmp_path / "a" / "v2.db"
+    racing(t1, "foreign target")
+    with pytest.raises(SV.MigrationRefused, match="TARGET_EXISTS"):
+        SV.migrate_copy(src, t1, anchors=anchors, clock=e.clk)
+    monkeypatch.undo()
+    assert t1.read_bytes() == b"foreign target" and calls == [("link", "v2.db")]                                       # never overwritten, one try
+    assert names(t1.parent) == ["v2.db", "v2.db.partial"] and SV.status(Path(str(t1) + ".partial"))["state"] == "V2_VERIFIED"   # the copy kept
+    with pytest.raises(SV.MigrationRefused, match="INTERRUPTED_MIGRATION_PRESENT"):
+        SV.migrate_copy(src, t1, anchors=anchors, clock=e.clk)
+    assert t1.read_bytes() == b"foreign target"
+    t2 = tmp_path / "b" / "v2.db"
+    r2 = Path(str(t2) + ".migration.json")
+    racing(r2, "foreign report")
+    with pytest.raises(SV.MigrationRefused, match="REPORT_EXISTS"):
+        SV.migrate_copy(src, t2, anchors=anchors, clock=e.clk)
+    monkeypatch.undo()
+    assert r2.read_bytes() == b"foreign report" and SV.status(t2)["state"] == "V2_VERIFIED"                            # the report is never overwritten
+    assert names(t2.parent) == ["v2.db", "v2.db.migration.json", "v2.db.migration.json.partial"]                     # its own report kept aside
+    t3 = tmp_path / "c" / "v2.db"
+    r3 = Path(str(t3) + ".migration.json.partial")
+    racing(r3, "a rival report", after=True)
+    with pytest.raises(SV.MigrationRefused, match="INTERRUPTED_MIGRATION_PRESENT"):
+        SV.migrate_copy(src, t3, anchors=anchors, clock=e.clk)
+    monkeypatch.undo()
+    assert r3.read_bytes() == b"a rival report" and names(t3.parent) == ["v2.db", "v2.db.migration.json.partial"]    # no report: not completed
+
+    def never(n):
+        def call(*a, **kw):
+            raise AssertionError(f"{n} must never be tried")
+        return call
+    for i, err in enumerate((errno.EPERM, errno.EXDEV, errno.EINVAL, errno.EACCES, errno.EOPNOTSUPP)):               # a file system without hard links
+        t4 = tmp_path / f"d{i}" / "v2.db"
+        def no_links(*a, err=err, **kw):
+            raise OSError(err, os.strerror(err))
+        monkeypatch.setattr(SV.os, "link", no_links)
+        for mod, n in ((SV.os, "replace"), (SV.os, "rename"), (shutil, "copyfile"), (shutil, "copy"), (shutil, "copy2"), (shutil, "move")):
+            monkeypatch.setattr(mod, n, never(n))
+        with pytest.raises(SV.MigrationRefused, match="ATOMIC_PROMOTION_UNSUPPORTED"):
+            SV.migrate_copy(src, t4, anchors=anchors, clock=e.clk)
+        monkeypatch.undo()
+        assert names(t4.parent) == ["v2.db.partial"], err                                                                # fail closed: no target at all
+
+    def swapped(a, b, *k, **kw):                                                                                         # an identical copy, not our file
+        real["link"](a, b, *k, **kw)
+        if Path(b).name == "v2.db":
+            shutil.copyfile(a, Path(b).with_name("theirs"))
+            real["replace"](Path(b).with_name("theirs"), b)
+
+    def changed(a, b, *k, **kw):                                                                                         # our file, other bytes
+        real["link"](a, b, *k, **kw)
+        if Path(b).name == "v2.db":
+            with open(b, "ab") as f:
+                f.write(b"x")
+    for i, fake in enumerate((swapped, changed)):
+        t5 = tmp_path / f"e{i}" / "v2.db"
+        monkeypatch.setattr(SV.os, "link", fake)
+        with pytest.raises(SV.MigrationRefused, match="PROMOTION_NOT_VERIFIED"):
+            SV.migrate_copy(src, t5, anchors=anchors, clock=e.clk)
+        monkeypatch.undo()
+        assert names(t5.parent) == ["v2.db", "v2.db.partial"], fake.__name__                                             # no report: not completed
+    text = (ROOT / "market_intel" / "schema_v2.py").read_text(encoding="utf-8")
+    assert [w for w in ("os.replace", "os.rename", ".rename(", "shutil", ".write_bytes(") if w in text] == []
+
+
+def test_V04_concurrent_migration_processes_promote_one_target_once_and_never_overwrite_it(tmp_path):
+    e = v1_world(tmp_path / "w")
+    src, target, data = e.store.path, tmp_path / "m" / "v2.db", names(ROOT / "data")
+    cmd = [sys.executable, "-m", "market_intel.schema_v2", "migrate", "--source", str(src), "--target", str(target), "--archive-root", str(e.archive.root)]
+    procs = [subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(3)]
+    outs = [x.communicate(timeout=300) for x in procs]
+    codes = sorted(x.returncode for x in procs)
+    assert codes == [0, 2, 2], (codes, outs)
+    refused = {json.loads(o)["refused"] for (o, _), x in zip(outs, procs) if x.returncode == 2}
+    assert refused <= {"INTERRUPTED_MIGRATION_PRESENT", "TARGET_EXISTS"}, outs
+    rep = json.loads(Path(str(target) + ".migration.json").read_text(encoding="utf-8"))
+    assert (rep["target"], rep["target_sha256"], rep["promotion"], rep["source_unchanged"]) == (str(target), sha_file(target), SV.PROMOTION, True)
+    assert MarketIntelStoreV2(target).verify_integrity(anchors=e.archive.anchors())["state"] == "VERIFIED"
+    left = names(target.parent)
+    assert left in (["v2.db", "v2.db.migration.json"], ["v2.db", "v2.db.migration.json", "v2.db.partial"]), left        # a late loser keeps its copy
+    if "v2.db.partial" in left:
+        assert not os.path.samefile(target, Path(str(target) + ".partial"))
+    assert names(ROOT / "data") == data and not ST.default_path().exists()
+
+
+CRASH = r"""
+import os, sys
+from pathlib import Path
+step, target = sys.argv[1], Path(sys.argv[2])
+report, partial = Path(str(target) + ".migration.json"), Path(str(target) + ".partial")
+real_link, real_unlink = os.link, os.unlink
+def link(a, b, *k, **kw):
+    if (step, Path(b)) in (("before_link", target), ("before_report_link", report)):
+        os._exit(9)
+    real_link(a, b, *k, **kw)
+    if (step, Path(b)) in (("after_link", target), ("after_report_link", report)):
+        os._exit(9)
+def unlink(p, *k, **kw):
+    real_unlink(p, *k, **kw)
+    if (step, Path(p)) == ("after_unlink", partial):
+        os._exit(9)
+os.link, os.unlink = link, unlink
+from market_intel import schema_v2 as SV
+raise SystemExit(SV.main(["migrate", "--source", sys.argv[3], "--target", str(target), "--archive-root", sys.argv[4]]))
+"""
+
+
+@pytest.mark.parametrize("step, left, code", [
+    ("before_link", ["v2.db.partial"], "INTERRUPTED_MIGRATION_PRESENT"),
+    ("after_link", ["v2.db", "v2.db.partial"], "INTERRUPTED_MIGRATION_PRESENT"),
+    ("after_unlink", ["v2.db"], "TARGET_EXISTS"),
+    ("before_report_link", ["v2.db", "v2.db.migration.json.partial"], "INTERRUPTED_MIGRATION_PRESENT"),
+    ("after_report_link", ["v2.db", "v2.db.migration.json", "v2.db.migration.json.partial"], "INTERRUPTED_MIGRATION_PRESENT"),
+])
+def test_V05_a_crash_at_every_promotion_step_fails_closed_and_recovers(tmp_path, step, left, code):
+    e = v1_world(tmp_path / "w")
+    src, anchors, target = e.store.path, e.archive.anchors(), tmp_path / "m" / "v2.db"
+    before = sha_file(src)
+    run = subprocess.run([sys.executable, "-c", CRASH, step, str(target), str(src), str(e.archive.root)], cwd=ROOT, capture_output=True, text=True, timeout=300)
+    assert run.returncode == 9 and names(target.parent) == left, (run.returncode, run.stdout, run.stderr, names(target.parent))   # killed, no cleanup
+    if step == "after_link":
+        assert os.path.samefile(target, Path(str(target) + ".partial"))                                                   # one file, two names
+    report = Path(str(target) + ".migration.json")
+    if report.exists():                                                                                                   # published last: complete
+        rep = json.loads(report.read_text(encoding="utf-8"))
+        assert step == "after_report_link" and rep["target_sha256"] == sha_file(target) and SV.status(target)["state"] == "V2_VERIFIED"
+    snap = {x.name: sha_file(x) for x in target.parent.iterdir()}
+    with pytest.raises(SV.MigrationRefused) as ei:
+        SV.migrate_copy(src, target, anchors=anchors, clock=e.clk)
+    assert ei.value.code == code and {x.name: sha_file(x) for x in target.parent.iterdir()} == snap                       # refused, nothing touched
+    if step == "after_report_link":
+        Path(str(report) + ".partial").unlink()                                                                           # the operator: complete already
+    else:
+        for x in target.parent.iterdir():                                                                                 # the operator: an unreported
+            x.unlink()                                                                                                    # target is not a migration
+        rep = SV.migrate_copy(src, target, anchors=anchors, clock=e.clk)
+        assert json.loads(report.read_text(encoding="utf-8")) == rep and rep["post_integrity"]["state"] == "VERIFIED"
+    assert names(target.parent) == ["v2.db", "v2.db.migration.json"] and sha_file(src) == before
+    assert json.loads(report.read_text(encoding="utf-8"))["target_sha256"] == sha_file(target)
+
+
+def test_V05b_a_stale_report_or_report_copy_is_refused_before_anything_is_copied(tmp_path):
+    e = v1_world(tmp_path / "w")
+    src, anchors = e.store.path, e.archive.anchors()
+    for i, (leftover, code) in enumerate(((".migration.json", "REPORT_EXISTS"), (".migration.json.partial", "INTERRUPTED_MIGRATION_PRESENT"))):
+        target = tmp_path / f"m{i}" / "v2.db"
+        target.parent.mkdir(parents=True)
+        Path(str(target) + leftover).write_bytes(b"stale")
+        with pytest.raises(SV.MigrationRefused) as ei:
+            SV.migrate_copy(src, target, anchors=anchors, clock=e.clk)
+        assert ei.value.code == code and names(target.parent) == ["v2.db" + leftover] and Path(str(target) + leftover).read_bytes() == b"stale"
+
+
 # ============================================================================================================ isolation (X)
 NEW_MODULES_731 = ("schema_v2.py", "store_v2.py", "collect_auth.py", "lifecycle.py", "news/persist.py")
 ALLOWED_731 = {"__future__", "argparse", "contextlib", "dataclasses", "datetime", "gzip", "hashlib", "json", "os", "re", "shutil", "sqlite3", "sys", "time",
@@ -887,7 +1074,8 @@ def test_X01_the_new_modules_reach_no_network_broker_trading_or_model_and_nothin
                      "proposals", "anthropic", "openai", "threading", "subprocess", "os.environ", "getenv", "submit_order", ".unlink(" if rel != "schema_v2.py" else "@@",
                      "rmtree", "os.remove"):
             assert word not in src, (rel, word)
-    assert (ROOT / "market_intel" / "schema_v2.py").read_text(encoding="utf-8").count(".unlink()") == 2                  # its own .partial only
+    sv = (ROOT / "market_intel" / "schema_v2.py").read_text(encoding="utf-8")
+    assert (sv.count(".unlink()"), sv.count("partial.unlink()"), sv.count("tmp.unlink()")) == (3, 2, 1)                  # its own .partial; a second name
     users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "tests/", ".venv/",
              "scratchpad/")) and "market_intel" in p.read_text(encoding="utf-8", errors="replace")]
     assert users == []

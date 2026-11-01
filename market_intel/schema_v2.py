@@ -15,9 +15,10 @@ v2 = migration 1 (Stage 7.1, unchanged) + migration 2:
 
 migrate_copy(source, target, anchors=...) never writes the source: backup to <target>.partial, verify the copy as v1 (schema, integrity,
 foreign keys, the 7.1 verify_integrity VERIFIED against the anchors), migrate it in one transaction, verify it as v2 (schema, integrity,
-foreign keys, every v1 table's row digest unchanged, the v2 verify_integrity VERIFIED), then rename it to the target and write a report.
-It refuses the production paths (the store's default file and anything under the project's data/), an existing target, a leftover
-.partial (an interrupted earlier run) and a source that is not a quiescent, verified v1 store.
+foreign keys, every v1 table's row digest unchanged, the v2 verify_integrity VERIFIED), then give it the target's name with a hard link
+(a new name or nothing: no existing file is ever replaced) and publish the report the same way, last. It refuses the production paths
+(the store's default file and anything under the project's data/), an existing target or report, a leftover .partial (an interrupted
+earlier run), a file system without hard links and a source that is not a quiescent, verified v1 store.
 
     python -m market_intel.schema_v2 status  --file <db>
     python -m market_intel.schema_v2 migrate --source <v1.db> --target <new.db> --archive-root <raw archive root>
@@ -296,12 +297,19 @@ def _verdict(v: dict) -> dict:
             "unanchored": v.get("unanchored_datasets", [])}
 
 
+PROMOTION = "os.link: a new name or nothing, never a replaced file"
+
+
 def migrate_copy(source, target, *, anchors: Optional[Dict[str, dict]], clock: Callable[[], datetime] = None) -> dict:
-    """The ONLY way a v1 store becomes v2 (see the module docstring). Returns the report (also written to <target>.migration.json).
-    Raises MigrationRefused with a code; a refusal discards this run's own .partial copy, a crash or an interrupt leaves it (fail closed)."""
+    """The ONLY way a v1 store becomes v2 (see the module docstring). Returns the report, also published as <target>.migration.json as
+    the very last step: a target without its report is not a completed migration (DESIGN_731 section 1). Raises MigrationRefused with
+    a code; a refusal before promotion discards this run's own .partial copy, while a refusal during promotion, a crash or an
+    interrupt leaves every file in place (fail closed: the next run refuses until an operator removes them)."""
     clock = clock or (lambda: datetime.now(timezone.utc))
     source, target = Path(source), Path(target)
     partial = target.with_name(target.name + ".partial")
+    report_path = target.with_name(target.name + ".migration.json")
+    report_partial = report_path.with_name(report_path.name + ".partial")
     if anchors is None:
         raise MigrationRefused("NO_ANCHORS", "the raw archive's anchors are required (every seal is verified against them)")
     if _is_production(source):
@@ -312,10 +320,13 @@ def migrate_copy(source, target, *, anchors: Optional[Dict[str, dict]], clock: C
         raise MigrationRefused("SOURCE_MISSING", str(source))
     if source.resolve() == target.resolve():
         raise MigrationRefused("SAME_FILE")
-    if partial.exists():
-        raise MigrationRefused("INTERRUPTED_MIGRATION_PRESENT", f"{partial} is left from an interrupted run: inspect and remove it first")
+    left = [str(x) for x in (partial, report_partial) if x.exists()]
+    if left:
+        raise MigrationRefused("INTERRUPTED_MIGRATION_PRESENT", f"{', '.join(left)} left from an interrupted run: inspect and remove first")
     if target.exists():
         raise MigrationRefused("TARGET_EXISTS", str(target))
+    if report_path.exists():
+        raise MigrationRefused("REPORT_EXISTS", str(report_path))
     started = clock()
     source_before = _file_sha256(source)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -342,17 +353,64 @@ def migrate_copy(source, target, *, anchors: Optional[Dict[str, dict]], clock: C
     except MigrationRefused:
         partial.unlink()                                                 # this run's own copy, never the source
         raise
-    if target.exists():                                                  # created meanwhile: never overwritten (the verified copy stays as .partial)
-        raise MigrationRefused("TARGET_EXISTS", f"{target} appeared during the migration")
     side = [str(partial) + s for s in ("-wal", "-shm", "-journal") if Path(str(partial) + s).exists()]
     if side:                                                             # a promoted main file must hold every committed page itself
         raise MigrationRefused("POST_SIDE_FILES", ", ".join(side))
-    os.replace(partial, target)
-    report.update({"source": str(source), "target": str(target), "started_at": _stamp(started), "finished_at": _stamp(clock()),
-                   "source_sha256_before": source_before, "source_sha256_after": _file_sha256(source)})
+    verified = _file_sha256(partial)
+    _publish(partial, target, verified, "TARGET_EXISTS")                 # a target created meanwhile is never overwritten
+    report.update({"source": str(source), "target": str(target), "target_sha256": verified, "promotion": PROMOTION, "started_at": _stamp(started),
+                   "finished_at": _stamp(clock()), "source_sha256_before": source_before, "source_sha256_after": _file_sha256(source)})
     report["source_unchanged"] = report["source_sha256_before"] == report["source_sha256_after"]
-    Path(str(target) + ".migration.json").write_bytes(json.dumps(report, indent=2, sort_keys=True).encode("utf-8"))
+    body = json.dumps(report, indent=2, sort_keys=True).encode("utf-8")
+    try:
+        fd = os.open(str(report_partial), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0))
+    except FileExistsError as exc:
+        raise MigrationRefused("INTERRUPTED_MIGRATION_PRESENT", f"{report_partial} appeared: another migration to this target is running") from exc
+    with os.fdopen(fd, "wb") as f:
+        f.write(body)
+    _publish(report_partial, report_path, hashlib.sha256(body).hexdigest(), "REPORT_EXISTS")   # last: the report marks a completed migration
     return report
+
+
+def _publish(tmp: Path, final: Path, sha256: str, exists_code: str) -> None:
+    """Gives the finished file `tmp` the name `final` without ever replacing a file, then drops the name `tmp`.
+
+    os.link creates the new name or fails when it exists: neither POSIX link(2) nor Windows CreateHardLinkW has a replacing mode, so no
+    file system that accepts the call can overwrite, and one without hard links (FAT, exFAT, some network shares) fails it. Nothing
+    else is ever tried (no rename, replace or copy): the migration is refused instead. After the link, `final` must be this very file
+    holding these very bytes. Every refusal here keeps `tmp`, so the next run refuses until an operator looks."""
+    fd = os.open(str(tmp), os.O_RDWR | getattr(os, "O_BINARY", 0))
+    try:
+        os.fsync(fd)                                                     # the bytes are on disk before any new name points at them
+    finally:
+        os.close(fd)
+    try:
+        os.link(tmp, final)
+    except FileExistsError as exc:
+        raise MigrationRefused(exists_code, f"{final} appeared during the migration: never overwritten ({tmp.name} kept)") from exc
+    except OSError as exc:
+        raise MigrationRefused("ATOMIC_PROMOTION_UNSUPPORTED", f"no hard link in {final.parent} ({type(exc).__name__}: {str(exc)[:120]}); "
+                               f"nothing else is tried ({tmp.name} kept)") from exc
+    try:
+        ours = os.path.samefile(tmp, final) and _file_sha256(final) == sha256
+    except OSError:
+        ours = False
+    if not ours:
+        raise MigrationRefused("PROMOTION_NOT_VERIFIED", f"{final} is not the verified file ({tmp.name} kept)")
+    _sync_dir(final.parent)                                              # the new name is durable before the old one goes
+    tmp.unlink()                                                         # a second name of the promoted file, never another file
+
+
+def _sync_dir(d: Path) -> None:
+    """POSIX: flush the directory, so a new name survives a power loss before the next step. Windows: os cannot open a directory for
+    fsync; NTFS records the name in its metadata log."""
+    if os.name != "posix":
+        return
+    fd = os.open(str(d), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _migrate_partial(partial: Path, anchors: Dict[str, dict], now: datetime) -> dict:
