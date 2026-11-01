@@ -115,7 +115,8 @@
         "test_mean_reversion_66.py",
         "test_breakout_67.py",
         "test_market_intel_70.py",
-        "test_market_intel_store_71.py"
+        "test_market_intel_store_71.py",
+        "test_market_intel_sources_72.py"
       ]
     },
     "campaign": {
