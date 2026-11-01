@@ -229,7 +229,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_executi
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_610D, FL.BASE_542).split())             # Stage 6.10D itself, between two fixed commits (main before / after PR #38)
     assert stage == FL.NEW_610D | FL.EDITED_610D, {"unexpected": sorted(stage - FL.NEW_610D - FL.EDITED_610D), "missing": sorted(FL.NEW_610D | FL.EDITED_610D - stage)}
-    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74                                                      # Stage 5.4.2, pinned by its own F tests
+    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75                                                      # Stage 5.4.2, pinned by its own F tests
     assert changed == FL.NEW_610D | FL.EDITED_610D | later, {"unexpected": sorted(changed - FL.NEW_610D - FL.EDITED_610D - later),
                                                              "missing": sorted((FL.NEW_610D | FL.EDITED_610D | later) - changed)}
     assert FL.SEMANTIC_610D == {} and FL.INSTRUMENTATION_610D == {}                                      # observability only

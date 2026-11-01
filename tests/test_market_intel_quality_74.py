@@ -757,7 +757,7 @@ def test_X01_the_report_reaches_no_network_broker_trading_or_model_has_no_write_
     assert re.findall(r"\bopen\([^)]*\)", src) == ['open(src, "rb")', 'open(dst, "xb")']    # the only file write: the private copy, exclusively
     assert src.count(".unlink(") == 1 and "dst.unlink()" in src                             # a refused copy, in the private directory
     assert src.count("sqlite3.connect(") == 1 and "?mode=ro" in src                         # and it opens only copies, read-only
-    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "tests/", ".venv/",
+    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "tests/", ".venv/",
              "scratchpad/")) and "market_intel" in p.read_text(encoding="utf-8", errors="replace")]
     assert users == []
     assert not ST.default_path().exists() and not (ROOT / "runtime" / "market_intel" / "collector.db").exists()
@@ -969,6 +969,13 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #46 (Stage 7.4 merged; the Stage 7.5 base): what Stage 7.4 left, whatever a later stage changed since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_75}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_75} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 APP_EDITS_74 = {".github/ci/pytest_groups.json"}
 FROZEN_DIRS_74 = ("setups", "ppe", "evidence", "evidence_refresh", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe",
                   "unified_portfolio", "trader_view", "scripts", "forward_validation", "account_refresh", "rh_gateway", "frontend", "browser_tests", "api",
@@ -979,9 +986,13 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     assert FL.BASE_74 == "b9c36212e0104831d665d22f8a2eaa3d4c4885c9" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_74}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_74).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_74 | FL.EDITED_74, {"unexpected": sorted(changed - FL.NEW_74 - FL.EDITED_74), "missing": sorted((FL.NEW_74 | FL.EDITED_74) - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_74, FL.BASE_75).split())                 # Stage 7.4 itself, between two fixed commits
+    assert stage == FL.NEW_74 | FL.EDITED_74, {"unexpected": sorted(stage - FL.NEW_74 - FL.EDITED_74), "missing": sorted((FL.NEW_74 | FL.EDITED_74) - stage)}
+    later = FL.NEW_75 | FL.EDITED_75                                                         # Stage 7.5, pinned by its own F tests
+    assert changed == FL.NEW_74 | FL.EDITED_74 | later, {"unexpected": sorted(changed - FL.NEW_74 - FL.EDITED_74 - later),
+                                                         "missing": sorted((FL.NEW_74 | FL.EDITED_74 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_74).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_74 and {p for p in changed if p in in_base} == FL.EDITED_74
+    assert {p for p in stage if p not in in_base} == FL.NEW_74 and {p for p in stage if p in in_base} == FL.EDITED_74
     assert FL.NEW_74 == {"DESIGN_74_MARKET_INTEL_QUALITY.md", "tests/test_market_intel_quality_74.py"} | {f"market_intel/{m}" for m in NEW_MODULES_74}
     assert {p for p in FL.EDITED_74 if not p.startswith("tests/")} == APP_EDITS_74
     assert FL.SEMANTIC_74 == {} and FL.INSTRUMENTATION_74 == {}
@@ -989,13 +1000,13 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
         for p in sorted((ROOT / d).rglob("*")):
             rel = p.relative_to(ROOT).as_posix()
             if p.is_file() and rel in in_base and "__pycache__" not in rel:
-                assert now_text(rel) == at_base(rel), rel
+                assert post(rel) == at_base(rel), rel
     for rel in ("config.py", "api/server.py", "autorun/calendar.py", "autorun/session.py", ".gitignore", "requirements.txt"):
-        assert now_text(rel) == at_base(rel), rel                                          # no config key, route, lifespan hook or dependency
+        assert post(rel) == at_base(rel), rel                                              # no config key, route, lifespan hook or dependency
     for rel in sorted(FL.NEW_74 | FL.EDITED_74):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel
+            assert m61 not in post(rel) and m54 not in post(rel), rel
 
 
 def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_market_intel():
@@ -1015,13 +1026,13 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_ma
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_74.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_74) == FL.EDITED_74 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}     # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nStage 7.4 (market intelligence data quality")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_73 + NEW_731 + NEW_74 plus this ledger.", " + NEW_73 + NEW_731 plus this ledger.", 1)
@@ -1031,8 +1042,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                       # no new ledger key
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_74 & set(old)
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 7.4 left
+    assert set(new_led) == set(old)                                                         # no new ledger key
+    assert {k for k in old if old[k] != new_led[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_74 & set(old)
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

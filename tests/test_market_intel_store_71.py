@@ -1869,7 +1869,7 @@ def test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or
         src = (ROOT / "market_intel" / rel).read_text(encoding="utf-8")
         for word in ("http.client", "urllib.request", "alpaca.data", "alpaca.trading", "anthropic", "os.environ"):
             assert word not in src, (rel, word)
-    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "tests/", ".venv/",
+    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "tests/", ".venv/",
              "scratchpad/")) and ("market_intel" in p.read_text(encoding="utf-8", errors="replace"))]
     assert users == []                                                                                   # no live path reads the store
     assert not [n for n in dir(config) if n.startswith(("MARKET_INTEL", "MI_"))]                         # MARKET_INTEL_MODE stays an OFF default
@@ -1912,7 +1912,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_71, FL.BASE_72).split())                # Stage 7.1 itself, between two fixed commits
     assert stage == FL.NEW_71 | FL.EDITED_71, {"unexpected": sorted(stage - FL.NEW_71 - FL.EDITED_71), "missing": sorted((FL.NEW_71 | FL.EDITED_71) - stage)}
-    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74                             # Stages 7.2, 7.3: pinned by their own F tests
+    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75                             # Stages 7.2, 7.3: pinned by their own F tests
     assert changed == FL.NEW_71 | FL.EDITED_71 | later, {"unexpected": sorted(changed - FL.NEW_71 - FL.EDITED_71 - later),
                                                          "missing": sorted((FL.NEW_71 | FL.EDITED_71 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_71).split())

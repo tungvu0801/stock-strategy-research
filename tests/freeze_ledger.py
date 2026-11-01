@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -98,6 +98,12 @@ module, market_intel/quality.py: freshness, coverage, latency, timestamp, integr
 explainable PASS / WARN / BLOCK / INSUFFICIENT_DATA verdict, as JSON or a text summary. It reads byte copies of its inputs only and reuses
 the Stage 7.0-7.3.1 interfaces unchanged. No write, transport, key, config, server, route, thread, job, network, migration, execution or UI
 change. tests/test_market_intel_quality_74.py pins it (BASE_74 / NEW_74 / EDITED_74).
+
+Stage 7.5 (the shared market scanner v1, offline core; DESIGN_75_MARKET_SCAN.md) adds one new package, market_scan/ (features, flags, filters,
+run): the pre-registered D.1 features and flags, the Stage 7.4 quality gate, per-horizon eligibility and the gap-list sequence, as one JSON
+document per scan. It reads byte copies of its inputs only (the Stage 7.4 protocol) and reuses the Stage 7.0-7.4 interfaces unchanged. No
+write, transport, key, config, server, route, thread, job, network, migration, execution or UI change. The earlier stages' isolation guards
+name market_scan/ as the one declared reader. tests/test_market_scan_75.py pins it (BASE_75 / NEW_75 / EDITED_75).
 """
 import hashlib
 import subprocess
@@ -223,8 +229,13 @@ NEW_74 = {"DESIGN_74_MARKET_INTEL_QUALITY.md", "market_intel/quality.py", "tests
 EDITED_74 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier stages' F01 unions, the 7.1 registry, the 7.3.1 F tests, bookkeeping
 SEMANTIC_74: dict = {}                                                                    # Stage 7.4: no behaviour change of an existing file
 INSTRUMENTATION_74: dict = {}                                                             # Stage 7.4: no executor instrumentation
+BASE_75 = "1d817939af64f38e95745e456595225ebf809c10"                                    # main: Stage 7.4 merged (PR #46)
+NEW_75 = {"DESIGN_75_MARKET_SCAN.md", "market_scan/__init__.py", "market_scan/features.py", "market_scan/filters.py", "market_scan/flags.py", "market_scan/run.py", "tests/test_market_scan_75.py"}   # Stage 7.5 (the shared market scanner v1, offline core): its new files
+EDITED_75 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_dynamic_universe_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py", "tests/test_market_intel_quality_74.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier F01 unions and isolation guards, the 7.4 F tests, bookkeeping
+SEMANTIC_75: dict = {}                                                                    # Stage 7.5: no behaviour change of an existing file
+INSTRUMENTATION_75: dict = {}                                                             # Stage 7.5: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "1e30675bfc70b219b5ad683098b6d17515bad5fda0c19d3969465d178438d5dc",
+    ".github/ci/pytest_groups.json": "910acef6f8a73205e036096130d0b6e4d61446e4feba770de45fbe36f0d991ac",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
@@ -262,7 +273,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "38351fd8d08463f8048fb213f4367d8354566aa64fb643ced378f83b23cfb3e8",
+    "tests/test_strategy_validation_62.py": "7a1a6e8a6f5b55469b740ed58e77abb42825fc218a96988aa62a72e04bf76d4c",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",

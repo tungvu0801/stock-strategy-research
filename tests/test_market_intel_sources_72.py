@@ -661,7 +661,7 @@ def test_S01_the_72_modules_are_a_closed_registry_with_pure_imports_and_nothing_
         assert "os.environ" not in (ROOT / "market_intel" / rel).read_text(encoding="utf-8"), rel
     present = {q.relative_to(ROOT / "market_intel").as_posix() for q in (ROOT / "market_intel").rglob("*.py")}
     assert set(NEW_MODULES_72) <= present and {f"market_intel/{m}" for m in NEW_MODULES_72} <= FL.NEW_72                # declared, one by one
-    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "tests/", ".venv/",
+    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "tests/", ".venv/",
              "scratchpad/")) and "market_intel" in p.read_text(encoding="utf-8", errors="replace")]
     assert users == []                                                                                                 # no live path reads the adapters
 
@@ -701,7 +701,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_72, FL.BASE_73).split())                # Stage 7.2 itself, between two fixed commits
     assert stage == FL.NEW_72 | FL.EDITED_72, {"unexpected": sorted(stage - FL.NEW_72 - FL.EDITED_72), "missing": sorted((FL.NEW_72 | FL.EDITED_72) - stage)}
-    later = FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74                           # Stages 7.3, 7.3.1: pinned by their own F tests
+    later = FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75                           # Stages 7.3, 7.3.1: pinned by their own F tests
     assert changed == FL.NEW_72 | FL.EDITED_72 | later, {"unexpected": sorted(changed - FL.NEW_72 - FL.EDITED_72 - later),
                                                          "missing": sorted((FL.NEW_72 | FL.EDITED_72 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_72).split())

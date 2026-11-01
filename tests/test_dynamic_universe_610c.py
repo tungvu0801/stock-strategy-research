@@ -152,7 +152,8 @@ def test_U06_status_and_plan_report_the_active_set_as_exactly_the_live_watchlist
 
 # ================================================================ I isolation ==============================================================
 def test_I01_no_live_module_imports_the_dynamic_universe_and_the_live_coverage_files_are_byte_identical_to_the_base():
-    allowed = ("dynamic_universe/", "tools/", "tests/", "decision_flow/", "api/routes/decision_flow.py", "scratchpad/")
+    allowed = ("dynamic_universe/", "tools/", "tests/", "decision_flow/", "api/routes/decision_flow.py", "scratchpad/",
+               "market_scan/")                                       # Stage 7.5: reads core.py, never activates
     offenders = []
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
