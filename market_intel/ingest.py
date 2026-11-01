@@ -15,9 +15,17 @@ feed / adjustment explicit, calendar coverage (any uncovered weekday in the rang
 15-minute rule (Basic plan: a SIP window must end at least 16 minutes ago) and estimates: sessions, rows, pages, requests, minutes at
 the backfill budget, bytes. A SIP plan always lists SIP_FEED among the approvals it needs; every plan lists REAL_BACKFILL.
 
-run_backfill() is the library path a FUTURE approved run will use: it requires a BackfillApproval bound to the plan's hash (and
-sip_approved for SIP), an injected fetch function, the backfill window (outside 07:00-20:00 New York time on market days), the budget,
-the raw archive and the store. Stage 7.1 ships no fetch function and the CLI never builds an approval, so no real request can be made.
+A plan above MAX_PLAN_ROWS rows is refused (ROWS_EXCEED_GENERIC_STORE_CAP): the generic store is measured for that order of magnitude,
+not for a multi-year minute history of a whole universe (DESIGN_71 section 7).
+
+run_backfill() is the library path a FUTURE approved run will use. It takes the BackfillRequest itself - never a plan dict - and
+RECOMPUTES the plan at run time; the operator approval (approvals.py: a file in the approvals directory, re-read and re-hashed here) must
+name that exact request and plan hash, bound its estimate with its caps, carry sip_approved for SIP, and is claimed once, in the
+transaction that creates the dataset. It also needs an injected fetch function, the backfill window (outside 07:00-20:00 New York time
+on market days), a budget no larger than the plan's, the raw archive and the store. Every failure on the way (a transport exception, a
+malformed Retry-After, an unparsable page, a store refusal) is recorded and the dataset is ALWAYS sealed (COMPLETED / PARTIAL / FAILED /
+EMPTY), its manifest hash anchored in the raw archive. Stage 7.1 ships no fetch function and the CLI never builds an approval, so no
+real request can be made.
 """
 from __future__ import annotations
 
@@ -27,11 +35,13 @@ import json
 import math
 import sys
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from market_intel import approvals as APP
 from market_intel import calendar as CAL
 from market_intel.budget import ProviderBudget
 from market_intel.models import FetchRecord
@@ -44,8 +54,11 @@ MAX_RANGE_DAYS = 3660
 SIP_DELAY_MINUTES = 16                    # Alpaca Basic: SIP history is available from 15 minutes back (design C.8; verify on the plan)
 WINDOW_BLOCK = (7 * 60, 20 * 60)          # no backfill 07:00-20:00 New York time on a market day (it shares the 200/min plan)
 EXTENDED_MINUTES = 16 * 60                # 04:00-20:00
-BYTES_PER_ROW_ESTIMATE = 950              # one envelope row incl. indexes: measured 915-950 on daily-bar fixtures (test_C05)
+BYTES_PER_ROW_ESTIMATE = 1500             # one value row + its membership row incl. indexes: measured 1,440-1,600 (test_C05, DESIGN_71 section 7)
 MAX_RETRIES = 2
+RETRY_SLEEP_S = 5.0                       # after a transport exception or a 5xx (a 429 waits for the budget's back-off instead)
+MAX_PLAN_ROWS = 2_500_000                 # the generic store's protective cap per plan (B10: measured, DESIGN_71 section 7)
+BUDGET_NAME = "ALPACA_BACKFILL"
 EXIT_OK, EXIT_USAGE, EXIT_REFUSED, EXIT_EXECUTE_REFUSED = 0, 1, 2, 3
 
 
@@ -71,15 +84,6 @@ class BackfillRequest:
     def as_dict(self) -> dict:
         return {"symbols": list(self.symbols), "start": self.start.isoformat(), "end": self.end.isoformat(), "timeframe": self.timeframe,
                 "feed": self.feed, "adjustment": self.adjustment, "extended_hours": self.extended_hours}
-
-
-@dataclass(frozen=True)
-class BackfillApproval:
-    """What a future approved run must present. Stage 7.1 never constructs one outside tests."""
-    ref: str
-    plan_sha256: str
-    sip_approved: bool = False
-    granted_by: str = "operator"
 
 
 def coverage(start: date, end: date) -> dict:
@@ -132,9 +136,13 @@ def validate(req: BackfillRequest, now: datetime) -> List[dict]:
         out.append({"code": "TOO_MANY_SYMBOLS", "detail": f"at most {MAX_SYMBOLS}"})
     for s in req.symbols:
         try:
-            validate_symbol(s)
+            ok = validate_symbol(s) == s
         except ValueError:
-            out.append({"code": "INVALID_SYMBOL", "detail": str(s)[:12]})
+            ok = False
+        if not ok:
+            out.append({"code": "INVALID_SYMBOL", "detail": str(s)[:12] + " (an upper-case ticker)"})
+    if len(set(req.symbols)) != len(req.symbols):
+        out.append({"code": "DUPLICATE_SYMBOL", "detail": "each symbol once"})
     if req.timeframe not in AB.TIMEFRAMES:
         out.append({"code": "INVALID_TIMEFRAME", "detail": f"one of {sorted(AB.TIMEFRAMES)}"})
     if req.feed not in AB.FEEDS:
@@ -172,14 +180,20 @@ def plan(req: BackfillRequest, now: datetime, *, store=None) -> dict:
     est = {"rows_per_symbol": rows, "rows_total": rows * n, "pages_per_symbol": pages, "requests": pages * n, "page_limit": AB.PAGE_LIMIT,
            "minutes_at_budget": round(pages * n / per_min, 2) if per_min else None, "bytes_estimate": rows * n * BYTES_PER_ROW_ESTIMATE,
            "bytes_per_row_estimate": BYTES_PER_ROW_ESTIMATE}
+    if est["rows_total"] > MAX_PLAN_ROWS:
+        refusals.append({"code": "ROWS_EXCEED_GENERIC_STORE_CAP", "detail": f"{est['rows_total']} rows > {MAX_PLAN_ROWS} per plan: split the request "
+                                                                            "(the generic store's measured limit, DESIGN_71 section 7)"})
     used = None
     if store is not None and store.exists():
-        used = store.budget_used("ALPACA_BACKFILL", CAL.session(now)["session_date"])
-    body = {"plan_version": PLAN_VERSION, "request": req.as_dict(), "coverage": cov, "estimate": est}
+        used = store.budget_used(BUDGET_NAME, CAL.session(now)["session_date"])
+    policy = {"provider": BUDGET_NAME, "per_minute": per_min, "max_retries": MAX_RETRIES, "window_block": list(WINDOW_BLOCK),
+              "max_plan_rows": MAX_PLAN_ROWS, "parser": AB.ENDPOINT, "page_limit": AB.PAGE_LIMIT}
+    # the hash binds the request, its coverage (calendar versions included), the estimate and the run policy (budget, retries, window)
+    body = {"plan_version": PLAN_VERSION, "request": req.as_dict(), "coverage": cov, "estimate": est, "policy": policy}
     sha = hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()
     return {**body, "valid": not refusals, "refusals": refusals, "network": False, "writes": False, "paid": False,
             "requires_approval": ["REAL_BACKFILL"] + (["SIP_FEED"] if req.feed == "sip" else []),
-            "budget": {"provider": "ALPACA_BACKFILL", "per_minute": per_min, "window_rule": "outside 07:00-20:00 New York time on market days",
+            "budget": {"provider": BUDGET_NAME, "per_minute": per_min, "window_rule": "outside 07:00-20:00 New York time on market days",
                        "window_open_now": backfill_window_open(now), "used_today": used},
             "plan_sha256": sha, "evaluated_at": _iso(now)}
 
@@ -194,33 +208,111 @@ def preview(p: dict, n: int = 10) -> List[dict]:
 
 
 # ------------------------------------------------------------------------------------------------------------ the gated runner
-def run_backfill(p: dict, *, fetch_fn: Callable[[dict], Tuple[int, dict, bytes]], store, archive, approval: BackfillApproval,
-                 clock: Callable[[], datetime], sleep_fn: Callable[[float], None], budget: Optional[ProviderBudget] = None) -> dict:
-    """Fetch, archive and ingest a VALID, APPROVED plan. fetch_fn(params) -> (http_status, headers, body) is injected; Stage 7.1 has none."""
-    if not p.get("valid"):
-        raise PermissionError("refused plan: " + ", ".join(r["code"] for r in p.get("refusals", [])))
-    if not isinstance(approval, BackfillApproval) or not approval.ref or approval.plan_sha256 != p["plan_sha256"]:
-        raise PermissionError("a real backfill needs an operator approval bound to this exact plan")
-    r = p["request"]
-    if r["feed"] == "sip" and not approval.sip_approved:
-        raise PermissionError("a SIP request needs its own approval")
-    if not backfill_window_open(clock()):
+def retry_after_s(headers, retrieved: datetime) -> Optional[float]:
+    """Retry-After in seconds: a non-negative finite number, or an HTTP date (RFC 9110) relative to `retrieved`. Anything else - absent,
+    negative, NaN, garbage, a header map that is not a map - is None, and the budget applies its own default back-off."""
+    if not isinstance(headers, Mapping):
+        return None
+    raw = next((v for k, v in headers.items() if str(k).lower() == "retry-after"), None)
+    if raw is None:
+        return None
+    text = str(raw).strip()[:64]
+    try:
+        v = float(text)
+    except ValueError:
+        from email.utils import parsedate_to_datetime
+        try:
+            d = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if d is None or d.tzinfo is None:
+            return None
+        return max(0.0, (d - retrieved).total_seconds())
+    return v if math.isfinite(v) and v >= 0 else None
+
+
+def _http_status(status) -> str:
+    if status == 200:
+        return "OK"
+    if status == 429:
+        return "RATE_LIMITED"
+    if status in (401, 403):
+        return "ACCESS_DENIED"
+    return "HTTP_ERROR"
+
+
+def _final_status(stats: dict, stop: Optional[str]) -> str:
+    if stats["ok_fetches"] == 0:
+        return "FAILED"
+    if stop or stats["unrecovered"] or stats["rejected"] or stats["problems"]:
+        return "PARTIAL"
+    if stats["inserted"] + stats["revised"] + stats["duplicates"] == 0:
+        return "EMPTY"
+    return "COMPLETED"
+
+
+def run_backfill(req: BackfillRequest, *, approval, fetch_fn: Callable[[dict], Tuple[int, dict, bytes]], store, archive,
+                 clock: Callable[[], datetime], sleep_fn: Callable[[float], None], budget: Optional[ProviderBudget] = None,
+                 approvals_root: Optional[Path] = None) -> dict:
+    """Fetch, archive and ingest an APPROVED request (see the module docstring). Refusals before the dataset exists raise PermissionError
+    (ApprovalError) or StoreError and send nothing. Once the dataset exists it is always sealed; an Exception during the run becomes the
+    stop reason (returned), and a KeyboardInterrupt / SystemExit is re-raised after the seal."""
+    if not isinstance(req, BackfillRequest):
+        raise PermissionError("run_backfill takes the BackfillRequest itself: the plan is recomputed here, never accepted from a caller")
+    now = clock()
+    fresh = plan(req, now)                                               # recomputed now: a plan cannot be edited after approval
+    APP.check(approval, fresh, now=now, root=approvals_root)
+    if not backfill_window_open(now):
         raise PermissionError("outside the backfill window (no backfill 07:00-20:00 New York time on a market day)")
+    per_min = fresh["budget"]["per_minute"]
+    if budget is None:
+        budget = ProviderBudget(BUDGET_NAME, per_min, clock)
+    elif budget.name != BUDGET_NAME or budget.bucket.per_minute > per_min or budget.bucket.capacity > per_min:
+        raise PermissionError(f"the budget may not exceed the plan's ({BUDGET_NAME}, {per_min}/min)")
     from market_intel.store import DatasetSpec
-    budget = budget or ProviderBudget("ALPACA_BACKFILL", p["budget"]["per_minute"], clock)
+    r = fresh["request"]
+    first, last = date.fromisoformat(r["start"]), date.fromisoformat(r["end"])
     kind = AB.TIMEFRAMES[r["timeframe"]]
     did = store.create_dataset(DatasetSpec(job_kind="BACKFILL", kind=kind, provider=AB.PROVIDER, feed=r["feed"], adjustment=r["adjustment"],
-                                           symbols=r["symbols"], timeframe=r["timeframe"], start_date=date.fromisoformat(r["start"]),
-                                           end_date=date.fromisoformat(r["end"]), request=r, plan_sha256=p["plan_sha256"], approval_ref=approval.ref))
-    start, end = _et(date.fromisoformat(r["start"]), 0), _et(date.fromisoformat(r["end"]) + timedelta(days=1), 0)
-    stats = {"ok_fetches": 0, "failed_fetches": 0, "unrecovered": 0, "inserted": 0, "duplicates": 0, "revised": 0, "problems": []}
-    stop = None
+                                           symbols=r["symbols"], timeframe=r["timeframe"], start_date=first, end_date=last, request=r,
+                                           plan_sha256=fresh["plan_sha256"], approval_ref=approval.approval_id), approval=approval)
+    stats = {"requests": 0, "ok_fetches": 0, "failed_fetches": 0, "unrecovered": 0, "inserted": 0, "duplicates": 0, "revised": 0,
+             "absences": 0, "rejected": 0, "problems": 0, "rows_delivered": 0}
+    stop, interrupt = None, None
+    try:
+        stop = _run(r, did, first, last, fetch_fn=fetch_fn, store=store, archive=archive, approval=approval, clock=clock, sleep_fn=sleep_fn,
+                    budget=budget, stats=stats)
+    except Exception as exc:                                             # noqa: BLE001 - recorded as the stop reason, never left RUNNING
+        stop = f"ERROR:{type(exc).__name__}"
+    except BaseException as exc:                                         # KeyboardInterrupt / SystemExit: sealed first, then re-raised
+        stop, interrupt = f"INTERRUPTED:{type(exc).__name__}", exc
+    final = _final_status(stats, stop)
+    detail = json.dumps({"stop": stop, **{k: stats[k] for k in ("requests", "unrecovered", "rejected", "problems")}})
+    from market_intel.store import StoreError
+    try:
+        sealed = store.finish_dataset(did, final, detail=detail)
+    except StoreError:                                                   # the store's own rule disagrees: never COMPLETED / EMPTY by default
+        final = "PARTIAL" if stats["ok_fetches"] else "FAILED"
+        sealed = store.finish_dataset(did, final, detail=detail)
+    anchor = archive.anchor(did, sealed["content_sha256"], records_sha256=sealed["records_sha256"], status=final, sealed_at=clock())
+    if interrupt is not None:
+        raise interrupt
+    return {"dataset_id": did, "status": final, "stop": stop, **stats, "content_sha256": sealed["content_sha256"], "anchor": anchor,
+            "plan_sha256": fresh["plan_sha256"], "approval_id": approval.approval_id}
+
+
+def _run(r: dict, did: str, first: date, last: date, *, fetch_fn, store, archive, approval, clock, sleep_fn, budget, stats) -> Optional[str]:
+    """The request loop. Returns the stop reason (None: every symbol was attempted). Each response is archived, recorded as a fetch row
+    and only then parsed and ingested; nothing a provider returns is trusted before it is validated."""
+    start, end = _et(first, 0), _et(last + timedelta(days=1), 0)
     for sym in r["symbols"]:
-        token, retries = None, 0
-        while stop is None:
+        endpoint = AB.ENDPOINT.format(symbol=sym)
+        token, retries, seen = None, 0, set()
+        while True:
             if not backfill_window_open(clock()):
-                stop = "WINDOW_CLOSED"
-                break
+                return "WINDOW_CLOSED"
+            if stats["requests"] >= approval.max_requests:
+                return "APPROVAL_REQUEST_CAP"
             ok, why = budget.allow()
             store.record_budget_event(budget.name, "ALLOW" if ok else "REFUSE", reason=why, per_minute=budget.bucket.per_minute,
                                       used_today=budget.day_count, dataset_id=did)
@@ -230,61 +322,93 @@ def run_backfill(p: dict, *, fetch_fn: Callable[[dict], Tuple[int, dict, bytes]]
                     retries += 1
                     sleep_fn(wait)
                     continue
-                stop = f"BUDGET_{why}"
-                break
+                return f"BUDGET_{why}"
+            stats["requests"] += 1
             params = AB.request_params(sym, r["timeframe"], start, end, r["feed"], r["adjustment"], token)
             started = clock()
-            status, headers, body = fetch_fn(params)
+            try:
+                status, headers, body = fetch_fn(params)
+            except Exception as exc:                                     # noqa: BLE001 - a transport failure is a fetch row, not a crash
+                fstatus = "TIMEOUT" if isinstance(exc, TimeoutError) else "ERROR"
+                store.record_fetch(FetchRecord(provider=AB.PROVIDER, endpoint=endpoint, started_at=started, status=fstatus,
+                                               error=f"TRANSPORT:{type(exc).__name__}"[:300]), dataset_id=did, params=params)
+                store.record_budget_event(budget.name, "RESPONSE", reason=fstatus, dataset_id=did)
+                stats["failed_fetches"] += 1
+                if retries < MAX_RETRIES:
+                    retries += 1
+                    sleep_fn(RETRY_SLEEP_S)
+                    continue
+                stats["unrecovered"] += 1
+                break
             retrieved = clock()
-            retry_after = (headers or {}).get("retry-after")
-            budget.record(status, retry_after_s=float(retry_after) if retry_after else None, access_denied=status in (401, 403))
-            store.record_budget_event(budget.name, "RESPONSE", http_status=status, retry_after_s=float(retry_after) if retry_after else None,
-                                      dataset_id=did)
+            if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599 or not isinstance(body, (bytes, bytearray)) \
+                    or not (headers is None or isinstance(headers, Mapping)):
+                store.record_fetch(FetchRecord(provider=AB.PROVIDER, endpoint=endpoint, started_at=started, retrieved_at=retrieved,
+                                               status="INVALID_RESPONSE", error="TRANSPORT_CONTRACT"), dataset_id=did, params=params)
+                stats["failed_fetches"] += 1
+                stats["unrecovered"] += 1
+                break
+            body = bytes(body)
+            wait_s = retry_after_s(headers, retrieved)
+            budget.record(status, retry_after_s=wait_s, access_denied=status in (401, 403))
+            store.record_budget_event(budget.name, "RESPONSE", http_status=status, retry_after_s=wait_s, dataset_id=did)
             fid = uuid.uuid4().hex
-            entry = archive.write(fid, body or b"", provider=AB.PROVIDER, endpoint=AB.ENDPOINT.format(symbol=sym.upper()), retrieved_at=retrieved)
-            fstatus = "OK" if status == 200 else ("RATE_LIMITED" if status == 429 else ("ACCESS_DENIED" if status in (401, 403) else "HTTP_ERROR"))
-            store.record_fetch(FetchRecord(provider=AB.PROVIDER, endpoint=AB.ENDPOINT.format(symbol=sym.upper()), started_at=started, retrieved_at=retrieved,
-                                           status=fstatus, http_status=status, latency_ms=int((retrieved - started).total_seconds() * 1000),
-                                           bytes=len(body or b""), content_hash=entry["sha256"]),
+            try:
+                entry = archive.write(fid, body, provider=AB.PROVIDER, endpoint=endpoint, retrieved_at=retrieved)
+            except OSError as exc:                                       # no raw evidence: nothing from this response is stored
+                store.record_fetch(FetchRecord(provider=AB.PROVIDER, endpoint=endpoint, started_at=started, retrieved_at=retrieved, status="ERROR",
+                                               http_status=status, error=f"ARCHIVE:{type(exc).__name__}"), dataset_id=did, params=params, fetch_id=fid)
+                stats["failed_fetches"] += 1
+                stats["unrecovered"] += 1
+                return "ARCHIVE_ERROR"
+            fstatus, obs, nxt, problems, page_problem = _http_status(status), [], None, [], None
+            if fstatus == "OK":
+                try:
+                    obs, nxt, problems = AB.parse_page(body, symbol=sym, timeframe=r["timeframe"], feed=r["feed"], adjustment=r["adjustment"],
+                                                       retrieved_at=retrieved, dataset_id=did, start_date=first, end_date=last)
+                except Exception as exc:                                 # noqa: BLE001 - a parser crash makes the page invalid, not the run
+                    obs, nxt, problems = [], None, [{"problem": f"PARSER_ERROR:{type(exc).__name__}"}]
+                page_problem = next((x["problem"] for x in problems if x["problem"] in AB.PAGE_PROBLEMS or x["problem"].startswith("PARSER_ERROR")), None)
+                if page_problem:
+                    fstatus = "INVALID_RESPONSE"
+            store.record_fetch(FetchRecord(provider=AB.PROVIDER, endpoint=endpoint, started_at=started, retrieved_at=retrieved, status=fstatus,
+                                           http_status=status, latency_ms=max(0, int((retrieved - started).total_seconds() * 1000)), bytes=len(body),
+                                           content_hash=entry["sha256"], retry_after_s=wait_s, error=page_problem or ""),
                                dataset_id=did, params=params, raw_path=entry["path"], fetch_id=fid)
             if fstatus == "ACCESS_DENIED":
                 stats["failed_fetches"] += 1
                 stats["unrecovered"] += 1
-                stop = "ACCESS_DENIED"
-                break
-            if fstatus != "OK":
+                return "ACCESS_DENIED"
+            if fstatus in ("RATE_LIMITED", "HTTP_ERROR"):
                 stats["failed_fetches"] += 1
-                if fstatus == "RATE_LIMITED" and retries < MAX_RETRIES:
-                    retries += 1                                                 # the same request again after the back-off (recovered if it succeeds)
+                if (fstatus == "RATE_LIMITED" or status >= 500) and retries < MAX_RETRIES:
+                    retries += 1                                         # the same request again (recovered only if it then succeeds)
                     until = budget.blocked_until
-                    sleep_fn(max(0.0, (until - clock()).total_seconds()) if until else 1.0)
+                    sleep_fn(max(0.0, (until - clock()).total_seconds()) if (fstatus == "RATE_LIMITED" and until) else RETRY_SLEEP_S)
                     continue
                 stats["unrecovered"] += 1
-                break                                                            # this symbol stays incomplete: the dataset can only be PARTIAL
+                break                                                    # this symbol stays incomplete: the dataset can only be PARTIAL
+            if fstatus == "INVALID_RESPONSE":
+                stats["failed_fetches"] += 1
+                stats["unrecovered"] += 1
+                stats["problems"] += store.record_problems(did, problems, fetch_id=fid)
+                break
             stats["ok_fetches"] += 1
             retries = 0
-            obs, token, problems = AB.parse_page(body, symbol=sym, timeframe=r["timeframe"], feed=r["feed"], adjustment=r["adjustment"],
-                                                 retrieved_at=retrieved, dataset_id=did)
-            stats["problems"] += [{**x, "symbol": sym} for x in problems]
-            res = store.ingest(did, obs, fetch_id=fid)
-            stats["inserted"] += res.inserted
-            stats["duplicates"] += res.duplicates
-            stats["revised"] += res.revised
-            if not token:
+            if stats["rows_delivered"] + len(obs) + len(problems) > approval.max_rows:
+                return "APPROVAL_ROW_CAP"                                # the page is archived and recorded, but not ingested
+            stats["rows_delivered"] += len(obs) + len(problems)
+            stats["problems"] += store.record_problems(did, problems, fetch_id=fid)
+            res = store.ingest(did, obs, fetch_id=fid, on_reject="quarantine")
+            for k in ("inserted", "duplicates", "revised", "absences", "rejected"):
+                stats[k] += getattr(res, k)
+            if not nxt:
                 break
-        if stop:
-            break
-    rows = stats["inserted"] + stats["revised"]
-    if stats["ok_fetches"] == 0:
-        final = "FAILED"
-    elif stop or stats["unrecovered"] or stats["problems"]:
-        final = "PARTIAL"
-    elif rows == 0 and stats["duplicates"] == 0:
-        final = "EMPTY"
-    else:
-        final = "COMPLETED"
-    sealed = store.finish_dataset(did, final, detail=json.dumps({"stop": stop, "problems": len(stats["problems"])}), duplicates=stats["duplicates"])
-    return {"dataset_id": did, "status": final, "stop": stop, **stats, "content_sha256": sealed["content_sha256"]}
+            if nxt in seen:
+                return "PAGINATION_LOOP"
+            seen.add(nxt)
+            token = nxt
+    return None
 
 
 # ------------------------------------------------------------------------------------------------------------ CLI (offline)

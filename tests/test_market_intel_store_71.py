@@ -13,14 +13,23 @@ no network (the conftest socket block plus explicit guards), no real backfill, n
   C01-C05 the CLI: offline by default (no socket, no file), refusals (coverage, SIP 15-minute rule, feed, dates), dry-run preview, execute
           always refused, inspect never creates, estimates (2025: 250 sessions; 24 pages per symbol-year of extended minute bars).
   K01-K02 the verified 2025 history calendar (NYSE publications + the empirical cross-check), 2024 / 2028 still NOT_COVERED.
-  S01     isolation: no network / broker / model / execution import in the new modules; nothing outside market_intel imports them.
+  N01-N12 the PR #42 review findings, each with its regression and negative tests: B1 approvals (a file for the exact request and the plan
+          recomputed at run time, used once), B2 dataset scope, B3 failures always sealed, B4 schema objects + row hashes + external
+          anchors, B5 chronology, B6 membership manifests, B7 exact recovery keys, B8 no reseal, B9 payloads / absences / latest status,
+          item 10 event_end semantics, B11 the 2025 early-close post-market, B10 bounded latest reads and the generic-store plan cap.
+  E01     an approved synthetic run end to end: quarantine, PARTIAL, integrity and anchors verified.
+  S01     isolation: no network / broker / model / execution import in ANY market_intel module (a closed registry: a new module must be
+          declared); nothing outside market_intel imports them.
   F01-F03 scope: exactly the declared files; frozen hashes; every bookkeeping edit pinned exactly.
 """
 from __future__ import annotations
 
 import ast
+import dataclasses
+import inspect
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -33,6 +42,7 @@ import pytest
 
 import config
 import freeze_ledger as FL
+from market_intel import approvals as APP
 from market_intel import calendar as CAL
 from market_intel import calendar_history as HIST
 from market_intel import ingest as IG
@@ -40,8 +50,9 @@ from market_intel import migrations as MG
 from market_intel.archive import RawArchive
 from market_intel.models import FetchRecord, Observation, forbidden_key
 from market_intel.sources import alpaca_bars as AB
-from market_intel.store import (CoverageError, DatasetSpec, FeedRequired, MarketIntelStore, StoreError, content_hash, natural_key, parse_ts,
-                                ts)
+from market_intel import store as ST
+from market_intel.store import (ChronologyError, CoverageError, DatasetSpec, FeedRequired, MarketIntelStore, PayloadError, ScopeError, StoreError,
+                                content_hash, natural_key, parse_ts, ts)
 
 ROOT = Path(__file__).resolve().parents[1]
 UTC = timezone.utc
@@ -85,8 +96,37 @@ def new_store(tmp_path, clock=None, name="mi.db"):
     return MarketIntelStore(tmp_path / name, clock=clock or Clock(SAT))
 
 
-def spec(job="BACKFILL", feed="iex", kind="BAR_1DAY"):
-    return DatasetSpec(job_kind=job, kind=kind, provider="ALPACA", feed=feed, adjustment="raw", symbols=["SPY"], timeframe="1Day")
+SYMS = ("SPY", "QQQ", "IWM", "AAPL")
+TF = {"BAR_1DAY": "1Day", "BAR_1HOUR": "1Hour", "BAR_1MIN": "1Min"}
+
+
+def spec(job="IMPORT", feed="iex", kind="BAR_1DAY", symbols=SYMS, start=date(2025, 1, 1), end=date(2025, 12, 31)):
+    """An IMPORT (backfilled rows, no approval needed) or FIXTURE dataset; a BACKFILL dataset needs an approval (approve())."""
+    return DatasetSpec(job_kind=job, kind=kind, provider="ALPACA", feed=feed, adjustment="raw", symbols=list(symbols), timeframe=TF.get(kind),
+                       start_date=start, end_date=end)
+
+
+def req(symbols=("SPY",), start=date(2025, 12, 1), end=date(2025, 12, 5), feed="iex", timeframe="1Day"):
+    return IG.BackfillRequest(symbols=tuple(symbols), start=start, end=end, timeframe=timeframe, feed=feed)
+
+
+def approve(tmp_path, rq, *, now=SAT, aid="OPS-TEST-0001", sip=False, max_requests=10_000, max_rows=10_000_000, hours=6, **over):
+    """What an operator does: write an approval file for the exact request and its plan hash into the approvals directory."""
+    root = tmp_path / "approvals"
+    root.mkdir(parents=True, exist_ok=True)
+    doc = {"version": APP.APPROVAL_VERSION, "approval_id": aid, "plan_sha256": IG.plan(rq, now)["plan_sha256"], "request": rq.as_dict(),
+           "sip_approved": sip, "max_requests": max_requests, "max_rows": max_rows, "granted_by": "test operator",
+           "granted_at": (now - timedelta(minutes=5)).isoformat(), "expires_at": (now + timedelta(hours=hours)).isoformat()}
+    doc.update(over)
+    path = root / f"{aid}.json"
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return APP.load(path, now=now, root=root), root
+
+
+def run(tmp_path, rq, clk, store, *, wire=None, archive=None, budget=None, aid="OPS-TEST-0001", sleep=None):
+    a, root = approve(tmp_path, rq, now=clk(), aid=aid)
+    return IG.run_backfill(rq, approval=a, approvals_root=root, fetch_fn=wire or Wire(clk), store=store, archive=archive or RawArchive(tmp_path / "raw"),
+                           clock=clk, sleep_fn=sleep or (lambda x: clk.tick(x)), budget=budget)
 
 
 # ============================================================================================================ the database (D)
@@ -119,7 +159,11 @@ def test_D01_the_store_is_created_lazily_and_reads_never_create_it(tmp_path):
 def test_D02_every_table_is_append_only_and_no_column_names_an_instruction(tmp_path):
     s = new_store(tmp_path)
     did = s.create_dataset(spec())
-    s.ingest(did, [daily("SPY", date(2025, 12, 1), 100.0)])
+    s.ingest(did, [daily("SPY", date(2025, 12, 1), 100.0), daily("SPY", date(2025, 12, 2), 0.0, status="UNAVAILABLE")])   # a value + an absence
+    a, _ = approve(tmp_path, req())
+    s.create_dataset(DatasetSpec(job_kind="BACKFILL", kind="BAR_1DAY", provider="ALPACA", feed="iex", adjustment="raw", symbols=["SPY"], timeframe="1Day",
+                                 start_date=date(2025, 12, 1), end_date=date(2025, 12, 5), plan_sha256=a.plan_sha256, approval_ref=a.approval_id),
+                     approval=a)                                                                   # an approval use
     s.record_budget_event("ALPACA", "ALLOW")
     s.record_quality_audit({"scope": {"x": 1}, "check": "c", "result": "PASS", "codes": []})
     s.record_fetch(FetchRecord(provider="ALPACA", endpoint="/v2/stocks/SPY/bars", started_at=SAT, retrieved_at=SAT, status="OK"), dataset_id=did)
@@ -171,7 +215,7 @@ def test_I01_reingesting_identical_content_is_a_duplicate_and_the_dataset_hash_i
         clk.tick(3600)
         again = s.ingest(did, [daily("SPY", d, 100.0 + i, retrieved=SAT + timedelta(hours=1)) for i, d in enumerate(days)])   # fetched again later
         assert (first.inserted, first.duplicates, again.inserted, again.duplicates, again.revised) == (5, 0, 0, 5, 0)
-        hashes.append(s.finish_dataset(did, "COMPLETED", duplicates=again.duplicates)["content_sha256"])
+        hashes.append(s.finish_dataset(did, "COMPLETED")["content_sha256"])
         assert s.dataset(did)["events"][-1]["rows_duplicate"] == 5
         with pytest.raises(StoreError):
             s.ingest(did, [daily("SPY", days[0], 1.0)])                                         # a sealed dataset takes no rows
@@ -185,14 +229,13 @@ def test_I02_corrections_are_new_revisions_and_every_version_is_kept(tmp_path):
     clk = Clock(SAT)
     s = new_store(tmp_path, clk)
     d = date(2025, 12, 1)
-    did = s.create_dataset(spec(job="FIXTURE"))
-    v1 = s.ingest(did, [daily("SPY", d, 100.0)]).obs_ids[0]
+    v1 = s.ingest(s.create_dataset(spec(job="FIXTURE")), [daily("SPY", d, 100.0)]).obs_ids[0]
     t1 = clk()
     clk.tick(86400)
-    corr = s.ingest(did, [daily("SPY", d, 101.0, retrieved=clk())])                             # the provider corrected the close
+    corr = s.ingest(s.create_dataset(spec(job="FIXTURE")), [daily("SPY", d, 101.0, retrieved=clk())])   # a later dataset: the provider corrected it
     t2 = clk()
     clk.tick(86400)
-    back = s.ingest(did, [daily("SPY", d, 100.0, retrieved=clk())])                             # ... and reverted it: A -> B -> A
+    back = s.ingest(s.create_dataset(spec(job="FIXTURE")), [daily("SPY", d, 100.0, retrieved=clk())])   # ... and reverted it: A -> B -> A
     assert (corr.revised, back.revised, back.duplicates) == (1, 1, 0)
     revs = s.revisions(natural_key(daily("SPY", d, 100.0)))
     assert [(r["revision"], r["payload"]["close"], r["supersedes_obs_id"] is None) for r in revs] == [(1, 100.0, True), (2, 101.0, False), (3, 100.0, False)]
@@ -217,14 +260,15 @@ def test_I03_point_in_time_reads_exclude_what_was_not_yet_available_or_not_yet_i
     clk.tick(7 * 86400)                                                                          # ingested a week later ...
     fx = s.create_dataset(spec(job="FIXTURE"))
     late = Observation(kind="BAR_1DAY", symbol="QQQ", provider="ALPACA", feed="iex", adjustment="raw", observed_at=ny(2025, 12, 2, 0, 0),
-                       retrieved_at=ny(2025, 12, 2, 16, 5), available_at=ny(2025, 12, 2, 16, 5), session="REG", session_date=date(2025, 12, 2),
+                       retrieved_at=ny(2025, 12, 2, 20, 5), available_at=ny(2025, 12, 2, 20, 5), session="REG", session_date=date(2025, 12, 2),
                        status="AVAILABLE", payload={"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10})   # ... claiming an earlier availability
     s.ingest(fx, [late])
     assert s.latest_usable("BAR_1DAY", at=ny(2025, 12, 3, 9, 0), symbol="QQQ", feed="iex") is None   # not in the store yet at that time
     assert s.latest_usable("BAR_1DAY", at=clk(), symbol="QQQ", feed="iex") is not None
     snap = s.snapshot("BAR_1DAY", ["spy", "QQQ", "IWM"], at=SAT, feed="iex")
-    assert (snap["SPY"]["usable"], snap["QQQ"]["status"], snap["IWM"]["status"]) == (True, "UNAVAILABLE", "UNAVAILABLE")
-    assert "close" not in snap["IWM"] and snap["IWM"]["reason"] == "NO_USABLE_OBSERVATION_KNOWN_AT"        # missing is never a zero
+    assert (snap["SPY"]["status"], snap["QQQ"]["status"], snap["IWM"]["status"]) == ("AVAILABLE", "UNAVAILABLE", "UNAVAILABLE")
+    assert snap["SPY"]["latest_usable"]["payload"]["close"] == 100.0 and snap["SPY"]["usable_is_latest"] is True
+    assert snap["IWM"]["latest_usable"] is None and snap["IWM"]["reason"] == "NO_USABLE_VALUE_KNOWN_AT"          # missing is never a zero
 
 
 def test_I04_every_time_is_utc_aware_and_stored_in_one_sortable_format(tmp_path):
@@ -251,7 +295,9 @@ def test_I05_missing_and_malformed_data_never_becomes_a_value(tmp_path):
     s = new_store(tmp_path)
     did = s.create_dataset(spec())
     s.ingest(did, [daily("SPY", date(2025, 12, 1), 0.0, status="UNAVAILABLE")])
-    assert s.latest_usable("BAR_1DAY", at=SAT, symbol="SPY", feed="iex") is None and s.history("BAR_1DAY", symbol="SPY", feed="iex")[0]["payload"] == {}
+    assert s.latest_usable("BAR_1DAY", at=SAT, symbol="SPY", feed="iex") is None and s.history("BAR_1DAY", symbol="SPY", feed="iex") == []
+    st = s.latest_status("BAR_1DAY", at=SAT, symbol="SPY", feed="iex")
+    assert (st["latest_record"]["record_type"], st["latest_record"]["status"], st["latest_record"]["payload"], st["status"]) == ("ABSENCE", "UNAVAILABLE", {}, "UNAVAILABLE")
     body = json.dumps({"symbol": "SPY", "bars": [{"t": "2025-12-01T05:00:00Z", "o": 1, "h": 2, "l": 0.5, "v": 9}, {"t": "not-a-time", "o": 1, "h": 2,
                        "l": 0.5, "c": 1, "v": 9}, {"t": "2025-12-02T05:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 9}]}).encode()
     obs, token, problems = AB.parse_page(body, symbol="SPY", timeframe="1Day", feed="iex", adjustment="raw", retrieved_at=SAT)
@@ -302,7 +348,7 @@ def test_I07_unknown_calendar_coverage_fails_closed_and_non_sessions_are_flagged
     s.ingest(did, [daily("SPY", date(2025, 7, 4), 100.0)])                                        # Independence Day: stored, flagged, unusable
     r = s.history("BAR_1DAY", symbol="SPY", feed="iex")[0]
     assert r["quality_flags"] == ["NON_SESSION_DAY"] and r["usable"] is False
-    days = sessions_2025(date(2025, 12, 1), 10)
+    days = sessions_2025(date(2025, 11, 10), 10)                                                    # sessions before the retrieval (B5)
     s.ingest(did, [daily("SPY", x, 100.0) for i, x in enumerate(days) if i not in (3,)])            # one session missing
     q = s.quality_report("BAR_1DAY", symbol="SPY", feed="iex", start=days[0], end=days[-1])
     assert (q["result"], q["missing_sessions"], q["expected_sessions"], q["present_sessions"]) == ("WARN", [days[3].isoformat()], 10, 9)
@@ -385,13 +431,13 @@ def test_I10_provenance_names_the_fetch_the_raw_archive_and_the_dataset(tmp_path
     clk = Clock(SAT)
     s = new_store(tmp_path, clk)
     arc = RawArchive(tmp_path / "raw")
-    p = IG.plan(IG.BackfillRequest(symbols=("SPY",), start=date(2025, 12, 1), end=date(2025, 12, 5), timeframe="1Day", feed="iex"), clk())
-    res = IG.run_backfill(p, fetch_fn=Wire(clk), store=s, archive=arc, approval=IG.BackfillApproval("OP-1", p["plan_sha256"]), clock=clk,
-                          sleep_fn=lambda x: clk.tick(x))
+    res = run(tmp_path, req(), clk, s, archive=arc, aid="OPS-PROV-01")
     row = s.history("BAR_1DAY", symbol="SPY", feed="iex")[0]
     prov = s.provenance(row["obs_id"])
-    assert prov["fetch"]["status"] == "OK" and prov["fetch"]["raw_path"].endswith(".json.gz") and prov["dataset"]["approval_ref"] == "OP-1"
-    assert prov["dataset"]["plan_sha256"] == p["plan_sha256"] and [e["status"] for e in prov["dataset_events"]] == ["RUNNING", "COMPLETED"]
+    assert prov["fetch"]["status"] == "OK" and prov["fetch"]["raw_path"].endswith(".json.gz") and prov["dataset"]["approval_ref"] == "OPS-PROV-01"
+    assert prov["dataset"]["plan_sha256"] == res["plan_sha256"] and [e["status"] for e in prov["dataset_events"]] == ["RUNNING", "COMPLETED"]
+    assert s.dataset(res["dataset_id"])["approval_use"]["approval_id"] == "OPS-PROV-01"
+    assert arc.anchors() == {res["dataset_id"]: {"content_sha256": res["content_sha256"], "records_sha256": s.dataset(res["dataset_id"])["events"][-1]["records_sha256"]}}
     assert json.loads(arc.read(prov["fetch"]["raw_path"]))["symbol"] == "SPY" and arc.verify() == {"entries": 1, "ok": True, "problems": []}
     assert "apikey" not in prov["fetch"]["params_json"].lower() and json.loads(prov["fetch"]["params_json"])["feed"] == "iex"
     (tmp_path / "raw" / prov["fetch"]["raw_path"]).write_bytes(b"tampered")
@@ -428,41 +474,44 @@ class Wire:
         return 200, {}, json.dumps({"symbol": params["symbol"], "bars": bars, "next_page_token": nxt}).encode()
 
 
-def _plan(symbols=("SPY",), start=date(2025, 12, 1), end=date(2025, 12, 5), feed="iex", now=SAT, timeframe="1Day"):
-    return IG.plan(IG.BackfillRequest(symbols=tuple(symbols), start=start, end=end, timeframe=timeframe, feed=feed), now)
-
-
-def test_R01_a_real_run_needs_a_valid_plan_an_approval_bound_to_it_sip_approval_and_the_window(tmp_path):
+def test_R01_a_real_run_needs_the_request_an_approval_file_for_its_recomputed_plan_sip_approval_and_the_window(tmp_path):
     clk = Clock(SAT)
     s, arc = new_store(tmp_path, clk), RawArchive(tmp_path / "raw")
-    p = _plan()
     w = Wire(clk)
-    run = lambda plan_, appr, c=clk: IG.run_backfill(plan_, fetch_fn=w, store=s, archive=arc, approval=appr, clock=c, sleep_fn=lambda x: None)   # noqa: E731
-    for bad in (None, "OK", IG.BackfillApproval("", p["plan_sha256"]), IG.BackfillApproval("OP", "0" * 64)):
+    rq = req()
+    good, root = approve(tmp_path, rq)
+    go = lambda r_, appr, c=clk: IG.run_backfill(r_, approval=appr, approvals_root=root, fetch_fn=w, store=s, archive=arc, clock=c,   # noqa: E731
+                                                 sleep_fn=lambda x: None)
+    for bad in (None, "OK", {"approval_id": "OPS-TEST-0001", "plan_sha256": good.plan_sha256}):
         with pytest.raises(PermissionError):
-            run(p, bad)
+            go(rq, bad)                                                                                  # only an approval loaded from a file
     with pytest.raises(PermissionError):
-        run(_plan(start=date(2024, 12, 30), end=date(2025, 1, 3)), IG.BackfillApproval("OP", "x"))          # a refused plan
-    sip = _plan(feed="sip")
+        go(IG.plan(rq, SAT), good)                                                                       # a plan dict is never accepted: recomputed
+    refused = req(start=date(2024, 12, 30), end=date(2025, 1, 3))
     with pytest.raises(PermissionError):
-        run(sip, IG.BackfillApproval("OP", sip["plan_sha256"]))                                            # SIP needs its own approval
+        go(refused, approve(tmp_path, refused, aid="OPS-REFUSED-1")[0])                                  # a refused plan, even if "approved"
+    sip = req(feed="sip")
+    with pytest.raises(PermissionError, match="SIP"):
+        go(sip, approve(tmp_path, sip, aid="OPS-SIP-0001")[0])                                           # SIP needs its own approval
     weekday = Clock(ny(2025, 12, 8, 10, 0))                                                                # Monday 10:00 New York
-    with pytest.raises(PermissionError):
-        run(_plan(now=weekday()), IG.BackfillApproval("OP", _plan(now=weekday())["plan_sha256"]), weekday)
+    with pytest.raises(PermissionError, match="window"):
+        go(rq, approve(tmp_path, rq, now=weekday(), aid="OPS-WKDY-0001")[0], weekday)
     assert w.calls == [] and not s.exists() and not arc.root.exists()                                    # nothing fetched, nothing written
     src = (ROOT / "market_intel" / "ingest.py").read_text(encoding="utf-8")
-    assert src.count("BackfillApproval(") == 0 and "class BackfillApproval" in src                         # the CLI never builds an approval
+    assert "APP.check(approval, fresh" in src and "APP.load(" not in src and "BackfillApproval" not in src  # the CLI never builds an approval
+    tree = ast.parse((ROOT / "market_intel" / "approvals.py").read_text(encoding="utf-8"))
+    calls = {n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "") for n in ast.walk(tree) if isinstance(n, ast.Call)}
+    assert not calls & {"write_text", "write_bytes", "open", "mkdir", "dump", "touch", "rename", "unlink"}   # no code writes an approval
 
 
 def test_R02_paging_archive_retries_and_honest_final_states(tmp_path):
     clk = Clock(SAT)
     s, arc = new_store(tmp_path, clk), RawArchive(tmp_path / "raw")
-    p = _plan(symbols=("SPY", "QQQ"), start=date(2025, 11, 3), end=date(2025, 11, 28))
+    rq = req(symbols=("SPY", "QQQ"), start=date(2025, 11, 3), end=date(2025, 11, 28))
     w = Wire(clk, per_page=7, script={1: (429, {"retry-after": "5"}, b"slow down")})
     sleeps = []
-    res = IG.run_backfill(p, fetch_fn=w, store=s, archive=arc, approval=IG.BackfillApproval("OP", p["plan_sha256"]), clock=clk,
-                          sleep_fn=lambda x: (sleeps.append(x), clk.tick(x)))
-    n = p["coverage"]["sessions"]
+    res = run(tmp_path, rq, clk, s, wire=w, archive=arc, sleep=lambda x: (sleeps.append(x), clk.tick(x)))
+    n = IG.plan(rq, SAT)["coverage"]["sessions"]
     assert n == 19 and res["status"] == "COMPLETED" and res["inserted"] == 2 * n and res["failed_fetches"] == 1 and res["unrecovered"] == 0   # a retried 429 is recovered
     assert [c.get("page_token") for c in w.calls if c["symbol"] == "SPY"] == [None, "7", "7", "14"] and sleeps and sleeps[0] == pytest.approx(5.0, abs=1.1)
     assert arc.verify()["ok"] and arc.verify()["entries"] == len(w.calls)
@@ -470,14 +519,11 @@ def test_R02_paging_archive_retries_and_honest_final_states(tmp_path):
         assert len(s.history("BAR_1DAY", symbol=sym, feed="iex")) == n
     ok = Clock(SAT)
     s2 = new_store(tmp_path, ok, "ok.db")
-    p2 = _plan(symbols=("SPY", "QQQ"), start=date(2025, 11, 3), end=date(2025, 11, 28))
-    r2 = IG.run_backfill(p2, fetch_fn=Wire(ok, per_page=7), store=s2, archive=RawArchive(tmp_path / "raw2"), approval=IG.BackfillApproval("OP", p2["plan_sha256"]),
-                         clock=ok, sleep_fn=lambda x: ok.tick(x))
+    r2 = run(tmp_path, rq, ok, s2, wire=Wire(ok, per_page=7), archive=RawArchive(tmp_path / "raw2"))
     assert r2["status"] == "COMPLETED"
     ok3 = Clock(SAT)
     s3 = new_store(tmp_path, ok3, "ok3.db")
-    r3 = IG.run_backfill(p2, fetch_fn=Wire(ok3, per_page=7), store=s3, archive=RawArchive(tmp_path / "raw3"), approval=IG.BackfillApproval("OP", p2["plan_sha256"]),
-                         clock=ok3, sleep_fn=lambda x: ok3.tick(x))
+    r3 = run(tmp_path, rq, ok3, s3, wire=Wire(ok3, per_page=7), archive=RawArchive(tmp_path / "raw3"))
     assert r3["content_sha256"] == r2["content_sha256"]                                              # the same data, the same dataset hash
     stuck = {i: (429, {"retry-after": "5"}, b"slow") for i in range(1, 4)}                          # page 2 of SPY never recovers
     cases = {"rate_limited": (Wire(Clock(SAT), per_page=7, script=stuck), "PARTIAL", "BUDGET_BLOCKED_BACKOFF"),   # still backing off: stop
@@ -486,14 +532,11 @@ def test_R02_paging_archive_retries_and_honest_final_states(tmp_path):
              "empty": (Wire(Clock(SAT), empty=True), "EMPTY", None)}
     for name, (wire, want, stop) in cases.items():
         st = new_store(tmp_path, wire.clock, f"{name}.db")
-        out = IG.run_backfill(p2, fetch_fn=wire, store=st, archive=RawArchive(tmp_path / f"raw_{name}"), approval=IG.BackfillApproval("OP", p2["plan_sha256"]),
-                              clock=wire.clock, sleep_fn=lambda x, c=wire.clock: c.tick(x))
+        out = run(tmp_path, rq, wire.clock, st, wire=wire, archive=RawArchive(tmp_path / f"raw_{name}"))
         assert (out["status"], out["stop"]) == (want, stop), name
     closes = Clock(ny(2025, 12, 8, 6, 59) + timedelta(seconds=57))                                  # Monday 06:59:57: the window closes at 07:00
     s4 = new_store(tmp_path, closes, "closes.db")
-    p4 = _plan(symbols=("SPY", "QQQ"), start=date(2025, 11, 3), end=date(2025, 11, 28), now=closes())
-    out4 = IG.run_backfill(p4, fetch_fn=Wire(closes, per_page=7), store=s4, archive=RawArchive(tmp_path / "raw4"), approval=IG.BackfillApproval("OP", p4["plan_sha256"]),
-                           clock=closes, sleep_fn=lambda x: closes.tick(x))
+    out4 = run(tmp_path, rq, closes, s4, wire=Wire(closes, per_page=7), archive=RawArchive(tmp_path / "raw4"))
     assert (out4["status"], out4["stop"]) == ("PARTIAL", "WINDOW_CLOSED")
 
 
@@ -501,11 +544,10 @@ def test_R03_the_budget_paces_requests_and_its_history_is_persisted(tmp_path):
     from market_intel.budget import ProviderBudget
     clk = Clock(SAT)
     s = new_store(tmp_path, clk)
-    p = _plan(symbols=("SPY", "QQQ", "IWM"), start=date(2025, 11, 3), end=date(2025, 11, 28))
-    slow = ProviderBudget("ALPACA_BACKFILL", 2, clk)                                                 # 2 requests a minute
+    rq = req(symbols=("SPY", "QQQ", "IWM"), start=date(2025, 11, 3), end=date(2025, 11, 28))
+    slow = ProviderBudget("ALPACA_BACKFILL", 2, clk)                                                 # 2 requests a minute (never more than the plan's)
     sleeps = []
-    res = IG.run_backfill(p, fetch_fn=Wire(clk), store=s, archive=RawArchive(tmp_path / "raw"), approval=IG.BackfillApproval("OP", p["plan_sha256"]),
-                          clock=clk, sleep_fn=lambda x: (sleeps.append(x), clk.tick(x)), budget=slow)
+    res = run(tmp_path, rq, clk, s, budget=slow, sleep=lambda x: (sleeps.append(x), clk.tick(x)))
     assert res["status"] == "COMPLETED" and len(sleeps) == 1 and sleeps[0] == pytest.approx(28.0, abs=0.5)   # the third request waited for its token
     assert s.budget_used("ALPACA_BACKFILL", date(2025, 12, 6)) == 3
     c = sqlite3.connect(s.path)
@@ -603,10 +645,11 @@ def test_C04_estimates_follow_the_verified_calendar():
 
 def test_C05_the_bytes_per_row_estimate_is_measured(tmp_path):
     s = new_store(tmp_path)
-    did = s.create_dataset(spec())
-    days = sessions_2025(date(2025, 1, 2), 250)
     syms = [f"S{chr(65 + i)}" for i in range(8)]
-    s.ingest(did, [daily(sym, d, 100.0 + i * 0.01) for sym in syms for i, d in enumerate(days)])
+    did = s.create_dataset(spec(symbols=syms))
+    days = sessions_2025(date(2025, 1, 2), 250)
+    jan3 = datetime(2026, 1, 3, 15, 0, tzinfo=UTC)
+    s.ingest(did, [daily(sym, d, 100.0 + i * 0.01, retrieved=jan3) for sym in syms for i, d in enumerate(days)])
     c = sqlite3.connect(s.path)
     c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     c.close()
@@ -621,7 +664,8 @@ def test_K01_2025_is_the_verified_nyse_history_and_classified_like_the_610a_clas
     assert HIST.HOLIDAYS == CAL.rule_holidays(2025) | HIST.EXCEPTIONAL_CLOSURES and HIST.EXCEPTIONAL_CLOSURES == {date(2025, 1, 9)}
     assert HIST.HOLIDAYS - CAL.rule_holidays(2025) == {date(2025, 1, 9)}                             # the national day of mourning
     assert {d for d in days if CAL.regular_minutes(d) == 210} == HIST.EARLY_CLOSES == {date(2025, 7, 3), date(2025, 11, 28), date(2025, 12, 24)}
-    cases = [(ny(2025, 7, 3, 12, 59), "REG"), (ny(2025, 7, 3, 13, 0), "POST"), (ny(2025, 7, 3, 19, 59), "POST"), (ny(2025, 7, 3, 20, 0), "CLOSED"),
+    cases = [(ny(2025, 7, 3, 12, 59), "REG"), (ny(2025, 7, 3, 13, 0), "POST"), (ny(2025, 7, 3, 16, 59), "POST"), (ny(2025, 7, 3, 17, 0), "CLOSED"),
+             (ny(2025, 7, 2, 19, 59), "POST"), (ny(2025, 7, 2, 20, 0), "CLOSED"),                                   # an early close ends late trading at 17:00
              (ny(2025, 1, 9, 10, 0), "CLOSED"), (ny(2025, 1, 10, 9, 30), "REG"), (ny(2025, 1, 10, 4, 0), "PRE"), (ny(2025, 1, 10, 3, 59), "CLOSED"),
              (datetime(2025, 3, 10, 13, 30, tzinfo=UTC), "REG"), (datetime(2025, 3, 10, 13, 29, tzinfo=UTC), "PRE"),      # the Monday after DST starts
              (datetime(2025, 11, 3, 14, 30, tzinfo=UTC), "REG"), (datetime(2025, 11, 3, 14, 29, tzinfo=UTC), "PRE"),      # the Monday after DST ends
@@ -646,17 +690,524 @@ def test_K02_2024_and_2028_stay_not_covered_and_fail_closed():
     import autorun.calendar as AC
     assert AC.COVERED_YEARS == (2026, 2027) and not [d for d in AC.HOLIDAYS if d.year == 2025]           # the frozen 6.10A table is untouched
 
+# ============================================================================================================ review findings (N, E)
+def test_N01_B1_an_approval_is_a_file_for_the_exact_request_and_the_plan_recomputed_at_run_time_used_once(tmp_path):
+    from market_intel.budget import ProviderBudget
+    clk = Clock(SAT)
+    s, arc, w = new_store(tmp_path, clk), RawArchive(tmp_path / "raw"), Wire(clk)
+    rq = req(symbols=("SPY", "QQQ"))
+    a, root = approve(tmp_path, rq)
+    go = lambda r_, appr, **k: IG.run_backfill(r_, approval=appr, approvals_root=root, fetch_fn=w, store=s, archive=arc, clock=clk,   # noqa: E731
+                                               sleep_fn=lambda x: clk.tick(x), **k)
+    for other in (req(symbols=("SPY", "QQQ", "IWM")), req(symbols=("SPY", "QQQ"), end=date(2025, 12, 4)), dataclasses.replace(rq, adjustment="all"),
+                  dataclasses.replace(rq, symbols=("QQQ", "SPY"))):
+        with pytest.raises(APP.ApprovalError, match="not the approved request"):
+            go(other, a)                                                                               # a mutated request is not the approved one
+    b, _ = approve(tmp_path, rq, aid="OPS-HASH-0001", plan_sha256="0" * 64)
+    with pytest.raises(APP.ApprovalError, match="does not hash"):
+        go(rq, b)                                                                                      # the plan recomputed now must hash to it
+    c_, _ = approve(tmp_path, rq, aid="OPS-EDIT-0001")
+    doc = json.loads(c_.path.read_text(encoding="utf-8"))
+    doc["max_rows"] = 99_999_999
+    c_.path.write_text(json.dumps(doc), encoding="utf-8")
+    with pytest.raises(APP.ApprovalError, match="changed"):
+        go(rq, c_)                                                                                     # the file edited after it was loaded
+    with pytest.raises(APP.ApprovalError, match="changed"):
+        go(rq, dataclasses.replace(a, max_rows=10 ** 9))                                               # an approval object built in code ...
+    with pytest.raises(APP.ApprovalError):
+        go(rq, dataclasses.replace(a, path=root / "ghost.json"))                                       # ... or naming no file: the file is the authority
+    with pytest.raises(APP.ApprovalError, match="caps"):
+        go(rq, approve(tmp_path, rq, aid="OPS-CAPS-0001", max_requests=1)[0])                          # caps below the plan's own estimate
+    with pytest.raises(PermissionError, match="budget"):
+        go(rq, a, budget=ProviderBudget("ALPACA_BACKFILL", 1000, clk))                                 # a budget above the plan's
+    late = Clock(SAT + timedelta(hours=7))
+    with pytest.raises(APP.ApprovalError, match="not valid now"):
+        IG.run_backfill(rq, approval=a, approvals_root=root, fetch_fn=w, store=s, archive=arc, clock=late, sleep_fn=lambda x: None)   # expired
+    good_doc = json.loads(a.path.read_text(encoding="utf-8"))
+    broken = {"extra field": {**good_doc, "note": "x"}, "missing field": {k: v for k, v in good_doc.items() if k != "granted_by"},
+              "version": {**good_doc, "version": "v0"}, "short id": {**good_doc, "approval_id": "x"}, "hash": {**good_doc, "plan_sha256": "ABC"},
+              "zero cap": {**good_doc, "max_rows": 0}, "bool cap": {**good_doc, "max_requests": True}, "grantor": {**good_doc, "granted_by": " "},
+              "naive time": {**good_doc, "granted_at": "2025-12-06T14:55:00"}, "over 24 h": {**good_doc, "expires_at": (SAT + timedelta(hours=25)).isoformat()},
+              "not yet valid": {**good_doc, "granted_at": (SAT + timedelta(minutes=1)).isoformat()}, "sip flag": {**good_doc, "sip_approved": "yes"}}
+    for name, d in broken.items():
+        path = root / f"broken_{name.replace(' ', '_')}.json"
+        path.write_text(json.dumps(d), encoding="utf-8")
+        with pytest.raises(APP.ApprovalError):
+            APP.load(path, now=SAT, root=root)
+    (root / "garbage.json").write_bytes(b"\xff not json")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "a.json").write_text(json.dumps(good_doc), encoding="utf-8")
+    (root / "a.txt").write_text(json.dumps(good_doc), encoding="utf-8")
+    for path in (root / "garbage.json", outside / "a.json", root / "a.txt", root / "missing.json"):
+        with pytest.raises(APP.ApprovalError):
+            APP.load(path, now=SAT, root=root)
+    assert w.calls == [] and not s.exists()                                                            # every refusal: nothing sent, nothing created
+    out = go(rq, a)
+    assert out["status"] == "COMPLETED" and s.dataset(out["dataset_id"])["approval_use"]["approval_file_sha256"] == a.file_sha256
+    n = len(w.calls)
+    with pytest.raises(StoreError, match="already used"):
+        go(rq, a)                                                                                      # an approval runs once ...
+    assert len(w.calls) == n and s.status_counts()["tables"]["mi_datasets"] == 1                       # ... and the reuse sent and created nothing
+    with pytest.raises(ScopeError, match="BACKFILL"):
+        s.create_dataset(DatasetSpec(job_kind="BACKFILL", kind="BAR_1DAY", provider="ALPACA", feed="iex", adjustment="raw", symbols=["SPY"],
+                                     timeframe="1Day", start_date=date(2025, 12, 1), end_date=date(2025, 12, 5), plan_sha256="0" * 64,
+                                     approval_ref="OPS-NONE-01"))                                   # the store refuses an unapproved backfill too
+
+
+def test_N02_B2_every_row_is_checked_against_its_dataset_scope_and_dataset_specs_are_validated(tmp_path):
+    s = new_store(tmp_path)
+    did = s.create_dataset(spec(symbols=("SPY",), start=date(2025, 12, 1), end=date(2025, 12, 5)))
+    d = date(2025, 12, 1)
+    base = daily("SPY", d, 100.0)
+    foreign = {"SCOPE_KIND": (base.model_copy(update={"kind": "BAR_1HOUR"}), ScopeError),
+               "SCOPE_PROVIDER": (base.model_copy(update={"provider": "SEC"}), ScopeError),
+               "SCOPE_FEED": (daily("SPY", d, 100.0, feed="sip"), FeedRequired),
+               "SCOPE_ADJUSTMENT": (daily("SPY", d, 100.0, adjustment="all"), ScopeError),
+               "SCOPE_SYMBOL": (daily("QQQ", d, 100.0), ScopeError),
+               "SCOPE_DATE": (daily("SPY", date(2025, 12, 8), 100.0), ScopeError),
+               "SCOPE_DATASET_ID": (base.model_copy(update={"dataset_id": "another"}), ScopeError),
+               "CONTENT_HASH_MISMATCH": (base.model_copy(update={"content_hash": "0" * 64}), StoreError)}
+    for why, (o, err) in foreign.items():
+        with pytest.raises(err, match=why):
+            s.ingest(did, [base, o])                                                                   # refused: the whole batch, nothing stored
+    assert s.history("BAR_1DAY", symbol="SPY", feed="iex") == []
+    res = s.ingest(did, [base] + [o for o, _ in foreign.values()], on_reject="quarantine")
+    assert (res.inserted, res.rejected) == (1, len(foreign)) and {r["reason"].split(":")[0] for r in res.rejections} == set(foreign)
+    assert sorted(m["disposition"] for m in s.members(did)) == ["INSERTED"] + ["REJECTED"] * len(foreign)
+    with pytest.raises(StoreError, match="rejected"):
+        s.finish_dataset(did, "COMPLETED")                                                             # a quarantined row: never COMPLETED
+    assert s.finish_dataset(did, "PARTIAL")["REJECTED"] == len(foreign)
+    n0 = s.status_counts()["tables"]["mi_datasets"]
+    bad_specs = [dataclasses.replace(spec(), kind="BAR_5MIN"), dataclasses.replace(spec(), provider="ACME"), dataclasses.replace(spec(), timeframe="1Hour"),
+                 spec(symbols=("spy",)), spec(symbols=("SPY", "SPY")), spec(symbols=()), spec(start=date(2025, 12, 5), end=date(2025, 12, 1)),
+                 spec(start=None), dataclasses.replace(spec(), job_kind="LIVE"), dataclasses.replace(spec(), adjustment="weird")]
+    for bad in bad_specs:
+        with pytest.raises(ScopeError):
+            s.create_dataset(bad)
+    with pytest.raises(CoverageError):
+        s.create_dataset(spec(start=date(2024, 12, 30), end=date(2025, 1, 3)))                         # a range must be covered by the calendar
+    assert s.status_counts()["tables"]["mi_datasets"] == n0                                            # no invalid dataset was created
+    other = s.create_dataset(spec())
+    fid_other = s.record_fetch(FetchRecord(provider="ALPACA", endpoint="/v2/stocks/SPY/bars", started_at=SAT, retrieved_at=SAT, status="OK"), dataset_id=other)
+    mine = s.create_dataset(spec())
+    fid_failed = s.record_fetch(FetchRecord(provider="ALPACA", endpoint="/v2/stocks/SPY/bars", started_at=SAT, status="TIMEOUT"), dataset_id=mine)
+    for fid in (fid_other, fid_failed, "no-such-fetch"):
+        with pytest.raises(ScopeError, match="provenance"):
+            s.ingest(mine, [base], fetch_id=fid)                                                       # rows carry their own fetch's provenance
+    body = json.dumps({"symbol": "SPY", "bars": [{"t": f"2025-{md}T05:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1.5, "v": 9} for md in ("11-28", "12-01", "12-08")]}).encode()
+    obs, _, problems = AB.parse_page(body, symbol="SPY", timeframe="1Day", feed="iex", adjustment="raw", retrieved_at=SAT,
+                                     start_date=date(2025, 12, 1), end_date=date(2025, 12, 5))
+    assert [o.session_date for o in obs] == [date(2025, 12, 1)] and problems == [{"problem": "OUT_OF_RANGE", "index": 0}, {"problem": "OUT_OF_RANGE", "index": 2}]
+
+
+class Scripted(Wire):
+    """Wire with per-call behaviour: an exception to raise or a response to return (by call index)."""
+
+    def __init__(self, clock, actions, **k):
+        super().__init__(clock, **k)
+        self.actions = actions
+
+    def __call__(self, params):
+        i = len(self.calls)
+        act = self.actions.get(i)
+        if isinstance(act, BaseException):
+            self.calls.append(params)
+            self.clock.tick(1)
+            raise act
+        if act is not None:
+            self.calls.append(params)
+            self.clock.tick(1)
+            return act
+        return super().__call__(params)
+
+
+def _parser_bug(*a, **k):
+    raise RuntimeError("a parser bug")
+
+
+def test_N03_B3_transport_parser_and_store_failures_are_recorded_and_the_dataset_is_always_sealed(tmp_path, monkeypatch):
+    rq = req(symbols=("SPY", "QQQ"))
+
+    def scenario(name, actions=None, patch=None):
+        clk = Clock(SAT)
+        st = new_store(tmp_path, clk, f"{name}.db")
+        arc = RawArchive(tmp_path / f"raw_{name}")
+        if patch:
+            patch(st)
+        out = run(tmp_path, rq, clk, st, wire=Scripted(clk, actions or {}), archive=arc, aid=f"OPS-{name}")
+        ds = st.dataset(out["dataset_id"])
+        assert ds["status"] == out["status"] and st.status_counts()["unsealed_datasets"] == 0 and out["dataset_id"] in arc.anchors(), name
+        c = sqlite3.connect(st.path)
+        fetches = [r[0] for r in c.execute("SELECT status FROM mi_fetches ORDER BY started_at, rowid")]
+        c.close()
+        return out, fetches, st
+
+    out, fetches, _ = scenario("timeout", {0: TimeoutError("read timed out")})
+    assert (out["status"], out["failed_fetches"], out["unrecovered"], fetches) == ("COMPLETED", 1, 0, ["TIMEOUT", "OK", "OK"])   # retried, recovered
+    out, fetches, _ = scenario("conn", {0: ConnectionError("x"), 1: ConnectionError("x"), 2: ConnectionError("x")})
+    assert (out["status"], out["unrecovered"], fetches) == ("PARTIAL", 1, ["ERROR", "ERROR", "ERROR", "OK"])                  # never recovered: PARTIAL
+    for bad in ("soon", "-5", "nan", "inf", "", "1e999"):
+        assert IG.retry_after_s({"Retry-After": bad}, SAT) is None, bad                                 # garbage never crashes the run
+    assert IG.retry_after_s({"retry-after": "Sat, 06 Dec 2025 15:00:30 GMT"}, SAT) == 30.0 and IG.retry_after_s("nope", SAT) is None
+    out, fetches, _ = scenario("retryafter", {0: (429, {"Retry-After": "soon"}, b"slow")})
+    assert (out["status"], fetches) == ("COMPLETED", ["RATE_LIMITED", "OK", "OK"])
+    out, fetches, st = scenario("parser", patch=lambda _st: monkeypatch.setattr(AB, "parse_page", _parser_bug))
+    monkeypatch.undo()
+    assert (out["status"], set(fetches)) == ("FAILED", {"INVALID_RESPONSE"})                           # no page parsed: FAILED, never RUNNING
+    assert {m["reason"] for m in st.members(out["dataset_id"])} == {"PARSER_ERROR:RuntimeError"}
+    out, fetches, _ = scenario("contract", {0: ("200", {}, b"{}"), 1: (200, {}, "not bytes")})
+    assert (out["status"], fetches) == ("FAILED", ["INVALID_RESPONSE", "INVALID_RESPONSE"])
+    out, fetches, _ = scenario("badjson", {0: (200, {}, b"<html>oops</html>")})
+    assert (out["status"], fetches[0]) == ("PARTIAL", "INVALID_RESPONSE")
+
+    def broken_ingest(st):
+        def boom(*a, **k):
+            raise sqlite3.OperationalError("disk I/O error")
+        st.ingest = boom
+    out, fetches, _ = scenario("ingest", patch=broken_ingest)
+    assert (out["status"], out["stop"]) == ("PARTIAL", "ERROR:OperationalError")                       # a store error mid-run: sealed PARTIAL
+    clk = Clock(SAT)
+    st = new_store(tmp_path, clk, "interrupt.db")
+    a, root = approve(tmp_path, rq, aid="OPS-interrupt")
+    with pytest.raises(KeyboardInterrupt):
+        IG.run_backfill(rq, approval=a, approvals_root=root, fetch_fn=Scripted(clk, {1: KeyboardInterrupt()}), store=st,
+                        archive=RawArchive(tmp_path / "raw_int"), clock=clk, sleep_fn=lambda x: None)
+    c = sqlite3.connect(st.path)
+    assert c.execute("SELECT status, detail FROM mi_dataset_events ORDER BY event_id DESC LIMIT 1").fetchone()[0] == "PARTIAL"   # sealed, then re-raised
+    c.close()
+
+
+def _copy_db(src: Path, dst: Path) -> Path:
+    a, b = sqlite3.connect(src), sqlite3.connect(dst)
+    a.backup(b)
+    a.close()
+    b.close()
+    return dst
+
+
+def test_N04_B4_schema_objects_are_verified_and_row_tampering_is_detected_by_hashes_and_external_anchors(tmp_path):
+    clk = Clock(SAT)
+    s, arc = new_store(tmp_path, clk), RawArchive(tmp_path / "raw")
+    out = run(tmp_path, req(), clk, s, archive=arc)
+    assert s.verify_integrity(anchors=arc.anchors())["ok"] and s.verify_integrity()["rows_checked"] == 5
+    tamper = {"dropped trigger": ["DROP TRIGGER mi_observations_no_update"],
+              "extra trigger": ["CREATE TRIGGER mi_x AFTER INSERT ON mi_fetches BEGIN SELECT 1; END"],
+              "extra index": ["CREATE INDEX mi_x ON mi_fetches(status)"],
+              "dropped index": ["DROP INDEX mi_obs_symbol_kind_time"],
+              "extra table": ["CREATE TABLE mi_x (a)"],
+              "altered table": ["ALTER TABLE mi_fetches ADD COLUMN note TEXT"]}
+    for name, sqls in tamper.items():
+        db = _copy_db(s.path, tmp_path / f"t_{name.replace(' ', '_')}.db")
+        c = sqlite3.connect(db)
+        for q in sqls:
+            c.execute(q)
+        c.commit()
+        c.close()
+        t = MarketIntelStore(db, clock=clk)
+        with pytest.raises(MG.SchemaMismatch):
+            t.history("BAR_1DAY", symbol="SPY", feed="iex")                                            # reads refuse a tampered schema ...
+        with pytest.raises(MG.SchemaMismatch):
+            t.record_budget_event("ALPACA", "ALLOW")                                                   # ... and so do writes
+    db = _copy_db(s.path, tmp_path / "edited.db")
+    c = sqlite3.connect(db)
+    trig = {n: q for n, q in c.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'")}
+    c.execute("DROP TRIGGER mi_observations_no_update")
+    c.execute("UPDATE mi_observations SET payload_json = replace(payload_json, '\"close\":10.5', '\"close\":99.5') WHERE session_date = '2025-12-03'")
+    c.execute(trig["mi_observations_no_update"])
+    c.commit()
+    c.close()
+    t = MarketIntelStore(db, clock=clk)
+    assert t.history("BAR_1DAY", symbol="SPY", feed="iex", as_of=SAT + timedelta(days=1))[2]["payload"]["close"] == 99.5   # the documented limit:
+    rep_ = t.verify_integrity()                                                                        # a restored trigger passes the schema check,
+    assert rep_["ok"] is False and len(rep_["row_hash_mismatches"]) == 1                               # but the row hash catches the edit
+    c = sqlite3.connect(db)
+    c.row_factory = sqlite3.Row
+    r = c.execute("SELECT * FROM mi_observations WHERE session_date = '2025-12-03'").fetchone()
+    h = ST._row_hash(r)                                                                                 # a thorough forger re-hashes everything inside the file
+    for n in ("mi_observations_no_update", "mi_dataset_members_no_update", "mi_dataset_events_no_update"):
+        c.execute(f"DROP TRIGGER {n}")
+    c.execute("UPDATE mi_observations SET content_hash = ? WHERE obs_id = ?", (h, r["obs_id"]))
+    c.execute("UPDATE mi_dataset_members SET content_hash = ? WHERE record_id = ?", (h, r["obs_id"]))
+    lines = {f"{m['natural_key']}\t{m['content_hash']}" for m in c.execute("SELECT natural_key, content_hash FROM mi_dataset_members WHERE dataset_id = ? "
+                                                                            "AND disposition IN ('INSERTED', 'REVISED', 'DUPLICATE')", (out["dataset_id"],))}
+    c.execute("UPDATE mi_dataset_events SET content_sha256 = ? WHERE dataset_id = ? AND status = 'COMPLETED'", (ST.manifest_sha256(lines), out["dataset_id"]))
+    for n in ("mi_observations_no_update", "mi_dataset_members_no_update", "mi_dataset_events_no_update"):
+        c.execute(trig[n])
+    c.commit()
+    c.close()
+    rep_ = t.verify_integrity()
+    assert rep_["row_hash_mismatches"] == rep_["member_mismatches"] == rep_["manifest_mismatches"] == [] and len(rep_["record_mismatches"]) == 1
+    c = sqlite3.connect(db)
+    c.row_factory = sqlite3.Row
+    for n in ("mi_dataset_members_no_update", "mi_dataset_events_no_update"):
+        c.execute(f"DROP TRIGGER {n}")
+    full = ST.record_sha256(c.execute("SELECT * FROM mi_observations WHERE obs_id = ?", (r["obs_id"],)).fetchone())
+    c.execute("UPDATE mi_dataset_members SET record_sha256 = ? WHERE record_id = ?", (full, r["obs_id"]))
+    recs = [m[0] for m in c.execute("SELECT record_sha256 FROM mi_dataset_members WHERE dataset_id = ? AND record_sha256 IS NOT NULL", (out["dataset_id"],))]
+    c.execute("UPDATE mi_dataset_events SET records_sha256 = ? WHERE dataset_id = ? AND status = 'COMPLETED'", (ST.manifest_sha256(recs), out["dataset_id"]))
+    for n in ("mi_dataset_members_no_update", "mi_dataset_events_no_update"):
+        c.execute(trig[n])
+    c.commit()
+    c.close()
+    assert t.verify_integrity()["ok"] is True                                                           # consistent inside the file ...
+    assert t.verify_integrity(anchors=arc.anchors())["anchor_mismatches"] == [out["dataset_id"]]       # ... the external anchor still disagrees
+    db2 = _copy_db(s.path, tmp_path / "lookahead.db")                                                  # a look-ahead forgery: only a time moves
+    c = sqlite3.connect(db2)
+    c.execute("DROP TRIGGER mi_observations_no_update")
+    c.execute("UPDATE mi_observations SET available_at = '2025-12-01T21:00:00.000000Z', retrieved_at = '2025-12-01T21:00:00.000000Z' "
+              "WHERE session_date = '2025-12-01'")
+    c.execute(trig["mi_observations_no_update"])
+    c.commit()
+    c.close()
+    look = MarketIntelStore(db2, clock=clk).verify_integrity(anchors=arc.anchors())
+    assert look["row_hash_mismatches"] == [] and len(look["record_mismatches"]) == 1 and look["ok"] is False   # the content is unchanged; the row is not
+
+
+def test_N05_B5_nothing_is_stored_or_read_before_it_could_have_existed(tmp_path):
+    s = new_store(tmp_path)
+    fx = s.create_dataset(spec(job="FIXTURE"))
+    tonight = ny(2025, 12, 2, 21, 0)
+    tomorrow = daily("SPY", date(2025, 12, 3), 1.0, retrieved=tonight, backfilled=False)               # a bar of a session not yet started
+    with pytest.raises(ChronologyError, match="OBSERVED_AFTER_RETRIEVAL"):
+        s.ingest(fx, [tomorrow])
+    forming = daily("SPY", date(2025, 12, 2), 1.0, retrieved=ny(2025, 12, 2, 17, 0), backfilled=False)  # late trading still open: not final
+    with pytest.raises(ChronologyError, match="BAR_NOT_COMPLETE_AT_RETRIEVAL"):
+        s.ingest(fx, [forming])
+    mfx = s.create_dataset(spec(job="FIXTURE", kind="BAR_1MIN"))
+    t0 = ny(2025, 12, 2, 10, 0)
+    minute = Observation(kind="BAR_1MIN", symbol="SPY", provider="ALPACA", feed="iex", adjustment="raw", observed_at=t0, retrieved_at=t0 + timedelta(seconds=30),
+                         available_at=t0 + timedelta(seconds=30), session="REG", session_date=date(2025, 12, 2), status="AVAILABLE",
+                         payload={"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1})
+    with pytest.raises(ChronologyError, match="BAR_NOT_COMPLETE_AT_RETRIEVAL"):
+        s.ingest(mfx, [minute])                                                                       # a minute bar retrieved mid-minute
+    published = daily("SPY", date(2025, 12, 1), 1.0, retrieved=tonight, backfilled=False).model_copy(update={"published_at": tonight + timedelta(hours=1)})
+    with pytest.raises(ChronologyError, match="PUBLISHED_AFTER_RETRIEVAL"):
+        s.ingest(fx, [published])
+    final = daily("SPY", date(2025, 12, 2), 7.0, retrieved=ny(2025, 12, 2, 20, 5), backfilled=False)
+    res = s.ingest(fx, [tomorrow, forming, final], on_reject="quarantine")
+    assert (res.inserted, res.rejected) == (1, 2)
+    for t in (ny(2025, 12, 2, 20, 4), ny(2025, 12, 2, 16, 0)):
+        assert s.history("BAR_1DAY", symbol="SPY", feed="iex", as_of=t) == [] and s.latest_usable("BAR_1DAY", at=t, symbol="SPY", feed="iex") is None
+    later = SAT + timedelta(days=30)
+    assert [r["payload"]["close"] for r in s.history("BAR_1DAY", symbol="SPY", feed="iex", as_of=later)] == [7.0]     # the rejected rows never appear
+    c = sqlite3.connect(s.path)
+    with pytest.raises(sqlite3.IntegrityError):                                                        # and the schema refuses an end before the start
+        c.execute("INSERT INTO mi_observations SELECT 'x', natural_key || 'x', 1, NULL, content_hash, dataset_id, fetch_id, kind, symbol, series_id, provider, "
+                  "feed, adjustment, observed_at, '2000-01-01T00:00:00.000000Z', published_at, retrieved_at, available_at, ingested_at, session, session_date, "
+                  "status, usable, freshness, age_s, source_url, source_identifier, tier, quality_flags_json, backfilled, payload_json, envelope_version "
+                  "FROM mi_observations LIMIT 1")
+    c.close()
+
+
+def test_N06_B6_every_delivered_row_is_a_member_and_a_dataset_hash_covers_what_it_delivered(tmp_path):
+    s = new_store(tmp_path)
+    days = sessions_2025(date(2025, 12, 1), 5)
+    d1 = s.create_dataset(spec())
+    s.ingest(d1, [daily("SPY", d, 100.0 + i) for i, d in enumerate(days)])
+    h1 = s.finish_dataset(d1, "COMPLETED")
+    d2 = s.create_dataset(spec())                                                                     # the same download again, into the same store
+    r2 = s.ingest(d2, [daily("SPY", d, 100.0 + i, retrieved=SAT + timedelta(hours=1)) for i, d in enumerate(days)])
+    h2 = s.finish_dataset(d2, "COMPLETED")
+    assert (r2.inserted, r2.duplicates) == (0, 5) and h2["content_sha256"] == h1["content_sha256"] != ST.manifest_sha256([])   # never the empty hash
+    assert [m["disposition"] for m in s.members(d2)] == ["DUPLICATE"] * 5
+    assert {m["record_id"] for m in s.members(d2)} == {m["record_id"] for m in s.members(d1)}         # each duplicate names the stored value
+    d3 = s.create_dataset(spec())
+    s.ingest(d3, [daily("SPY", d, 100.0 + i) for i, d in enumerate(days)][:4])
+    s.ingest(d3, [daily("SPY", d, 100.0 + i) for i, d in enumerate(days)][:4])                        # a repeated page: distinct facts count once
+    assert s.finish_dataset(d3, "PARTIAL")["content_sha256"] == ST.manifest_sha256(
+        {f"{natural_key(daily('SPY', d, 1.0))}\t{content_hash(daily('SPY', d, 100.0 + i))}" for i, d in enumerate(days[:4])})
+    fresh = new_store(tmp_path, name="fresh.db")
+    f1 = fresh.create_dataset(spec())
+    fresh.ingest(f1, [daily("SPY", d, 100.0 + i) for i, d in enumerate(days)])
+    assert fresh.finish_dataset(f1, "COMPLETED")["content_sha256"] == h1["content_sha256"]           # reproducible across stores
+    rep_ = s.verify_integrity()
+    assert rep_["ok"] and rep_["manifest_mismatches"] == []
+
+
+def test_N07_B7_a_failed_fetch_is_recovered_only_by_the_identical_request(tmp_path):
+    s = new_store(tmp_path)
+    ep = "/v2/stocks/SPY/bars"
+    P = lambda sym: AB.request_params(sym, "1Day", ny(2025, 12, 1, 0, 0), ny(2025, 12, 6, 0, 0), "iex", "raw")   # noqa: E731
+    cases = {"other params": ((ep, P("SPY")), ("ALPACA", ep, P("QQQ")), False),
+             "other endpoint": ((ep, P("SPY")), ("ALPACA", "/v2/stocks/QQQ/bars", P("SPY")), False),
+             "other provider": ((ep, P("SPY")), ("SEC", ep, P("SPY")), False),
+             "empty params": ((ep, {}), ("ALPACA", ep, {}), False),
+             "identical": ((ep, P("SPY")), ("ALPACA", ep, P("SPY")), True)}
+    for name, ((f_ep, f_params), (ok_provider, ok_ep, ok_params), recovered) in cases.items():
+        did = s.create_dataset(spec())
+        s.record_fetch(FetchRecord(provider="ALPACA", endpoint=f_ep, started_at=SAT, status="HTTP_ERROR", http_status=503), dataset_id=did, params=f_params)
+        s.record_fetch(FetchRecord(provider=ok_provider, endpoint=ok_ep, started_at=SAT + timedelta(seconds=5), retrieved_at=SAT + timedelta(seconds=6),
+                                   status="OK"), dataset_id=did, params=ok_params)
+        if recovered:
+            assert s.finish_dataset(did, "COMPLETED")["unrecovered_failures"] == 0, name
+        else:
+            with pytest.raises(StoreError, match="unrecovered"):
+                s.finish_dataset(did, "COMPLETED")
+            assert s.finish_dataset(did, "PARTIAL")["unrecovered_failures"] == 1, name
+
+
+def test_N08_B8_a_sealed_dataset_is_never_resealed(tmp_path):
+    s = new_store(tmp_path)
+    did = s.create_dataset(spec())
+    s.ingest(did, [daily("SPY", date(2025, 12, 1), 1.0)])
+    s.finish_dataset(did, "COMPLETED")
+    for again in ("FAILED", "PARTIAL", "COMPLETED", "EMPTY"):
+        with pytest.raises(StoreError, match="sealed"):
+            s.finish_dataset(did, again)
+    assert [e["status"] for e in s.dataset(did)["events"]] == ["RUNNING", "COMPLETED"] and s.dataset(did)["status"] == "COMPLETED"
+
+
+def test_N09_B9_bar_payloads_are_validated_and_absences_never_hide_or_pose_as_current_values(tmp_path):
+    clk = Clock(SAT)
+    s = new_store(tmp_path, clk)
+    did = s.create_dataset(spec())
+    good = daily("SPY", date(2025, 12, 1), 100.0)
+    for payload, why in (({}, "PAYLOAD_OPEN"), ({**good.payload, "close": "100"}, "PAYLOAD_CLOSE"), ({**good.payload, "volume": True}, "PAYLOAD_VOLUME"),
+                         ({k: v for k, v in good.payload.items() if k != "low"}, "PAYLOAD_LOW")):
+        with pytest.raises(PayloadError, match=why):
+            s.ingest(did, [good.model_copy(update={"payload": payload})])                              # an AVAILABLE bar needs real OHLCV
+    bad_shape = daily("SPY", date(2025, 12, 2), 100.0).model_copy(update={"payload": {"open": 10, "high": 9, "low": 8, "close": 10, "volume": 5}})
+    s.ingest(did, [good, bad_shape])
+    rows = {r["session_date"]: r for r in s.history("BAR_1DAY", symbol="SPY", feed="iex")}
+    assert rows["2025-12-02"]["usable"] is False and "HIGH_BELOW_BODY" in rows["2025-12-02"]["quality_flags"] and rows["2025-12-01"]["usable"] is True
+    stale = Observation(**{**daily("SPY", date(2025, 12, 3), 101.0).model_dump(), "status": "STALE", "freshness": "STALE"})
+    s.ingest(did, [stale])
+    assert s.latest_usable("BAR_1DAY", at=SAT, symbol="SPY", feed="iex")["session_date"] == "2025-12-01"   # a STALE or blocked value is not usable
+    clk.tick(3600)
+    later = s.create_dataset(spec())
+    s.ingest(later, [daily("SPY", date(2025, 12, 1), 0.0, status="UNAVAILABLE", retrieved=clk()),
+                     daily("SPY", date(2025, 12, 4), 0.0, status="UNAVAILABLE", retrieved=clk())])
+    key = natural_key(good)
+    assert len(s.revisions(key)) == 1 and len(s.absences(key)) == 1                                   # an absence is never a revision of a value
+    st = s.latest_status("BAR_1DAY", at=clk(), symbol="SPY", feed="iex")
+    assert st["latest_usable"]["payload"]["close"] == 100.0                                           # the last usable value is still shown ...
+    assert (st["latest_record"]["record_type"], st["latest_record"]["session_date"], st["usable_is_latest"], st["status"], st["reason"]) == (
+        "ABSENCE", "2025-12-04", False, "STALE_OR_SUPERSEDED_BY_ABSENCE", "LATEST_RECORD_IS_ABSENCE")  # ... never as the current state
+    before = s.latest_status("BAR_1DAY", at=SAT, symbol="SPY", feed="iex")
+    assert before["latest_record"]["record_type"] == "VALUE" and before["latest_record"]["session_date"] == "2025-12-03" and before["status"] != "AVAILABLE"
+
+
+def test_N10_item10_event_end_is_stored_and_operational_as_of_never_shortcuts_to_research_availability(tmp_path):
+    s = new_store(tmp_path)
+    did = s.create_dataset(spec())
+    s.ingest(did, [daily("SPY", date(2025, 12, 1), 1.0), daily("SPY", date(2025, 7, 3), 1.0), daily("SPY", date(2025, 11, 28), 1.0)])
+    ends = {r["session_date"]: r["event_end"] for r in s.history("BAR_1DAY", symbol="SPY", feed="iex")}
+    assert ends == {"2025-07-03": "2025-07-03T21:00:00.000000Z", "2025-11-28": "2025-11-28T22:00:00.000000Z",      # 17:00 New York on an early close
+                    "2025-12-01": "2025-12-02T01:00:00.000000Z"}                                                    # 20:00 New York otherwise
+    t0 = ny(2025, 12, 2, 10, 0)
+    for kind, tf, step in (("BAR_1MIN", "1Min", timedelta(minutes=1)), ("BAR_1HOUR", "1Hour", timedelta(hours=1))):
+        o = Observation(kind=kind, symbol="SPY", provider="ALPACA", feed="iex", adjustment="raw", observed_at=t0, retrieved_at=SAT, available_at=SAT,
+                        session="REG", session_date=date(2025, 12, 2), status="AVAILABLE", backfilled=True,
+                        payload={"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "timeframe": tf})
+        assert ST.event_end(o) == t0 + step
+    assert s.latest_usable("BAR_1DAY", at=ny(2025, 12, 1, 20, 30), symbol="SPY", feed="iex") is None   # complete then, but not KNOWN then (backfilled)
+    for name in ("history", "latest_usable", "latest_status", "snapshot", "quality_report"):
+        params = inspect.signature(getattr(MarketIntelStore, name)).parameters
+        assert not [q for q in params if any(w in q for w in ("event", "research", "vintage", "latency"))], name
+    assert not [n for n in dir(MarketIntelStore) if any(w in n.lower() for w in ("research", "vintage", "backtest"))]   # no research shortcut (Stage 7.6)
+
+
+def test_N11_B11_the_2025_early_close_post_market_ends_at_17_00_and_2026_2027_stay_on_the_frozen_classifier():
+    assert HIST.EARLY_CLOSES == {date(2025, 7, 3), date(2025, 11, 28), date(2025, 12, 24)}
+    for d in sorted(HIST.EARLY_CLOSES):
+        y, m, dd = d.year, d.month, d.day
+        assert [CAL.session_of(ny(y, m, dd, hh, mm)) for hh, mm in ((12, 59), (13, 0), (16, 59), (17, 0), (19, 59))] == ["REG", "POST", "POST", "CLOSED", "CLOSED"]
+        assert CAL.post_market_end_minute(d) == HIST.EARLY_CLOSE_LATE_TRADING_END_MINUTE == 17 * 60
+    assert CAL.session_of(ny(2025, 12, 1, 19, 59)) == "POST" and CAL.post_market_end_minute(date(2025, 12, 1)) == 20 * 60
+    assert CAL.post_market_end_minute(date(2025, 7, 4)) is None and CAL.post_market_end_minute(date(2024, 7, 3)) is None
+    assert CAL.session_of(ny(2026, 11, 27, 18, 0)) == "POST" and CAL.post_market_end_minute(date(2026, 11, 27)) == 20 * 60   # pending decision:
+    assert CAL.regular_minutes(date(2026, 11, 27)) == 210                                                                  # DESIGN_71 section 5
+
+
+def _minute_rows(n_days, start=date(2025, 11, 3)):
+    out = []
+    for d in sessions_2025(start, n_days):
+        t = ny(d.year, d.month, d.day, 9, 30)
+        for i in range(390 if CAL.regular_minutes(d) == 390 else 210):
+            x = t + timedelta(minutes=i)
+            out.append(Observation(kind="BAR_1MIN", symbol="SPY", provider="ALPACA", feed="iex", adjustment="raw", observed_at=x, retrieved_at=SAT,
+                                   available_at=SAT, session="REG", session_date=d, status="AVAILABLE", backfilled=True,
+                                   payload={"open": 1.0, "high": 1.0 + i / 1000, "low": 1.0, "close": 1.0 + i / 1000, "volume": 1}))
+    return out
+
+
+def test_N12_B10_latest_reads_are_bounded_and_plans_above_the_generic_store_cap_are_refused(tmp_path):
+    steps = {}
+    for n_days in (2, 20):
+        s = new_store(tmp_path, name=f"m{n_days}.db")
+        did = s.create_dataset(spec(kind="BAR_1MIN", symbols=("SPY",), start=date(2025, 11, 1), end=date(2025, 12, 31)))
+        rows = _minute_rows(n_days)
+        s.ingest(did, rows)
+        c = sqlite3.connect(f"file:{s.path.as_posix()}?mode=ro", uri=True)
+        c.row_factory = sqlite3.Row
+        count = [0]
+
+        def tick():
+            count[0] += 1
+            return 0
+
+        c.set_progress_handler(tick, 100)
+        latest = s._latest_value(c, "BAR_1MIN", SAT, "SPY", None, "iex", None, usable=True)
+        c.set_progress_handler(None, 0)
+        assert latest["observed_at"] == ts(rows[-1].observed_at)
+        a = ts(SAT)
+        where, args = s._scope("BAR_1MIN", "SPY", None, "iex", None)
+        plan_ = " ".join(r[3] for r in c.execute(f"EXPLAIN QUERY PLAN SELECT o.* FROM mi_observations o WHERE {' AND '.join(where)} AND o.observed_at <= ? AND "
+                                                 f"o.available_at <= ? AND o.ingested_at <= ? AND {s._KNOWN_REV} AND o.usable = 1 ORDER BY o.observed_at DESC, "
+                                                 f"o.natural_key DESC LIMIT 1", args + [a] * 5))
+        c.close()
+        assert "mi_obs_symbol_kind_time" in plan_ and "TEMP B-TREE" not in plan_, plan_                 # an index walk, no sort of the partition
+        steps[n_days] = count[0]
+    assert steps[20] <= 2 * steps[2] + 5, steps                                                         # 10x the rows, the same work: bounded
+    now = datetime(2026, 10, 31, 20, 0, tzinfo=UTC)
+    big = IG.plan(IG.BackfillRequest(tuple(f"S{i}" for i in range(100)), date(2025, 1, 1), date(2025, 12, 31), "1Min", "iex", extended_hours=True), now)
+    assert big["valid"] is False and "ROWS_EXCEED_GENERIC_STORE_CAP" in [r["code"] for r in big["refusals"]] and big["estimate"]["rows_total"] == 24_000_000
+    ok = IG.plan(IG.BackfillRequest(tuple(f"S{chr(65 + i // 26)}{chr(65 + i % 26)}" for i in range(100)), date(2025, 1, 1), date(2025, 12, 31), "1Day", "iex"), now)
+    assert ok["valid"] and ok["estimate"]["rows_total"] == 25_000 <= IG.MAX_PLAN_ROWS
+
+
+class Dirty(Wire):
+    """Wire whose QQQ pages carry an out-of-range bar, a malformed row, a NaN close and a string close (the store's payload check)."""
+
+    def __call__(self, params):
+        status, headers, body = super().__call__(params)
+        if params["symbol"] != "QQQ" or status != 200:
+            return status, headers, body
+        doc = json.loads(body)
+        doc["bars"][1]["c"] = "10.5"                                                                    # a string price: quarantined by the store
+        doc["bars"] += [{"t": "2025-12-08T05:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": 1, "v": 1},       # outside the requested range
+                        {"t": "2025-12-02T05:00:00Z", "o": 1},                                          # malformed
+                        {"t": "2025-12-03T06:00:00Z", "o": 1, "h": 2, "l": 0.5, "c": float("nan"), "v": 1}]   # refused by the envelope
+        return status, headers, json.dumps(doc).encode()
+
+
+def test_E01_an_approved_synthetic_run_end_to_end_quarantines_bad_rows_and_verifies(tmp_path):
+    clk = Clock(SAT)
+    s, arc = new_store(tmp_path, clk), RawArchive(tmp_path / "raw")
+    out = run(tmp_path, req(symbols=("SPY", "QQQ")), clk, s, wire=Dirty(clk), archive=arc)
+    assert (out["status"], out["inserted"], out["problems"], out["rejected"]) == ("PARTIAL", 9, 3, 1)
+    reasons = sorted(m["reason"].split(":")[0] for m in s.members(out["dataset_id"]) if m["disposition"] == "REJECTED")
+    assert reasons == ["MALFORMED_ROW", "OUT_OF_RANGE", "PAYLOAD_CLOSE", "REFUSED_BY_ENVELOPE"]
+    assert len(s.history("BAR_1DAY", symbol="SPY", feed="iex")) == 5 and len(s.history("BAR_1DAY", symbol="QQQ", feed="iex")) == 4
+    assert s.verify_integrity(anchors=arc.anchors())["ok"] and arc.verify()["ok"] and arc.anchors()[out["dataset_id"]]["content_sha256"] == out["content_sha256"]
+    assert s.status_counts()["unsealed_datasets"] == 0 and s.dataset(out["dataset_id"])["approval_use"]["approval_id"] == "OPS-TEST-0001"
+
 
 # ============================================================================================================ isolation (S)
-NEW_MODULES = ("calendar_history.py", "migrations.py", "store.py", "archive.py", "ingest.py", "sources/__init__.py", "sources/alpaca_bars.py")
-ALLOWED_71 = {"__future__", "argparse", "gzip", "hashlib", "json", "math", "sqlite3", "sys", "uuid", "contextlib", "dataclasses", "datetime", "pathlib",
-              "typing", "zoneinfo", "config", "api.validation", "market_intel", "market_intel.calendar", "market_intel.validate", "market_intel.models",
-              "market_intel.migrations", "market_intel.budget", "market_intel.settings", "market_intel.sources", "market_intel.store",
-              "market_intel.archive", "market_intel.sources.alpaca_bars"}
+PURE_70 = ("__init__.py", "budget.py", "calendar.py", "freshness.py", "models.py", "settings.py", "validate.py")   # their own test: 7.0 I01
+NEW_MODULES = ("calendar_history.py", "migrations.py", "store.py", "archive.py", "ingest.py", "approvals.py", "sources/__init__.py", "sources/alpaca_bars.py")
+ALLOWED_71 = {"__future__", "argparse", "gzip", "hashlib", "json", "math", "re", "sqlite3", "sys", "uuid", "contextlib", "dataclasses", "datetime", "pathlib",
+              "typing", "zoneinfo", "collections", "collections.abc", "email.utils", "urllib.parse", "pydantic", "config", "api.validation",
+              "autorun", "autorun.calendar", "autorun.session", "setups.market_hours", "market_intel", "market_intel.calendar", "market_intel.calendar_history",
+              "market_intel.validate", "market_intel.models", "market_intel.migrations", "market_intel.budget", "market_intel.settings",
+              "market_intel.sources", "market_intel.store", "market_intel.archive", "market_intel.approvals", "market_intel.sources.alpaca_bars"}
 
 
 def test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or_a_model():
-    for rel in NEW_MODULES:
+    present = {q.relative_to(ROOT / "market_intel").as_posix() for q in (ROOT / "market_intel").rglob("*.py")}
+    assert present == set(PURE_70) | set(NEW_MODULES), sorted(present ^ (set(PURE_70) | set(NEW_MODULES)))   # a new module must be declared here
+    for rel in sorted(present):
         tree = ast.parse((ROOT / "market_intel" / rel).read_text(encoding="utf-8"))
         names = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module} | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
                                                                                                     for a in n.names}
@@ -673,7 +1224,7 @@ def test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or
     assert not [n for n in dir(config) if n.startswith(("MARKET_INTEL", "MI_"))]                         # MARKET_INTEL_MODE stays an OFF default
 
 
-PINNED_V1_DDL = "c15451ca248520bcc26d7195a8a630caf15c36142ecdac213c8d9bcb42612f17"   # the v1 schema; a change is a new migration
+PINNED_V1_DDL = "1e93d70f17cc9649820342077c32276105afa0e716e7d6856951622ce90109bb"   # the v1 schema (re-pinned by the PR #42 remediation, unmerged, no data); a change is a new migration
 
 
 # ============================================================================================================ scope (F)
@@ -705,7 +1256,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_71).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_71 and {p for p in changed if p in in_base} == FL.EDITED_71
     assert FL.NEW_71 == {"DESIGN_71_MARKET_INTEL_STORE.md", "tests/test_market_intel_store_71.py"} | {f"market_intel/{n}" for n in (
-        "archive.py", "calendar_history.py", "ingest.py", "migrations.py", "sources/__init__.py", "sources/alpaca_bars.py", "store.py")}
+        "approvals.py", "archive.py", "calendar_history.py", "ingest.py", "migrations.py", "sources/__init__.py", "sources/alpaca_bars.py", "store.py")}
     assert {p for p in FL.EDITED_71 if not p.startswith("tests/")} == APP_EDITS_71
     assert set(FL.SEMANTIC_71) == {"market_intel/calendar.py"} and FL.INSTRUMENTATION_71 == {}
     for d in FROZEN_DIRS_71:
@@ -768,7 +1319,7 @@ REPLAY_71 = {
     ],
     'market_intel/__init__.py': [
         ('proposal, safety or setup service (tests/test_market_intel_70.py).\n"""\n',
-         'proposal, safety or setup service (tests/test_market_intel_70.py).\n\nStage 7.1 (DESIGN_71_MARKET_INTEL_STORE.md) adds, still with nothing in the live path importing them:\n\n  calendar_history.py  the verified 2025 NYSE history (holidays, the 2025-01-09 closure, early closes); 2024 / 2028 stay NOT_COVERED\n  migrations.py        the versioned schema of the store\'s own SQLite file (data/market_intel.db), append-only triggers on every table\n  store.py             the point-in-time store: lazy creation, idempotent ingestion, revisions, feed separation, PIT queries, quality reports\n  archive.py           the raw-response archive (gzip + SHA-256 manifest under runtime/market_intel/raw)\n  sources/alpaca_bars.py  Alpaca bars -> envelopes, parse-only (no network code)\n  ingest.py            the offline backfill planner and CLI; the gated runner a future approved backfill will use\n"""\n'),
+         'proposal, safety or setup service (tests/test_market_intel_70.py).\n\nStage 7.1 (DESIGN_71_MARKET_INTEL_STORE.md) adds, still with nothing in the live path importing them:\n\n  calendar_history.py  the verified 2025 NYSE history (holidays, the 2025-01-09 closure, early closes); 2024 / 2028 stay NOT_COVERED\n  migrations.py        the versioned schema of the store\'s own SQLite file (data/market_intel.db), append-only triggers on every table\n  store.py             the point-in-time store: lazy creation, idempotent ingestion, revisions, feed separation, PIT queries, quality reports\n  archive.py           the raw-response archive (gzip + SHA-256 manifest under runtime/market_intel/raw)\n  sources/alpaca_bars.py  Alpaca bars -> envelopes, parse-only (no network code)\n  ingest.py            the offline backfill planner and CLI; the gated runner a future approved backfill will use\n  approvals.py         the fail-closed operator approval that runner needs (a file in runtime/; no code writes one)\n"""\n'),
     ],
     'market_intel/calendar.py': [
         ('executor\'s session health); a live year (2028) is a separate, declared change to autorun/calendar.py. `rule_holidays` only cross-checks.\n"""\n',
@@ -778,7 +1329,7 @@ REPLAY_71 = {
         ('from market_intel import CLOSED, POST, PRE, REG\n\n',
          'from market_intel import CLOSED, POST, PRE, REG\nfrom market_intel import calendar_history as HIST\nfrom setups.market_hours import OPEN_MINUTE, to_et\n\n'),
         ('def covered(d: date) -> bool:\n    return CAL.covered(d)\n\n',
-         'def covered(d: date) -> bool:\n    return CAL.covered(d) or HIST.covered(d)\n\n\ndef _close_minute(d: date) -> Optional[int]:\n    """The regular close of a covered date (None on a weekend or a holiday): the history table for its years, else the 6.10A table."""\n    return HIST.close_minute(d) if HIST.covered(d) else CAL.close_minute(d)\n\n\ndef calendar_version(d: Optional[date]) -> str:\n    if d is None:\n        return "UNAVAILABLE"\n    if HIST.covered(d):\n        return HIST.HISTORY_VERSION\n    return CAL.CALENDAR_VERSION if CAL.covered(d) else "NOT_COVERED"\n\n\ndef _classify_history(now: datetime) -> Dict[str, Any]:\n    """A history-year moment, with the 6.10A classifier\'s own thresholds and the history table\'s close."""\n    et = to_et(_utc(now))\n    d = et.date()\n    m = et.hour * 60 + et.minute + et.second / 60.0\n    close = HIST.close_minute(d)\n    if close is None or m < PREMARKET_MINUTE or m >= AFTER_HOURS_END_MINUTE:\n        cls = A_CLOSED\n    elif m < OPEN_MINUTE:\n        cls = PREMARKET\n    elif m < close:\n        cls = REGULAR\n    else:\n        cls = AFTER_HOURS\n    return {"session": cls, "trading_date": d.isoformat(), "et_time": et.strftime("%H:%M:%S"), "close_minute": close,\n            "calendar": HIST.HISTORY_VERSION}\n\n'),
+         'def covered(d: date) -> bool:\n    return CAL.covered(d) or HIST.covered(d)\n\n\ndef _close_minute(d: date) -> Optional[int]:\n    """The regular close of a covered date (None on a weekend or a holiday): the history table for its years, else the 6.10A table."""\n    return HIST.close_minute(d) if HIST.covered(d) else CAL.close_minute(d)\n\n\ndef calendar_version(d: Optional[date]) -> str:\n    if d is None:\n        return "UNAVAILABLE"\n    if HIST.covered(d):\n        return HIST.HISTORY_VERSION\n    return CAL.CALENDAR_VERSION if CAL.covered(d) else "NOT_COVERED"\n\n\ndef post_market_end_minute(d: Optional[date]) -> Optional[int]:\n    """When the late (post-market) session of a market day ends, minutes after midnight New York time; None on a non-session or uncovered\n    day. History years: 17:00 on an early close (the NYSE release), else 20:00. 2026-2027: the 6.10A classifier\'s 20:00 on every market day\n    (its early-close correction is a pending Stage 7.0 contract decision - DESIGN_71 section 5)."""\n    if d is None or market_day_status(d) != MARKET_DAY:\n        return None\n    return HIST.post_market_end_minute(d) if HIST.covered(d) else AFTER_HOURS_END_MINUTE\n\n\ndef _classify_history(now: datetime) -> Dict[str, Any]:\n    """A history-year moment, with the 6.10A classifier\'s own thresholds, the history table\'s close and its late-trading end (17:00 on\n    an early-close day: the NYSE release)."""\n    et = to_et(_utc(now))\n    d = et.date()\n    m = et.hour * 60 + et.minute + et.second / 60.0\n    close = HIST.close_minute(d)\n    late_end = HIST.post_market_end_minute(d) if close is not None else None\n    if close is None or m < PREMARKET_MINUTE or m >= late_end:\n        cls = A_CLOSED\n    elif m < OPEN_MINUTE:\n        cls = PREMARKET\n    elif m < close:\n        cls = REGULAR\n    else:\n        cls = AFTER_HOURS\n    return {"session": cls, "trading_date": d.isoformat(), "et_time": et.strftime("%H:%M:%S"), "close_minute": close,\n            "calendar": HIST.HISTORY_VERSION}\n\n'),
         ('        return NOT_COVERED\n    return MARKET_DAY if CAL.close_minute(d) is not None else HOLIDAY\n\n',
          '        return NOT_COVERED\n    return MARKET_DAY if _close_minute(d) is not None else HOLIDAY\n\n'),
         ('    c = SES.classify(_utc(now))\n    d = date.fromisoformat(c["trading_date"]) if c.get("trading_date") else None\n',

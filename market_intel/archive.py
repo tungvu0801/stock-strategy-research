@@ -4,6 +4,11 @@ market_intel/archive.py - Stage 7.1: the raw-response archive (the value_quality
 Every provider response body is kept byte-for-byte, gzipped (mtime 0, so the archive is reproducible), under
 <root>/YYYY-MM-DD/<fetch_id>.json.gz with one manifest line {fetch_id, sha256, bytes, provider, endpoint, retrieved_at}. The default root
 is runtime/market_intel/raw (git-ignored). verify() re-hashes every archived body against the manifest. Nothing here touches the network.
+
+External anchors (Stage 7.1 remediation): when a dataset is sealed, its content manifest and its records digest (the full rows it wrote)
+are appended to <root>/anchors.jsonl - OUTSIDE the store's database file. store.verify_integrity(anchors=archive.anchors()) compares every
+sealed dataset with its anchor, so rows edited and re-hashed inside the database alone are detected. (A writer who can edit both files is
+out of scope: DESIGN_71 section 3.)
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 def default_root() -> Path:
@@ -41,6 +46,29 @@ class RawArchive:
         with (self.root / "manifest.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, sort_keys=True) + "\n")
         return entry
+
+    def anchor(self, dataset_id: str, content_sha256: str, *, records_sha256: str, status: str, sealed_at: datetime) -> dict:
+        """Append a sealed dataset's content manifest and records digest (append-only; a dataset is anchored once)."""
+        if dataset_id in self.anchors():
+            raise ValueError(f"dataset {dataset_id} is already anchored")
+        entry = {"dataset_id": dataset_id, "content_sha256": content_sha256, "records_sha256": records_sha256, "status": status,
+                 "sealed_at": sealed_at.astimezone(timezone.utc).isoformat(timespec="microseconds")}
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / "anchors.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
+        return entry
+
+    def anchors(self) -> Dict[str, dict]:
+        """{dataset_id: {content_sha256, records_sha256}} of every anchored dataset."""
+        p = self.root / "anchors.jsonl"
+        if not p.exists():
+            return {}
+        out: Dict[str, dict] = {}
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                e = json.loads(line)
+                out.setdefault(e["dataset_id"], {"content_sha256": e["content_sha256"], "records_sha256": e.get("records_sha256")})   # first counts
+        return out
 
     def read(self, rel: str) -> bytes:
         return gzip.decompress((self.root / rel).read_bytes())

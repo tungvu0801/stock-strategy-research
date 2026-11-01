@@ -2,10 +2,14 @@
 market_intel/migrations.py - Stage 7.1: the versioned schema of the market-intelligence store (its OWN SQLite file, data/market_intel.db).
 
 * Explicit versions. Each migration is (version, name, statements). migrate() applies the pending ones in order inside one transaction,
-  records each in mi_schema_migrations with the SHA-256 of its DDL, and sets PRAGMA user_version. A database whose user_version is newer
-  than this code refuses to open for writing (SchemaTooNew); a recorded DDL hash that differs from this code refuses too (SchemaMismatch).
-* Append-only. Every data table carries no-UPDATE / no-DELETE triggers (the evidence/store.py convention): a revision or a correction is
-  a new row; history is never rewritten. A dataset's status changes are rows in mi_dataset_events, never an UPDATE.
+  records each in mi_schema_migrations with the SHA-256 of its DDL, and sets PRAGMA user_version.
+* Schema verification (verify, on EVERY open): the user_version, every recorded DDL hash, AND the live schema objects themselves - every
+  table, index and trigger in sqlite_master is compared with a reference built from these statements in an in-memory database. A missing,
+  extra or altered object (a dropped append-only trigger, a changed column, an added trigger) refuses the store (SchemaMismatch).
+  Limitation: schema verification proves the schema is the expected one at open time; it cannot prove that no row was modified while a
+  trigger was temporarily dropped and restored. Row-level evidence is store.verify_integrity() (content hashes, sealed dataset manifests,
+  the raw archive's external anchors) - see DESIGN_71 section 3.
+* Append-only. Every table carries no-UPDATE / no-DELETE triggers: a revision, a correction, an absence or a status change is a new row.
 * No instruction field. There is no order, quantity, side, signal, target or position column anywhere (tested over the schema).
 * Nothing here runs at import. The file is created only by MarketIntelStore on an explicit write (store.py).
 """
@@ -14,11 +18,11 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from datetime import datetime, timezone
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 SCHEMA_VERSION = 1
-APPEND_ONLY_TABLES = ("mi_datasets", "mi_dataset_events", "mi_fetches", "mi_observations", "mi_budget_events", "mi_quality_audits",
-                      "mi_schema_migrations")
+APPEND_ONLY_TABLES = ("mi_datasets", "mi_dataset_events", "mi_dataset_members", "mi_approval_uses", "mi_fetches", "mi_observations", "mi_absences",
+                      "mi_budget_events", "mi_quality_audits", "mi_schema_migrations")
 
 
 class SchemaTooNew(RuntimeError):
@@ -26,7 +30,7 @@ class SchemaTooNew(RuntimeError):
 
 
 class SchemaMismatch(RuntimeError):
-    """A recorded migration's DDL hash differs from this code's: the schema was altered outside these migrations."""
+    """The schema on disk differs from this code's: recorded migration metadata or the live objects (tables, indexes, triggers)."""
 
 
 def _immutable(table: str) -> List[str]:
@@ -44,7 +48,7 @@ def _ts(*cols: str) -> str:
 V1: Tuple[str, ...] = (
     """CREATE TABLE IF NOT EXISTS mi_schema_migrations (
         version INTEGER PRIMARY KEY, name TEXT NOT NULL, ddl_sha256 TEXT NOT NULL, applied_at TEXT NOT NULL)""",
-    # one explicit download, import or (later) daemon window = one dataset; its status history is mi_dataset_events
+    # one explicit download, import or (later) daemon window = one dataset; its scope is checked on every row (store._scope_reason)
     f"""CREATE TABLE IF NOT EXISTS mi_datasets (
         dataset_id TEXT PRIMARY KEY, job_kind TEXT NOT NULL CHECK (job_kind IN ('BACKFILL', 'IMPORT', 'FIXTURE')),
         kind TEXT NOT NULL, provider TEXT NOT NULL, feed TEXT NOT NULL, adjustment TEXT NOT NULL, timeframe TEXT,
@@ -54,24 +58,49 @@ V1: Tuple[str, ...] = (
         event_id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id),
         status TEXT NOT NULL CHECK (status IN ('PLANNED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'EMPTY')),
         at TEXT NOT NULL, rows_inserted INTEGER NOT NULL DEFAULT 0, rows_duplicate INTEGER NOT NULL DEFAULT 0,
-        rows_revised INTEGER NOT NULL DEFAULT 0, content_sha256 TEXT, detail TEXT NOT NULL DEFAULT '', {_ts('at')})""",
+        rows_revised INTEGER NOT NULL DEFAULT 0, rows_absent INTEGER NOT NULL DEFAULT 0, rows_rejected INTEGER NOT NULL DEFAULT 0,
+        content_sha256 TEXT, records_sha256 TEXT, detail TEXT NOT NULL DEFAULT '', {_ts('at')})""",
+    # what each dataset delivered, row by row, including duplicates (the reproducible manifest) and rejections (never silently dropped);
+    # record_sha256 = the full stored row the dataset wrote (every column, times included) - store.verify_integrity()
+    f"""CREATE TABLE IF NOT EXISTS mi_dataset_members (
+        member_id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), natural_key TEXT NOT NULL,
+        content_hash TEXT, record_id TEXT, record_sha256 TEXT,
+        disposition TEXT NOT NULL CHECK (disposition IN ('INSERTED', 'REVISED', 'DUPLICATE', 'ABSENCE', 'REJECTED')),
+        reason TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, {_ts('at')})""",
+    # an operator approval is used once (the run binds it to its dataset in the same transaction that creates the dataset)
+    f"""CREATE TABLE IF NOT EXISTS mi_approval_uses (
+        approval_id TEXT PRIMARY KEY, plan_sha256 TEXT NOT NULL, approval_file_sha256 TEXT NOT NULL,
+        dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), used_at TEXT NOT NULL, {_ts('used_at')})""",
     # every provider request; the raw response body lives gzipped in the raw archive (runtime/market_intel/raw), named here
     f"""CREATE TABLE IF NOT EXISTS mi_fetches (
         fetch_id TEXT PRIMARY KEY, dataset_id TEXT REFERENCES mi_datasets(dataset_id), provider TEXT NOT NULL, endpoint TEXT NOT NULL,
         params_json TEXT NOT NULL, started_at TEXT NOT NULL, retrieved_at TEXT, status TEXT NOT NULL, http_status INTEGER,
         latency_ms INTEGER, bytes INTEGER NOT NULL DEFAULT 0, content_hash TEXT, retry_after_s REAL, error TEXT NOT NULL DEFAULT '',
         raw_path TEXT, ingested_at TEXT NOT NULL, {_ts('started_at', 'retrieved_at', 'ingested_at')})""",
-    # the Stage 7.0 Observation envelope, one row per revision of one fact
+    # VALUES: the Stage 7.0 envelope, one row per revision of one fact; event_end = when the fact was complete (DESIGN_71 section 3)
     f"""CREATE TABLE IF NOT EXISTS mi_observations (
         obs_id TEXT PRIMARY KEY, natural_key TEXT NOT NULL, revision INTEGER NOT NULL CHECK (revision >= 1),
         supersedes_obs_id TEXT REFERENCES mi_observations(obs_id), content_hash TEXT NOT NULL,
         dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), fetch_id TEXT REFERENCES mi_fetches(fetch_id),
         kind TEXT NOT NULL, symbol TEXT, series_id TEXT, provider TEXT NOT NULL, feed TEXT NOT NULL, adjustment TEXT NOT NULL,
-        observed_at TEXT, published_at TEXT, retrieved_at TEXT NOT NULL, available_at TEXT NOT NULL, ingested_at TEXT NOT NULL,
-        session TEXT NOT NULL, session_date TEXT, status TEXT NOT NULL, freshness TEXT, age_s REAL, source_url TEXT,
-        source_identifier TEXT, tier INTEGER, quality_flags_json TEXT NOT NULL, backfilled INTEGER NOT NULL CHECK (backfilled IN (0, 1)),
-        payload_json TEXT NOT NULL, envelope_version TEXT NOT NULL,
+        observed_at TEXT, event_end TEXT NOT NULL, published_at TEXT, retrieved_at TEXT NOT NULL, available_at TEXT NOT NULL,
+        ingested_at TEXT NOT NULL, session TEXT NOT NULL, session_date TEXT, status TEXT NOT NULL, usable INTEGER NOT NULL CHECK (usable IN (0, 1)),
+        freshness TEXT, age_s REAL, source_url TEXT, source_identifier TEXT, tier INTEGER, quality_flags_json TEXT NOT NULL,
+        backfilled INTEGER NOT NULL CHECK (backfilled IN (0, 1)), payload_json TEXT NOT NULL, envelope_version TEXT NOT NULL,
         UNIQUE (natural_key, revision),
+        CHECK (status NOT IN ('UNAVAILABLE', 'INSUFFICIENT_DATA', 'NOT_APPLICABLE')), CHECK (usable = 0 OR status = 'AVAILABLE'),
+        CHECK (available_at >= retrieved_at), CHECK (backfilled = 0 OR available_at = retrieved_at),
+        CHECK (observed_at IS NULL OR event_end >= observed_at),
+        {_ts('observed_at', 'event_end', 'published_at', 'retrieved_at', 'available_at', 'ingested_at')})""",
+    # ABSENCES: "we looked and there was nothing" - kept, never a revision of a value, never hiding one
+    f"""CREATE TABLE IF NOT EXISTS mi_absences (
+        absence_id TEXT PRIMARY KEY, natural_key TEXT NOT NULL, content_hash TEXT NOT NULL,
+        dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), fetch_id TEXT REFERENCES mi_fetches(fetch_id),
+        kind TEXT NOT NULL, symbol TEXT, series_id TEXT, provider TEXT NOT NULL, feed TEXT NOT NULL, adjustment TEXT NOT NULL,
+        observed_at TEXT, published_at TEXT, retrieved_at TEXT NOT NULL, available_at TEXT NOT NULL, ingested_at TEXT NOT NULL,
+        session TEXT NOT NULL, session_date TEXT, status TEXT NOT NULL CHECK (status IN ('UNAVAILABLE', 'INSUFFICIENT_DATA', 'NOT_APPLICABLE')),
+        source_url TEXT, source_identifier TEXT, tier INTEGER, quality_flags_json TEXT NOT NULL,
+        backfilled INTEGER NOT NULL CHECK (backfilled IN (0, 1)), payload_json TEXT NOT NULL, envelope_version TEXT NOT NULL,
         CHECK (available_at >= retrieved_at), CHECK (backfilled = 0 OR available_at = retrieved_at),
         {_ts('observed_at', 'published_at', 'retrieved_at', 'available_at', 'ingested_at')})""",
     f"""CREATE TABLE IF NOT EXISTS mi_budget_events (
@@ -83,18 +112,22 @@ V1: Tuple[str, ...] = (
         audit_id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, dataset_id TEXT REFERENCES mi_datasets(dataset_id),
         scope_json TEXT NOT NULL, check_name TEXT NOT NULL, result TEXT NOT NULL CHECK (result IN ('PASS', 'WARN', 'BLOCKED')),
         codes_json TEXT NOT NULL, detail_json TEXT NOT NULL, {_ts('at')})""",
-    "CREATE INDEX IF NOT EXISTS mi_obs_symbol_kind_time ON mi_observations(symbol, kind, feed, observed_at)",
-    "CREATE INDEX IF NOT EXISTS mi_obs_series_time ON mi_observations(series_id, kind, observed_at)",
+    # (..., observed_at, natural_key): a latest-known read walks the index backwards and stops at its first known row (bounded, DESIGN_71 section 3)
+    "CREATE INDEX IF NOT EXISTS mi_obs_symbol_kind_time ON mi_observations(symbol, kind, feed, observed_at, natural_key)",
+    "CREATE INDEX IF NOT EXISTS mi_obs_series_time ON mi_observations(series_id, kind, observed_at, natural_key)",
     "CREATE INDEX IF NOT EXISTS mi_obs_available ON mi_observations(available_at)",
-    "CREATE INDEX IF NOT EXISTS mi_obs_provider_kind ON mi_observations(provider, kind)",
-    "CREATE INDEX IF NOT EXISTS mi_obs_kind_time ON mi_observations(kind, observed_at)",
+    "CREATE INDEX IF NOT EXISTS mi_obs_kind_time ON mi_observations(kind, observed_at, natural_key)",
     "CREATE INDEX IF NOT EXISTS mi_obs_dataset ON mi_observations(dataset_id)",
+    "CREATE INDEX IF NOT EXISTS mi_abs_symbol_kind_time ON mi_absences(symbol, kind, feed, observed_at, retrieved_at)",
+    "CREATE INDEX IF NOT EXISTS mi_abs_key ON mi_absences(natural_key)",
+    "CREATE INDEX IF NOT EXISTS mi_members_dataset ON mi_dataset_members(dataset_id, natural_key)",
     "CREATE INDEX IF NOT EXISTS mi_dataset_events_ds ON mi_dataset_events(dataset_id, event_id)",
     "CREATE INDEX IF NOT EXISTS mi_fetches_dataset ON mi_fetches(dataset_id)",
     "CREATE INDEX IF NOT EXISTS mi_budget_provider_at ON mi_budget_events(provider, at)",
     *[t for table in APPEND_ONLY_TABLES for t in _immutable(table)],
 )
 MIGRATIONS: Sequence[Tuple[int, str, Tuple[str, ...]]] = ((1, "initial market-intelligence store", V1),)
+_EXPECTED: Dict[int, Dict[Tuple[str, str], str]] = {}
 
 
 def ddl_sha256(statements: Sequence[str]) -> str:
@@ -105,8 +138,29 @@ def current_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
+def _objects(conn: sqlite3.Connection) -> Dict[Tuple[str, str], str]:
+    """Every schema object SQLite itself does not own: (type, name) -> normalized CREATE text (automatic indexes included, as NULL sql)."""
+    return {(t, n): " ".join((s or "").split()) for t, n, s in conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_stat%'")
+            if not (t == "table" and n == "sqlite_sequence")}
+
+
+def expected_objects(version: int) -> Dict[Tuple[str, str], str]:
+    """The objects these migrations create up to `version`, built once in an in-memory database (the reference for verify)."""
+    if version not in _EXPECTED:
+        mem = sqlite3.connect(":memory:")
+        try:
+            for v, _name, stmts in MIGRATIONS:
+                if v <= version:
+                    for st in stmts:
+                        mem.execute(st)
+            _EXPECTED[version] = _objects(mem)
+        finally:
+            mem.close()
+    return _EXPECTED[version]
+
+
 def verify(conn: sqlite3.Connection) -> int:
-    """Read-only check of a database's schema against this code: its version, and every recorded DDL hash. Returns the version."""
+    """Read-only check against this code: the version, every recorded DDL hash, and every live table / index / trigger. Returns the version."""
     v = current_version(conn)
     if v > SCHEMA_VERSION:
         raise SchemaTooNew(f"market_intel.db is schema version {v}; this code knows up to {SCHEMA_VERSION}")
@@ -115,6 +169,12 @@ def verify(conn: sqlite3.Connection) -> int:
         for version, _name, stmts in MIGRATIONS:
             if version <= v and recorded.get(version) != ddl_sha256(stmts):
                 raise SchemaMismatch(f"migration {version} on disk does not match this code")
+        live, want = _objects(conn), expected_objects(v)
+        missing = sorted(k for k in want if k not in live)
+        extra = sorted(k for k in live if k not in want)
+        altered = sorted(k for k in want if k in live and live[k] != want[k])
+        if missing or extra or altered:
+            raise SchemaMismatch(f"schema objects differ from this code: missing {missing[:5]}, extra {extra[:5]}, altered {altered[:5]}")
     return v
 
 
@@ -137,4 +197,5 @@ def migrate(conn: sqlite3.Connection, now: datetime) -> int:
     except Exception:
         conn.execute("ROLLBACK")
         raise
+    verify(conn)
     return pending[-1][0]

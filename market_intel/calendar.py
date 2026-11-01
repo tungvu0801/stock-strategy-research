@@ -65,13 +65,24 @@ def calendar_version(d: Optional[date]) -> str:
     return CAL.CALENDAR_VERSION if CAL.covered(d) else "NOT_COVERED"
 
 
+def post_market_end_minute(d: Optional[date]) -> Optional[int]:
+    """When the late (post-market) session of a market day ends, minutes after midnight New York time; None on a non-session or uncovered
+    day. History years: 17:00 on an early close (the NYSE release), else 20:00. 2026-2027: the 6.10A classifier's 20:00 on every market day
+    (its early-close correction is a pending Stage 7.0 contract decision - DESIGN_71 section 5)."""
+    if d is None or market_day_status(d) != MARKET_DAY:
+        return None
+    return HIST.post_market_end_minute(d) if HIST.covered(d) else AFTER_HOURS_END_MINUTE
+
+
 def _classify_history(now: datetime) -> Dict[str, Any]:
-    """A history-year moment, with the 6.10A classifier's own thresholds and the history table's close."""
+    """A history-year moment, with the 6.10A classifier's own thresholds, the history table's close and its late-trading end (17:00 on
+    an early-close day: the NYSE release)."""
     et = to_et(_utc(now))
     d = et.date()
     m = et.hour * 60 + et.minute + et.second / 60.0
     close = HIST.close_minute(d)
-    if close is None or m < PREMARKET_MINUTE or m >= AFTER_HOURS_END_MINUTE:
+    late_end = HIST.post_market_end_minute(d) if close is not None else None
+    if close is None or m < PREMARKET_MINUTE or m >= late_end:
         cls = A_CLOSED
     elif m < OPEN_MINUTE:
         cls = PREMARKET

@@ -13,8 +13,10 @@ the NYSE's own publications AND an independent empirical cross-check; a year tha
 * Empirical cross-check: archived IEX daily bars of 82 symbols (the Stage 6.4 value + quality bundle): the 2025 weekdays without a
   session are exactly those 11 dates; 250 sessions. (Daily bars cannot show early closes; those rest on the NYSE publication.)
 
-Early-close days end the regular session at 13:00 ET; post-market timing on those days follows the Stage 6.10A classifier convention
-(the close to 20:00 ET), a fact still marked "verify" in DESIGN_70 section 5.
+Early-close days end the regular session at 13:00 ET and the late (post-market) trading session at 17:00 ET: the same NYSE Group
+release states "NYSE American Equities, NYSE Arca Equities, NYSE Chicago, and NYSE National late trading sessions will close at 5:00 p.m."
+on those dates (verified 2026-10-31). The 2025 history uses 17:00. (2026-2027 still follow the frozen Stage 6.10A classifier, which runs
+the post-market to 20:00 on every market day: changing that is a Stage 7.0 contract decision - DESIGN_71 section 5.)
 """
 from __future__ import annotations
 
@@ -23,6 +25,8 @@ from datetime import date
 HISTORY_VERSION = "nyse_history_2025_v1"
 HISTORY_YEARS = (2025,)
 EARLY_CLOSE_MINUTE = 13 * 60
+EARLY_CLOSE_LATE_TRADING_END_MINUTE = 17 * 60                  # the NYSE late trading session ends at 17:00 ET on early-close days
+LATE_TRADING_END_MINUTE = 20 * 60
 HOLIDAYS = frozenset(date.fromisoformat(d) for d in (
     "2025-01-01", "2025-01-09", "2025-01-20", "2025-02-17", "2025-04-18", "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
     "2025-11-27", "2025-12-25",
@@ -48,3 +52,10 @@ def close_minute(d: date):
     if d.weekday() >= 5 or d in HOLIDAYS:
         return None
     return EARLY_CLOSE_MINUTE if d in EARLY_CLOSES else 16 * 60
+
+
+def post_market_end_minute(d: date):
+    """When the late trading session of a covered history day ends (17:00 on an early close, 20:00 otherwise); None on a non-session day."""
+    if close_minute(d) is None:
+        return None
+    return EARLY_CLOSE_LATE_TRADING_END_MINUTE if d in EARLY_CLOSES else LATE_TRADING_END_MINUTE

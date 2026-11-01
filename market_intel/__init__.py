@@ -24,6 +24,7 @@ Stage 7.1 (DESIGN_71_MARKET_INTEL_STORE.md) adds, still with nothing in the live
   archive.py           the raw-response archive (gzip + SHA-256 manifest under runtime/market_intel/raw)
   sources/alpaca_bars.py  Alpaca bars -> envelopes, parse-only (no network code)
   ingest.py            the offline backfill planner and CLI; the gated runner a future approved backfill will use
+  approvals.py         the fail-closed operator approval that runner needs (a file in runtime/; no code writes one)
 """
 VERSION = "market_intel_v0"
 STAGE = "7.0"
