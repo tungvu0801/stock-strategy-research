@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -78,6 +78,13 @@ and snapshots, SEC filings and company facts, FRED / ALFRED, the Nasdaq halt RSS
 news attribution, deduplication and entity matching, and an offline CLI whose fetch is always refused. They emit Stage 7.0 envelopes into
 the unchanged Stage 7.1 store. No transport, key, config, server, route, thread, network, execution, setup, proposal, safety or UI change;
 the earnings provider is not wired. tests/test_market_intel_sources_72.py pins behaviour and scope (BASE_72 / NEW_72 / EDITED_72).
+
+Stage 7.3 (market intelligence collector and scheduling, offline; DESIGN_73_MARKET_INTEL_COLLECTOR.md) adds market_intel/collector:
+registered collection plans, an injectable transport (a fake in tests; the default refuses the network), budgets, leases, retry with
+deterministic jitter, a circuit breaker, its own append-only state file (runs, watermarks, leases, breaker), feed health and a thread-free
+scheduler. It writes FIXTURE datasets through the unchanged Stage 7.1 store and refuses any real transport, live sink, blocked (SEC) plan,
+missing credential or historical window. No transport, key, config, server, route, thread, job, network, execution, setup, proposal,
+safety or UI change. tests/test_market_intel_collector_73.py pins behaviour and scope (BASE_73 / NEW_73 / EDITED_73).
 """
 import hashlib
 import subprocess
@@ -188,8 +195,13 @@ NEW_72 = {"DESIGN_72_MARKET_INTEL_SOURCES.md", "market_intel/news/__init__.py", 
 EDITED_72 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier stages' F01 unions, the 7.1 registry / F tests, bookkeeping
 SEMANTIC_72: dict = {}                                                                    # Stage 7.2: no behaviour change of an existing file
 INSTRUMENTATION_72: dict = {}                                                             # Stage 7.2: no executor instrumentation
+BASE_73 = "7376568260bcd8e18282593fbc82b4927248644a"                                    # main: Stage 7.2 merged (PR #43)
+NEW_73 = {"DESIGN_73_MARKET_INTEL_COLLECTOR.md", "market_intel/collector/__init__.py", "market_intel/collector/health.py", "market_intel/collector/plans.py", "market_intel/collector/policy.py", "market_intel/collector/runner.py", "market_intel/collector/scheduler.py", "market_intel/collector/state.py", "market_intel/collector/transport.py", "tests/test_market_intel_collector_73.py"}   # Stage 7.3 (market intelligence collector, offline): its new files
+EDITED_73 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier stages' F01 unions, the 7.1 registry, the 7.2 F tests, bookkeeping
+SEMANTIC_73: dict = {}                                                                    # Stage 7.3: no behaviour change of an existing file
+INSTRUMENTATION_73: dict = {}                                                             # Stage 7.3: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "1067639817f6919d4cb9abae5dedc56279febdff69d37d30bf2ec6559144c9ec",
+    ".github/ci/pytest_groups.json": "e63a9f7fcf0690cc5db1e5bd360bf83c2d84628d0db7f27d869d93b61924c397",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
@@ -227,7 +239,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "c3e6f2dfee97f9c1914bfa551c98a008f3ef3899d8471702c5326adb1f5b76a4",
+    "tests/test_strategy_validation_62.py": "4e9888f0354f91eb2926047d4f03ebe01e380942f871a87a0dd4a306d537ad17",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
