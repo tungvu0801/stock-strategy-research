@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from market_intel import calendar as CAL
 from market_intel import freshness as FR
 from market_intel import schema_v2 as SV
 from market_intel import store as ST
@@ -74,15 +75,27 @@ INTRADAY = ("BAR_1MIN", "BAR_1HOUR")
 EVENT_KINDS = ("NEWS", "HALT", "FILING", "EARNINGS")         # no event is not missing data: no expected count exists
 POLL_POLICY = {"NEWS": "NEWS_POLL", "HALT": "HALT_FEED", "EARNINGS": "EARNINGS_CALENDAR", "MACRO": PL.DAILY_REFRESH}
 SAMPLE_S = 60                                                # schedule coverage resolution (a presentation step, not a threshold)
+SCHEDULE_MAX_DAYS = 366                                      # an operational bound on the sampled window (cost), not a quality threshold
+REQUIRED = ("inputs", "integrity", "timestamps", "freshness", "coverage")   # a PASS needs every one of them established
 MAX_LISTED = 20
 NY = ZoneInfo("America/New_York")
 
 _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
 _TS_COL = re.compile(r"(\w+) GLOB '\[0-9\]\[0-9\]\[0-9\]\[0-9\]-")      # the schema's own timestamp CHECK names every time column
+# the store's own format CHECK: a time that fails it is malformed (counted by the timestamp scan) and never compared as text
+_GLOB = "'[0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9].[0-9][0-9][0-9][0-9][0-9][0-9]Z'"
+
+
+def _le(col: str) -> str:
+    return f"{col} GLOB {_GLOB} AND {col} <= :T"
+
+
 # the store's KNOWN rule (store.MarketIntelStore._KNOWN): observed, complete, available and ingested by T
-_KNOWN = "{a}.observed_at <= :T AND {a}.event_end <= :T AND {a}.available_at <= :T AND {a}.ingested_at <= :T"
+_KNOWN = " AND ".join(_le("{a}." + c) for c in ("observed_at", "event_end", "available_at", "ingested_at"))
 _LATEST = ("{a}.revision = (SELECT MAX(r.revision) FROM mi_observations r WHERE r.natural_key = {a}.natural_key "
-           "AND r.available_at <= :T AND r.ingested_at <= :T)")
+           f"AND {_le('r.available_at')} AND {_le('r.ingested_at')})")
+_ABS_KNOWN = f"{_le('b.available_at')} AND {_le('b.ingested_at')}"
+_MEMBER_KNOWN = f"{_le('m.at')} AND {_le('m.available_at')}"
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,16 @@ def _malformed(s) -> bool:
     return s is not None and _t(s) is None
 
 
+def _finite(v) -> Optional[float]:
+    """A stored number that can be a figure: an int or float, not a bool, finite. Anything else is not a sample."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+def _err(exc: BaseException, scrub: Optional[str] = None) -> str:
+    msg = f"{type(exc).__name__}: {str(exc)[:160]}"
+    return msg.replace(scrub, "<private copy>") if scrub else msg
+
+
 def _sec(a: datetime, b: datetime) -> float:
     return round((a - b).total_seconds(), 6)
 
@@ -163,9 +186,10 @@ def _canonical(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
-def _check(name: str, result: str, codes: Iterable[str] = (), *, required: bool = False, detail: str = "") -> dict:
+def _check(name: str, result: str, codes: Iterable[str] = (), *, detail: str = "") -> dict:
+    """One check's result. Whether it is required comes from REQUIRED only, never from the caller."""
     assert result in RESULTS
-    return {"check": name, "result": result, "codes": sorted(set(codes)), "required": required, "detail": detail}
+    return {"check": name, "result": result, "codes": sorted(set(codes)), "required": name in REQUIRED, "detail": detail}
 
 
 # ------------------------------------------------------------------------------------------------ the read-only snapshot
@@ -200,8 +224,8 @@ def _open_store(copy: Path, now: datetime) -> Tuple[Optional[object], dict]:
     """The 7.1 store (v1) or the 7.3.1 store (v2) on the copy, after each one's own schema verification."""
     try:
         s = SV.status(copy)
-    except sqlite3.DatabaseError as exc:
-        return None, {"state": "NOT_A_DATABASE", "detail": f"{type(exc).__name__}: {str(exc)[:120]}"}
+    except Exception as exc:                                                 # not a database, or not one this code can read
+        return None, {"state": "NOT_A_DATABASE", "detail": _err(exc, str(copy))}
     clock = lambda: now  # noqa: E731 - the store's own "now" is the evaluation time
     if s["state"] == "V2_VERIFIED":
         return MarketIntelStoreV2(copy, clock=clock), {"state": "OK", "schema_version": 2}
@@ -209,8 +233,8 @@ def _open_store(copy: Path, now: datetime) -> Tuple[Optional[object], dict]:
         store = ST.MarketIntelStore(copy, clock=clock)
         try:
             store.schema_version()                                          # the 7.1 schema verification, on the copy
-        except (SchemaMismatch, SchemaTooNew, sqlite3.DatabaseError) as exc:
-            return None, {"state": "SCHEMA_MISMATCH", "schema_version": 1, "detail": str(exc)[:200]}
+        except Exception as exc:
+            return None, {"state": "SCHEMA_MISMATCH", "schema_version": 1, "detail": _err(exc, str(copy))}
         return store, {"state": "OK", "schema_version": 1}
     if s["state"] == "EMPTY":
         return None, {"state": "EMPTY", "schema_version": 0}
@@ -233,6 +257,7 @@ class _Ctx:
     conn: sqlite3.Connection
     store: object
     ds: Dict[str, dict]
+    scrub: Optional[str] = None
 
     @property
     def at(self) -> str:
@@ -329,12 +354,12 @@ def _streams(ctx: _Ctx) -> List[dict]:
         x["values"], x["facts"] = r["n"], r["facts"]
     for r in ctx.conn.execute(f"""SELECT DISTINCT o.kind, o.symbol, o.series_id, o.feed, o.adjustment, o.provider, m.dataset_id FROM mi_dataset_members m
                                   JOIN mi_observations o ON o.obs_id = m.record_id WHERE m.disposition IN ('INSERTED', 'REVISED', 'DUPLICATE')
-                                  AND m.at <= :T AND m.available_at <= :T AND {_KNOWN.format(a='o')}""", {"T": ctx.at}):
+                                  AND {_MEMBER_KNOWN} AND {_KNOWN.format(a='o')}""", {"T": ctx.at}):
         x = g(r)                                                                 # every dataset that DELIVERED a fact, a re-delivery included
         x["providers"].add(r["provider"])
         x["evidence"].add(ctx.evidence(r["dataset_id"]))
-    for r in ctx.conn.execute("""SELECT b.kind, b.symbol, b.series_id, b.feed, b.adjustment, b.provider, b.dataset_id, COUNT(*) n,
-                                 SUM(b.observed_at IS NULL) untimed FROM mi_absences b WHERE b.available_at <= :T AND b.ingested_at <= :T
+    for r in ctx.conn.execute(f"""SELECT b.kind, b.symbol, b.series_id, b.feed, b.adjustment, b.provider, b.dataset_id, COUNT(*) n,
+                                 SUM(b.observed_at IS NULL) untimed FROM mi_absences b WHERE {_ABS_KNOWN}
                                  GROUP BY 1, 2, 3, 4, 5, 6, 7""", {"T": ctx.at}):
         x = g(r)
         x["absences"] += r["n"]
@@ -352,13 +377,15 @@ def _streams(ctx: _Ctx) -> List[dict]:
                   "reason": type(exc).__name__.upper()}
         rec = ls["latest_record"] or {}
         times = {n: rec.get(n) for n in _TIMES if n in rec}
+        sec = kind in SEC_KINDS                                              # an acceptance time of unverified zone: never measured
         out.append({"kind": kind, "symbol": symbol, "series_id": series, "feed": feed, "adjustment": adj, "providers": sorted(x["providers"]),
                     "evidence": sorted(x["evidence"]), "mixed_evidence": len(x["evidence"]) > 1, "values": x["values"], "facts": x["facts"],
                     "absences": x["absences"], "absences_without_event_time": x["absences_without_event_time"],
-                    "latest_record": {"type": rec.get("record_type"), "times": times,
-                                      "ages_s": {n: _sec(ctx.T, _t(v)) for n, v in times.items() if _t(v) is not None},
-                                      "missing": sorted(n for n, v in times.items() if v is None)} if rec else None,
-                    "latest_usable_observed_at": (ls["latest_usable"] or {}).get("observed_at"), "usable_is_latest": ls["usable_is_latest"],
+                    "latest_record": ({"type": rec.get("record_type"), "times": None, "ages_s": None, "missing": None, "withheld": SEC_BLOCKED} if sec else
+                                      {"type": rec.get("record_type"), "times": times,
+                                       "ages_s": {n: _sec(ctx.T, _t(v)) for n, v in times.items() if _t(v) is not None},
+                                       "missing": sorted(n for n, v in times.items() if v is None)}) if rec else None,
+                    "latest_usable_observed_at": None if sec else (ls["latest_usable"] or {}).get("observed_at"), "usable_is_latest": ls["usable_is_latest"],
                     "store_status": ls["status"], "store_reason": ls["reason"], **_grade(kind, ls, ctx.T)})
     return out
 
@@ -455,13 +482,13 @@ def _delivered(ctx: _Ctx) -> Dict[str, Dict[str, dict]]:
     it): values (usable or not) and absences."""
     out: Dict[str, Dict[str, dict]] = {}
     for r in ctx.conn.execute(f"""SELECT m.dataset_id, o.symbol, COUNT(*) n, SUM(o.usable) u FROM mi_dataset_members m JOIN mi_observations o
-                                  ON o.obs_id = m.record_id WHERE m.disposition IN ('INSERTED', 'REVISED', 'DUPLICATE') AND m.at <= :T
-                                  AND m.available_at <= :T AND {_KNOWN.format(a='o')} GROUP BY 1, 2""", {"T": ctx.at}):
+                                  ON o.obs_id = m.record_id WHERE m.disposition IN ('INSERTED', 'REVISED', 'DUPLICATE') AND {_MEMBER_KNOWN}
+                                  AND {_KNOWN.format(a='o')} GROUP BY 1, 2""", {"T": ctx.at}):
         x = out.setdefault(r["dataset_id"], {}).setdefault(r["symbol"] or "", {"values": 0, "usable": 0, "absences": 0})
         x["values"] += r["n"]
         x["usable"] += r["u"] or 0
-    for r in ctx.conn.execute("""SELECT m.dataset_id, b.symbol, COUNT(*) n FROM mi_dataset_members m JOIN mi_absences b ON b.absence_id = m.record_id
-                                 WHERE m.disposition = 'ABSENCE' AND m.at <= :T AND b.available_at <= :T AND b.ingested_at <= :T GROUP BY 1, 2""",
+    for r in ctx.conn.execute(f"""SELECT m.dataset_id, b.symbol, COUNT(*) n FROM mi_dataset_members m JOIN mi_absences b ON b.absence_id = m.record_id
+                                 WHERE m.disposition = 'ABSENCE' AND {_le('m.at')} AND {_ABS_KNOWN} GROUP BY 1, 2""",
                               {"T": ctx.at}):
         out.setdefault(r["dataset_id"], {}).setdefault(r["symbol"] or "", {"values": 0, "usable": 0, "absences": 0})["absences"] += r["n"]
     return out
@@ -484,7 +511,15 @@ def _dataset_coverage(ctx: _Ctx) -> Tuple[List[dict], Dict[tuple, dict], set, se
         except (TypeError, ValueError):
             span = None
             item["codes"].append("DATASET_DATES_UNREADABLE")
-        if d["kind"] == "BAR_1DAY" and d["symbols"] and span and d["feed"] in ("iex", "sip"):
+        due = CAL.last_completed_session(ctx.T)                            # the 7.0 daily-bar rule: the last session whose bar is due by T
+        if d["kind"] == "BAR_1DAY" and span and due is not None and due < span[1]:
+            item["not_yet_due_sessions"] = sum(1 for n in range(max(due.toordinal() + 1, span[0].toordinal()), span[1].toordinal() + 1)
+                                               if CAL.market_day_status(date.fromordinal(n)) == CAL.MARKET_DAY)
+            span = (span[0], due)
+        if d["kind"] == "BAR_1DAY" and d["symbols"] and span and span[1] < span[0]:
+            item.update({"expectation": INSUFFICIENT, "reason": "NO_SESSION_DUE_AT_AS_OF", "expected": None,
+                         "observed": sum(x["values"] for x in got.values()), "absences": sum(x["absences"] for x in got.values())})
+        elif d["kind"] == "BAR_1DAY" and d["symbols"] and span and d["feed"] in ("iex", "sip"):
             per = {}
             for sym in d["symbols"]:
                 q = ctx.store.quality_report("BAR_1DAY", symbol=sym, feed=d["feed"], start=span[0], end=span[1], adjustment=d["adjustment"], as_of=ctx.T)
@@ -540,6 +575,11 @@ def _schedule(ctx: _Ctx, runs: List[dict]) -> Tuple[List[dict], set, bool]:
             continue
         first = min(r["_started"] for r in rs)
         start = max(first, ctx.S) if ctx.S else first
+        if (ctx.T - start).total_seconds() > SCHEDULE_MAX_DAYS * 86400:
+            out.append({**item, "status": "WINDOW_TOO_LONG", "from": ST.ts(start),
+                        "detail": f"more than {SCHEDULE_MAX_DAYS} days to sample: give a later --since"})
+            codes.add("SCHEDULE_WINDOW_TOO_LONG")
+            continue
         t = start.replace(second=0, microsecond=0) + (timedelta(minutes=1) if (start.second or start.microsecond) else timedelta(0))
         ok, i, ref = _successes(rs), 0, None
         counts = Counter()
@@ -589,7 +629,8 @@ def _coverage(ctx: _Ctx, runs: Optional[List[dict]]) -> Tuple[dict, dict]:
     for a in by_provider:
         a["ratio"] = round(a["observed"] / a["expected"], 6) if a["expected"] else None
     section = {"datasets": rows, "by_provider_kind_evidence": by_provider, "schedules": sched, "min_coverage": ctx.th.min_coverage}
-    return section, _check("coverage", result, codes, detail="" if judged else "no explicit expectation (requested symbols, calendar or schedule) exists")
+    return section, _check("coverage", result, codes,
+                           detail="" if judged else "no explicit expectation (requested symbols, calendar or schedule) exists")
 
 
 # ------------------------------------------------------------------------------------------------ latency
@@ -620,11 +661,11 @@ def _latency(ctx: _Ctx) -> Tuple[dict, dict]:
                 g["delivery"].append(d)
                 g["negative_within_skew"] += d < 0
         pub, av, ing = _t(r["published_at"]), _t(r["available_at"]), _t(r["ingested_at"])
-        if pub is not None and r["kind"] == "NEWS":
+        if pub is not None and r["kind"] == "NEWS" and pub <= ret + ST.NEWS_SKEW:
             g["published_to_retrieved"].append(_sec(ret, pub))
-        if av is not None:
+        if av is not None and av >= ret:                                     # earlier contradicts the store's rule: a violation, never a sample
             g["availability"].append(_sec(av, ret))
-        if ing is not None:
+        if ing is not None and ing >= ret:
             g["ingestion"].append(_sec(ing, ret))
     feed = [{"provider": k[0], "kind": k[1], "feed": k[2], "evidence": k[3], "reference": "event_end" if k[1] in BARS else "observed_at",
              "delivery_s": _dist(g["delivery"]), "published_to_retrieved_s": _dist(g["published_to_retrieved"]), "availability_s": _dist(g["availability"]),
@@ -640,30 +681,40 @@ def _latency(ctx: _Ctx) -> Tuple[dict, dict]:
         if r["status"] not in ("OK", "NOT_MODIFIED"):
             continue
         g["n"] += 1
+        ms = _finite(r["latency_ms"])
         if r["latency_ms"] is None:
             g["missing_latency"] += 1
-        elif r["latency_ms"] >= 0:
-            g["latency_ms"].append(float(r["latency_ms"]))
+        elif ms is not None and ms >= 0:                                     # negative, non-numeric or infinite: a violation, never a sample
+            g["latency_ms"].append(ms)
         if ret is not None and ret >= start:
             g["duration_ms"].append(round((ret - start).total_seconds() * 1000, 3))
     fetch = [{"provider": k[0], "endpoint": k[1], "evidence": k[2], "successful_fetches": g["n"], "latency_ms": _dist(g["latency_ms"]),
               "duration_ms": _dist(g["duration_ms"]), "missing_latency": g["missing_latency"]} for k, g in sorted(fetch_groups.items())]
-    codes, judged = set(), []
-    if ctx.th.max_fetch_p95_ms is not None:
-        judged.append("fetch")
-        if any(f["latency_ms"].get("p95", 0) > ctx.th.max_fetch_p95_ms for f in fetch):
-            codes.add("FETCH_P95_ABOVE_TARGET")
-    if ctx.th.max_feed_p95_s is not None:
-        judged.append("delivery")
-        if any(f["delivery_s"].get("p95", -math.inf) > ctx.th.max_feed_p95_s for f in feed):
-            codes.add("DELIVERY_P95_ABOVE_TARGET")
+    codes, judged, unjudged = set(), [], []
+    for name, target, groups_, metric, above, none in (("fetch", ctx.th.max_fetch_p95_ms, fetch, "latency_ms", "FETCH_P95_ABOVE_TARGET", "NO_FETCH_SAMPLES"),
+                                                         ("delivery", ctx.th.max_feed_p95_s, feed, "delivery_s", "DELIVERY_P95_ABOVE_TARGET",
+                                                          "NO_DELIVERY_SAMPLES")):
+        if target is None:
+            continue
+        measured = [x[metric]["p95"] for x in groups_ if x[metric]["n"]]
+        if not measured:                                                     # a target with nothing to measure is not met: it is unknown
+            unjudged.append(name)
+            codes.add(none)
+            continue
+        judged.append(name)
+        if any(v > target for v in measured):
+            codes.add(above)
     samples = any(f["latency_ms"]["n"] or f["duration_ms"]["n"] for f in fetch) or any(f["delivery_s"]["n"] for f in feed)
-    if not samples:
+    if codes & {"FETCH_P95_ABOVE_TARGET", "DELIVERY_P95_ABOVE_TARGET"}:
+        result, detail = WARN, f"judged against: {', '.join(judged)}"
+    elif unjudged:
+        result, detail = INSUFFICIENT, f"a target is set but nothing was measured for: {', '.join(unjudged)}"
+    elif judged:
+        result, detail = PASS, f"judged against: {', '.join(judged)}"
+    elif not samples:
         result, codes, detail = INSUFFICIENT, codes | {"NO_LATENCY_SAMPLES"}, "no live (non-backfilled) row or successful fetch in the window"
-    elif not judged:
-        result, codes, detail = INSUFFICIENT, codes | {"NO_LATENCY_TARGET"}, "measured, not judged: no latency target or SLA is set"
     else:
-        result, detail = (WARN if codes else PASS), f"judged against: {', '.join(judged)}"
+        result, codes, detail = INSUFFICIENT, codes | {"NO_LATENCY_TARGET"}, "measured, not judged: no latency target or SLA is set"
     section = {"fetch": fetch, "feed": feed, "excluded": dict(sorted(excluded.items())), "percentiles": "nearest rank",
                "note": "backfilled rows are history, not latency; SEC times are not measured (" + SEC_BLOCKED + ")"}
     return section, _check("latency", result, codes, detail=detail)
@@ -750,7 +801,10 @@ def _timestamps(ctx: _Ctx, state_conn: Optional[sqlite3.Connection], runs: Optio
         w = {"table": "mi_fetches", "id": r["fetch_id"]}
         if start is not None and ret is not None and ret < start:
             bad.add("NEGATIVE_FETCH_DURATION", **w)
-        if r["latency_ms"] is not None and r["latency_ms"] < 0:
+        ms = _finite(r["latency_ms"])
+        if r["latency_ms"] is not None and ms is None:
+            bad.add("INVALID_LATENCY_MS", **w)
+        elif ms is not None and ms < 0:
             bad.add("NEGATIVE_LATENCY_MS", **w)
         if r["status"] in ("OK", "NOT_MODIFIED") and r["retrieved_at"] is None:
             bad.add("SUCCESS_WITHOUT_RETRIEVED_AT", **w)
@@ -780,7 +834,7 @@ def _timestamps(ctx: _Ctx, state_conn: Optional[sqlite3.Connection], runs: Optio
     codes = set(malformed.counts) | set(bad.counts)
     section = {"malformed": malformed.as_dict(), "violations": bad.as_dict(), "missing": dict(sorted(missing.items())),
                "scope": "malformed values: the whole file (a value that cannot be parsed cannot be placed in time); violations: rows recorded by as_of"}
-    return section, _check("timestamps", BLOCK if codes else PASS, codes, required=True,
+    return section, _check("timestamps", BLOCK if codes else PASS, codes,
                            detail="a stored time contradicts the store's own invariants" if codes else "")
 
 
@@ -788,29 +842,44 @@ def _timestamps(ctx: _Ctx, state_conn: Optional[sqlite3.Connection], runs: Optio
 def _integrity(ctx: _Ctx, archive_root: Optional[Path]) -> Tuple[dict, dict]:
     codes, block, anchors, archive = set(), False, None, None
     if archive_root is not None:
-        if not archive_root.is_dir():
-            archive = {"path": str(archive_root), "present": False}
+        archive = {"path": str(archive_root), "present": archive_root.is_dir()}
+        if not archive["present"]:
             codes.add("ARCHIVE_NOT_FOUND")
         else:
             ra = RawArchive(archive_root)
+            if not (archive_root / "anchors.jsonl").is_file():
+                codes.add("ANCHORS_FILE_NOT_FOUND")                          # a wrong or empty directory never vouches for a seal
+            else:
+                try:
+                    anchors = ra.anchors()
+                    if not isinstance(anchors, dict):
+                        raise TypeError("anchors are not a mapping")
+                    archive["anchors"] = len(anchors)
+                except Exception as exc:                                     # an anchors file that does not parse as written
+                    anchors, block = None, True
+                    codes.add("ANCHORS_UNREADABLE")
+                    archive["anchors_error"] = _err(exc)
             try:
-                anchors = ra.anchors()
-            except (ValueError, KeyError, TypeError) as exc:
-                codes.add("ANCHORS_UNREADABLE")
-                block = True
-                archive = {"path": str(archive_root), "present": True, "anchors_error": str(exc)[:120]}
-            if anchors is not None:
-                v = ra.verify()
-                archive = {"path": str(archive_root), "present": True, "anchors": len(anchors), "manifest_entries": v["entries"],
-                           "manifest_problems": v["problems"][:MAX_LISTED], "manifest_problem_count": len(v["problems"])}
-                if v["problems"]:
+                m = ra.verify()
+                archive.update({"manifest_entries": m["entries"], "manifest_problems": m["problems"][:MAX_LISTED], "manifest_problem_count": len(m["problems"])})
+                if m["problems"]:
                     codes.add("RAW_ARCHIVE_MISMATCH")
                     block = True
-    v = ctx.store.verify_integrity(anchors=anchors)
+            except Exception as exc:                                         # a manifest that does not parse as written
+                codes.add("RAW_ARCHIVE_UNREADABLE")
+                block = True
+                archive["manifest_error"] = _err(exc)
+    try:
+        v = ctx.store.verify_integrity(anchors=anchors)
+    except Exception as exc:                                                 # a row that cannot be read as written: the store cannot be trusted
+        v = {"state": ST.CORRUPT, "store": "UNREADABLE", "anchors_checked": anchors is not None, "unanchored_datasets": [], "unsealed_datasets": [],
+             "error": _err(exc, ctx.scrub)}
+        codes.add("INTEGRITY_UNREADABLE")
+        block = True
     findings = {k: {"count": len(x), "first": sorted(map(str, x))[:MAX_LISTED]} for k, x in sorted(v.items()) if isinstance(x, list) and x}
     sqlite_check = [r[0] for r in ctx.conn.execute("PRAGMA integrity_check")]
     fk = [list(r) for r in ctx.conn.execute("PRAGMA foreign_key_check")]
-    if v["state"] == ST.CORRUPT:
+    if v["state"] == ST.CORRUPT and v.get("store") != "UNREADABLE":
         codes.add("INTEGRITY_CORRUPT" if v.get("store") != "SCHEMA_ERROR" else "INTEGRITY_SCHEMA_ERROR")
         block = True
     if sqlite_check != ["ok"]:
@@ -821,8 +890,8 @@ def _integrity(ctx: _Ctx, archive_root: Optional[Path]) -> Tuple[dict, dict]:
         block = True
     if block:
         result = BLOCK
-    elif "ARCHIVE_NOT_FOUND" in codes or not v["anchors_checked"]:
-        codes.add("NO_ANCHORS")
+    elif not v["anchors_checked"] or (not anchors and v["unanchored_datasets"]):
+        codes.add("NO_ANCHORS")                                              # nothing anchored: no seal can be confirmed
         result = INSUFFICIENT
     elif v["state"] == ST.UNVERIFIED:
         codes |= {"PENDING_ANCHOR"} if v["unanchored_datasets"] else set()
@@ -831,27 +900,28 @@ def _integrity(ctx: _Ctx, archive_root: Optional[Path]) -> Tuple[dict, dict]:
     else:
         result = PASS
     section = {"state": v["state"], "store": v.get("store"), "rows_checked": v.get("rows_checked"), "anchors_checked": v["anchors_checked"],
-               "findings": findings, "sqlite_integrity_check": sqlite_check[:MAX_LISTED], "foreign_key_violations": len(fk), "archive": archive,
+               "findings": findings, "error": v.get("error"), "sqlite_integrity_check": sqlite_check[:MAX_LISTED], "foreign_key_violations": len(fk), "archive": archive,
                "scope": "the file as read (not point in time): integrity is a property of the stored bytes"}
-    return section, _check("integrity", result, codes, required=True,
+    return section, _check("integrity", result, codes,
                            detail={BLOCK: "stored data cannot be trusted", INSUFFICIENT: "seals cannot be confirmed without the archive's anchors",
                                    WARN: "nothing contradicts, but something is pending", PASS: ""}[result])
 
 
 # ------------------------------------------------------------------------------------------------ provider health
-def _pressure(times: List[datetime]) -> List[List[str]]:
+def _pressure(hits: List[Tuple[datetime, str]]) -> List[dict]:
     """Episodes of the 7.0 plan-pressure rule (budget.ProviderBudget.record): at least PRESSURE_429S 429 responses within PRESSURE_WINDOW_S.
-    Overlapping episodes are merged; each is [first 429, last 429]."""
-    xs, out, j = sorted(times), [], 0
-    for i, t in enumerate(xs):
-        while (t - xs[j]).total_seconds() > PRESSURE_WINDOW_S:
+    Overlapping episodes are merged; each gives its first and last 429 and the evidence classes of its responses."""
+    xs, out, j = sorted(hits), [], 0
+    for i, (t, _) in enumerate(xs):
+        while (t - xs[j][0]).total_seconds() > PRESSURE_WINDOW_S:
             j += 1
         if i - j + 1 >= PRESSURE_429S:
-            if out and xs[j] <= out[-1][1]:
-                out[-1][1] = t
+            if out and xs[j][0] <= out[-1]["_to"]:
+                out[-1]["_to"] = t
+                out[-1]["_ev"] |= {e for _, e in xs[j:i + 1]}
             else:
-                out.append([xs[j], t])
-    return [[ST.ts(a), ST.ts(b)] for a, b in out]
+                out.append({"_from": xs[j][0], "_to": t, "_ev": {e for _, e in xs[j:i + 1]}})
+    return [{"from": ST.ts(e["_from"]), "to": ST.ts(e["_to"]), "evidence": sorted(e["_ev"])} for e in out]
 
 
 def _health(ctx: _Ctx, state_info: Optional[dict], runs: Optional[List[dict]], state: Optional[CollectorState]) -> Tuple[dict, dict]:
@@ -871,7 +941,7 @@ def _health(ctx: _Ctx, state_info: Optional[dict], runs: Optional[List[dict]], s
             g["errors"][(r["error"] or r["status"])[:120]] += 1
             g["last_error"] = max(g["last_error"] or r["started_at"], r["started_at"])
         if r["http_status"] == 429:
-            r429.setdefault(r["provider"], []).append(start)
+            r429.setdefault(r["provider"], []).append((start, ctx.evidence(r["dataset_id"])))
     fetches = [{"provider": k[0], "endpoint": k[1], "evidence": k[2], "by_status": dict(sorted(g["status"].items())),
                 "by_http_status": dict(sorted(g["http"].items())), "errors": _top(g["errors"]), "last_ok_started_at": g["last_ok"],
                 "last_error_started_at": g["last_error"]} for k, g in sorted(fetch_groups.items())]
@@ -879,11 +949,12 @@ def _health(ctx: _Ctx, state_info: Optional[dict], runs: Optional[List[dict]], s
         codes.add("FETCH_ERRORS_RECORDED")
     budget: Dict[str, dict] = {}
     allows: Dict[str, List[datetime]] = {}
-    for r in ctx.conn.execute("SELECT provider, event, reason, at FROM mi_budget_events ORDER BY event_id"):
+    for r in ctx.conn.execute("SELECT provider, event, reason, at, dataset_id FROM mi_budget_events ORDER BY event_id"):
         at = _t(r["at"])
         if not ctx.in_window(at):
             continue
-        b = budget.setdefault(r["provider"], {"events": Counter(), "refusals": Counter(), "allows_by_new_york_day": Counter()})
+        b = budget.setdefault(r["provider"], {"events": Counter(), "refusals": Counter(), "allows_by_new_york_day": Counter(), "evidence": Counter()})
+        b["evidence"][ctx.evidence(r["dataset_id"])] += 1
         b["events"][r["event"]] += 1
         if r["event"] == "REFUSE":
             b["refusals"][r["reason"] or ""] += 1
@@ -906,6 +977,7 @@ def _health(ctx: _Ctx, state_info: Optional[dict], runs: Optional[List[dict]], s
             codes.add("DAILY_CAP_EXCEEDED")
         budget_out[p] = {"events": dict(sorted(b["events"].items())), "refusals": dict(sorted(b["refusals"].items())),
                          "allows_by_new_york_day": dict(sorted(b["allows_by_new_york_day"].items())), "peak_allows_in_60_s": peak,
+                         "events_by_evidence": dict(sorted(b["evidence"].items())),
                          "daily_cap": caps.get(p), "days_over_daily_cap": over}
     pressure = {p: _pressure(ts_) for p, ts_ in sorted(r429.items())}
     pressure = {p: e for p, e in pressure.items() if e}
@@ -964,7 +1036,7 @@ def _divergence(ctx: _Ctx) -> Tuple[dict, dict]:
         except (TypeError, ValueError, AttributeError):
             g["not_computable"] += 1
             continue
-        codes = VA.feed_divergence(a, b)
+        codes = VA.feed_divergence(a, b) if math.isfinite(a) and math.isfinite(b) else ["NON_FINITE"]
         if "NON_FINITE" in codes:
             g["not_computable"] += 1
             continue
@@ -982,12 +1054,13 @@ def _divergence(ctx: _Ctx) -> Tuple[dict, dict]:
 # ------------------------------------------------------------------------------------------------ the report
 def _verdict(checks: List[dict], evidence_scope: str) -> dict:
     blocking = [c for c in checks if c["result"] == BLOCK]
-    required_missing = [c for c in checks if c["result"] == INSUFFICIENT and c["required"]]
+    required_missing = [c for c in checks if c["result"] == INSUFFICIENT and c["required"]]                # REQUIRED: a PASS needs them all
     warnings = [c for c in checks if c["result"] == WARN]
     result = BLOCK if blocking else (INSUFFICIENT if required_missing else (WARN if warnings else PASS))
     brief = lambda cs: [{"check": c["check"], "codes": c["codes"]} for c in cs]  # noqa: E731
     return {"result": result, "blocking": brief(blocking), "insufficient": brief(required_missing), "warnings": brief(warnings),
             "not_established": brief([c for c in checks if c["result"] == INSUFFICIENT and not c["required"]]), "evidence_scope": evidence_scope,
+            "required": list(REQUIRED),
             "rule": ("BLOCK if any check blocks; else INSUFFICIENT_DATA if a required check cannot be established; else WARN if any check warns; "
                      "else PASS. Checks are never averaged or scored, so nothing outweighs a BLOCK.")}
 
@@ -1008,12 +1081,12 @@ def build_report(store, *, as_of: datetime, state=None, archive_root=None, since
     with tempfile.TemporaryDirectory(prefix="mi_quality_", dir=str(tmp_root) if tmp_root else None) as tmp:
         snap = _snapshot(store_path, Path(tmp) / "store.db")
         st_snap = _snapshot(state_path, Path(tmp) / "collector.db") if state_path is not None else None
-        report = _build(T, S, th, snap, st_snap, archive)
+        report = _build(T, S, th, snap, st_snap, archive, tmp)
     report["report_sha256"] = hashlib.sha256(_canonical(report)).hexdigest()
     return report
 
 
-def _build(T: datetime, S: Optional[datetime], th: Thresholds, snap: dict, st_snap: Optional[dict], archive: Optional[Path]) -> dict:
+def _build(T: datetime, S: Optional[datetime], th: Thresholds, snap: dict, st_snap: Optional[dict], archive: Optional[Path], tmp: str) -> dict:
     inputs = {"store": {k: v for k, v in snap.items() if not k.startswith("_")},
               "collector_state": {k: v for k, v in st_snap.items() if not k.startswith("_")} if st_snap is not None else None,
               "archive_root": str(archive) if archive is not None else None}
@@ -1027,7 +1100,7 @@ def _build(T: datetime, S: Optional[datetime], th: Thresholds, snap: dict, st_sn
     else:
         store, info = _open_store(snap["_copy"], T)
     inputs["store"].update({"schema": info})
-    state, runs, state_conn, state_info = None, None, None, None
+    state, runs, state_conn, state_info, state_missing = None, None, None, None, False
     if st_snap is not None:
         if st_snap.get("refused"):
             state_info = {"state": st_snap["refused"]}
@@ -1039,33 +1112,48 @@ def _build(T: datetime, S: Optional[datetime], th: Thresholds, snap: dict, st_sn
                 runs = _runs_at(state.runs(), T)
                 state_conn = _ro(st_snap["_copy"])
                 state_info = {"state": "OK"}
-            except (StateError, sqlite3.DatabaseError) as exc:
-                state, runs, state_info = None, None, {"state": "SCHEMA_MISMATCH", "detail": str(exc)[:200]}
+            except Exception as exc:                                       # a state file that does not verify, or a row that does not parse
+                if state_conn is not None:
+                    state_conn.close()
+                state, runs, state_conn = None, None, None
+                state_info = {"state": "SCHEMA_MISMATCH" if isinstance(exc, StateError) else "UNREADABLE", "detail": _err(exc, tmp)}
         inputs["collector_state"].update({"schema": state_info})
         if state_info["state"] == "NOT_CREATED":
-            state_info = None                                          # nothing collected yet: health falls back to the store alone
+            state_info, state_missing = None, True                       # named but absent: never silently ignored (inputs check)
     if store is None:
         code = {"NOT_CREATED": "STORE_NOT_CREATED", "EMPTY": "STORE_EMPTY"}.get(info["state"], f"STORE_{info['state']}")
         result = INSUFFICIENT if info["state"] in ("NOT_CREATED", "EMPTY") else BLOCK
-        checks = [_check("inputs", result, [code], required=True, detail=info.get("detail", ""))]
-        checks += [_check(n, INSUFFICIENT, ["INPUT_NOT_READ"], required=n in ("integrity", "timestamps")) for n in SECTIONS[1:]]
+        checks = [_check("inputs", result, [code], detail=info.get("detail", ""))]
+        checks += [_check(n, INSUFFICIENT, ["INPUT_NOT_READ"]) for n in SECTIONS[1:]]
         if state_conn is not None:
             state_conn.close()
         return {**head, **{n: None for n in SECTIONS}, "checks": checks, "verdict": _verdict(checks, "NONE")}
     conn = _ro(snap["_copy"])
     try:
-        ctx = _Ctx(T=T, S=S, th=th, conn=conn, store=store, ds=_datasets(conn, T))
-        evidence = _evidence(ctx)
-        rows = ctx.conn.execute(f"SELECT (SELECT COUNT(*) FROM mi_observations o WHERE {_KNOWN.format(a='o')}) + (SELECT COUNT(*) FROM mi_absences b "
-                                "WHERE b.available_at <= :T AND b.ingested_at <= :T)", {"T": ctx.at}).fetchone()[0]
+        try:
+            ctx = _Ctx(T=T, S=S, th=th, conn=conn, store=store, ds=_datasets(conn, T), scrub=tmp)
+            evidence = _evidence(ctx)
+            rows = ctx.conn.execute(f"SELECT (SELECT COUNT(*) FROM mi_observations o WHERE {_KNOWN.format(a='o')}) + (SELECT COUNT(*) FROM mi_absences b "
+                                    f"WHERE {_ABS_KNOWN})", {"T": ctx.at}).fetchone()[0]
+        except Exception as exc:                                         # the store's own rows do not read as written: it cannot be trusted
+            checks = [_check("inputs", BLOCK, ["STORE_UNREADABLE"], detail=_err(exc, tmp))]
+            checks += [_check(n, INSUFFICIENT, ["INPUT_NOT_READ"]) for n in SECTIONS[1:]]
+            return {**head, **{n: None for n in SECTIONS}, "checks": checks, "verdict": _verdict(checks, "NONE")}
         empty = "STORE_EMPTY_AT_AS_OF" if not any(d["known"] for d in ctx.ds.values()) else ("NO_ROWS_AT_AS_OF" if not rows else None)
-        checks = [_check("inputs", INSUFFICIENT if empty else PASS, [empty] if empty else [], required=True,
-                         detail="nothing was delivered by as_of: data quality cannot be established from no data" if empty else "")]
+        in_codes = ([empty] if empty else []) + (["STATE_NOT_CREATED"] if state_missing else [])
+        checks = [_check("inputs", INSUFFICIENT if in_codes else PASS, in_codes,
+                         detail=("nothing was delivered by as_of: data quality cannot be established from no data" if empty else
+                                 "the collector state named does not exist" if state_missing else ""))]
         sections = {"evidence": evidence}
         for name, fn in (("integrity", lambda: _integrity(ctx, archive)), ("timestamps", lambda: _timestamps(ctx, state_conn, runs)),
                          ("freshness", lambda: _freshness(ctx, runs)), ("coverage", lambda: _coverage(ctx, runs)), ("latency", lambda: _latency(ctx)),
                          ("provider_health", lambda: _health(ctx, state_info, runs, state)), ("feed_divergence", lambda: _divergence(ctx))):
-            sections[name], c = fn()
+            try:
+                sections[name], c = fn()
+            except Exception as exc:                                     # data that does not read as written: never a crash, never a pass
+                sections[name] = {"error": _err(exc, tmp)}
+                c = _check(name, BLOCK, [f"{name.upper()}_UNREADABLE"],
+                           detail="the stored data could not be read as written, so it cannot be trusted")
             checks.append(c)
     finally:
         conn.close()
@@ -1139,14 +1227,21 @@ def main(argv: Optional[List[str]] = None, out=None) -> int:
     ap.add_argument("--format", choices=("text", "json"), default="text")
     try:
         a = ap.parse_args(argv)
-        as_of = _iso(a.as_of) if a.as_of else datetime.now(timezone.utc)
-        rep = build_report(a.store, as_of=as_of, state=a.state, archive_root=a.archive_root, since=_iso(a.since) if a.since else None,
-                           thresholds=Thresholds(a.min_coverage, a.max_fetch_p95_ms, a.max_feed_p95_s))
+        as_of = _aware(_iso(a.as_of), "as_of") if a.as_of else datetime.now(timezone.utc)
+        since = _aware(_iso(a.since), "since") if a.since else None
+        if since is not None and since > as_of:
+            raise ValueError("since must not be after as_of")
+        th = Thresholds(a.min_coverage, a.max_fetch_p95_ms, a.max_feed_p95_s)
     except SystemExit:
         return USAGE_ERROR
     except ValueError as exc:
         out.write(f"refused: {exc}\n")
         return USAGE_ERROR
+    try:
+        rep = build_report(a.store, as_of=as_of, state=a.state, archive_root=a.archive_root, since=since, thresholds=th)
+    except Exception as exc:                                             # nothing could be vouched for: as a BLOCK
+        out.write(f"error: the report could not be built ({_err(exc)}); nothing is vouched for\n")
+        return EXIT_CODES[BLOCK]
     out.write(dumps(rep) if a.format == "json" else render_summary(rep))
     return EXIT_CODES[rep["verdict"]["result"]]
 

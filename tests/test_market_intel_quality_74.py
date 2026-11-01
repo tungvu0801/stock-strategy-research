@@ -95,10 +95,12 @@ def dbar(sym, d, close, *, feed, retrieved, backfilled=True, flags=()):
                        payload={"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 1000})
 
 
-def clone_obs(path, symbol, dataset_id, **changes):
-    """A copy of a stored observation row written around the store (raw SQL): a tool, or a bug."""
+def clone_obs(path, symbol, dataset_id, unchecked=False, **changes):
+    """A copy of a stored observation row written around the store (raw SQL): a tool, or a bug. `unchecked`: around the CHECKs too."""
     c = sqlite3.connect(str(path))
     try:
+        if unchecked:
+            c.execute("PRAGMA ignore_check_constraints = ON")
         cols = [x[1] for x in c.execute("PRAGMA table_info(mi_observations)")]
         row = dict(zip(cols, c.execute("SELECT * FROM mi_observations WHERE symbol = ? ORDER BY rowid LIMIT 1", (symbol,)).fetchone()))
         row.update(dataset_id=dataset_id, fetch_id=None, **changes)
@@ -281,7 +283,7 @@ def test_Q04_a_missing_empty_or_unreadable_store_is_never_created_and_never_pass
     r = Q.build_report(none, as_of=TUE)
     assert (r["verdict"]["result"], chk(r, "inputs")["result"], chk(r, "inputs")["codes"]) == ("INSUFFICIENT_DATA", "INSUFFICIENT_DATA", ["STORE_NOT_CREATED"])
     assert not none.parent.exists()
-    assert all(r[s] is None for s in Q.SECTIONS) and {c["check"] for c in r["checks"] if c["required"]} == {"inputs", "integrity", "timestamps"}
+    assert all(r[s] is None for s in Q.SECTIONS) and {c["check"] for c in r["checks"] if c["required"]} == {"inputs", "integrity", "timestamps", "freshness", "coverage"}
     zero = tmp_path / "zero.db"
     zero.write_bytes(b"")
     z = chk(Q.build_report(zero, as_of=TUE), "inputs")
@@ -609,12 +611,14 @@ def test_Q12_provider_health_summarizes_fetch_outcomes_errors_plan_pressure_budg
     c = sqlite3.connect(f"file:{Path(e.store.path).as_posix()}?mode=ro&immutable=1", uri=True)
     starts = [x[0] for x in c.execute("SELECT started_at FROM mi_fetches WHERE http_status = 429 ORDER BY seq")]
     c.close()
-    assert len(starts) == 2 and h["plan_pressure"] == {"ALPACA": [starts]}                                  # the 7.0 rule: two 429s in 10 minutes
+    assert len(starts) == 2 and h["plan_pressure"] == {"ALPACA": [{"from": starts[0], "to": starts[1], "evidence": ["FIXTURE"]}]}   # two 429s, 10 min
     nf = next(f for f in h["fetches"] if f["endpoint"] == "/v1beta1/news")
     assert nf["by_http_status"]["429"] == 2 and nf["evidence"] == "FIXTURE"
     halts = next(x for x in h["collector"] if x["source"] == "halts")
     assert (halts["by_status"], halts["breaker"], halts["latest"]["status"], halts["errors"][0]["count"]) == ({"FAILED": 3}, "OPEN", "FAILED", 3)
     assert h["budget"]["ALPHA_VANTAGE"]["days_over_daily_cap"] == ["2025-12-02"]
+    assert h["budget"]["ALPHA_VANTAGE"]["events_by_evidence"] == {"UNATTRIBUTED": 7} and set(h["budget"]["ALPACA"]["events_by_evidence"]) <= {"FIXTURE",
+                                                                                                                                       "UNATTRIBUTED"}
     assert set(chk(r, "provider_health")["codes"]) == {"PLAN_LIMIT_PRESSURE", "CIRCUIT_OPEN", "LATEST_RUN_NOT_COMPLETE", "RUN_ERRORS_RECORDED",
                                                          "FETCH_ERRORS_RECORDED", "CLOCK_SKEW", "DAILY_CAP_EXCEEDED"}
     assert chk(r, "provider_health")["result"] == "WARN" and "DATASET_FAILED" in chk(r, "coverage")["codes"]
@@ -653,6 +657,9 @@ def test_Q14_sec_times_stay_blocked_they_are_neither_graded_nor_measured(tmp_pat
     assert (r["latency"]["excluded"]["SEC_ACCEPTANCE_TZ_UNVERIFIED"], r["latency"]["feed"]) == (1, [])
     assert (chk(r, "freshness")["result"], chk(r, "freshness")["codes"]) == ("INSUFFICIENT_DATA", ["SEC_ACCEPTANCE_TZ_UNVERIFIED"])
     assert "FILING" not in r["freshness"]["event_age_s"] and chk(r, "coverage")["result"] == "INSUFFICIENT_DATA"
+    assert (f["latest_record"]["times"], f["latest_record"]["ages_s"], f["latest_record"]["withheld"], f["latest_usable_observed_at"]) == (
+        None, None, "SEC_ACCEPTANCE_TZ_UNVERIFIED", None)                                  # not one SEC time is measured
+    assert r["verdict"]["result"] == "INSUFFICIENT_DATA"
     assert [PL.PLANS[s].blocked_reason for s in ("sec_filings", "sec_facts")] == [PL.SEC_TZ_BLOCK] * 2          # still blocked, unchanged
 
 
@@ -753,6 +760,169 @@ def test_X01_the_report_reaches_no_network_broker_trading_or_model_has_no_write_
     assert users == []
     assert not ST.default_path().exists() and not (ROOT / "runtime" / "market_intel" / "collector.db").exists()
 
+
+
+# ============================================================================================================ the independent review (R)
+def test_R01_tampered_or_odd_inputs_never_crash_the_report_they_block_it(tmp_path, monkeypatch):
+    e = v1_world(tmp_path / "w")
+    add_daily(e, "SPY", sessions(date(2025, 11, 24), date(2025, 12, 1)))
+    add_daily(e, "SPY", [date(2025, 11, 24)], feed="sip")                                 # one IEX / SIP pair
+    at = TUE + timedelta(minutes=5)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    def copy(name):
+        shutil.copytree(tmp_path / "w", tmp_path / name)
+        return world_paths(tmp_path / name)
+
+    def append(path, text):
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(text)
+    cases = {}
+    db, state, archive = cases.setdefault("payload", copy("payload"))
+    tamper(db, "mi_observations", "UPDATE mi_observations SET payload_json = 'not json' WHERE rowid = 1")
+    db, state, archive = cases.setdefault("flags", copy("flags"))
+    tamper(db, "mi_observations", "UPDATE mi_observations SET quality_flags_json = '{' WHERE rowid = 1")
+    db, state, archive = cases.setdefault("session_date", copy("session_date"))
+    tamper(db, "mi_observations", "UPDATE mi_observations SET session_date = 'garbage' WHERE rowid = (SELECT MAX(rowid) FROM mi_observations "
+                                  "WHERE kind = 'BAR_1DAY')")
+    db, state, archive = cases.setdefault("event_end", copy("event_end"))
+    did = MarketIntelStore(db, clock=Clock(TUE)).create_dataset(DatasetSpec(job_kind="IMPORT", kind="BAR_1MIN", provider="ALPACA", feed="iex",
+                                                                             adjustment="raw", symbols=["SPY"], timeframe="1Min",
+                                                                             start_date=date(2025, 12, 1), end_date=date(2025, 12, 1)))
+    clone_obs(db, "SPY", did, obs_id="odd-end", kind="BAR_1MIN", natural_key="BAR_1MIN|SPY|odd", event_end="2025-12-02T14:52:00Z", unchecked=True)
+    for name, ms in (("inf_latency", float("inf")), ("text_latency", "slow")):
+        db, state, archive = cases.setdefault(name, copy(name))
+        raw_fetch(db, name, started=ST.ts(TUE), retrieved=ST.ts(TUE + S), ingested=ST.ts(TUE + S), latency_ms=ms)
+    db, state, archive = cases.setdefault("anchor_null", copy("anchor_null"))
+    append(archive / "anchors.jsonl", "null\n")
+    db, state, archive = cases.setdefault("manifest_json", copy("manifest_json"))
+    append(archive / "manifest.jsonl", "{bad\n")
+    db, state, archive = cases.setdefault("manifest_key", copy("manifest_key"))
+    append(archive / "manifest.jsonl", '{"fetch_id": "x"}\n')
+    db, state, archive = cases.setdefault("inf_close", copy("inf_close"))
+    tamper(db, "mi_observations", "UPDATE mi_observations SET payload_json = '{\"open\": 1, \"high\": 1, \"low\": 1, \"close\": Infinity, \"volume\": 1}' "
+                                  "WHERE feed = 'sip'")
+    db, state, archive = cases.setdefault("state_json", copy("state_json"))
+    c = sqlite3.connect(str(state))
+    c.execute("INSERT INTO cs_runs (run_id, source, scope_key, scope_json, worker, lease_id, plan_sha256, started_at, dataset_id, trial) "
+              "VALUES ('odd', 'halts', 'x', 'not json', 'w', 'none', 'x', ?, 'none', 0)", (ST.ts(TUE),))
+    c.commit()
+    c.close()
+    want = {"payload": "INTEGRITY_UNREADABLE", "flags": "INTEGRITY_UNREADABLE", "session_date": "INTEGRITY_CORRUPT", "event_end": "MALFORMED_TIMESTAMP",
+            "inf_latency": "INVALID_LATENCY_MS", "text_latency": "INVALID_LATENCY_MS", "anchor_null": "ANCHORS_UNREADABLE",
+            "manifest_json": "RAW_ARCHIVE_UNREADABLE", "manifest_key": "RAW_ARCHIVE_UNREADABLE", "state_json": "STATE_UNREADABLE",
+            "inf_close": "DIVERGENCE_NOT_COMPUTABLE"}
+    for name, (db, state, archive) in cases.items():
+        r = Q.build_report(db, as_of=at, state=state, archive_root=archive, tmp_root=scratch)          # never raises
+        codes = {x for c in r["checks"] for x in c["codes"]}
+        assert r["verdict"]["result"] == "BLOCK" and want[name] in codes, (name, r["verdict"])
+        assert json.loads(Q.dumps(r)) == r and str(scratch) not in Q.dumps(r) and list(scratch.iterdir()) == [], name   # valid, no private path
+        out = io.StringIO()
+        assert Q.main(["--store", str(db), "--state", str(state), "--archive-root", str(archive), "--as-of", ST.ts(at), "--format", "json"], out=out) == 2, name
+        assert json.loads(out.getvalue())["verdict"]["result"] == "BLOCK", name
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(Q, "build_report", boom)
+    out = io.StringIO()
+    assert Q.main(["--store", str(db), "--as-of", ST.ts(at)], out=out) == 2 and out.getvalue().startswith("error:")       # never vouched for
+
+
+def test_R02_a_pass_needs_freshness_and_coverage_established_and_is_reachable(tmp_path):
+    e = env(tmp_path / "news")
+    did = e.store.create_dataset(fixture("NEWS"))
+    t = TUE - timedelta(hours=1)
+    e.store.ingest(did, [Observation(kind="NEWS", provider="ALPACA", observed_at=t, published_at=t, retrieved_at=TUE, available_at=TUE, backfilled=True,
+                                     session=CAL.session(t)["session"], session_date=CAL.session(t)["session_date"], status="AVAILABLE",
+                                     source_identifier="hist", payload={"headline": "history"})])
+    seal(e, did)
+    r = Q.build_report(e.store.path, as_of=TUE + 10 * S, archive_root=e.archive.root)
+    assert {c["check"]: c["result"] for c in r["checks"] if c["check"] in ("integrity", "timestamps", "freshness", "coverage")} == {
+        "integrity": "PASS", "timestamps": "PASS", "freshness": "INSUFFICIENT_DATA", "coverage": "INSUFFICIENT_DATA"}
+    assert r["verdict"]["result"] == "INSUFFICIENT_DATA" and r["verdict"]["required"] == ["inputs", "integrity", "timestamps", "freshness", "coverage"]   # never PASS on nothing established
+    b = env(tmp_path / "bars")
+    add_daily(b, "SPY", sessions(date(2025, 11, 24), date(2025, 12, 1)))
+    r = Q.build_report(b.store.path, as_of=TUE + 10 * S, archive_root=b.archive.root)
+    assert r["verdict"]["result"] == "PASS" and all(c["result"] == "PASS" for c in r["checks"] if c["required"])
+    assert {c["check"] for c in r["verdict"]["not_established"]} == {"latency", "provider_health", "feed_divergence"}
+    assert Q.main(["--store", str(b.store.path), "--archive-root", str(b.archive.root), "--as-of", ST.ts(TUE + 10 * S)], out=io.StringIO()) == 0
+
+
+def test_R03_a_latency_target_with_nothing_to_measure_is_never_judged_met(tmp_path):
+    e = env(tmp_path / "live")
+    did = e.store.create_dataset(fixture("NEWS"))
+    t = TUE - timedelta(minutes=5)
+    e.store.ingest(did, [Observation(kind="NEWS", provider="ALPACA", observed_at=t, published_at=t, retrieved_at=TUE, available_at=TUE,
+                                     session=CAL.session(t)["session"], session_date=CAL.session(t)["session_date"], status="AVAILABLE",
+                                     source_identifier="live", payload={"headline": "live"})])
+    seal(e, did)                                                                          # a live row, no fetch at all
+    r = rep(e, TUE + 10 * S, state=None, thresholds=Q.Thresholds(max_fetch_p95_ms=1))
+    assert (chk(r, "latency")["result"], chk(r, "latency")["codes"]) == ("INSUFFICIENT_DATA", ["NO_FETCH_SAMPLES"])
+    r = rep(e, TUE + 10 * S, state=None, thresholds=Q.Thresholds(max_fetch_p95_ms=1, max_feed_p95_s=3600))
+    assert (chk(r, "latency")["result"], chk(r, "latency")["codes"]) == ("INSUFFICIENT_DATA", ["NO_FETCH_SAMPLES"])   # one target unknown: not met
+    h = env(tmp_path / "history")
+    add_daily(h, "SPY", sessions(date(2025, 11, 24), date(2025, 12, 1)))                  # history only, and one fetch
+    raw_fetch(h.store.path, "one", started=ST.ts(TUE), retrieved=ST.ts(TUE + S), ingested=ST.ts(TUE + S), latency_ms=5)
+    r = rep(h, TUE + 10 * S, state=None, thresholds=Q.Thresholds(max_feed_p95_s=0.001))
+    assert (chk(r, "latency")["result"], chk(r, "latency")["codes"]) == ("INSUFFICIENT_DATA", ["NO_DELIVERY_SAMPLES"])
+
+
+def test_R04_daily_bar_coverage_expects_only_the_sessions_due_by_as_of(tmp_path):
+    e = env(tmp_path)
+    days = sessions(date(2025, 11, 24), date(2025, 12, 1))
+    did = add_daily(e, "SPY", days, end=date(2025, 12, 5))                               # a window ending after T: 2-5 December are not due yet
+    future = e.store.create_dataset(DatasetSpec(job_kind="IMPORT", kind="BAR_1DAY", provider="ALPACA", feed="iex", adjustment="raw", symbols=["QQQ"],
+                                                timeframe="1Day", start_date=date(2025, 12, 3), end_date=date(2025, 12, 5)))
+    seal(e, future, "EMPTY")
+    r = Q.build_report(e.store.path, as_of=TUE + 10 * S, archive_root=e.archive.root)
+    cov = {d["dataset_id"]: d for d in r["coverage"]["datasets"]}
+    assert (cov[did]["not_yet_due_sessions"], cov[did]["per_symbol"]["SPY"]["result"], cov[did]["per_symbol"]["SPY"]["missing_sessions"]) == (4, "PASS", [])
+    assert (cov[future]["expectation"], cov[future]["reason"], cov[future]["not_yet_due_sessions"]) == ("INSUFFICIENT_DATA", "NO_SESSION_DUE_AT_AS_OF", 3)
+    assert chk(r, "coverage")["result"] == "PASS"                                         # never a hole for sessions still to come
+    later = Q.build_report(e.store.path, as_of=datetime(2025, 12, 6, 15, tzinfo=UTC), archive_root=e.archive.root)
+    assert {d["dataset_id"]: d["per_symbol"]["SPY"]["missing_sessions"] for d in later["coverage"]["datasets"] if d["dataset_id"] == did} == {
+        did: ["2025-12-02", "2025-12-03", "2025-12-04", "2025-12-05"]}                     # once due, they are missing
+
+
+def test_R05_an_archive_without_anchors_never_vouches_and_a_named_state_file_must_exist(tmp_path):
+    e = v1_world(tmp_path / "w")
+    at = TUE + timedelta(minutes=5)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    r = rep(e, at, archive_root=empty)
+    assert (chk(r, "integrity")["result"], chk(r, "integrity")["codes"], r["verdict"]["result"]) == ("INSUFFICIENT_DATA", ["ANCHORS_FILE_NOT_FOUND", "NO_ANCHORS"],
+                                                                                                   "INSUFFICIENT_DATA")
+    bare = tmp_path / "bare"
+    shutil.copytree(e.archive.root, bare)
+    (bare / "anchors.jsonl").write_bytes(b"")
+    assert (chk(rep(e, at, archive_root=bare), "integrity")["codes"]) == ["NO_ANCHORS"]   # no anchor for any sealed dataset
+    r = rep(e, at, state=tmp_path / "typo" / "collector.db")
+    assert (chk(r, "inputs")["result"], chk(r, "inputs")["codes"], r["verdict"]["result"]) == ("INSUFFICIENT_DATA", ["STATE_NOT_CREATED"], "INSUFFICIENT_DATA")
+    assert r["inputs"]["collector_state"]["present"] is False and not (tmp_path / "typo").exists()
+
+
+def test_R06_rows_breaking_the_stores_rules_never_become_figures(tmp_path):
+    e = env(tmp_path, outcomes=[snaps(AAPL=TUE - S)])
+    e.col.collect(SNAP, AAPL_IEX)
+    did = e.store.create_dataset(fixture("QUOTE_SNAPSHOT", feed="iex", symbols=["AAPL"]))
+    clone_obs(e.store.path, "AAPL", did, obs_id="early", natural_key="QUOTE_SNAPSHOT|AAPL|early", ingested_at=ST.ts(TUE - 30 * S))
+    clone_obs(e.store.path, "AAPL", did, obs_id="sloppy", natural_key="QUOTE_SNAPSHOT|AAPL|sloppy", observed_at="2025-12-02T14:59:59Z", unchecked=True)
+    r = rep(e, TUE + 10 * S)
+    assert {"INGESTED_BEFORE_RETRIEVAL", "MALFORMED_TIMESTAMP"} <= set(chk(r, "timestamps")["codes"]) and r["verdict"]["result"] == "BLOCK"
+    g = next(x for x in r["latency"]["feed"] if x["kind"] == "QUOTE_SNAPSHOT")
+    assert g["ingestion_s"]["min"] >= 0                                                   # the row ingested 30 s early is no -30 s sample
+    assert stream(r, "QUOTE_SNAPSHOT", "AAPL")["values"] == 2                               # the malformed time is never compared as text
+
+
+def test_R07_the_schedule_window_is_bounded_and_since_brings_it_back(tmp_path):
+    e = env(tmp_path, outcomes=[rss()])
+    e.col.collect(HALTS, NONE)
+    far = TUE + timedelta(days=Q.SCHEDULE_MAX_DAYS + 1)
+    s = next(x for x in rep(e, far)["coverage"]["schedules"] if x["source"] == "halts")
+    assert (s["status"], s["from"]) == ("WINDOW_TOO_LONG", ST.ts(TUE))
+    assert "SCHEDULE_WINDOW_TOO_LONG" in chk(rep(e, far), "coverage")["codes"]
+    s = next(x for x in rep(e, far, since=far - timedelta(days=1))["coverage"]["schedules"] if x["source"] == "halts")
+    assert s["status"] == "EVALUATED"
 
 
 # ============================================================================================================ scope (F)

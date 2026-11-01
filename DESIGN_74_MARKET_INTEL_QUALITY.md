@@ -43,6 +43,9 @@ report that must leave its inputs untouched and must not miss data.
 The raw archive is read with plain file reads; nothing is written there. Cost: temporary disk space equal to the store's size while the
 report runs (section 9).
 
+A store that does not exist is `INSUFFICIENT_DATA` (`STORE_NOT_CREATED`) and is never created. A collector state the operator named but that
+does not exist is `INSUFFICIENT_DATA` too (`STATE_NOT_CREATED`): a mistyped path is never silently ignored.
+
 ## 3. Point in time
 
 The report is evaluated at an explicit instant `as_of` (T). A naive time is refused; an offset is normalised to UTC. `since` (optional)
@@ -57,6 +60,10 @@ bounds the window of the activity sections (latency, provider health, schedule c
 | a fetch | `ingested_at <= T` (and, in a window, `started_at >= since`) |
 | a budget event | `at <= T` |
 | a collector run | `started_at <= T`; its end only when `ended_at <= T` (otherwise it was still open at T) |
+
+Every comparison with T in SQL also requires the store's own timestamp format (the schema's `GLOB`). A time that fails it is malformed: it
+is never compared as text and never counted, and the timestamp scan reports it and blocks. (The frozen 7.1 reads, such as `latest_status`,
+compare text themselves, so a malformed row can still be chosen there; the report blocks either way.)
 
 Two sections describe the **file**, not the moment, and say so in the report: `integrity` (a property of the stored bytes) and malformed
 timestamps (a value that cannot be parsed cannot be placed in time). Test Q08 proves that a report at T is identical, section for section,
@@ -96,7 +103,7 @@ A stream is (kind, symbol, series, feed, adjustment), the scope of the store's o
 | bars | the 7.1 `latest_status` freshness (daily bar: the last completed session's bar; minute: bar end; hour: bar start) |
 | quote snapshots | `QUOTE_DAY` and `QUOTE_SWING` from the quote time (both are reported: they serve different consumers) |
 | news, halts, earnings, macro | their **feed**: the 7.3 health rule, the plan's 7.0 policy measured from the start of the last successful, verified run (needs the collector state) |
-| filings, facts | not graded: `SEC_ACCEPTANCE_TZ_UNVERIFIED` (section 8) |
+| filings, facts | not graded, and their times and ages are withheld: `SEC_ACCEPTANCE_TZ_UNVERIFIED` (section 8) |
 
 The histogram counts streams and feeds per policy key by status and freshness class (the classes are the pre-registered FRESH / AGING / STALE
 boundaries, not new bins), and `event_age_s` gives the distribution of the latest event's age per kind.
@@ -109,7 +116,7 @@ Expected versus observed **only where an expectation is explicit**:
 
 | Expectation | Source | Per item |
 |---|---|---|
-| calendar sessions of a daily-bar dataset's window and symbols | the 7.1 `quality_report` (unchanged) | VALID, INVALID or MISSING sessions, holes |
+| calendar sessions of a daily-bar dataset's window and symbols, up to the last session whose bar is due by T (the 7.0 daily-bar rule) | the 7.1 `quality_report` (unchanged) | VALID, INVALID or MISSING sessions, holes; later sessions are `not_yet_due_sessions`, never missing |
 | the requested symbols of a quote-snapshot dataset | the dataset's `symbols` | `VALUE`, `INVALID` (only unusable values), `ABSENCE` (looked, nothing), `MISSING` |
 | a collection plan's schedule | the plan's 7.0 health policy and its windows | minutes current / expected |
 
@@ -122,7 +129,8 @@ minute, `collector.health.freshness` (the 7.3 rule) says whether the feed was cu
 Minutes outside the policy's window are not expected; a minute on a day the calendar does not cover is reported apart
 (`CALENDAR_NOT_COVERED`). The result is expected minutes, current minutes, the ratio, the not-current intervals, and the gaps the collector
 recorded itself. The windows follow New York time across daylight-saving changes (test Q07b). The 60 s step is the resolution, not a
-threshold.
+threshold. A window longer than 366 days is not sampled (`SCHEDULE_WINDOW_TOO_LONG`; give a later `--since`): an operational bound on the
+cost, not a quality threshold.
 
 Breakdowns: per dataset and symbol, per (provider, kind, evidence), and per collection pair with its time window. The check blocks on a
 daily-bar `BLOCKED` result (the pinned 7.1 rule: a hole of two or more sessions, an uncovered calendar day, a blocking code). It warns on
@@ -144,8 +152,12 @@ Each group (provider, endpoint or kind and feed, evidence) reports n, p50, p95, 
 sample). A delivery up to the 2 s clock skew early is kept and counted (`negative_within_skew`); beyond the skew it contradicts the store's
 own rule and is a timestamp violation, never a sample. SEC kinds are excluded and counted.
 
+A value that contradicts the store's rules is never a sample: a negative availability or ingestion delay, a publication after retrieval
+beyond the news skew, or a `latency_ms` that is negative, non-numeric or infinite (each is a timestamp violation, section 4.5).
+
 No latency target or SLA exists, so none is assumed: latency is **measured, not judged** (`INSUFFICIENT_DATA`, `NO_LATENCY_TARGET`) unless
-the operator sets `max_fetch_p95_ms` or `max_feed_p95_s`; then a group above its target warns.
+the operator sets `max_fetch_p95_ms` or `max_feed_p95_s`. A target is judged only on samples of its own metric: a group above it warns, and
+a target with nothing to measure is `INSUFFICIENT_DATA` (`NO_FETCH_SAMPLES`, `NO_DELIVERY_SAMPLES`), never met.
 
 ### 4.5 Timestamps
 
@@ -154,7 +166,8 @@ the operator sets `max_fetch_p95_ms` or `max_feed_p95_s`; then a group above its
   reported with their column and never used: a row whose time cannot be parsed is left out of every figure (test Q02).
 - **Violations** (rows recorded by T): a value available before it was retrieved; a backfilled row available after retrieval; an event end
   before its event; a provider time after retrieval beyond the skew (`OBSERVED_AFTER_RETRIEVAL`, a negative latency); a bar not complete at
-  retrieval; a publication after retrieval beyond the news skew; ingestion before retrieval; a negative fetch duration or `latency_ms`; a
+  retrieval; a publication after retrieval beyond the news skew; ingestion before retrieval; a negative fetch duration or `latency_ms`, or a
+  `latency_ms` that is not a finite number (`INVALID_LATENCY_MS`); a
   successful fetch without `retrieved_at`; ingestion before the fetch started; a member available before retrieval; a dataset event before
   its dataset; a collector run that ended before it started, or a window that ends before it starts. The store refuses all of these on
   write, so each means a tool wrote around the store (or a bug).
@@ -167,16 +180,18 @@ Any malformed value or violation blocks.
 
 The 7.1 `verify_integrity` on a v1 file, the 7.3.1 `MarketIntelStoreV2.verify_integrity` on a v2 file (adding the COLLECT claim and news run
 checks), each with the archive's anchors when `--archive-root` is given; SQLite's `integrity_check` and `foreign_key_check` on the copy;
-and the raw archive's manifest (`RawArchive.verify`). `CORRUPT`, a schema error, an SQLite or foreign-key failure, an unreadable anchors file
-or an archive body that does not match blocks. Without anchors the seals cannot be confirmed: `INSUFFICIENT_DATA` (`NO_ANCHORS`, also when
-the archive root does not exist). A pending anchor or a dataset still open warns. The store's rows are never repaired, re-anchored or
+and the raw archive's manifest (`RawArchive.verify`). `CORRUPT`, a schema error, an SQLite or foreign-key failure, an anchors file or
+manifest that does not parse (`ANCHORS_UNREADABLE`, `RAW_ARCHIVE_UNREADABLE`), a row the verification cannot read as written
+(`INTEGRITY_UNREADABLE`) or an archive body that does not match blocks. Without anchors the seals cannot be confirmed: `INSUFFICIENT_DATA`
+(`NO_ANCHORS`), also when the archive root does not exist, has no `anchors.jsonl` (`ANCHORS_FILE_NOT_FOUND`) or anchors none of the sealed
+datasets, so a wrong path never reads better than no path. A pending anchor for some datasets, or a dataset still open, warns. The store's rows are never repaired, re-anchored or
 re-sealed (`recover_pending` is not called).
 
 ### 4.7 Provider health
 
 From the store: per (provider, endpoint, evidence), fetches by status and HTTP status, the distinct errors with counts, and the last success
-and last error. **Plan pressure** applies the 7.0 rule to the recorded 429 responses (at least two within 600 s), and any recorded
-`PRESSURE` budget event also counts. **Budget use**: per provider, events by type, refusals by reason, `ALLOW`s per New York day (New
+and last error. **Plan pressure** applies the 7.0 rule to the recorded 429 responses (at least two within 600 s); each episode lists the
+evidence classes of its responses, and any recorded `PRESSURE` budget event also counts. Budget events are counted per evidence class too. **Budget use**: per provider, events by type, refusals by reason, `ALLOW`s per New York day (New
 York midnight, so 05:00 UTC in winter and 04:00 UTC in summer), and the peak `ALLOW`s within 60 s next to the pre-registered default budget.
 The 7.0 token bucket allows a burst plus its refill, so a 60 s peak above the per-minute budget is not a violation. A day above Alpha
 Vantage's daily cap is (`DAILY_CAP_EXCEEDED`). Config overrides are not read.
@@ -222,17 +237,24 @@ distribution. Divergence warns and is never a correction (the stored bars are un
 Each check is `PASS`, `WARN`, `BLOCK` or `INSUFFICIENT_DATA` with its codes. The verdict is:
 
 1. `BLOCK` if any check blocks; else
-2. `INSUFFICIENT_DATA` if a **required** check (`inputs`, `integrity`, `timestamps`) cannot be established; else
+2. `INSUFFICIENT_DATA` if a **required** check (`inputs`, `integrity`, `timestamps`, `freshness`, `coverage`) cannot be established; else
 3. `WARN` if any check warns; else
 4. `PASS`.
 
 Checks are never averaged, weighted or scored, so nothing outweighs a `BLOCK`: test Q06 tampers one row and shows the verdict blocks while
-every other check is exactly as good as before. A non-required check that cannot be established (for example latency without a target) is
-listed under `not_established`. An input that is missing, empty or delivered nothing by T is `INSUFFICIENT_DATA`, never `PASS`
-(`STORE_NOT_CREATED`, `STORE_EMPTY`, `STORE_EMPTY_AT_AS_OF`, `NO_ROWS_AT_AS_OF`); one that is unreadable, of an unknown schema or in use
-blocks.
+every other check is exactly as good as before. A `PASS` therefore says that integrity, timestamps, freshness and coverage were all
+established and good; a store about which nothing could be established is `INSUFFICIENT_DATA`, never `PASS` (test R02).
 
-CLI exit codes: 0 `PASS`, 1 `WARN`, 2 `BLOCK`, 3 `INSUFFICIENT_DATA`, 4 a refused invocation (a naive time, an invalid threshold).
+**Failing closed on unreadable data.** Every section runs inside a guard: if the stored data cannot be read as written (corrupt JSON in a
+row, an impossible date, a collector state row that does not parse), the section is `BLOCK` with `<SECTION>_UNREADABLE` and the error,
+and the report is still produced. Tampered or odd inputs never crash the report (test R01).
+
+A non-required check that cannot be established (for example latency without a target) is listed under `not_established`. An input that
+is missing, empty or delivered nothing by T is `INSUFFICIENT_DATA`, never `PASS` (`STORE_NOT_CREATED`, `STORE_EMPTY`, `STORE_EMPTY_AT_AS_OF`,
+`NO_ROWS_AT_AS_OF`, `STATE_NOT_CREATED`); one that is unreadable, of an unknown schema or in use blocks.
+
+CLI exit codes: 0 `PASS`, 1 `WARN`, 2 `BLOCK`, 3 `INSUFFICIENT_DATA`, 4 a refused invocation (a naive time, an invalid threshold). Data
+problems are verdicts, never exit 4. A report that cannot be built at all exits 2 with "nothing is vouched for".
 
 ## 7. Report format and determinism
 
@@ -271,6 +293,8 @@ the freshness histogram, the latency groups, coverage and the digest.
 - **Integrity and malformed timestamps describe the file, not the moment**, so they are not point-in-time (section 3).
 - **Delivery latency for backfilled data is not reported** (it would measure history, not the feed). Live latency exists only for
   collector-written (fixture or, later, real) rows.
+- **The frozen 7.1 reads compare times as text.** A malformed time can still be chosen by `latest_status` as a latest record; the report
+  blocks on it (section 3), but the stream's grade beside it is then meaningless.
 - **Evidence is only as honest as `job_kind`.** A fixture written as `IMPORT` would read as operator data; the store's rules (IMPORT rows
   must be backfilled) are the only guard.
 - **No production observation has been reported on.** Every test store is a fixture or an offline-verification store.
@@ -290,3 +314,24 @@ the freshness histogram, the latency groups, coverage and the digest.
 3. **A read-only route** for this report belongs to the deferred wiring stage (proposal only; not authorized here).
 4. **Reporting on the production store** is allowed read-only by naming it with `--store`, but it needs a quiet moment (no writer) and free
    temporary space. No production store exists yet.
+
+## 12. Independent review
+
+A reviewer working from the requirements and the code alone (not from this document's conclusions) built adversarial stores against
+`dfc4f46`. Every finding was reproduced by a regression test and fixed:
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| 1 | BLOCKING | Tampered or odd inputs (corrupt JSON, an impossible date, a non-numeric or infinite `latency_ms`, a bad anchors or manifest line, an unparsable collector-state row) crashed the report, so their BLOCK never came out; the CLI mapped data errors to exit 4 | Every section and reused interface guarded: unreadable data is a BLOCK with its code, and the report is still produced; a bad `latency_ms` is `INVALID_LATENCY_MS`; the CLI exits 4 only on a refused invocation (R01) |
+| 2 | SHOULD_FIX | `PASS` when only integrity and timestamps were established | freshness and coverage are required checks (R02; a `PASS` is reachable: R02) |
+| 3 | SHOULD_FIX | A latency target was "met" with no sample of its metric | judged only on its own samples; else `NO_FETCH_SAMPLES` / `NO_DELIVERY_SAMPLES` (R03) |
+| 4 | SHOULD_FIX | Daily-bar coverage expected sessions after T: a false hole | only sessions due by T are expected; later ones are `not_yet_due_sessions` (R04) |
+| 5 | SHOULD_FIX | SEC streams exposed their acceptance-time ages | SEC times and ages withheld (Q14) |
+| 6 | MINOR | An empty or wrong archive root read better (WARN) than none | `ANCHORS_FILE_NOT_FOUND` / `NO_ANCHORS` (R05) |
+| 7 | MINOR | A named collector state that does not exist was ignored | `STATE_NOT_CREATED` (R05) |
+| 8 | MINOR | Rule-breaking rows still became figures (a negative ingestion delay; a malformed but sortable time) | never samples; malformed times never compared (R06) |
+| 9 | MINOR | Schedule sampling had no bound (a bogus early start would hang it) | `SCHEDULE_WINDOW_TOO_LONG` beyond 366 days (R07) |
+| 10 | MINOR | Budget and plan-pressure figures had no evidence label | evidence per budget provider and per pressure episode (Q12) |
+
+The reviewer also confirmed: nothing written beside the inputs and no private copy left behind even after a crash; point in time across a
+dataset sealed after T and later rows; the refusals; v2 stores; verdict precedence; thresholds; determinism; isolation.
