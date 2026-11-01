@@ -24,7 +24,8 @@ HORIZONS = (INTRADAY, SWING)
 COMPLETED, BLOCKED, INSUFFICIENT_DATA = "COMPLETED", "BLOCKED", "INSUFFICIENT_DATA"
 # per-horizon states of one symbol
 ELIGIBLE, INELIGIBLE, NOT_APPLICABLE = "ELIGIBLE", "INELIGIBLE", "NOT_APPLICABLE"
-# flag values: a flag that cannot be established says so; it is never read as its favourable value
+# flag values: a flag that cannot be established says so; it is never read as its favourable value (the catalyst flag also reads the
+# Stage 7.0 UNAVAILABLE when the news poll is not current)
 TRUE, FALSE, UNKNOWN, NOT_ESTABLISHED = "TRUE", "FALSE", "UNKNOWN", "NOT_ESTABLISHED"
 
 # universe roles (Tier A, master design D.1)

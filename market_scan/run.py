@@ -39,7 +39,7 @@ from zoneinfo import ZoneInfo
 from api.validation import validate_symbol
 from data.sector_map import SECTOR_MAP
 from dynamic_universe import core as DUC
-from market_intel import AVAILABLE, INSUFFICIENT_DATA as MI_INSUFFICIENT, NOT_APPLICABLE as MI_NOT_APPLICABLE, PRE, REG
+from market_intel import AVAILABLE, INSUFFICIENT_DATA as MI_INSUFFICIENT, NOT_APPLICABLE as MI_NOT_APPLICABLE, PRE, REG, UNAVAILABLE
 from market_intel import calendar as CAL
 from market_intel import freshness as FR
 from market_intel import quality as Q
@@ -62,7 +62,6 @@ NY = ZoneInfo("America/New_York")
 ROLE_ORDER = (CORE, WATCHLIST, SECTOR_ETF, INDEX_PROXY)
 EXIT_CODES = {"PASS": 0, "WARN": 1, BLOCKED: 2, INSUFFICIENT_DATA: 3}
 USAGE_ERROR = 4
-LOOKBACK_DAYS = 400                                     # the read window of the 200-session regime (calendar days; a bound, not a parameter)
 
 LIMITATIONS = (
     "No production observation has been scanned: every test store is a fixture or an offline-verification store.",
@@ -76,6 +75,12 @@ LIMITATIONS = (
     "The regime's macro flags are display only (no release schedule makes them usable under the 7.0 MACRO policy); the VIX percentile is "
     "not pre-registered.",
     "Earnings proximity reads expected dates only; SEC confirmations, like every SEC acceptance time, stay blocked.",
+    "From 18:00 to the daily bar's completion (20:00; 17:00 on an early close) no swing candidate can be eligible: 7.0 expects today's bar "
+    "from 18:00, the 7.1 store holds it only once complete (DAILY_BAR_DUE_BEFORE_STORABLE).",
+    "ATR(14) and what uses it (ATR units, unusual volatility) are withheld for 14 sessions after any close-to-close move beyond 25 %: on "
+    "raw bars a split cannot be told from a real move without a corporate-action source.",
+    "Unverified offline: whether the provider rolls a snapshot's daily and previous-day bars before the open; if it does not, a "
+    "premarket gap reads PREV_CLOSE_NOT_PREVIOUS_SESSION (fail closed).",
 )
 
 
@@ -149,7 +154,8 @@ def universe(*, core: Optional[DUC.Core] = None, watchlist: Optional[Sequence[st
         rows.append({"symbol": s, "roles": [r for r in ROLE_ORDER if r in m["roles"]], "sector": m["sector"],
                      "sector_etf": SECTOR_MAP[m["sector"]]["etf"] if m["sector"] else None})
     return {"tier": "A", "symbols": rows, "count": len(rows), "sha256": sha256([[r["symbol"], r["roles"], r["sector"]] for r in rows]),
-            "core": c.summary(), "watchlist": {"count": len(wl), "symbols": list(wl)}, "problems": problems,
+            "core": c.summary(), "watchlist": {"count": len({str(s).strip().upper() for s in wl}), "symbols": sorted({str(s).strip().upper() for s in wl})},
+            "problems": problems,
             "sector_etfs": {sec: info["etf"] for sec, info in SECTOR_MAP.items()}}
 
 
@@ -174,6 +180,7 @@ class _Reader:
     def __init__(self, store, conn, T: datetime, feed: str, schema_version: int):
         self.store, self.conn, self.T, self.feed, self.v2 = store, conn, T, feed, schema_version >= 2
         self.at = ST.ts(T)
+        self._news: Optional[Dict[str, dict]] = None
         self.jobs = {r["dataset_id"]: r["job_kind"] for r in conn.execute("SELECT dataset_id, job_kind FROM mi_datasets")}
 
     def evidence(self, dataset_id: Optional[str]) -> str:
@@ -222,20 +229,28 @@ class _Reader:
         return present, missing, [b["_row"] for b in present]
 
     def last_daily(self, sym: str) -> dict:
-        u = self.store.latest_usable("BAR_1DAY", at=self.T, symbol=sym, feed=self.feed, adjustment=BAR_ADJUSTMENT)
-        return FR.assess_daily_bar(date.fromisoformat(u["session_date"]) if u else None, self.T)
+        """The 7.0 daily-bar state of the latest usable raw bar - only while it is the latest record: a newer absence or unusable bar makes
+        it UNAVAILABLE, exactly as the store's latest_status says."""
+        ls = self.store.latest_status("BAR_1DAY", at=self.T, symbol=sym, feed=self.feed, adjustment=BAR_ADJUSTMENT)
+        f = ls["freshness"]                                            # assess_daily_bar of the latest usable bar (NEVER_OBSERVED without one)
+        if ls["latest_record"] is None or ls["usable_is_latest"]:
+            return f
+        return {**f, "status": UNAVAILABLE, "usable": False, "freshness": None, "reason": ls["reason"]}
 
-    def halts(self, sym: str, today: Optional[date]) -> List[dict]:
-        if today is None:
-            return []
-        return self.store.history("HALT", symbol=sym, start=ny(today), end=self.T, as_of=self.T, usable_only=True)
+    def halts(self, sym: str) -> List[dict]:
+        """Every halt of `sym` known at T (whenever it began): an unresolved halt from an earlier session is still open today."""
+        return self.store.history("HALT", symbol=sym, end=self.T, as_of=self.T, usable_only=True)
 
     def last_ok_fetch(self, provider: str, endpoint: Optional[str] = None) -> Optional[datetime]:
-        """The latest successful fetch of `provider` (and `endpoint`) retrieved and ingested by T: when the feed was last seen working."""
-        sql = (f"SELECT MAX(retrieved_at) FROM mi_fetches WHERE provider = :p AND status IN ('OK', 'NOT_MODIFIED') AND {Q._le('retrieved_at')} "
-               f"AND {Q._le('ingested_at')}" + (" AND endpoint = :e" if endpoint else ""))
-        r = self.conn.execute(sql, {"p": provider, "e": endpoint, "T": self.at}).fetchone()
-        return ST.parse_ts(r[0]) if r and r[0] else None
+        """The latest successful fetch of `provider` (and `endpoint`) retrieved and ingested by T: when the feed was last seen working. A
+        time that does not parse is never a time (7.4's own reader); the next one is taken."""
+        sql = (f"SELECT retrieved_at FROM mi_fetches WHERE provider = :p AND status IN ('OK', 'NOT_MODIFIED') AND {Q._le('retrieved_at')} "
+               f"AND {Q._le('ingested_at')}" + (" AND endpoint = :e" if endpoint else "") + " ORDER BY retrieved_at DESC")
+        for (v,) in self.conn.execute(sql, {"p": provider, "e": endpoint, "T": self.at}):
+            t = Q._t(v)
+            if t is not None:
+                return t
+        return None
 
     def mention_runs(self) -> int:
         if not self.v2:
@@ -243,34 +258,61 @@ class _Reader:
         return self.conn.execute(f"SELECT COUNT(*) FROM mi_news_runs WHERE run_kind = 'MENTIONS' AND algorithm = :a AND {Q._le('as_of')} AND "
                                  f"{Q._le('computed_at')}", {"a": NP.MENTION_ALGORITHM, "T": self.at}).fetchone()[0]
 
+    def _articles(self) -> Dict[str, dict]:
+        """Per article published within the 18 h before T: the MENTIONS run known at T (as_of and computed_at <= T) that read its LATEST
+        revision known at T - the highest revision read, then the latest as_of / computed_at / run id. An article whose latest known revision
+        no run has read yet is withheld (`behind`): a correction is never outweighed by the run that read the text before it."""
+        if self._news is None:
+            lo = ST.ts(self.T - timedelta(seconds=CATALYST_WINDOW_S))
+            best: Dict[str, dict] = {}
+            for r in self.conn.execute(
+                    "SELECT i.natural_key, i.revision, i.obs_id, r.run_id, r.as_of, r.computed_at, o.published_at, o.dataset_id FROM mi_news_run_inputs i "
+                    "JOIN mi_news_runs r ON r.run_id = i.run_id JOIN mi_observations o ON o.obs_id = i.obs_id "
+                    f"WHERE r.run_kind = 'MENTIONS' AND r.algorithm = :a AND {Q._le('r.as_of')} AND {Q._le('r.computed_at')} "
+                    f"AND {Q._le('o.published_at')} AND o.published_at >= :lo", {"a": NP.MENTION_ALGORITHM, "T": self.at, "lo": lo}):
+                key = (int(r["revision"]), r["as_of"], r["computed_at"], r["run_id"])
+                if r["natural_key"] not in best or key > best[r["natural_key"]]["key"]:
+                    best[r["natural_key"]] = {**dict(r), "key": key}
+            latest = {r[0]: int(r[1]) for r in self.conn.execute(
+                f"SELECT o.natural_key, MAX(o.revision) FROM mi_observations o WHERE o.kind = 'NEWS' AND {Q._KNOWN.format(a='o')} GROUP BY o.natural_key",
+                {"T": self.at})}
+            self._news = {k: {**v, "behind": latest.get(k, v["key"][0]) > v["key"][0]} for k, v in best.items()}
+        return self._news
+
     def mentions(self, sym: str) -> Optional[List[dict]]:
-        """Catalyst-eligible mentions of `sym` from MENTIONS runs known at T (as_of and computed_at <= T), in articles - the revision each
-        run read - published within the 18 h before T. None on a v1 store (no mention tables)."""
+        """Catalyst-eligible mentions of `sym`, each from its article's run (_articles), in articles published within the 18 h before T. None on
+        a v1 store (no mention tables)."""
         if not self.v2:
             return None
-        lo = ST.ts(self.T - timedelta(seconds=CATALYST_WINDOW_S))
-        rows = self.conn.execute(
-            "SELECT m.natural_key, m.method, m.confidence, m.role, r.run_id, r.as_of, o.obs_id, o.published_at, o.dataset_id "
-            "FROM mi_news_mentions m JOIN mi_news_runs r ON r.run_id = m.run_id "
-            "JOIN mi_news_run_inputs i ON i.run_id = m.run_id AND i.natural_key = m.natural_key JOIN mi_observations o ON o.obs_id = i.obs_id "
-            f"WHERE r.run_kind = 'MENTIONS' AND r.algorithm = :a AND {Q._le('r.as_of')} AND {Q._le('r.computed_at')} AND m.symbol = :s "
-            f"AND m.catalyst_eligible = 1 AND {Q._le('o.published_at')} AND o.published_at >= :lo ORDER BY o.published_at, m.natural_key, r.run_id",
-            {"a": NP.MENTION_ALGORITHM, "s": sym, "T": self.at, "lo": lo}).fetchall()
-        seen, out = set(), []
-        for r in rows:
-            if r["natural_key"] not in seen:                       # one article once, whichever runs saw it
-                seen.add(r["natural_key"])
-                out.append({"natural_key": r["natural_key"], "published_at": r["published_at"], "method": r["method"], "confidence": r["confidence"],
-                            "role": r["role"], "run_id": r["run_id"], "obs_id": r["obs_id"], "evidence": self.evidence(r["dataset_id"])})
-        return out
+        arts = self._articles()
+        out = []
+        for m in self.conn.execute("SELECT natural_key, run_id, method, confidence, role FROM mi_news_mentions WHERE symbol = :s AND catalyst_eligible = 1 "
+                                   "ORDER BY natural_key, run_id", {"s": sym}):
+            a = arts.get(m["natural_key"])
+            if a is not None and a["run_id"] == m["run_id"] and not a["behind"]:
+                out.append({"natural_key": m["natural_key"], "published_at": a["published_at"], "method": m["method"], "confidence": m["confidence"],
+                            "role": m["role"], "run_id": m["run_id"], "revision": a["key"][0], "obs_id": a["obs_id"], "evidence": self.evidence(a["dataset_id"])})
+        return sorted(out, key=lambda x: (x["published_at"], x["natural_key"]))
 
     def macro(self) -> Optional[dict]:
         return self.store.latest_usable("MACRO", at=self.T, series_id=CURVE_SERIES)
 
-    def earnings(self, sym: str, today: Optional[date]):
-        if today is None:
-            return None
-        return EA.StoreEarningsProvider(self.store, as_of=self.T).get_upcoming_earnings(sym, today, today + timedelta(days=LOOKBACK_DAYS))
+    def earnings_index(self) -> Tuple[Optional[str], Dict[str, List[dict]]]:
+        """(the latest calendar snapshot date known at T, its usable rows per symbol). One calendar call lists every symbol, so a symbol the
+        latest snapshot no longer lists has no expected date, whatever an older snapshot said."""
+        rows = self.store.history("EARNINGS", as_of=self.T, usable_only=True)
+        dated = []
+        for r in rows:
+            try:
+                dated.append((date.fromisoformat(str(r["payload"].get("snapshot_date"))).isoformat(), r))
+            except ValueError:
+                continue                                                # a snapshot date that does not parse is never the latest
+        latest = max((d for d, _ in dated), default=None)
+        by: Dict[str, List[dict]] = {}
+        for d, r in dated:
+            if d == latest:
+                by.setdefault(r["symbol"], []).append(r)
+        return latest, by
 
 
 # ------------------------------------------------------------------------------------------------ one symbol
@@ -278,14 +320,17 @@ def _context(T: datetime) -> Dict[str, Any]:
     s = CAL.session(T)
     today = s["session_date"] if s["market_day"] else None
     return {"session": s["session"], "today": today, "previous": CAL.previous_market_day(today) if today else None,
-            "last_completed": CAL.last_completed_session(T), "calendar": s["calendar"], "covered": s["covered"]}
+            "last_completed": CAL.last_completed_session(T), "calendar": s["calendar"], "covered": s["covered"], "et_minute": s["et_minute"]}
 
 
 def _rvol(rd: _Reader, sym: str, ctx: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]], dict]:
-    """(relative_volume_tod, the premarket features, the minute-bar inputs). Regular session only for the relative volume."""
+    """(relative_volume_tod, the premarket features, the minute-bar inputs). Regular session only for the relative volume: t = the end of
+    today's latest delivered regular-session minute bar (graded by the 7.0 BAR_1MIN policy), m = the minutes from 09:30 to t; today and each
+    of the 10 prior sessions must have a bar for every one of those minutes (an early close: up to its close), else MISSING - a missing
+    minute, on IEX possibly a minute without prints, is never read as zero volume (C.13)."""
     today = ctx["today"]
     if today is None:
-        na = F.feature(status=MI_NOT_APPLICABLE, codes=["NOT_A_MARKET_DAY"], unit="x")
+        na = F.feature(status=MI_NOT_APPLICABLE, codes=["CALENDAR_NOT_COVERED" if not ctx["covered"] else "NOT_A_MARKET_DAY"], unit="x")
         return na, F.premarket([], feed=rd.feed), {"count": 0}
     prior, covered = _back(CAL.previous_market_day(today), RVOL_PRIOR_SESSIONS)
     start = ny(prior[0], 9, 30) if prior else ny(today, 4)
@@ -293,23 +338,26 @@ def _rvol(rd: _Reader, sym: str, ctx: Dict[str, Any]) -> Tuple[Dict[str, Any], D
     by: Dict[date, List[dict]] = {}
     for b in bars:
         by.setdefault(b["session_date"], []).append(b)
+    open_at = ny(today, 9, 30)
     pre = [b for b in by.get(today, []) if b["session"] == PRE]
-    pm = F.premarket(pre, feed=rd.feed)
+    pm = F.premarket(pre, feed=rd.feed, minutes_elapsed=max(0, int((min(rd.T, open_at) - ny(today, 4)).total_seconds() // 60)))
     inputs = rd.digest([b["_row"] for b in bars])
     if ctx["session"] != REG:
         return F.feature(status=MI_NOT_APPLICABLE, codes=["OUTSIDE_REGULAR_SESSION"], unit="x"), pm, inputs
-    open_at = ny(today, 9, 30)
-    minutes = min(int((rd.T - open_at).total_seconds() // 60), CAL.regular_minutes(today) or 0)
     reg = lambda d: [b for b in by.get(d, []) if b["session"] == REG]  # noqa: E731
+    if not reg(today):
+        return F.feature(codes=["NO_BARS_TODAY"], unit="x"), pm, inputs
+    t_end = max(b["start"] for b in reg(today)) + timedelta(minutes=1)
+    minutes = min(int((t_end - open_at).total_seconds() // 60), CAL.regular_minutes(today) or 0)
     cum_today = F.cumulative_volume(reg(today), open_at=open_at, minutes=minutes)
-    cums = [F.cumulative_volume(reg(d), open_at=ny(d, 9, 30), minutes=minutes) for d in prior]
+    cums = [F.cumulative_volume(reg(d), open_at=ny(d, 9, 30), minutes=min(minutes, CAL.regular_minutes(d) or 0)) for d in prior]
     missing = [d.isoformat() for d, v in zip(prior, cums) if v is None] + ([] if covered else ["CALENDAR_NOT_COVERED"])
-    f = F.relative_volume_tod(cum_today, cums, minutes=minutes, missing=missing)          # fewer than 10 when the calendar ends
-    last_end = max((b["start"] + timedelta(minutes=1) for b in reg(today)), default=None)
-    return F.graded(f, FR.assess("BAR_1MIN", last_end, rd.T)), pm, inputs
+    f = F.relative_volume_tod(cum_today, cums, minutes=minutes, missing=missing, today_code="MINUTES_MISSING")   # fewer than 10: the calendar ends
+    return F.graded(f, FR.assess("BAR_1MIN", t_end, rd.T)), pm, inputs
 
 
-def _symbol(rd: _Reader, member: Dict[str, Any], ctx: Dict[str, Any], feeds: Dict[str, dict]) -> Dict[str, Any]:
+def _symbol(rd: _Reader, member: Dict[str, Any], ctx: Dict[str, Any], feeds: Dict[str, dict], earnings: Tuple[Optional[str], Dict[str, List[dict]]]
+            ) -> Dict[str, Any]:
     sym, today, prev, last = member["symbol"], ctx["today"], ctx["previous"], ctx["last_completed"]
     q = rd.quote(sym)
     snap = q["payload"]
@@ -336,32 +384,37 @@ def _symbol(rd: _Reader, member: Dict[str, Any], ctx: Dict[str, Any], feeds: Dic
     fs["price_swing"] = (F.feature(F.num(close["close"]), AVAILABLE, unit="USD", session=last.isoformat()) if close and (F.num(close["close"]) or 0) > 0
                          else F.feature(codes=["LAST_SESSION_BAR_MISSING"], unit="USD"))
     fs["sector_strength"] = F.feature(status=MI_NOT_APPLICABLE, codes=["NO_SECTOR"], unit="pp")      # completed once every symbol is read
-    halts = rd.halts(sym, today)
-    fl = {"halt": FG.halt_flag(halts, feeds["halt"], today=today, now=rd.T),
+    halts = rd.halts(sym)
+    snapshot, by_symbol = earnings
+    fl = {"halt": FG.halt_flag(halts, feeds["halt"], now=rd.T),
           "catalyst": FG.catalyst_flag(rd.mentions(sym), news_poll=feeds["news"], runs_known=feeds["mention_runs"]),
-          "earnings_proximity": FG.earnings_proximity(rd.earnings(sym, today or last), feeds["earnings_calendar"], today=today or last)}
+          "earnings_proximity": FG.earnings_proximity(by_symbol.get(sym), feeds["earnings_calendar"], today=today or last, snapshot=snapshot,
+                                                      evidence=lambda r: rd.evidence(r["dataset_id"]))}
     inputs = {"quote": q["latest_record"], "daily_bars": rd.digest(atr_rows), "dollar_volume_bars": rd.digest(dv_rows), "minute_bars": minute_inputs,
               "spread_snapshots": rd.digest(spread_rows), "halts": [h["obs_id"] for h in halts]}
     ev = {e for k in ("daily_bars", "dollar_volume_bars", "minute_bars", "spread_snapshots") for e in inputs[k].get("evidence", [])}
     ev |= {inputs["quote"]["evidence"]} if inputs["quote"] else set()
     ev |= {a["evidence"] for a in fl["catalyst"].get("articles", [])} | {rd.evidence(h["dataset_id"]) for h in halts}
+    ev |= {fl["earnings_proximity"]["evidence"]} if fl["earnings_proximity"].get("evidence") else set()
     return {"symbol": sym, "roles": member["roles"], "sector": member["sector"], "sector_etf": member["sector_etf"], "features": fs, "flags": fl,
             "quote": {"present": q["latest_record"] is not None, "usable_is_latest": q["usable_is_latest"], "reason": q["reason"], "day": q["day"],
                       "swing": q["swing"]}, "daily": rd.last_daily(sym), "inputs": inputs,
             "evidence": sorted(ev), "problems": []}
 
 
-def _unreadable(member: Dict[str, Any], exc: Exception) -> Dict[str, Any]:
-    """A symbol whose inputs cannot be read as written: fail closed (ineligible everywhere), and the run says so."""
-    na = F.feature(codes=["SYMBOL_INPUT_UNREADABLE"])
+def _placeholder(member: Dict[str, Any], code: str, exc: Optional[Exception] = None) -> Dict[str, Any]:
+    """A symbol nothing could be computed for - its inputs do not read as written (SYMBOL_INPUT_UNREADABLE), or the store was not read at
+    all (INPUT_NOT_READ): every feature empty, every flag unknown, ineligible everywhere. Every symbol still has its result."""
+    na = F.feature(codes=[code])
     fs = {k: na for k in ("gap_pct", "price_intraday", "atr_14", "intraday_move", "unusual_volatility", "day_change", "relative_volume_tod",
                           "premarket_volume", "premarket_range", "dollar_volume_20d", "spread_bps", "price_swing", "sector_strength")}
-    unknown = FG.flag("UNKNOWN", ["SYMBOL_INPUT_UNREADABLE"])
-    never = {"status": "UNAVAILABLE", "usable": False, "reason": "SYMBOL_INPUT_UNREADABLE"}
+    unknown = FG.flag("UNKNOWN", [code])
+    never = {"status": "UNAVAILABLE", "usable": False, "reason": code}
     return {"symbol": member["symbol"], "roles": member["roles"], "sector": member["sector"], "sector_etf": member["sector_etf"], "features": fs,
-            "flags": {"halt": unknown, "catalyst": FG.flag("NOT_ESTABLISHED", ["SYMBOL_INPUT_UNREADABLE"]), "earnings_proximity": unknown},
-            "quote": {"present": False, "usable_is_latest": False, "reason": "SYMBOL_INPUT_UNREADABLE", "day": never, "swing": never}, "daily": never,
-            "inputs": {"quote": None, "error": f"{type(exc).__name__}"}, "evidence": [], "problems": ["SYMBOL_INPUT_UNREADABLE"]}
+            "flags": {"halt": unknown, "catalyst": FG.flag("NOT_ESTABLISHED", [code]), "earnings_proximity": unknown},
+            "quote": {"present": False, "usable_is_latest": False, "reason": code, "day": never, "swing": never}, "daily": never,
+            "inputs": {"quote": None, **({"error": type(exc).__name__} if exc is not None else {})}, "evidence": [],
+            "problems": [code] if code == "SYMBOL_INPUT_UNREADABLE" else []}
 
 
 # ------------------------------------------------------------------------------------------------ the scan
@@ -426,24 +479,35 @@ def _scan(T, feed, uni, ctx, snap, st_snap, archive, tmp) -> Dict[str, Any]:
         store, info = Q._open_store(snap["_copy"], T)
         if store is None:
             run.update(status=BLOCKED if rep["verdict"]["result"] == FI.BLOCK else INSUFFICIENT_DATA, codes=[f"STORE_{info['state']}"])
+            run["gate"] = {**gate, "actionable": False, "codes": sorted(set(gate["codes"]) | {f"STORE_{info['state']}"})}
         else:
             conn = Q._ro(snap["_copy"])
             try:
                 results, context = _read_all(_Reader(store, conn, T, feed, info["schema_version"]), uni, ctx)
+                unreadable = sorted(s for s, r in results.items() if r["problems"])
+                run.update(status=COMPLETED if gate["actionable"] else (BLOCKED if gate["verdict"] == FI.BLOCK else INSUFFICIENT_DATA),
+                           codes=sorted(set(gate["codes"]) | ({"SYMBOL_INPUT_UNREADABLE"} if unreadable else set())))
+            except Exception as exc:                                     # run-level data that does not read as written: nothing is vouched for
+                results, context = {}, {"regime": None, "feeds": None, "error": type(exc).__name__}
+                run["gate"] = {**gate, "actionable": False, "codes": sorted(set(gate["codes"]) | {"SCAN_INPUT_UNREADABLE"})}
+                run.update(status=BLOCKED, codes=sorted(set(gate["codes"]) | {"SCAN_INPUT_UNREADABLE"}))
             finally:
                 conn.close()
-            unreadable = sorted(s for s, r in results.items() if r["problems"])
-            run.update(status=COMPLETED if gate["actionable"] else (BLOCKED if gate["verdict"] == FI.BLOCK else INSUFFICIENT_DATA),
-                       codes=sorted(set(gate["codes"]) | ({"SYMBOL_INPUT_UNREADABLE"} if unreadable else set())))
+    if not results:                                                      # nothing read: every symbol still has its (ineligible) result
+        results = {m["symbol"]: _placeholder(m, "INPUT_NOT_READ") for m in uni["symbols"]}
     window = (ctx["today"] is not None and ctx["session"] in (PRE, REG),
               "CALENDAR_NOT_COVERED" if not ctx["covered"] else ("NOT_A_MARKET_DAY" if ctx["today"] is None else f"OUTSIDE_DAY_WINDOW_{ctx['session']}"))
-    gate = run["gate"] or {"actionable": False, "codes": list(run["codes"]), "verdict": None}
+    gate = run["gate"] or {"actionable": False, "codes": list(run["codes"]), "verdict": None}      # no 7.4 report ran: an input was refused
     for r in results.values():
         r["horizons"] = {INTRADAY: FI.intraday(r, gate, window=window), SWING: FI.swing(r, gate)}
     sequence = {h: FI.sequence(results, h) for h in HORIZONS}
+    due = (ctx["today"] is not None and ctx["et_minute"] is not None
+           and CAL.DAILY_BAR_CUTOFF_MINUTE <= ctx["et_minute"] < (CAL.post_market_end_minute(ctx["today"]) or 0))
     summary = {h: {"applies": window[0] if h == INTRADAY else True, "reason": None if h == SWING or window[0] else window[1],
                    "eligible": sum(r["horizons"][h]["eligible"] for r in results.values()),
-                   "ranked": sum(r["horizons"][h]["rank"] is not None for r in results.values()), "symbols": len(results)} for h in HORIZONS}
+                   "ranked": sum(r["horizons"][h]["rank"] is not None for r in results.values()), "symbols": len(results),
+                   # 7.0 expects today's daily bar from 18:00; the 7.1 store holds it only from its completion (20:00, 17:00 on an early close)
+                   "codes": ["DAILY_BAR_DUE_BEFORE_STORABLE"] if h == SWING and due else []} for h in HORIZONS}
     return {"scan": VERSION, "stage": STAGE, "pre_registration": PRE_REGISTRATION, "as_of": ST.ts(T), "feed": feed,
             "session": {"session": ctx["session"], "session_date": None if ctx["today"] is None else ctx["today"].isoformat(),
                         "previous_session": None if ctx["previous"] is None else ctx["previous"].isoformat(),
@@ -460,12 +524,13 @@ def _read_all(rd: _Reader, uni: Dict[str, Any], ctx: Dict[str, Any]) -> Tuple[Di
     feeds = {"halt": FR.assess("HALT_FEED", rd.last_ok_fetch(HA.PROVIDER), rd.T),
              "news": FR.assess("NEWS_POLL", rd.last_ok_fetch(AN.PROVIDER, AN.ENDPOINT), rd.T),
              "earnings_calendar": FR.assess_earnings_calendar(rd.last_ok_fetch(EA.PROVIDER), rd.T), "mention_runs": rd.mention_runs()}
+    earnings = rd.earnings_index()
     results: Dict[str, Dict[str, Any]] = {}
     for m in uni["symbols"]:
         try:
-            results[m["symbol"]] = _symbol(rd, m, ctx, feeds)
+            results[m["symbol"]] = _symbol(rd, m, ctx, feeds, earnings)
         except Exception as exc:                                                     # data that does not read as written: fail closed
-            results[m["symbol"]] = _unreadable(m, exc)
+            results[m["symbol"]] = _placeholder(m, "SYMBOL_INPUT_UNREADABLE", exc)
     spy = results.get(MARKET_PROXY)
     for r in results.values():
         etf = results.get(r["sector_etf"]) if r["sector_etf"] else None
@@ -480,6 +545,7 @@ def _read_all(rd: _Reader, uni: Dict[str, Any], ctx: Dict[str, Any]) -> Tuple[Di
                 break
             run_.append(b)
         reg = FG.regime(list(reversed(run_)), rd.last_daily(MARKET_PROXY), last_session=ctx["last_completed"], macro=rd.macro(), now=rd.T)
+        reg["inputs"] = rd.digest([b["_row"] for b in run_])
     except Exception as exc:                                                         # fail closed: the regime is unknown
         reg = {"spy_trend": "UNKNOWN", "spy_vol": "UNKNOWN", "codes": ["REGIME_INPUT_UNREADABLE"], "status": MI_INSUFFICIENT, "error": type(exc).__name__}
     return results, {"regime": reg, "feeds": feeds}

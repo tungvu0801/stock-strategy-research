@@ -10,8 +10,9 @@ The gate (operator decision at Stage 7.5): the Stage 7.4 report runs on the same
 
 Eligibility (D.1, never looser than the project's MIN_PRICE 5): price >= $5; the halt flag; every REQUIRED input AVAILABLE (FRESH / AGING)
 under the Stage 7.0 policy. Required inputs per horizon:
-* INTRADAY: the latest quote snapshot (QUOTE_DAY: <= 5 s FRESH, <= 15 s AGING, regular session only), and a halt flag of FALSE - a TRUE
-  flag or an UNKNOWN one (the halt feed is not current) blocks: HALT_FEED fails closed for every day candidate;
+* INTRADAY: the latest quote snapshot - the latest record, usable, and current under QUOTE_DAY (<= 5 s FRESH, <= 15 s AGING, regular
+  session only) - and a halt flag of FALSE - a TRUE flag or an UNKNOWN one (the halt feed is not current) blocks: HALT_FEED fails closed
+  for every day candidate. Outside the day window the horizon is NOT_APPLICABLE, and still lists the gate's codes;
 * SWING: the last completed session's daily bar (the 7.0 daily-bar rule), its close as the price, and a halt flag that is not TRUE (an
   UNKNOWN halt feed leaves swing unaffected: C.5 / C.13).
 A symbol that fails a filter is recorded with every reason, never dropped.
@@ -48,13 +49,11 @@ def _price(reasons: List[str], price: Dict[str, Any]) -> None:
 def intraday(sym: Dict[str, Any], gate: Dict[str, Any], *, window: Tuple[bool, str]) -> Dict[str, Any]:
     """`sym`: the symbol's inputs and features (run.py); `window`: (the day horizon applies at T, why not)."""
     applies, why = window
-    if not applies:
-        return {"state": NOT_APPLICABLE, "eligible": False, "reasons": [why], "rank": None}
+    if not applies:                                                # the gate's codes too: a closed window never hides a BLOCK
+        return {"state": NOT_APPLICABLE, "eligible": False, "reasons": sorted({why} | set([] if gate["actionable"] else gate["codes"])), "rank": None}
     reasons: List[str] = [] if gate["actionable"] else list(gate["codes"])
     q = sym["quote"]
-    if not q["present"]:
-        reasons.append("QUOTE_NEVER_OBSERVED")
-    elif not q["usable_is_latest"]:
+    if not q["usable_is_latest"]:                                 # NEVER_OBSERVED, LATEST_RECORD_IS_ABSENCE, NO_USABLE_VALUE_KNOWN_AT, ...
         reasons.append(f"QUOTE_{q['reason']}")
     elif not q["day"]["usable"]:
         reasons.append(f"QUOTE_{q['day']['reason']}")

@@ -79,14 +79,14 @@ known at T, used only when it is the latest record and usable (a newer absence o
 
 | Feature | Formula | Grading |
 |---|---|---|
-| `gap_pct` | PRE: the snapshot's last trade (traded on D, in PRE) vs its `prev_daily_bar` close; REG / POST: the snapshot's `daily_bar` open (dated D) vs its `prev_daily_bar` close (dated P). 100 × (price / previous close − 1). Both sides from one snapshot, so one feed | the quote's QUOTE_DAY state |
+| `gap_pct` | PRE: the snapshot's last trade (traded on D, in PRE) vs its `prev_daily_bar` close; REG / POST: the snapshot's `daily_bar` open (dated D) vs its `prev_daily_bar` close (dated P). 100 × (price / previous close − 1). Both sides from one snapshot, so one feed. Both embedded bars are checked like stored ones (positive prices, high ≥ max(open, close), low ≤ min(open, close)): else `EMBEDDED_BAR_INVALID` | the quote's QUOTE_DAY state |
 | `price_intraday` | the snapshot's last trade, traded on D in PRE or REG | QUOTE_DAY |
-| `premarket_volume`, `premarket_range` | today's PRE minute bars: Σ volume; 100 × (max high / min low − 1); `THIN_ON_IEX` on IEX | — |
-| `relative_volume_tod` | REG only. m = completed minutes since 09:30 (capped by the session). Σ volume of today's REG minute bars starting before 09:30 + m ÷ the median over the 10 previous market days of the same sum (an early close stops at its close). A session without a REG bar is MISSING (not zero); fewer than 10 → `PRIOR_SESSIONS_MISSING` | BAR_1MIN freshness of today's last bar |
+| `premarket_volume`, `premarket_range` | today's DELIVERED PRE minute bars: Σ volume (`SUM_OF_DELIVERED_BARS`); 100 × (max high / min low − 1); the coverage stated (`minutes_covered` of `minutes_elapsed`), never filled; `THIN_ON_IEX` on IEX | — |
+| `relative_volume_tod` | REG only. t = the end of today's latest delivered REG minute bar; m = the minutes from 09:30 to t (capped by the session). Σ volume of today's bars of [09:30, t) ÷ the median over the 10 previous market days of the same sum over their first m minutes (an early close: up to its close). **Every** minute must have its bar on both sides: a gap today → `MINUTES_MISSING`; a prior session with a gap is MISSING → `PRIOR_SESSIONS_MISSING`. A missing minute — on IEX possibly a minute without prints — is never read as zero volume (C.13) | BAR_1MIN freshness of t |
 | `atr_14` | the plain mean of the 14 true ranges over the 15 market days ending at L, TR = max(high, previous close) − min(low, previous close); a day jump beyond 25 % (`validate.DAY_JUMP`) → `DAY_JUMP_IN_WINDOW` | all 15 sessions present |
-| `intraday_move` | the snapshot's last trade (traded on D in REG) vs its `daily_bar` open: 100 × (last / open − 1), and `atr_units` = (last − open) / ATR(14) | QUOTE_DAY |
-| `unusual_volatility` | (the snapshot's `daily_bar` high − low) / ATR(14) | QUOTE_DAY |
-| `day_change` | 100 × (the last trade on D / the previous close), from one snapshot: sector strength's "move" | QUOTE_DAY |
+| `intraday_move` | the snapshot's last trade (traded on D in REG) vs its (checked) `daily_bar` open: 100 × (last / open − 1), and `atr_units` = (last − open) / ATR(14) | QUOTE_DAY |
+| `unusual_volatility` | (the snapshot's checked `daily_bar` high − low) / ATR(14); a zero ATR is never a divisor | QUOTE_DAY |
+| `day_change` | 100 × (the last trade on D / the previous close − 1), from one snapshot: sector strength's "move" | QUOTE_DAY |
 | `sector_strength` | the sector ETF's `day_change` − SPY's `day_change`, in percentage points; no sector → `NOT_APPLICABLE` | worst of both |
 | `dollar_volume_20d` | the median of close × volume over the 20 market days ending at L: SIP when all 20 exist, else IEX labelled `IEX_ONLY` | all 20 present |
 | `spread_bps` | the median over the last 5 usable REG snapshots of D of 10 000 × (ask − bid) / mid; `NON_REPRESENTATIVE_IEX` on IEX | QUOTE_DAY |
@@ -99,9 +99,9 @@ sessions, 5 snapshots, $5, 10 min, 18 h, SMA200) or the 7.0 policy's; none is tu
 
 | Flag | Values | Rule |
 |---|---|---|
-| `halt` | TRUE / FALSE / UNKNOWN | TRUE: a halt known at T, halted on D, still open (no resumption, or one after T) or resumed less than 10 min before T. FALSE: none, and the halt feed is current under the 7.0 HALT_FEED policy (the latest OK fetch of `NASDAQ_TRADER` retrieved and ingested by T: ≤ 120 s FRESH, ≤ 180 s AGING, regular session only). UNKNOWN otherwise (`HALT_FEED_<reason>`) |
-| `catalyst` | TRUE / NOT_ESTABLISHED | TRUE: a catalyst-eligible mention (the 7.2 rule: PRIMARY, confidence ≥ 0.8, tier ≤ 3) of the symbol in an article published in the 18 h before T, from a MENTIONS run (the pinned algorithm) whose `as_of` and `computed_at` are both ≤ T. Never FALSE: the 8-K / earnings-release parts read SEC acceptance times, which stay BLOCKED. A v1 store has no mention tables: `NEWS_MENTIONS_NOT_IN_SCHEMA_V1`. A flag, not an eligibility filter |
-| `earnings_proximity` | KNOWN (sessions) / UNKNOWN | the market days after D up to the next expected report date of the latest calendar snapshot known at T (`StoreEarningsProvider`), when the 7.0 EARNINGS_CALENDAR policy says the calendar is current (the latest OK `ALPHA_VANTAGE` fetch); else `EARNINGS_UNKNOWN`. Expected dates only, `DATE_ONLY` |
+| `halt` | TRUE / FALSE / UNKNOWN | TRUE: any halt known at T — whenever it began: an unresolved halt from an earlier session is open today — that is still open (no resumption, one after T, or one that cannot be read: `HALT_RESUMPTION_UNREADABLE`) or resumed less than 10 min before T. The halt time is the row's store-validated `observed_at`, never the payload's. FALSE: none, and the halt feed is current under the 7.0 HALT_FEED policy (the latest OK fetch of `NASDAQ_TRADER` retrieved and ingested by T, whose time parses: ≤ 120 s FRESH, ≤ 180 s AGING, regular session only). UNKNOWN otherwise (`HALT_FEED_<reason>`) |
+| `catalyst` | TRUE / NOT_ESTABLISHED / UNAVAILABLE | TRUE: a catalyst-eligible mention (the 7.2 rule: PRIMARY, confidence ≥ 0.8, tier ≤ 3) of the symbol in an article published in the 18 h before T, from the MENTIONS run (the pinned algorithm; `as_of` and `computed_at` ≤ T) that read the article's **latest revision known at T** — an article whose latest known revision no run has read yet is withheld, so a superseded run never speaks for a correction. UNAVAILABLE when nothing is found and the news poll is not current (C.5: never "no news"); NOT_ESTABLISHED otherwise. Never FALSE: the 8-K / earnings-release parts read SEC acceptance times, which stay BLOCKED. A v1 store has no mention tables: `NEWS_MENTIONS_NOT_IN_SCHEMA_V1`. A flag, not an eligibility filter |
+| `earnings_proximity` | KNOWN (sessions) / UNKNOWN | the market days after D up to the next expected report date in the **latest** calendar snapshot known at T (one calendar call lists every symbol, so a symbol the latest snapshot no longer lists is `NOT_IN_LATEST_CALENDAR`, whatever an older snapshot said), when the 7.0 EARNINGS_CALENDAR policy says the calendar is current (the latest OK `ALPHA_VANTAGE` fetch); else `EARNINGS_UNKNOWN`. Expected dates only, `DATE_ONLY`; the snapshot date, the row and its evidence class are recorded |
 | `regime` | spy_trend / spy_vol | `rotation_walkforward.regimes.labels` unchanged (SPY close vs SMA200; 20-session realised volatility vs 0.20) at L, over the contiguous run of SPY sessions ending at L; UNKNOWN before 200 / 21 sessions or when SPY's daily bar is not current. Macro flags: curve inversion (T10Y2Y < 0) is display only — the 7.0 MACRO policy needs a release schedule no source records, so it is never usable; the VIX percentile is `NOT_PRE_REGISTERED` (no window is defined) |
 
 ## 6. The gate, eligibility and the sequence
@@ -110,17 +110,19 @@ sessions, 5 snapshots, $5, 10 min, 18 h, SMA200) or the 7.0 policy's; none is tu
    (test S05 shows a +3 % gap with every input fresh, blocked); INSUFFICIENT_DATA → `QUALITY_INSUFFICIENT_DATA`; WARN → `QUALITY_WARN`
    on the run, proceeds; PASS → proceeds. A report that cannot run is never a pass.
 2. **INTRADAY** (applies on a market day in PRE or REG; else `NOT_APPLICABLE` with `OUTSIDE_DAY_WINDOW_<session>` /
-   `NOT_A_MARKET_DAY` / `CALENDAR_NOT_COVERED`): the quote is present, its latest record is usable, and QUOTE_DAY says AVAILABLE
+   `NOT_A_MARKET_DAY` / `CALENDAR_NOT_COVERED`, plus the gate's codes): the quote's latest record is a usable value, and QUOTE_DAY says AVAILABLE
    (`QUOTE_<reason>` otherwise: `AGE_LIMIT`, `OUTSIDE_WINDOW`, `LATEST_RECORD_IS_ABSENCE`, ...); `price_intraday` ≥ $5
    (`PRICE_UNAVAILABLE` / `PRICE_BELOW_MIN`); halt FALSE (`HALTED`, or `HALT_STATUS_UNKNOWN` — the halt feed fails closed for every
    day candidate).
-3. **SWING** (applies always): L's daily bar is present (`DAILY_BAR_<reason>`); `price_swing` ≥ $5; halt not TRUE (an UNKNOWN halt
-   feed leaves swing unaffected, C.5 / C.13).
+3. **SWING** (applies always): L's daily bar is the latest record and present (`DAILY_BAR_<reason>`, e.g. `SESSION_MISSING`,
+   `LATEST_RECORD_IS_ABSENCE`); `price_swing` ≥ $5; halt not TRUE (an UNKNOWN halt feed leaves swing unaffected, C.5 / C.13). From 18:00
+   to the bar's completion the horizon carries `DAILY_BAR_DUE_BEFORE_STORABLE` (section 12).
 4. **Sequence**: INTRADAY — the gap list (section 2, decision 3), then every other symbol in symbol order, unranked; SWING — symbol
    order, unranked. `filters.sequence` refuses any other horizon. (The document key is `sequence`, not `order`: "order" is a Strategy
    Standard forbidden key.)
 
-Every symbol of the universe gets one result in both horizons, with every reason; nothing is dropped.
+Every symbol of the universe gets one result in both horizons, with every reason; nothing is dropped — also when the store was not read
+(`INPUT_NOT_READ`), or a run-level read failed (the run is then `BLOCKED`, `SCAN_INPUT_UNREADABLE`).
 
 ## 7. Point in time
 
@@ -151,10 +153,12 @@ INSUFFICIENT_DATA, 4 a refused invocation.
 
 * MONITOR_ONLY, Paper Auto OFF, MANUAL_ARM, Robinhood read-only, Evidence Refresh OFF unchanged; SEC acceptance-time uncertainty stays
   BLOCKED; no provider request, migration, deployment, configuration, route, thread or job.
-* The package imports market-intel, `dynamic_universe.core`, `data.sector_map`, `api.validation`, `rotation_walkforward.regimes` /
-  `backtest.replay` (the regime) and `config` (the watchlist path) only — no network, broker, execution, proposal, setup, safety or
-  model module (test X01); it holds no SQL write and no file write other than the CLI's output stream; nothing outside `market_scan/`
-  imports it.
+* The package imports **directly** market-intel, `dynamic_universe.core`, `data.sector_map`, `api.validation`,
+  `rotation_walkforward.regimes` / `backtest.replay` (the regime) and `config` (the watchlist path) only — no network, broker, execution,
+  proposal, setup, safety or model module (test X01); it holds no SQL write and no file write other than the CLI's output stream;
+  nothing outside `market_scan/` imports it. **Transitively**, through the frozen data layer, it loads `evidence.net` / `evidence.rules`
+  (the 7.2 news attribution's tier rules; nothing calls a fetch), `setups.market_hours` and `autorun` (the calendar) and `data.events`
+  (the earnings model) — and no Alpaca, broker, execution, proposal, paper, Robinhood or model module, and no thread (X01 pins the list).
 * The earlier stages' isolation guards ("nothing outside `market_intel/` mentions `market_intel`", 7.0–7.4; "only these directories
   import `dynamic_universe`", 6.10C) now name `market_scan/` as the one declared reader. X01 proves nothing outside `market_scan/`
   imports it, so no live path reaches the data layer through it.
@@ -164,8 +168,17 @@ INSUFFICIENT_DATA, 4 a refused invocation.
 `tests/test_market_scan_75.py`: S01–S17 (the feature maths on fixtures; a whole scan; fail-closed on STALE; determinism and the
 tie-break; the 7.4 gate; point in time; missing, stale, malformed and contradictory inputs; duplicates and revisions; provenance and
 evidence; Day / Swing separation; halts; catalysts; earnings; the regime; the universe and the inactive dynamic universe; read-only
-behaviour; the CLI), V01 (the figures recomputed from raw SQL), A01–A02 (tampered rows and unreadable symbols fail closed), X01
-(isolation), F01–F03 (scope). Fake clocks, fixtures and temporary paths only.
+behaviour; the CLI), V01 (the figures recomputed from raw SQL), A01–A02 (tampered rows and unreadable symbols fail closed), R01–R10
+(the independent review's findings, section 14, each failing on the reviewed commit), X01 (isolation), F01–F03 (scope). Fake clocks,
+fixtures and temporary paths only.
+
+**Mutation check.** Each guarantee of `market_scan/` was undone in turn (a harness that restores every file and stops if a test writes
+into the repository's `data/`). The first run caught 70 of 81: six gaps were cases no test reached (a trade from another day, a negative
+minute volume, a zero ATR, yesterday's embedded bar for the intraday move, SIP daily bars, three post-close quotes), three were in-place
+reads the fixtures' own empty `-wal` / `-shm` hid (S16 now scans a store with nothing beside it and checks that the 7.4 report reads the
+scan's copy), and two were redundant branches, removed. After the review's fixes, 95 of 95 mutations are caught. Equivalent mutations are
+listed in the harness, not counted (the mention-run algorithm filter: one algorithm exists; the 7.4 report's store-hash cross-check: a
+private copy of a private copy; the minute bars' REG filter: the window already lies in the regular session except after an early close).
 
 ## 11. Deferred dependencies (`BLOCKED_BY_DEFERRED_7_3_WIRING`)
 
@@ -186,6 +199,14 @@ behaviour; the CLI), V01 (the figures recomputed from raw SQL), A01–A02 (tampe
 * **The 7.4 gate is store-wide.** One malformed row anywhere blocks every symbol (fail closed by design).
 * **Regime macro flags are display only; the VIX percentile is not pre-registered.**
 * **Earnings proximity reads expected dates only**; SEC confirmations stay blocked.
+* **No swing candidate between 18:00 and the daily bar's completion** (20:00; 17:00 on an early close): the 7.0 calendar expects
+  today's bar from 18:00, the 7.1 store holds it only once complete. The scan says so (`DAILY_BAR_DUE_BEFORE_STORABLE`).
+* **ATR is withheld after any close-to-close move beyond 25 %** (`validate.DAY_JUMP`), for 14 sessions, with ATR units and unusual
+  volatility: on raw bars a split cannot be told from a real move without a corporate-action source. This is stricter than the master
+  design's plain ATR(14), and it hits exactly the most volatile names.
+* **Premarket volume is the sum of the delivered bars**, with its coverage stated; premarket prints are sparse, so it is not judged.
+* **Unverified offline:** whether the provider rolls a snapshot's daily and previous-day bars before the open; if not, a premarket gap
+  reads `PREV_CLOSE_NOT_PREVIOUS_SESSION` (fail closed).
 * **Private helpers of `market_intel.quality` are reused** (`_snapshot`, `_open_store`, `_ro`, `_le`, `_aware`, `_iso`): one
   implementation of the read-only rule. They are frozen with Stage 7.4; a change there is a declared change for both stages.
 
@@ -195,8 +216,35 @@ behaviour; the CLI), V01 (the figures recomputed from raw SQL), A01–A02 (tampe
 2. Persisting scan runs (tables) and the cadence: with the Stage 7.3 wiring, when authorized.
 3. A VIX-percentile window, if the regime should carry it; a macro release schedule, if macro flags should become usable.
 4. The SIP decision for spreads and the day strategy's real-time phase (master design E.2 #9).
-5. The merge of this stage.
+5. Aligning the 7.0 daily-bar cutoff (18:00) with the 7.1 completion time (20:00), a 7.0 policy change, if post-close swing scans should
+   run at 18:00.
+6. A corporate-action source (or adjusted bars) for ATR across splits, if the 25 % rule should not withhold ATR after real moves.
+7. The merge of this stage.
 
 ## 14. Independent review
 
-(Recorded after the independent CODE-ONLY review.)
+A reviewer working from the requirements and the code alone (not from this document's conclusions) built adversarial stores against
+`9abc03e` (30 probes, each asserting what it found). Every finding was reproduced by a regression test that fails on `9abc03e`, and fixed:
+
+| # | Severity | Finding | Resolution |
+|---|---|---|---|
+| B1 | BLOCKING | The halt flag read only halts that began on D: a stock halted at yesterday's close, never resumed, was FALSE and ranked first | every halt known at T counts; an unresolved one is open today (R01) |
+| B2 | BLOCKING | A snapshot's embedded bars were never checked: an open above the day's high became the top gap | both embedded bars checked like stored ones: `EMBEDDED_BAR_INVALID` (R02) |
+| S1 | SHOULD_FIX | Relative volume summed whatever minute bars existed: a missing minute read as zero volume (0.2x; or 29x with sparse prior sessions) | t ends at today's last delivered bar; every minute covered on both sides, else MISSING (R03) |
+| S2 | SHOULD_FIX | A superseded mention run (before a correction re-tagged the article) still made the catalyst TRUE | only the run that read the article's latest known revision speaks for it (R04) |
+| S3 | SHOULD_FIX | A fetch time the schema accepts but no clock can read (second 61) crashed the scan | parsed by 7.4's reader, skipped; run-level reads fail closed into a BLOCKED document (R05) |
+| S4 | SHOULD_FIX | From 18:00 to 20:00 no swing candidate can be eligible (7.0 cutoff vs 7.1 completion), silently | recorded on the horizon and in the limitations; the alignment is an operator decision (R06) |
+| S5 | SHOULD_FIX | Earnings proximity read an older snapshot's date after the latest snapshot dropped the symbol | the latest snapshot only (R07) |
+| S6 | SHOULD_FIX | A halt row whose payload time could not be read was FALSE | the validated `observed_at`; an unreadable resumption keeps it open (R08) |
+| M1 | MINOR | Swing read past a newer absence of the daily bar | the store's `latest_status` (R09) |
+| M2 | MINOR | The scan hash changed with the watchlist's order | the watchlist is recorded as a set (R10) |
+| M3 | MINOR | Section 9 described direct imports as if transitive | both described; X01 pins the transitive list and no thread |
+| M4 | MINOR | `day_change` formula missing "− 1" here | fixed (the code was right) |
+| M5 | MINOR | No results when the store was not read, against section 6 | a result per symbol, `INPUT_NOT_READ` (S16) |
+| M6 | MINOR | Misleading codes: NOT_A_MARKET_DAY for an uncovered year; no UNAVAILABLE catalyst on a stale news poll; a closed day window hid the gate; no earnings / regime provenance | `CALENDAR_NOT_COVERED`; UNAVAILABLE (S12); gate codes kept (R10); snapshot / row / evidence and a SPY-bar digest recorded |
+| M7 | MINOR | ATR withheld after any > 25 % day goes beyond the master's ATR(14) | kept (fail closed; a split is indistinguishable on raw bars); limitation and operator decision 6 |
+
+The reviewer found sound: point in time (later rows, late arrivals, mention runs computed after T); the 7.4 gate; the feature maths;
+no feed mixing; ranking and horizon separation; no execution field or score; the regime's reuse; the catalyst never FALSE; hash
+determinism; read-only behaviour (inputs byte-identical, temp root empty even on a crash, a CLI subprocess creates nothing); calendar
+edges; isolation.

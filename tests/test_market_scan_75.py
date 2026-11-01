@@ -269,6 +269,8 @@ def test_S01_the_feature_maths_follow_the_pre_registered_formulas_on_fixtures():
     bars = [{"start": open_at + timedelta(minutes=k), "volume": 10} for k in range(5)]
     assert F.cumulative_volume(bars, open_at=open_at, minutes=3) == 30 and F.cumulative_volume([], open_at=open_at, minutes=3) is None
     assert F.cumulative_volume(bars + [{"start": open_at, "volume": float("nan")}], open_at=open_at, minutes=3) is None
+    assert F.cumulative_volume(bars + [{"start": open_at, "volume": -5}], open_at=open_at, minutes=3) is None           # never a negative volume
+    assert F.cumulative_volume([b for b in bars if b["start"] != open_at + timedelta(minutes=1)], open_at=open_at, minutes=3) is None   # a gap: never 0
     # ATR(14): the plain mean of 14 true ranges; a gap counts through the previous close; a day jump beyond 25 % leaves it undefined
     days = back(PREV, 15)
     b = [{"session_date": d, "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "volume": 1} for d in days]
@@ -284,6 +286,14 @@ def test_S01_the_feature_maths_follow_the_pre_registered_formulas_on_fixtures():
     assert (im["value"], im["atr_units"]) == (round(100 * (186.0 / 185.4 - 1), 6), round(0.6 / a["value"], 6))
     uv = F.unusual_volatility(s, a, today=TODAY)
     assert uv["value"] == round((187.0 - 184.4) / a["value"], 6)
+    flat = F.atr([{**x, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0} for x in b])          # a zero ATR is never a divisor
+    assert flat["value"] == 0.0 and F.unusual_volatility(s, flat, today=TODAY)["codes"] == ["ATR_UNAVAILABLE"]
+    assert F.intraday_move(last, s, flat, today=TODAY)["atr_units"] is None
+    old = snap(quote_at=T - 2 * S, prev_close=180.0, open_=185.4, last=186.0, trade_at=ny(PREV, 15, 59))
+    assert F.last_trade(old, today=TODAY)["codes"] == ["LAST_TRADE_NOT_TODAY"]                             # yesterday's trade is no price today
+    pre_trade = snap(quote_at=T - 2 * S, prev_close=180.0, open_=185.4, last=186.0, trade_at=ny(TODAY, 9, 29))
+    assert F.last_trade(pre_trade, today=TODAY, sessions=("REG",))["codes"] == ["LAST_TRADE_IN_PRE"]
+    assert F.intraday_move(F.last_trade(pre_trade, today=TODAY, sessions=("REG",)), pre_trade, a, today=TODAY)["codes"] == ["LAST_TRADE_IN_PRE"]
     etf, spy = F.feature(1.5, "AVAILABLE"), F.feature(0.5, "AVAILABLE")
     assert F.sector_strength("Semiconductors", "SOXX", etf, spy)["value"] == 1.0
     stale = F.sector_strength("Semiconductors", "SOXX", F.feature(1.5, "STALE"), spy)
@@ -296,9 +306,12 @@ def test_S01_the_feature_maths_follow_the_pre_registered_formulas_on_fixtures():
     assert (sp["value"], sp["codes"]) == (10.0, ["NON_REPRESENTATIVE_IEX"])
     assert F.spread_bps([{"bid": 100.0, "ask": 99.0}] * 5, feed="sip")["codes"] == ["INVALID_QUOTE"]
     assert F.spread_bps([{"bid": 99.95, "ask": 100.05}] * 4, feed="sip")["codes"] == ["FEWER_THAN_5_SNAPSHOTS"]
-    pm = F.premarket([{"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 5}, {"open": 11.0, "high": 11.5, "low": 10.0, "close": 11.0, "volume": 7}],
-                     feed="iex")
+    pre0 = ny(TODAY, 8)
+    pm = F.premarket([{"start": pre0, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 5},
+                      {"start": pre0 + timedelta(minutes=7), "open": 11.0, "high": 11.5, "low": 10.0, "close": 11.0, "volume": 7}], feed="iex", minutes_elapsed=240)
     assert (pm["premarket_volume"]["value"], pm["premarket_range"]["value"], pm["premarket_range"]["codes"]) == (12.0, round(100 * (12 / 9 - 1), 6), ["THIN_ON_IEX"])
+    assert (pm["premarket_volume"]["codes"], pm["premarket_volume"]["minutes_covered"], pm["premarket_volume"]["minutes_elapsed"]) == (
+        ["SUM_OF_DELIVERED_BARS", "THIN_ON_IEX"], 2, 240)                                              # the coverage is stated, never filled
     for bad in (float("nan"), float("inf"), True, "1", None):
         assert F.num(bad) is None
     assert F.worst(["AVAILABLE", "NOT_APPLICABLE", "STALE"]) == "STALE" and F.worst(["UNAVAILABLE", "INSUFFICIENT_DATA"]) == "INSUFFICIENT_DATA"
@@ -313,15 +326,16 @@ def test_S02_a_whole_scan_computes_every_feature_and_ranks_the_gap_list(tmp_path
     got = {k: n[k]["value"] for k in ("gap_pct", "price_intraday", "atr_14", "intraday_move", "unusual_volatility", "day_change", "relative_volume_tod",
                                       "dollar_volume_20d", "spread_bps", "price_swing", "sector_strength")}
     assert got == {"gap_pct": 3.0, "price_intraday": 186.0, "atr_14": 3.6, "intraday_move": round(100 * (186 / 185.4 - 1), 6), "unusual_volatility": round(2.6 / 3.6, 6),
-                   "day_change": round(100 * (186 / 180 - 1), 6), "relative_volume_tod": 2.9, "dollar_volume_20d": 180_000_000.0,
+                   "day_change": round(100 * (186 / 180 - 1), 6), "relative_volume_tod": 3.0, "dollar_volume_20d": 180_000_000.0,
                    "spread_bps": round(10_000 * 0.02 / 186.0, 6), "price_swing": 180.0, "sector_strength": 1.0}
     assert all(n[k]["status"] == "AVAILABLE" for k in got) and n["intraday_move"]["atr_units"] == round(0.6 / 3.6, 6)
+    assert (n["relative_volume_tod"]["minutes"], n["relative_volume_tod"]["today_volume"], n["relative_volume_tod"]["baseline_volume"]) == (29, 8700, 2900)   # to t = 09:59
     assert n["dollar_volume_20d"]["codes"] == ["IEX_ONLY"] and n["spread_bps"]["codes"] == ["NON_REPRESENTATIVE_IEX"]
     assert n["premarket_volume"]["codes"] == ["NO_PREMARKET_BARS"] and n["premarket_volume"]["value"] is None
     assert doc["sequence"][MS.INTRADAY][:4] == ["NVDA", "AMD", "SOXX", "SPY"] and [hz(doc, s)["rank"] for s in ("NVDA", "AMD", "SOXX", "SPY")] == [1, 2, 3, 4]
     assert fv(doc, "AMD", "gap_pct")[0] == fv(doc, "SOXX", "gap_pct")[0] == 1.0                            # a tie: broken by symbol
-    assert doc["horizons"] == {MS.INTRADAY: {"applies": True, "reason": None, "eligible": 4, "ranked": 4, "symbols": 19},
-                               MS.SWING: {"applies": True, "reason": None, "eligible": 4, "ranked": 0, "symbols": 19}}
+    assert doc["horizons"] == {MS.INTRADAY: {"applies": True, "reason": None, "eligible": 4, "ranked": 4, "symbols": 19, "codes": []},
+                               MS.SWING: {"applies": True, "reason": None, "eligible": 4, "ranked": 0, "symbols": 19, "codes": []}}
     assert all(hz(doc, s, MS.SWING)["rank"] is None for s in doc["sequence"][MS.SWING]) and doc["sequence"][MS.SWING] == sorted(doc["sequence"][MS.SWING])
     shop = res(doc, "SHOP")
     assert set(hz(doc, "SHOP")["reasons"]) == {"QUOTE_NEVER_OBSERVED", "PRICE_UNAVAILABLE"} and hz(doc, "SHOP")["rank"] is None
@@ -415,6 +429,7 @@ def test_S07_missing_stale_malformed_and_contradictory_inputs_are_never_estimate
     d15 = back(PREV, 15)
     add_daily(w, "QCOM", {d: (100.0 if i != 7 else 140.0) for i, d in enumerate(d15)})          # a 40 % jump: a split or an extreme move
     add_daily(w, "TXN", {d: 100.0 for d in back(PREV, 12)})                                      # 12 of the 20 sessions dollar volume needs
+    add_daily(w, "AMD", {d: 210.0 for d in back(PREV, 20)}, feed="sip", volume=2_000_000)        # 20 SIP sessions: dollar volume prefers them
     rows = base_snaps()
     q = T - 2 * S
     rows += [("MU", q, snap(quote_at=q, prev_close=4.0, open_=4.1, last=4.2)),                    # under $5
@@ -427,6 +442,9 @@ def test_S07_missing_stale_malformed_and_contradictory_inputs_are_never_estimate
     doc = scan(w, core=core, watchlist=())
     assert set(hz(doc, "MU")["reasons"]) == {"PRICE_BELOW_MIN"} and "PRICE_BELOW_MIN" in hz(doc, "MU", MS.SWING)["reasons"]
     assert res(doc, "AVGO")["features"]["gap_pct"]["codes"] == ["DAILY_BAR_NOT_TODAY"] and hz(doc, "AVGO")["eligible"] and hz(doc, "AVGO")["rank"] is None
+    assert res(doc, "AVGO")["features"]["intraday_move"]["codes"] == ["DAILY_BAR_NOT_TODAY"] and fv(doc, "AVGO", "unusual_volatility")[0] is None
+    assert (fv(doc, "AMD", "dollar_volume_20d"), res(doc, "AMD")["features"]["dollar_volume_20d"]["codes"]) == ((420_000_000.0, "AVAILABLE"), ["SIP"])
+    assert res(doc, "NVDA")["features"]["dollar_volume_20d"]["codes"] == ["IEX_ONLY"]                       # no SIP history: IEX, labelled
     assert hz(doc, "MRVL")["reasons"] == ["PRICE_UNAVAILABLE", "QUOTE_NO_USABLE_VALUE_KNOWN_AT"] and fv(doc, "MRVL", "gap_pct")[0] is None
     assert res(doc, "MRVL")["inputs"]["quote"]["quality_flags"] == ["CROSSED"]
     assert res(doc, "QCOM")["features"]["atr_14"]["codes"] == ["DAY_JUMP_IN_WINDOW"] and res(doc, "QCOM")["features"]["intraday_move"]["atr_units"] is None
@@ -446,7 +464,7 @@ def test_S07_missing_stale_malformed_and_contradictory_inputs_are_never_estimate
 def test_S08_duplicate_deliveries_count_once_and_the_revision_known_at_t_is_used(tmp_path):
     w = world(tmp_path / "w")
     add_minutes(w, "NVDA", base_minutes())                                                       # the same minute bars delivered again
-    assert fv(scan(w, T + 2 * S), "NVDA", "relative_volume_tod")[0] == 2.9
+    assert fv(scan(w, T + 2 * S), "NVDA", "relative_volume_tod")[0] == 3.0
     w.clk.t = T - 0.2 * S
     add_daily(w, "NVDA", {PREV: 170.0}, high=172.0, low=168.0)                                   # a revision of the last session, known before T
     doc = scan(w, T + 2 * S)
@@ -479,11 +497,11 @@ def test_S09_every_figure_carries_its_provenance_and_evidence_class(tmp_path):
 
 def test_S10_the_day_and_swing_horizons_are_kept_apart(tmp_path):
     w = world(tmp_path / "w")
-    pq = ny(TODAY, 16, 10)
-    add_snaps(w, [("NVDA", pq, snap(quote_at=pq, prev_close=180.0, open_=185.4, last=186.0, bid=180.0, ask=190.0))])   # a wide POST quote
+    add_snaps(w, [("NVDA", q, snap(quote_at=q, prev_close=180.0, open_=185.4, last=186.0, bid=180.0, ask=190.0))
+                  for q in (ny(TODAY, 16, 5), ny(TODAY, 16, 10), ny(TODAY, 16, 15))])                  # three wide POST quotes
     post = scan(w, ny(TODAY, 16, 30))
     assert fv(post, "NVDA", "spread_bps")[0] == round(10_000 * 0.02 / 186.0, 6)                # the spread reads regular-session quotes only
-    assert post["horizons"][MS.INTRADAY] == {"applies": False, "reason": "OUTSIDE_DAY_WINDOW_POST", "eligible": 0, "ranked": 0, "symbols": 19}
+    assert post["horizons"][MS.INTRADAY] == {"applies": False, "reason": "OUTSIDE_DAY_WINDOW_POST", "eligible": 0, "ranked": 0, "symbols": 19, "codes": []}
     assert hz(post, "NVDA") == {"state": "NOT_APPLICABLE", "eligible": False, "reasons": ["OUTSIDE_DAY_WINDOW_POST"], "rank": None}
     assert hz(post, "NVDA", MS.SWING)["eligible"]                                                # swing is evaluated after the close
     sat = scan(w, ny(date(2025, 12, 6), 12))
@@ -506,14 +524,16 @@ def test_S10_the_day_and_swing_horizons_are_kept_apart(tmp_path):
 def test_S11_the_halt_flag_is_true_false_or_unknown_never_assumed(tmp_path):
     fresh = {"status": "AVAILABLE", "usable": True, "reason": "OK", "age_s": 5.0}
     stale = {"status": "STALE", "usable": False, "reason": "AGE_LIMIT", "age_s": 400.0}
-    row = lambda h, r=None: {"obs_id": "x", "payload": {"halted_at": h.isoformat(), "resumed_at": None if r is None else r.isoformat()}}  # noqa: E731
-    assert FG.halt_flag([row(T - 60 * S)], stale, today=TODAY, now=T)["value"] == "TRUE"                  # a known open halt is a fact
-    assert FG.halt_flag([row(T - 900 * S, T - 540 * S)], fresh, today=TODAY, now=T)["codes"] == ["RESUMED_WITHIN_10_MIN"]
-    assert FG.halt_flag([row(T - 900 * S, T - 660 * S)], fresh, today=TODAY, now=T)["value"] == "FALSE"
-    assert FG.halt_flag([row(T - 900 * S, T + 60 * S)], fresh, today=TODAY, now=T)["codes"] == ["HALT_OPEN"]   # a resumption still to come
-    assert FG.halt_flag([row(ny(PREV, 11))], fresh, today=TODAY, now=T)["value"] == "FALSE"               # yesterday's halt
-    assert FG.halt_flag([], stale, today=TODAY, now=T) == {"value": "UNKNOWN", "codes": ["HALT_FEED_AGE_LIMIT"], "feed": {"status": "STALE",
-                                                                                                                             "reason": "AGE_LIMIT", "age_s": 400.0}}
+    row = lambda h, r=None: {"obs_id": "x", "observed_at": ST.ts(h), "payload": {"resumed_at": r if r is None or isinstance(r, str) else r.isoformat()}}  # noqa: E731
+    assert FG.halt_flag([row(T - 60 * S)], stale, now=T)["value"] == "TRUE"                               # a known open halt is a fact
+    assert FG.halt_flag([row(T - 900 * S, T - 540 * S)], fresh, now=T)["codes"] == ["RESUMED_WITHIN_10_MIN"]
+    assert FG.halt_flag([row(T - 900 * S, T - 660 * S)], fresh, now=T)["value"] == "FALSE"
+    assert FG.halt_flag([row(T - 900 * S, T + 60 * S)], fresh, now=T)["codes"] == ["HALT_OPEN"]           # a resumption still to come
+    assert FG.halt_flag([row(ny(PREV, 15, 50))], fresh, now=T)["codes"] == ["HALT_OPEN"]                  # halted yesterday, never resumed: open today
+    assert FG.halt_flag([row(ny(PREV, 11), ny(PREV, 11, 30))], fresh, now=T)["value"] == "FALSE"          # yesterday's halt, resumed yesterday
+    assert FG.halt_flag([row(T - 900 * S, "soon")], fresh, now=T)["codes"] == ["HALT_RESUMPTION_UNREADABLE"]   # never read as resumed
+    assert FG.halt_flag([], stale, now=T) == {"value": "UNKNOWN", "codes": ["HALT_FEED_AGE_LIMIT"], "feed": {"status": "STALE", "reason": "AGE_LIMIT",
+                                                                                                             "age_s": 400.0}}
     w = world(tmp_path / "w", halt_at=None)
     assert res(scan(w), "NVDA")["flags"]["halt"]["codes"] == ["HALT_FEED_NEVER_OBSERVED"]
     halt_poll(w, T - 0.7 * S, status="HTTP_ERROR")
@@ -556,10 +576,13 @@ def test_S12_the_catalyst_flag_is_true_or_not_established_never_false(tmp_path):
     lc = res(scan(late, T + 2 * S), "NVDA")["flags"]["catalyst"]
     assert lc["value"] == "NOT_ESTABLISHED" and "NO_MENTION_RUN_KNOWN" in lc["codes"]
     assert res(scan(late, T + 90 * S), "NVDA")["flags"]["catalyst"]["value"] == "TRUE"
-    v1 = res(scan(world(tmp_path / "v1")), "NVDA")["flags"]["catalyst"]
-    assert v1["codes"] == ["NEWS_MENTIONS_NOT_IN_SCHEMA_V1", "SEC_ACCEPTANCE_TZ_UNVERIFIED"]
+    v1 = res(scan(world(tmp_path / "v1")), "NVDA")["flags"]["catalyst"]                       # no mention tables, and no news poll seen
+    assert (v1["value"], v1["codes"]) == ("UNAVAILABLE", ["NEWS_MENTIONS_NOT_IN_SCHEMA_V1", "NEWS_POLL_NEVER_OBSERVED", "SEC_ACCEPTANCE_TZ_UNVERIFIED"])
+    quiet = res(scan(w, T + 700 * S), "AMD")["flags"]["catalyst"]                               # the news poll is stale: never "no news"
+    assert (quiet["value"], "NEWS_POLL_AGE_LIMIT" in quiet["codes"]) == ("UNAVAILABLE", True)
+    assert res(scan(w, T + 700 * S), "NVDA")["flags"]["catalyst"]["value"] == "TRUE"             # a known article is still a fact
     for d in (doc, scan(old, T + 2 * S), scan(late, T + 2 * S)):
-        assert {r["flags"]["catalyst"]["value"] for r in d["results"]} <= {"TRUE", "NOT_ESTABLISHED"}       # never FALSE: SEC stays blocked
+        assert {r["flags"]["catalyst"]["value"] for r in d["results"]} <= {"TRUE", "NOT_ESTABLISHED", "UNAVAILABLE"}   # never FALSE: SEC is blocked
     assert hz(doc, "NVDA") == hz(scan(world(tmp_path / "plain", v2=True), T + 2 * S), "NVDA")    # a flag, never an eligibility filter
 
 
@@ -583,7 +606,8 @@ def test_S13_earnings_proximity_needs_a_current_calendar_and_reads_expected_date
     assert (e["value"], e["sessions"], e["report_date"], e["time_precision"]) == ("KNOWN", 5, "2025-12-09", "DATE_ONLY")      # Wed..Tue next week
     assert e["codes"] == ["EXPECTED_NOT_CONFIRMED", "SEC_ACCEPTANCE_TZ_UNVERIFIED"]
     assert res(doc, "AMD")["flags"]["earnings_proximity"]["codes"] == ["EARNINGS_UNKNOWN", "NO_UPCOMING_DATE_IN_CALENDAR"]   # only a past date
-    assert res(doc, "SPY")["flags"]["earnings_proximity"]["codes"] == ["EARNINGS_UNKNOWN", "NO_CALENDAR_ROW"]
+    assert res(doc, "SPY")["flags"]["earnings_proximity"]["codes"] == ["EARNINGS_UNKNOWN", "NOT_IN_LATEST_CALENDAR"]
+    assert (e["calendar"]["snapshot_date"], e["evidence"]) == (TODAY.isoformat(), "FIXTURE") and e["obs_id"]
     assert res(doc, "SHOP")["flags"]["earnings_proximity"]["sessions"] == 3                    # Wed, Thu, Fri before Saturday 2025-12-06
     stale = res(scan(w, T + timedelta(hours=40)), "NVDA")["flags"]["earnings_proximity"]
     assert stale["value"] == "UNKNOWN" and stale["codes"] == ["EARNINGS_CALENDAR_AGE_LIMIT", "EARNINGS_UNKNOWN"]
@@ -643,17 +667,37 @@ def test_S15_the_universe_is_tier_a_and_the_dynamic_universe_stays_off_with_its_
         DUS.compute()
 
 
-def test_S16_the_scan_reads_copies_only_and_leaves_every_input_byte_for_byte_as_it_was(tmp_path):
+def test_S16_the_scan_reads_copies_only_and_leaves_every_input_byte_for_byte_as_it_was(tmp_path, monkeypatch):
     w = world(tmp_path / "w")
-    before = tree(w.tmp)
+    quiet = tmp_path / "quiet"                                                                   # the store alone: no -wal / -shm beside it yet
+    quiet.mkdir()
+    shutil.copyfile(w.store.path, quiet / "mi.db")
+    shutil.copytree(w.archive.root, quiet / "raw")
+    control = tmp_path / "control"
+    control.mkdir()
+    shutil.copyfile(w.store.path, control / "mi.db")
+    MarketIntelStore(control / "mi.db").status_counts()                                          # the 7.1 read path, in place, on a WAL file ...
+    assert sorted(p.name for p in control.iterdir()) == ["mi.db", "mi.db-shm", "mi.db-wal"]     # ... leaves files beside its input
+    before = tree(quiet)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    doc = scan(w, tmp_root=scratch)
-    assert tree(w.tmp) == before and list(scratch.iterdir()) == []                               # no byte changed or added beside the inputs
-    assert doc["run"]["status"] == "COMPLETED"                                                   # (the empty -wal / -shm are the fixture's own)
+    seen = []
+    real = R.Q.build_report
+
+    def spy(store, **kw):
+        seen.append(Path(store))
+        return real(store, **kw)
+    monkeypatch.setattr(R.Q, "build_report", spy)
+    doc = R.run_scan(quiet / "mi.db", as_of=T, archive_root=quiet / "raw", core=TEST_CORE, watchlist=WATCH, tmp_root=scratch)
+    assert doc["run"]["status"] == "COMPLETED" and tree(quiet) == before and sorted(p.name for p in quiet.iterdir()) == ["mi.db", "raw"]
+    assert list(scratch.iterdir()) == [] and len(seen) == 1 and seen[0].parent.parent == scratch   # the 7.4 report read the scan's own copy
+    monkeypatch.setattr(R.Q, "build_report", real)
+    assert {k: v for k, v in doc.items() if k != "invocation"} == {k: v for k, v in scan(w).items() if k != "invocation"}
     missing = R.run_scan(tmp_path / "nope.db", as_of=T, core=TEST_CORE, watchlist=WATCH)
     assert (missing["run"]["status"], missing["run"]["codes"]) == ("INSUFFICIENT_DATA", ["STORE_NOT_CREATED"]) and not (tmp_path / "nope.db").exists()
-    assert missing["results"] == [] and missing["horizons"][MS.INTRADAY]["eligible"] == 0
+    assert len(missing["results"]) == 19 and missing["horizons"][MS.INTRADAY]["eligible"] == 0             # every symbol has its result, not read
+    assert all(r["features"]["gap_pct"]["codes"] == ["INPUT_NOT_READ"] and "STORE_NOT_CREATED" in r["horizons"][h]["reasons"]
+               for r in missing["results"] for h in MS.HORIZONS)
     st = scan(w, state=tmp_path / "no-state.db")
     assert (st["run"]["status"], st["run"]["codes"]) == ("INSUFFICIENT_DATA", ["STATE_NOT_CREATED"]) and not (tmp_path / "no-state.db").exists()
     c = sqlite3.connect(str(w.store.path))
@@ -662,7 +706,9 @@ def test_S16_the_scan_reads_copies_only_and_leaves_every_input_byte_for_byte_as_
         c.execute("INSERT INTO mi_budget_events (at, provider, event) VALUES (?, 'ALPACA', 'ALLOW')", (ST.ts(T - S),))
         c.commit()                                                                               # a writer holding committed pages in -wal
         busy = scan(w, tmp_root=scratch)
-        assert (busy["run"]["status"], busy["run"]["codes"]) == ("BLOCKED", ["STORE_WRITER_MAY_BE_ACTIVE"]) and busy["results"] == []
+        assert (busy["run"]["status"], busy["run"]["codes"]) == ("BLOCKED", ["STORE_WRITER_MAY_BE_ACTIVE"]) and len(busy["results"]) == 19
+        assert all("STORE_WRITER_MAY_BE_ACTIVE" in r["horizons"][h]["reasons"] for r in busy["results"] for h in MS.HORIZONS)
+        assert busy["horizons"][MS.INTRADAY]["eligible"] == busy["horizons"][MS.SWING]["eligible"] == 0
         assert list(scratch.iterdir()) == []
     finally:
         c.close()
@@ -719,13 +765,15 @@ def test_V01_the_figures_recompute_from_raw_sql(tmp_path):
     assert fv(doc, "NVDA", "dollar_volume_20d")[0] == round((dv[9] + dv[10]) / 2, 6)
     sp = sorted(1e4 * (s["ask"] - s["bid"]) / ((s["ask"] + s["bid"]) / 2) for s in snaps[-5:])
     assert fv(doc, "NVDA", "spread_bps")[0] == round(sp[2], 6)
+    last_today = max(datetime.fromisoformat(t.replace("Z", "+00:00")) for t, _, d in minutes if d == TODAY.isoformat())
+    m = int((last_today + timedelta(minutes=1) - ny(TODAY, 9, 30)).total_seconds() // 60)        # to the end of today's last delivered bar
     by = {}
-    for t, v, d in minutes:                                                                      # cumulative to 10:00 New York, per session
-        if t < ST.ts(ny(date.fromisoformat(d), 10)):
+    for t, v, d in minutes:
+        if t < ST.ts(ny(date.fromisoformat(d), 9, 30) + timedelta(minutes=m)):
             by[d] = by.get(d, 0) + v
     today = by.pop(TODAY.isoformat())
     prior = sorted(by.values())
-    assert len(prior) == 10 and fv(doc, "NVDA", "relative_volume_tod")[0] == round(today / ((prior[4] + prior[5]) / 2), 6)
+    assert m == 29 and len(prior) == 10 and fv(doc, "NVDA", "relative_volume_tod")[0] == round(today / ((prior[4] + prior[5]) / 2), 6)
 
 
 # ============================================================================================================ adversarial (A)
@@ -765,6 +813,142 @@ def test_A02_a_symbol_whose_inputs_cannot_be_read_fails_closed_and_the_run_says_
     monkeypatch.setattr(R.FG, "regime", boom)
     g = scan(w)["context"]["regime"]
     assert (g["spy_trend"], g["spy_vol"], g["codes"], g["status"]) == ("UNKNOWN", "UNKNOWN", ["REGIME_INPUT_UNREADABLE"], "INSUFFICIENT_DATA")
+    monkeypatch.setattr(R._Reader, "last_ok_fetch", lambda self, *a, **k: boom())                # a run-level read that does not read as written
+    d = scan(w)
+    assert (d["run"]["status"], d["run"]["codes"]) == ("BLOCKED", ["SCAN_INPUT_UNREADABLE"]) and len(d["results"]) == 19
+    assert all(not r["horizons"][h]["eligible"] and "SCAN_INPUT_UNREADABLE" in r["horizons"][h]["reasons"] for r in d["results"] for h in MS.HORIZONS)
+
+
+# ============================================================================================================ the independent review (R)
+def test_R01_a_halt_that_began_before_today_and_is_unresolved_is_open_today(tmp_path):
+    w = world(tmp_path / "w", halt_at=None)
+    halt_poll(w, T - 0.6 * S, [halt_obs("NVDA", ny(PREV, 15, 50), at=T - 0.6 * S), halt_obs("AMD", ny(PREV, 15, 55), T - 300 * S, at=T - 0.6 * S),
+                               halt_obs("SOXX", ny(PREV, 11), ny(PREV, 11, 30), at=T - 0.6 * S)])
+    doc = scan(w)
+    assert res(doc, "NVDA")["flags"]["halt"]["codes"] == ["HALT_OPEN"] and "HALTED" in hz(doc, "NVDA")["reasons"] and "HALTED" in hz(doc, "NVDA", MS.SWING)["reasons"]
+    assert res(doc, "AMD")["flags"]["halt"]["codes"] == ["RESUMED_WITHIN_10_MIN"] and hz(doc, "AMD")["rank"] is None     # halted at the close, resumed now
+    assert res(doc, "SOXX")["flags"]["halt"]["value"] == "FALSE" and hz(doc, "SOXX")["rank"] == 1                          # resolved yesterday
+
+
+def test_R02_a_self_contradictory_embedded_bar_is_never_a_value(tmp_path):
+    q = T - 2 * S
+    bad_today = snap(quote_at=q, prev_close=210.0, open_=212.1, last=211.0)
+    bad_today["daily_bar"] = {**bad_today["daily_bar"], "open": 500.0, "high": 212.0, "low": 209.0}
+    bad_prev = snap(quote_at=q, prev_close=300.0, open_=303.0, last=304.5)
+    bad_prev["prev_daily_bar"] = {**bad_prev["prev_daily_bar"], "high": 1.0}
+    w = world(tmp_path / "w", snaps=[r for r in base_snaps() if r[0] not in ("AMD", "SOXX")] + [("AMD", q, bad_today), ("SOXX", q, bad_prev)])
+    doc = scan(w)
+    assert doc["run"]["quality"]["verdict"] == "PASS"                                            # the 7.4 report does not read embedded bars
+    for name in ("gap_pct", "intraday_move", "unusual_volatility"):
+        assert (fv(doc, "AMD", name)[0], res(doc, "AMD")["features"][name]["codes"]) == (None, ["EMBEDDED_BAR_INVALID"]), name
+    assert res(doc, "SOXX")["features"]["gap_pct"]["codes"] == ["EMBEDDED_BAR_INVALID"] and fv(doc, "SOXX", "day_change")[0] is None
+    assert hz(doc, "AMD")["rank"] is None and hz(doc, "SOXX")["rank"] is None and doc["sequence"][MS.INTRADAY][:2] == ["NVDA", "SPY"]
+
+
+def test_R03_relative_volume_never_reads_a_missing_minute_as_zero(tmp_path):
+    w = world(tmp_path / "w", minutes=False)
+    prior = back(PREV, 10)
+    bars = {ny(d, 9, 30) + timedelta(minutes=k): 100 for d in prior for k in range(30)}
+    bars[ny(TODAY, 9, 30)] = 100                                                                 # only 09:30 has arrived
+    add_minutes(w, "NVDA", bars)
+    one = res(scan(w, T + 2 * S), "NVDA")["features"]["relative_volume_tod"]
+    assert (one["value"], one["minutes"], one["status"]) == (1.0, 1, "STALE")                   # to t = 09:31, one minute each; that bar is old
+    add_minutes(w, "NVDA", {ny(TODAY, 9, 32): 100})                                              # 09:31 never arrives
+    gap = res(scan(w, T + 2 * S), "NVDA")["features"]["relative_volume_tod"]
+    assert (gap["value"], gap["codes"]) == (None, ["MINUTES_MISSING"])
+    sparse = world(tmp_path / "sparse", minutes=False)
+    b2 = {ny(d, 9, 30) + timedelta(minutes=k): 100 for d in prior for k in range(30 if d not in prior[:6] else 1)}
+    b2.update({ny(TODAY, 9, 30) + timedelta(minutes=k): 100 for k in range(29)})
+    add_minutes(sparse, "NVDA", b2)                                                              # six prior sessions hold only their first bar
+    f = res(scan(sparse), "NVDA")["features"]["relative_volume_tod"]
+    assert f["codes"] == ["PRIOR_SESSIONS_MISSING"] and f["missing_sessions"] == [d.isoformat() for d in prior[:6]] and f["value"] is None
+
+
+def test_R04_a_catalyst_is_read_from_the_run_that_read_the_articles_latest_revision(tmp_path):
+    w = _news_world(tmp_path / "w", published=T - timedelta(hours=2))
+    assert res(scan(w, T + 2 * S), "NVDA")["flags"]["catalyst"]["value"] == "TRUE"
+    w.clk.t = T - 1.0 * S
+    did = w.store.create_dataset(DatasetSpec(job_kind="FIXTURE", kind="NEWS", provider="ALPACA", feed="none", adjustment="none", symbols=[]))
+    fixed = news([dict(art(1, T - timedelta(hours=2), headline="Advanced Micro Devices (NASDAQ: AMD) beats estimates", symbols=("AMD",),
+                           updated=T - 2 * S), source="Reuters", url="https://www.reuters.com/markets/nvda-beats")]).body   # the correction re-tags it
+    w.store.record_fetch(FetchRecord(provider="ALPACA", endpoint=AN.ENDPOINT, started_at=w.clk(), retrieved_at=w.clk(), status="OK"), dataset_id=did)
+    w.store.ingest(did, AN.parse_page(fixed, symbols=[], retrieved_at=w.clk(), dataset_id=did)[0])
+    seal(w, did)
+    behind = res(scan(w, T + 2 * S), "NVDA")["flags"]["catalyst"]                                # revision 2 is known, no run has read it yet
+    assert behind["value"] == "NOT_ESTABLISHED" and "articles" not in behind
+    msha = w.store.record_entity_map({"sec_names": {"NVDA": "NVIDIA CORP", "AMD": "ADVANCED MICRO DEVICES INC"}, "universe": ["NVDA", "AMD"], "aliases": {}})
+    w.clk.t = T - 0.8 * S
+    NP.mention_run(w.store, as_of=T - 0.8 * S, window_start=T - timedelta(hours=3), window_end=T - 0.8 * S, map_sha256=msha)
+    d = scan(w, T + 2 * S)
+    assert res(d, "NVDA")["flags"]["catalyst"]["value"] == "NOT_ESTABLISHED"                     # the superseded run never speaks for it
+    a = res(d, "AMD")["flags"]["catalyst"]
+    assert a["value"] == "TRUE" and a["articles"][0]["revision"] == 2
+
+
+def test_R05_a_fetch_time_the_schema_accepts_but_no_clock_can_read_never_crashes_the_scan(tmp_path):
+    w = world(tmp_path / "w")
+    c = sqlite3.connect(str(w.store.path))
+    try:
+        c.execute("INSERT INTO mi_fetches (fetch_id, provider, endpoint, params_json, started_at, retrieved_at, status, ingested_at) "
+                  "VALUES ('odd', 'NASDAQ_TRADER', ?, '{}', ?, ?, 'OK', ?)", (HA.ENDPOINT, "2025-12-02T14:59:50.000000Z", "2025-12-02T14:59:61.000000Z",
+                                                                             "2025-12-02T14:59:59.000000Z"))
+        c.commit()
+    finally:
+        c.close()
+    doc = scan(w)                                                                                # 61 seconds: GLOB-valid, never a time
+    assert doc["run"]["status"] == "BLOCKED" and doc["run"]["quality"]["verdict"] == "BLOCK"
+    assert doc["context"]["feeds"]["halt"]["age_s"] == 30.0                                      # the readable poll before it, never the odd one
+
+
+def test_R06_from_18_00_to_the_daily_bars_completion_no_swing_candidate_can_be_eligible_and_the_scan_says_why(tmp_path):
+    w = world(tmp_path / "w")
+    at6 = scan(w, ny(TODAY, 18, 30))
+    assert at6["horizons"][MS.SWING]["codes"] == ["DAILY_BAR_DUE_BEFORE_STORABLE"] and at6["horizons"][MS.SWING]["eligible"] == 0
+    at_least(w, ny(TODAY, 20, 5))
+    for s in BASE:
+        add_daily(w, s, {TODAY: BASE[s]})                                                        # complete at 20:00, stored from then
+    at8 = scan(w, ny(TODAY, 20, 30))
+    assert at8["horizons"][MS.SWING]["codes"] == [] and at8["horizons"][MS.SWING]["eligible"] == 4
+
+
+def test_R07_earnings_proximity_reads_the_latest_calendar_snapshot_only(tmp_path):
+    w = world(tmp_path / "w")
+    _earnings(w, ny(PREV, 12), csv=AV_CSV)                                                       # yesterday: NVDA on 2025-12-09
+    _earnings(w, T - 0.8 * S, csv="symbol,name,reportDate,fiscalDateEnding,estimate,currency\r\nAMD,AMD,2026-02-03,2025-12-31,,USD\r\n")
+    doc = scan(w)
+    e = res(doc, "NVDA")["flags"]["earnings_proximity"]
+    assert (e["value"], e["codes"], e["calendar"]["snapshot_date"]) == ("UNKNOWN", ["EARNINGS_UNKNOWN", "NOT_IN_LATEST_CALENDAR"], TODAY.isoformat())
+    assert res(doc, "AMD")["flags"]["earnings_proximity"]["report_date"] == "2026-02-03"
+
+
+def test_R08_a_halt_reads_its_validated_time_and_an_unreadable_resumption_keeps_it_open(tmp_path):
+    w = world(tmp_path / "w", halt_at=None)
+    odd = halt_obs("NVDA", T - 900 * S, at=T - 0.6 * S)
+    odd = odd.model_copy(update={"payload": {**dict(odd.payload), "halted_at": "yesterday-ish", "resumed_at": "later"}})
+    halt_poll(w, T - 0.6 * S, [odd])
+    h = res(scan(w), "NVDA")["flags"]["halt"]
+    assert (h["value"], h["codes"], h["halts"][0]["halted_at"]) == ("TRUE", ["HALT_RESUMPTION_UNREADABLE"], ST.ts(T - 900 * S))
+
+
+def test_R09_a_newer_absence_of_the_daily_bar_is_never_read_past(tmp_path):
+    w = world(tmp_path / "w")
+    did = w.store.create_dataset(DatasetSpec(job_kind="IMPORT", kind="BAR_1DAY", provider="ALPACA", feed="iex", adjustment="raw", symbols=["AMD"], timeframe="1Day",
+                                             start_date=PREV, end_date=PREV))
+    w.store.ingest(did, [Observation(kind="BAR_1DAY", symbol="AMD", provider="ALPACA", feed="iex", adjustment="raw", observed_at=ny(PREV), retrieved_at=w.clk(),
+                                     available_at=w.clk(), session="REG", session_date=PREV, status="UNAVAILABLE", backfilled=True, payload={})])
+    seal(w, did, "PARTIAL")
+    doc = scan(w)
+    assert res(doc, "AMD")["daily"]["reason"] == "LATEST_RECORD_IS_ABSENCE" and "DAILY_BAR_LATEST_RECORD_IS_ABSENCE" in hz(doc, "AMD", MS.SWING)["reasons"]
+    assert hz(doc, "NVDA", MS.SWING)["eligible"]
+
+
+def test_R10_the_hash_ignores_input_order_codes_say_what_happened_and_a_closed_window_never_hides_the_gate(tmp_path):
+    w = world(tmp_path / "w")
+    assert scan(w, watchlist=("CLS", "NVDA"))["scan_sha256"] == scan(w, watchlist=("NVDA", "CLS", "nvda"))["scan_sha256"]
+    far = scan(w, ny(date(2029, 1, 3), 10))                                                      # a year outside the calendar
+    assert far["horizons"][MS.INTRADAY]["reason"] == "CALENDAR_NOT_COVERED" and res(far, "NVDA")["features"]["relative_volume_tod"]["codes"] == ["CALENDAR_NOT_COVERED"]
+    post = scan(w, ny(TODAY, 16, 30), archive_root=None)                                         # INSUFFICIENT_DATA after the close
+    assert hz(post, "NVDA")["reasons"] == ["OUTSIDE_DAY_WINDOW_POST", "QUALITY_INSUFFICIENT_DATA"]
 
 
 # ============================================================================================================ isolation (X)
@@ -806,6 +990,16 @@ def test_X01_the_scanner_reaches_no_network_broker_execution_or_model_writes_not
             return set(x) | {k for v in x.values() for k in keys(v)}
         return {k for v in x for k in keys(v)} if isinstance(x, list) else set()
     assert forbidden_keys(doc) == [] and not {"score", "score_kind", "probability", "signal"} & keys(doc)   # no execution field and no score, anywhere
+    probe = ("import sys, threading; n = threading.active_count(); import market_scan.run; "
+             "print(sorted(m for m in sys.modules if m.split('.')[0] in {'api', 'autorun', 'config', 'data', 'dynamic_universe', 'evidence', 'setups', "
+             "'alpaca', 'anthropic', 'openai', 'agents', 'ai_explain', 'execution', 'proposals', 'paper', 'safety', 'scanner', 'trader_view', 'rh_gateway', "
+             "'robinhood_sync', 'strategy', 'backtest', 'rotation_walkforward'})); print(threading.active_count() - n)")
+    out = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True)
+    loaded, threads = out.stdout.splitlines()
+    assert ast.literal_eval(loaded) == ["api", "api.validation", "autorun", "autorun.calendar", "autorun.session", "config", "data", "data.events",
+                                        "data.events.earnings", "data.events.models", "data.sector_map", "dynamic_universe", "dynamic_universe.core", "evidence",
+                                        "evidence.net", "evidence.rules", "setups", "setups.market_hours"], out.stderr[-600:]
+    assert threads == "0"                                    # transitively: the data layer's own imports (DESIGN_75 section 9); no broker, no model
     import config
     assert (MS.MIN_PRICE, config.MIN_PRICE) == (5.0, 5) and MS.MIN_PRICE >= config.MIN_PRICE     # never looser than the project's minimum
     from market_intel.news import entities as EN

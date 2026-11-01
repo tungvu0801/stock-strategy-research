@@ -84,11 +84,22 @@ def _prev_close(snap: dict, previous: Optional[date], codes: List[str]) -> Optio
     if not isinstance(pb, dict) or previous is None or ny_day(pb.get("start")) != previous:
         codes.append("PREV_CLOSE_NOT_PREVIOUS_SESSION")
         return None
-    pc = num(pb.get("close"))
-    if pc is None or pc <= 0:
-        codes.append("PREV_CLOSE_INVALID")
+    if not _bar_ok(pb):                                                # an embedded bar is checked like a stored one
+        codes.append("EMBEDDED_BAR_INVALID")
         return None
-    return pc
+    return float(pb["close"])
+
+
+def _today_bar(snap: dict, today: Optional[date], codes: List[str]) -> Optional[dict]:
+    """The snapshot's daily bar, only when it is dated `today` and consistent (positive prices, high / low around open and close)."""
+    db = snap.get("daily_bar")
+    if not isinstance(db, dict) or ny_day(db.get("start")) != today:
+        codes.append("DAILY_BAR_NOT_TODAY")
+        return None
+    if not _bar_ok(db):
+        codes.append("EMBEDDED_BAR_INVALID")
+        return None
+    return db
 
 
 def last_trade(snap: Optional[dict], *, today: Optional[date], sessions: Sequence[str] = (PRE, REG, POST)) -> Dict[str, Any]:
@@ -121,15 +132,8 @@ def gap_pct(snap: Optional[dict], *, session: str, today: Optional[date], previo
         p, basis = lt["value"], "PRE_LAST_TRADE"
         codes += [] if p is not None else ["NO_PREMARKET_TRADE"]
     else:
-        db = snap.get("daily_bar")
-        p, basis = None, "TODAY_OPEN"
-        if not isinstance(db, dict) or ny_day(db.get("start")) != today:
-            codes.append("DAILY_BAR_NOT_TODAY")
-        else:
-            p = num(db.get("open"))
-            if p is None or p <= 0:
-                codes.append("OPEN_INVALID")
-                p = None
+        db = _today_bar(snap, today, codes)
+        p, basis = (None if db is None else float(db["open"])), "TODAY_OPEN"
     if pc is None or p is None:
         return feature(codes=codes, unit="%", basis=basis)
     return feature(100.0 * (p / pc - 1.0), AVAILABLE, codes, unit="%", basis=basis, price=round(p, DIGITS), previous_close=round(pc, DIGITS))
@@ -154,36 +158,47 @@ def _bar_ok(b: dict) -> bool:
     return None not in (o, h, lo, c, v) and min(o, h, lo, c) > 0 and v >= 0 and h >= max(o, c) and lo <= min(o, c)
 
 
-def premarket(bars: Sequence[dict], *, feed: str) -> Dict[str, Dict[str, Any]]:
-    """PRE cumulative volume and the PRE high / low of `today`'s premarket minute bars (D.1: flagged THIN on IEX)."""
+def premarket(bars: Sequence[dict], *, feed: str, minutes_elapsed: int = 0) -> Dict[str, Dict[str, Any]]:
+    """PRE volume and the PRE high / low of `today`'s DELIVERED premarket minute bars (D.1: flagged THIN on IEX). A sum of the delivered
+    bars, with its coverage stated (minutes covered of the minutes elapsed): premarket prints are sparse, so a missing minute is not read as
+    zero volume here - it is not read at all, and the coverage says so."""
     thin = ["THIN_ON_IEX"] if feed == "iex" else []
+    cov = {"minutes_covered": len({b["start"] for b in bars}), "minutes_elapsed": minutes_elapsed}
     if not bars:
-        return {"premarket_volume": feature(codes=["NO_PREMARKET_BARS"], unit="shares"),
-                "premarket_range": feature(codes=["NO_PREMARKET_BARS"], unit="%")}
+        return {"premarket_volume": feature(codes=["NO_PREMARKET_BARS"], unit="shares", **cov),
+                "premarket_range": feature(codes=["NO_PREMARKET_BARS"], unit="%", **cov)}
     if not all(_bar_ok(b) for b in bars):
         return {"premarket_volume": feature(codes=["INVALID_BAR"], unit="shares"), "premarket_range": feature(codes=["INVALID_BAR"], unit="%")}
     hi, lo = max(float(b["high"]) for b in bars), min(float(b["low"]) for b in bars)
-    return {"premarket_volume": feature(sum(float(b["volume"]) for b in bars), AVAILABLE, thin, unit="shares", bars=len(bars)),
-            "premarket_range": feature(100.0 * (hi / lo - 1.0), AVAILABLE, thin, unit="%", high=round(hi, DIGITS), low=round(lo, DIGITS))}
+    return {"premarket_volume": feature(sum(float(b["volume"]) for b in bars), AVAILABLE, thin + ["SUM_OF_DELIVERED_BARS"], unit="shares", **cov),
+            "premarket_range": feature(100.0 * (hi / lo - 1.0), AVAILABLE, thin, unit="%", high=round(hi, DIGITS), low=round(lo, DIGITS), **cov)}
 
 
 def cumulative_volume(bars: Sequence[dict], *, open_at: datetime, minutes: int) -> Optional[float]:
-    """The volume of the regular-session minute bars that start in the first `minutes` minutes after `open_at`; None without any bar or
-    with a volume that is not a finite, non-negative number."""
+    """The volume of the minute bars of [open_at, open_at + minutes), only when EVERY minute of it has its bar: a missing minute (on IEX
+    possibly a minute without prints) is never a zero. None with a gap, without any minute, or with a volume that is not a finite,
+    non-negative number."""
+    if minutes < 1:
+        return None
     cut = open_at + timedelta(minutes=minutes)
-    vols = [num(b.get("volume")) for b in bars if open_at <= b["start"] < cut]
-    if not vols or any(v is None or v < 0 for v in vols):
+    by = {b["start"]: b for b in bars if open_at <= b["start"] < cut}
+    if set(by) != {open_at + timedelta(minutes=k) for k in range(minutes)}:
+        return None
+    vols = [num(b.get("volume")) for b in by.values()]
+    if any(v is None or v < 0 for v in vols):
         return None
     return sum(vols)
 
 
-def relative_volume_tod(today: Optional[float], prior: Sequence[Optional[float]], *, minutes: int, missing: Sequence[str] = ()) -> Dict[str, Any]:
-    """Cumulative volume to minute t / the median of the prior 10 sessions' cumulative volume to the same minute (one feed both sides)."""
+def relative_volume_tod(today: Optional[float], prior: Sequence[Optional[float]], *, minutes: int, missing: Sequence[str] = (),
+                        today_code: str = "NO_BARS_TODAY") -> Dict[str, Any]:
+    """Cumulative volume to t / the median of the prior 10 sessions' cumulative volume to the same minute (one feed both sides), t = the end
+    of today's latest delivered regular-session minute bar (run.py)."""
     extra = {"minutes": minutes, "prior_sessions": len(prior)}
     if minutes < 1:
         return feature(codes=["NO_COMPLETED_MINUTE"], unit="x", **extra)
     if today is None:
-        return feature(codes=["NO_BARS_TODAY"], unit="x", **extra)
+        return feature(codes=[today_code], unit="x", **extra)
     if len(prior) < RVOL_PRIOR_SESSIONS or any(v is None for v in prior):
         return feature(codes=["PRIOR_SESSIONS_MISSING"], unit="x", missing_sessions=list(missing), **extra)
     base = median([float(v) for v in prior])
@@ -209,11 +224,12 @@ def atr(bars: Sequence[dict], *, missing: Sequence[str] = ()) -> Dict[str, Any]:
 
 def intraday_move(last: Dict[str, Any], snap: Optional[dict], atr_f: Dict[str, Any], *, today: Optional[date]) -> Dict[str, Any]:
     """The last trade vs today's open: 100 x (last / open - 1), and (last - open) / ATR(14) when the ATR is usable."""
-    db = snap.get("daily_bar") if isinstance(snap, dict) else None
     if last["value"] is None:
         return feature(codes=last["codes"], unit="%")
-    if not isinstance(db, dict) or ny_day(db.get("start")) != today or (num(db.get("open")) or 0) <= 0:
-        return feature(codes=["DAILY_BAR_NOT_TODAY"], unit="%")
+    codes: List[str] = []
+    db = _today_bar(snap, today, codes) if isinstance(snap, dict) else None
+    if db is None:
+        return feature(codes=codes or ["NO_SNAPSHOT"], unit="%")
     o = float(db["open"])
     units = (last["value"] - o) / atr_f["value"] if atr_f["usable"] and atr_f["value"] > 0 else None
     return feature(100.0 * (last["value"] / o - 1.0), AVAILABLE, [] if units is not None else ["ATR_UNAVAILABLE"], unit="%",
@@ -222,12 +238,11 @@ def intraday_move(last: Dict[str, Any], snap: Optional[dict], atr_f: Dict[str, A
 
 def unusual_volatility(snap: Optional[dict], atr_f: Dict[str, Any], *, today: Optional[date]) -> Dict[str, Any]:
     """Today's range so far (the snapshot's daily bar high - low) / ATR(14)."""
-    db = snap.get("daily_bar") if isinstance(snap, dict) else None
-    if not isinstance(db, dict) or ny_day(db.get("start")) != today:
-        return feature(codes=["DAILY_BAR_NOT_TODAY"], unit="x")
-    h, lo = num(db.get("high")), num(db.get("low"))
-    if h is None or lo is None or h < lo or lo <= 0:
-        return feature(codes=["INVALID_BAR"], unit="x")
+    codes: List[str] = []
+    db = _today_bar(snap, today, codes) if isinstance(snap, dict) else None
+    if db is None:
+        return feature(codes=codes or ["NO_SNAPSHOT"], unit="x")
+    h, lo = float(db["high"]), float(db["low"])
     if not atr_f["usable"] or atr_f["value"] <= 0:
         return feature(codes=["ATR_UNAVAILABLE"], unit="x")
     return feature((h - lo) / atr_f["value"], AVAILABLE, unit="x")
