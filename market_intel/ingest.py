@@ -15,17 +15,22 @@ feed / adjustment explicit, calendar coverage (any uncovered weekday in the rang
 15-minute rule (Basic plan: a SIP window must end at least 16 minutes ago) and estimates: sessions, rows, pages, requests, minutes at
 the backfill budget, bytes. A SIP plan always lists SIP_FEED among the approvals it needs; every plan lists REAL_BACKFILL.
 
-A plan above MAX_PLAN_ROWS rows is refused (ROWS_EXCEED_GENERIC_STORE_CAP): the generic store is measured for that order of magnitude,
-not for a multi-year minute history of a whole universe (DESIGN_71 section 7).
+A plan whose provider may deliver more than MAX_PLAN_ROWS rows is refused (ROWS_EXCEED_GENERIC_STORE_CAP): the generic store is measured
+for that order of magnitude, not for a multi-year minute history of a whole universe (DESIGN_71 section 7). The estimate keeps two numbers:
+rows_total (the bars the approved sessions keep) and rows_delivered_max (what the provider may send: every bar of 04:00 to the late-trading
+end for intraday timeframes, whether or not the request is regular-hours only - extended bars are then EXCLUDED, but still delivered).
 
 run_backfill() is the library path a FUTURE approved run will use. It takes the BackfillRequest itself - never a plan dict - and
 RECOMPUTES the plan at run time; the operator approval (approvals.py: a file in the approvals directory, re-read and re-hashed here) must
 name that exact request and plan hash, bound its estimate with its caps, carry sip_approved for SIP, and is claimed once, in the
 transaction that creates the dataset. It also needs an injected fetch function, the backfill window (outside 07:00-20:00 New York time
-on market days), a budget no larger than the plan's, the raw archive and the store. Every failure on the way (a transport exception, a
-malformed Retry-After, an unparsable page, a store refusal) is recorded and the dataset is ALWAYS sealed (COMPLETED / PARTIAL / FAILED /
-EMPTY), its manifest hash anchored in the raw archive. Stage 7.1 ships no fetch function and the CLI never builds an approval, so no
-real request can be made.
+on market days), a budget no larger than the plan's, the raw archive and the store. The STORE verifies the same authority again before
+it creates the dataset (store._authorize), so no other entry point can create a BACKFILL dataset without it. Every failure on the way (a
+transport exception, a malformed Retry-After, an unparsable page, a store refusal) is recorded and the dataset is sealed (COMPLETED /
+PARTIAL / FAILED / EMPTY) and anchored in the raw archive. If the seal itself cannot be written (a disk failure) run_backfill raises
+FinalizationError and the dataset stays RUNNING (pending finalization); if the anchor cannot be written the result says PENDING_ANCHOR.
+Both are durable states that recover_pending() completes later - a persistent disk failure is never claimed to be sealed. Stage 7.1
+ships no fetch function and the CLI never builds an approval, so no real request can be made.
 """
 from __future__ import annotations
 
@@ -43,6 +48,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from market_intel import approvals as APP
 from market_intel import calendar as CAL
+from market_intel import store as ST
 from market_intel.budget import ProviderBudget
 from market_intel.models import FetchRecord
 from market_intel.settings import settings as mi_settings
@@ -53,11 +59,11 @@ MAX_SYMBOLS = 100
 MAX_RANGE_DAYS = 3660
 SIP_DELAY_MINUTES = 16                    # Alpaca Basic: SIP history is available from 15 minutes back (design C.8; verify on the plan)
 WINDOW_BLOCK = (7 * 60, 20 * 60)          # no backfill 07:00-20:00 New York time on a market day (it shares the 200/min plan)
-EXTENDED_MINUTES = 16 * 60                # 04:00-20:00
-BYTES_PER_ROW_ESTIMATE = 1500             # one value row + its membership row incl. indexes: measured 1,440-1,600 (test_C05, DESIGN_71 section 7)
+BYTES_PER_ROW_ESTIMATE = 1650             # one value row + its membership row incl. indexes: measured 1,628-1,640 (test_C05, DESIGN_71 section 7)
+BYTES_PER_EXCLUDED_ESTIMATE = 500         # the membership row of a delivered, EXCLUDED bar: measured ~503 (DESIGN_71 section 7)
 MAX_RETRIES = 2
 RETRY_SLEEP_S = 5.0                       # after a transport exception or a 5xx (a 429 waits for the budget's back-off instead)
-MAX_PLAN_ROWS = 2_500_000                 # the generic store's protective cap per plan (B10: measured, DESIGN_71 section 7)
+MAX_PLAN_ROWS = ST.MAX_DATASET_ROWS       # the generic store's protective cap, the same number the store enforces per dataset (DESIGN_71 section 7)
 BUDGET_NAME = "ALPACA_BACKFILL"
 EXIT_OK, EXIT_USAGE, EXIT_REFUSED, EXIT_EXECUTE_REFUSED = 0, 1, 2, 3
 
@@ -86,6 +92,35 @@ class BackfillRequest:
                 "feed": self.feed, "adjustment": self.adjustment, "extended_hours": self.extended_hours}
 
 
+REQUEST_KEYS = ("symbols", "start", "end", "timeframe", "feed", "adjustment", "extended_hours")
+
+
+class FinalizationError(RuntimeError):
+    """The run ended but its seal could not be written: the dataset stays RUNNING - pending finalization - until recover_pending()."""
+
+    def __init__(self, dataset_id: str, state: str, cause: str):
+        super().__init__(f"dataset {dataset_id}: {state} ({cause}); recover_pending() seals it once the store can be written")
+        self.dataset_id, self.state, self.cause = dataset_id, state, cause
+
+
+def request_from_dict(d: dict) -> BackfillRequest:
+    """The exact inverse of BackfillRequest.as_dict (a dataset's stored request): exactly these keys, of these types."""
+    if not isinstance(d, dict) or set(d) != set(REQUEST_KEYS):
+        raise ValueError(f"a request has exactly the keys {REQUEST_KEYS}")
+    if not isinstance(d["symbols"], list) or not all(isinstance(x, str) for x in d["symbols"]) or not isinstance(d["extended_hours"], bool):
+        raise ValueError("symbols is a list of strings and extended_hours a boolean")
+    return BackfillRequest(symbols=tuple(d["symbols"]), start=date.fromisoformat(d["start"]), end=date.fromisoformat(d["end"]), timeframe=str(d["timeframe"]),
+                           feed=str(d["feed"]), adjustment=str(d["adjustment"]), extended_hours=d["extended_hours"])
+
+
+def dataset_spec(fresh_plan: dict, approval) -> "ST.DatasetSpec":
+    """The ONE dataset spec an approved plan allows (the store compares the spec it is asked to create with this, field by field)."""
+    r = fresh_plan["request"]
+    return ST.DatasetSpec(job_kind="BACKFILL", kind=AB.TIMEFRAMES[r["timeframe"]], provider=AB.PROVIDER, feed=r["feed"], adjustment=r["adjustment"],
+                          symbols=list(r["symbols"]), timeframe=r["timeframe"], start_date=date.fromisoformat(r["start"]), end_date=date.fromisoformat(r["end"]),
+                          request=r, plan_sha256=fresh_plan["plan_sha256"], approval_ref=approval.approval_id)
+
+
 def coverage(start: date, end: date) -> dict:
     sessions, uncovered, versions = 0, [], set()
     x = start
@@ -101,19 +136,31 @@ def coverage(start: date, end: date) -> dict:
             "uncovered_first": uncovered[:10], "uncovered_last": uncovered[-3:], "calendars": sorted(versions)}
 
 
-def _rows_per_symbol(req: BackfillRequest) -> int:
-    n, x = 0, req.start
+def _bars_in(timeframe: str, lo: int, hi: int) -> int:
+    """Bars of `timeframe` whose interval overlaps [lo, hi) minutes after New York midnight (the store's session-scope rule)."""
+    if hi <= lo:
+        return 0
+    if timeframe == "1Min":
+        return hi - lo
+    return sum(1 for h in range(24) if h * 60 < hi and h * 60 + 60 > lo)
+
+
+def _rows_per_symbol(req: BackfillRequest) -> Tuple[int, int]:
+    """(rows the approved sessions keep, the most rows the provider may deliver) per symbol over the request's market days."""
+    kept = delivered = 0
+    x = req.start
     while x <= req.end:
-        mins = CAL.regular_minutes(x) if CAL.market_day_status(x) != CAL.NOT_COVERED else 0
-        if mins:
+        if CAL.market_day_status(x) == CAL.MARKET_DAY:
             if req.timeframe == "1Day":
-                n += 1
-            elif req.timeframe == "1Hour":
-                n += 16 if req.extended_hours else math.ceil((mins + 30) / 60)       # hour-aligned bars from 09:00 (09:30-10:00) on
+                kept += 1
+                delivered += 1
             else:
-                n += EXTENDED_MINUTES if req.extended_hours else mins
+                close, late = 9 * 60 + 30 + CAL.regular_minutes(x), CAL.post_market_end_minute(x)
+                ext = _bars_in(req.timeframe, 4 * 60, late)
+                kept += ext if req.extended_hours else _bars_in(req.timeframe, 9 * 60 + 30, close)
+                delivered += ext
         x += timedelta(days=1)
-    return n
+    return kept, delivered
 
 
 def backfill_window_open(now: datetime) -> bool:
@@ -174,15 +221,17 @@ def plan(req: BackfillRequest, now: datetime, *, store=None) -> dict:
                                                                    f"{cov['uncovered_first'][:3]}: refused, never assumed to be sessions"})
     b = mi_settings()["budgets"]
     per_min = b["MI_ALPACA_BACKFILL_MAX_PER_MIN"]
-    rows = _rows_per_symbol(req) if req.start <= req.end and req.timeframe in AB.TIMEFRAMES else 0
-    pages = max(1, math.ceil(rows / AB.PAGE_LIMIT)) if rows else 0
+    rows, most = _rows_per_symbol(req) if req.start <= req.end and req.timeframe in AB.TIMEFRAMES else (0, 0)
+    pages = max(1, math.ceil(most / AB.PAGE_LIMIT)) if most else 0                # pages follow what the provider sends
     n = len(req.symbols)
-    est = {"rows_per_symbol": rows, "rows_total": rows * n, "pages_per_symbol": pages, "requests": pages * n, "page_limit": AB.PAGE_LIMIT,
-           "minutes_at_budget": round(pages * n / per_min, 2) if per_min else None, "bytes_estimate": rows * n * BYTES_PER_ROW_ESTIMATE,
+    est = {"rows_per_symbol": rows, "rows_total": rows * n, "rows_delivered_max_per_symbol": most, "rows_delivered_max": most * n,
+           "pages_per_symbol": pages, "requests": pages * n, "page_limit": AB.PAGE_LIMIT,
+           "minutes_at_budget": round(pages * n / per_min, 2) if per_min else None,
+           "bytes_estimate": rows * n * BYTES_PER_ROW_ESTIMATE + (most - rows) * n * BYTES_PER_EXCLUDED_ESTIMATE,
            "bytes_per_row_estimate": BYTES_PER_ROW_ESTIMATE}
-    if est["rows_total"] > MAX_PLAN_ROWS:
-        refusals.append({"code": "ROWS_EXCEED_GENERIC_STORE_CAP", "detail": f"{est['rows_total']} rows > {MAX_PLAN_ROWS} per plan: split the request "
-                                                                            "(the generic store's measured limit, DESIGN_71 section 7)"})
+    if est["rows_delivered_max"] > MAX_PLAN_ROWS:
+        refusals.append({"code": "ROWS_EXCEED_GENERIC_STORE_CAP", "detail": f"up to {est['rows_delivered_max']} delivered rows > {MAX_PLAN_ROWS} per plan: "
+                                                                            "split the request (the generic store's measured limit, DESIGN_71 section 7)"})
     used = None
     if store is not None and store.exists():
         used = store.budget_used(BUDGET_NAME, CAL.session(now)["session_date"])
@@ -244,7 +293,7 @@ def _http_status(status) -> str:
 def _final_status(stats: dict, stop: Optional[str]) -> str:
     if stats["ok_fetches"] == 0:
         return "FAILED"
-    if stop or stats["unrecovered"] or stats["rejected"] or stats["problems"]:
+    if stop or stats["unrecovered"] or stats["rejected"] or stats["problems"]:                  # EXCLUDED rows never make a run PARTIAL
         return "PARTIAL"
     if stats["inserted"] + stats["revised"] + stats["duplicates"] == 0:
         return "EMPTY"
@@ -252,16 +301,16 @@ def _final_status(stats: dict, stop: Optional[str]) -> str:
 
 
 def run_backfill(req: BackfillRequest, *, approval, fetch_fn: Callable[[dict], Tuple[int, dict, bytes]], store, archive,
-                 clock: Callable[[], datetime], sleep_fn: Callable[[float], None], budget: Optional[ProviderBudget] = None,
-                 approvals_root: Optional[Path] = None) -> dict:
+                 clock: Callable[[], datetime], sleep_fn: Callable[[float], None], budget: Optional[ProviderBudget] = None) -> dict:
     """Fetch, archive and ingest an APPROVED request (see the module docstring). Refusals before the dataset exists raise PermissionError
-    (ApprovalError) or StoreError and send nothing. Once the dataset exists it is always sealed; an Exception during the run becomes the
-    stop reason (returned), and a KeyboardInterrupt / SystemExit is re-raised after the seal."""
+    (ApprovalError) or StoreError and send nothing. Once the dataset exists every Exception of the run becomes its stop reason and the
+    dataset is sealed; a KeyboardInterrupt / SystemExit is re-raised after the seal. A seal that cannot be written raises FinalizationError
+    (the dataset stays RUNNING: pending finalization); an anchor that cannot be written returns finalization PENDING_ANCHOR."""
     if not isinstance(req, BackfillRequest):
         raise PermissionError("run_backfill takes the BackfillRequest itself: the plan is recomputed here, never accepted from a caller")
     now = clock()
     fresh = plan(req, now)                                               # recomputed now: a plan cannot be edited after approval
-    APP.check(approval, fresh, now=now, root=approvals_root)
+    APP.check(approval, fresh, now=now, root=store.approvals_root)       # the store re-checks the same file before the dataset exists
     if not backfill_window_open(now):
         raise PermissionError("outside the backfill window (no backfill 07:00-20:00 New York time on a market day)")
     per_min = fresh["budget"]["per_minute"]
@@ -269,15 +318,11 @@ def run_backfill(req: BackfillRequest, *, approval, fetch_fn: Callable[[dict], T
         budget = ProviderBudget(BUDGET_NAME, per_min, clock)
     elif budget.name != BUDGET_NAME or budget.bucket.per_minute > per_min or budget.bucket.capacity > per_min:
         raise PermissionError(f"the budget may not exceed the plan's ({BUDGET_NAME}, {per_min}/min)")
-    from market_intel.store import DatasetSpec
     r = fresh["request"]
     first, last = date.fromisoformat(r["start"]), date.fromisoformat(r["end"])
-    kind = AB.TIMEFRAMES[r["timeframe"]]
-    did = store.create_dataset(DatasetSpec(job_kind="BACKFILL", kind=kind, provider=AB.PROVIDER, feed=r["feed"], adjustment=r["adjustment"],
-                                           symbols=r["symbols"], timeframe=r["timeframe"], start_date=first, end_date=last, request=r,
-                                           plan_sha256=fresh["plan_sha256"], approval_ref=approval.approval_id), approval=approval)
+    did = store.create_dataset(dataset_spec(fresh, approval), approval=approval)
     stats = {"requests": 0, "ok_fetches": 0, "failed_fetches": 0, "unrecovered": 0, "inserted": 0, "duplicates": 0, "revised": 0,
-             "absences": 0, "rejected": 0, "problems": 0, "rows_delivered": 0}
+             "absences": 0, "rejected": 0, "excluded": 0, "problems": 0, "rows_delivered": 0}
     stop, interrupt = None, None
     try:
         stop = _run(r, did, first, last, fetch_fn=fetch_fn, store=store, archive=archive, approval=approval, clock=clock, sleep_fn=sleep_fn,
@@ -287,18 +332,59 @@ def run_backfill(req: BackfillRequest, *, approval, fetch_fn: Callable[[dict], T
     except BaseException as exc:                                         # KeyboardInterrupt / SystemExit: sealed first, then re-raised
         stop, interrupt = f"INTERRUPTED:{type(exc).__name__}", exc
     final = _final_status(stats, stop)
-    detail = json.dumps({"stop": stop, **{k: stats[k] for k in ("requests", "unrecovered", "rejected", "problems")}})
-    from market_intel.store import StoreError
+    detail = json.dumps({"stop": stop, **{k: stats[k] for k in ("requests", "unrecovered", "rejected", "excluded", "problems")}})
     try:
-        sealed = store.finish_dataset(did, final, detail=detail)
-    except StoreError:                                                   # the store's own rule disagrees: never COMPLETED / EMPTY by default
-        final = "PARTIAL" if stats["ok_fetches"] else "FAILED"
-        sealed = store.finish_dataset(did, final, detail=detail)
-    anchor = archive.anchor(did, sealed["content_sha256"], records_sha256=sealed["records_sha256"], status=final, sealed_at=clock())
+        try:
+            sealed = store.finish_dataset(did, final, detail=detail)
+        except ST.SealedError:
+            raise
+        except ST.StoreError:                                            # the store's own rule disagrees: never COMPLETED / EMPTY by default
+            final = "PARTIAL" if stats["ok_fetches"] else "FAILED"
+            sealed = store.finish_dataset(did, final, detail=detail)
+    except Exception as exc:                                             # noqa: BLE001 - the seal could not be written: say so, never claim it
+        raise FinalizationError(did, "PENDING_FINALIZATION", type(exc).__name__) from (interrupt or exc)
+    anchor, finalization, anchor_error = None, "ANCHORED", None
+    try:
+        anchor = archive.anchor(did, sealed["content_sha256"], records_sha256=sealed["records_sha256"], metadata_sha256=sealed["metadata_sha256"],
+                                status=final, sealed_at=clock())
+    except Exception as exc:                                             # noqa: BLE001 - sealed, not yet anchored: UNVERIFIED until recovered
+        finalization, anchor_error = "PENDING_ANCHOR", type(exc).__name__
     if interrupt is not None:
         raise interrupt
     return {"dataset_id": did, "status": final, "stop": stop, **stats, "content_sha256": sealed["content_sha256"], "anchor": anchor,
-            "plan_sha256": fresh["plan_sha256"], "approval_id": approval.approval_id}
+            "finalization": finalization, "anchor_error": anchor_error, "plan_sha256": fresh["plan_sha256"], "approval_id": approval.approval_id}
+
+
+RECOVERY_STALE_AFTER = timedelta(hours=1)
+
+
+def recover_pending(store, archive, *, clock: Callable[[], datetime], stale_after: timedelta = RECOVERY_STALE_AFTER) -> dict:
+    """Complete what a crash, a disk failure or an anchor failure left pending - deterministically, never guessing success:
+    * a dataset still RUNNING whose last activity is older than `stale_after` (no live run touches it) is sealed PARTIAL when it delivered a
+      value, else FAILED (detail RECOVERED_ABANDONED_RUN). Its approval stays used: replay protection is unchanged;
+    * a sealed dataset without its anchor is anchored with the seal the database holds - but only when the store verifies without any
+      CORRUPT finding (a corrupt store is never re-anchored: the anchors would then vouch for the corruption).
+    A dataset with recent activity is left alone (it may belong to a live run)."""
+    now = clock()
+    out = {"sealed": [], "anchored": [], "left_running": [], "refused": None}
+    for d in store.dataset_states()["unsealed"]:
+        if now - ST.parse_ts(d["last_activity"]) < stale_after:
+            out["left_running"].append(d["dataset_id"])
+            continue
+        final = "PARTIAL" if d["values"] else "FAILED"
+        store.finish_dataset(d["dataset_id"], final, detail=json.dumps({"stop": "RECOVERED_ABANDONED_RUN"}))
+        out["sealed"].append({"dataset_id": d["dataset_id"], "status": final})
+    v = store.verify_integrity(anchors=archive.anchors())
+    if v["state"] == ST.CORRUPT:
+        out["refused"] = "CORRUPT"
+        return out
+    seals = {d["dataset_id"]: d for d in store.dataset_states()["sealed"]}
+    for did in v["unanchored_datasets"]:
+        e = seals[did]
+        archive.anchor(did, e["content_sha256"], records_sha256=e["records_sha256"], metadata_sha256=e["metadata_sha256"], status=e["status"],
+                       sealed_at=ST.parse_ts(e["at"]))
+        out["anchored"].append(did)
+    return out
 
 
 def _run(r: dict, did: str, first: date, last: date, *, fetch_fn, store, archive, approval, clock, sleep_fn, budget, stats) -> Optional[str]:
@@ -395,12 +481,12 @@ def _run(r: dict, did: str, first: date, last: date, *, fetch_fn, store, archive
                 break
             stats["ok_fetches"] += 1
             retries = 0
-            if stats["rows_delivered"] + len(obs) + len(problems) > approval.max_rows:
+            if stats["rows_delivered"] + len(obs) + len(problems) > min(approval.max_rows, ST.MAX_DATASET_ROWS):   # the store enforces it too
                 return "APPROVAL_ROW_CAP"                                # the page is archived and recorded, but not ingested
             stats["rows_delivered"] += len(obs) + len(problems)
             stats["problems"] += store.record_problems(did, problems, fetch_id=fid)
             res = store.ingest(did, obs, fetch_id=fid, on_reject="quarantine")
-            for k in ("inserted", "duplicates", "revised", "absences", "rejected"):
+            for k in ("inserted", "duplicates", "revised", "absences", "rejected", "excluded"):
                 stats[k] += getattr(res, k)
             if not nxt:
                 break

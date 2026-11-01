@@ -15,8 +15,14 @@ the NYSE's own publications AND an independent empirical cross-check; a year tha
 
 Early-close days end the regular session at 13:00 ET and the late (post-market) trading session at 17:00 ET: the same NYSE Group
 release states "NYSE American Equities, NYSE Arca Equities, NYSE Chicago, and NYSE National late trading sessions will close at 5:00 p.m."
-on those dates (verified 2026-10-31). The 2025 history uses 17:00. (2026-2027 still follow the frozen Stage 6.10A classifier, which runs
-the post-market to 20:00 on every market day: changing that is a Stage 7.0 contract decision - DESIGN_71 section 5.)
+on those dates (verified 2026-10-31). The 2025 history uses 17:00.
+
+2026-2027 LATE-TRADING OVERRIDE (LATE_TRADING_OVERRIDE_VERSION nyse_late_trading_2026_2027_v1; operator-approved 2026-10-31, DESIGN_71
+section 5). The same release lists the 2026-2027 early closes - Friday 2026-11-27, Thursday 2026-12-24 and Friday 2027-11-26
+- each "1:00 p.m." with the same footnote: the late trading sessions "will close at 5:00 p.m." (re-verified 2026-10-31). The frozen Stage 6.10A
+table (autorun/calendar.py, read by the executor) is NOT changed: its sessions, holidays and 13:00 closes stay the single source for those
+years; this override changes only when the post-market ends on those three dates, inside market_intel. That is the one declared exception
+to the Stage 7.0 single-source rule; a test pins the override dates equal to the frozen table's early closes.
 """
 from __future__ import annotations
 
@@ -34,10 +40,14 @@ HOLIDAYS = frozenset(date.fromisoformat(d) for d in (
 EXCEPTIONAL_CLOSURES = frozenset((date(2025, 1, 9),))          # not derivable from the holiday rules
 EARLY_CLOSES = frozenset(date.fromisoformat(d) for d in ("2025-07-03", "2025-11-28", "2025-12-24"))
 SESSIONS_PER_YEAR = {2025: 250}                               # the empirical cross-check, pinned by tests
+LATE_TRADING_OVERRIDE_VERSION = "nyse_late_trading_2026_2027_v1"
+LATE_TRADING_OVERRIDE_YEARS = (2026, 2027)
+LATE_TRADING_EARLY_CLOSES = frozenset(date.fromisoformat(d) for d in ("2026-11-27", "2026-12-24", "2027-11-26"))   # = autorun EARLY_CLOSES (pinned)
 SOURCES = (
     "NYSE Group: 2025, 2026 and 2027 Holiday and Early Closings Calendar (ir.theice.com, 2024)",
     "NYSE: markets close on January 9, 2025 for the National Day of Mourning (ir.theice.com, 2024-12-30)",
     "empirical: IEX daily bars of 82 symbols, Stage 6.4 bundle - 250 sessions in 2025, the 11 closures exactly",
+    "NYSE Group release footnotes: late trading sessions close at 5:00 p.m. on every 2025-2027 early-close date (re-verified 2026-10-31)",
 )
 
 

@@ -18,8 +18,13 @@ executor's session health); a live year (2028) is a separate, declared change to
 
 Stage 7.1: 2025 is covered by the market_intel-owned, verified history table (calendar_history.py: the NYSE publications plus an
 empirical cross-check). For a history year the session is classified here with the 6.10A classifier's own thresholds (PRE from 04:00,
-REG from 09:30 to the close, POST to 20:00) and the history table's closes; 2026-2027 still come from the 6.10A classifier itself. Every
-other year (2024 and earlier, 2028 and later) stays NOT_COVERED.
+REG from 09:30 to the close, POST to the late-trading end) and the history table's closes; 2026-2027 still come from the 6.10A classifier
+itself. Every other year (2024 and earlier, 2028 and later) stays NOT_COVERED.
+
+THE ONE DECLARED EXCEPTION to "one source of truth" (Stage 7.1, operator-approved): on an NYSE early-close day the late trading session
+ends at 17:00 New York time, not 20:00 (the NYSE release). For 2025 the history table says so; for 2026-2027 a market_intel-owned,
+versioned override (calendar_history.LATE_TRADING_EARLY_CLOSES, nyse_late_trading_2026_2027_v1) turns the 6.10A classifier's AFTER_HOURS
+into CLOSED from 17:00 on those three dates only. autorun/calendar.py and the executor's session health are untouched.
 """
 from __future__ import annotations
 
@@ -67,11 +72,12 @@ def calendar_version(d: Optional[date]) -> str:
 
 def post_market_end_minute(d: Optional[date]) -> Optional[int]:
     """When the late (post-market) session of a market day ends, minutes after midnight New York time; None on a non-session or uncovered
-    day. History years: 17:00 on an early close (the NYSE release), else 20:00. 2026-2027: the 6.10A classifier's 20:00 on every market day
-    (its early-close correction is a pending Stage 7.0 contract decision - DESIGN_71 section 5)."""
+    day: 17:00 on an NYSE early close (the 2025 history table; the 2026-2027 late-trading override), else 20:00."""
     if d is None or market_day_status(d) != MARKET_DAY:
         return None
-    return HIST.post_market_end_minute(d) if HIST.covered(d) else AFTER_HOURS_END_MINUTE
+    if HIST.covered(d):
+        return HIST.post_market_end_minute(d)
+    return HIST.EARLY_CLOSE_LATE_TRADING_END_MINUTE if d in HIST.LATE_TRADING_EARLY_CLOSES else AFTER_HOURS_END_MINUTE
 
 
 def _classify_history(now: datetime) -> Dict[str, Any]:
@@ -121,10 +127,13 @@ def session(now: datetime) -> Dict[str, Any]:
     d = date.fromisoformat(c["trading_date"]) if c.get("trading_date") else None
     et = c.get("et_time")
     minute = int(et[:2]) * 60 + int(et[3:5]) if et else None
+    if c["session"] == AFTER_HOURS and d in HIST.LATE_TRADING_EARLY_CLOSES and minute is not None and minute >= HIST.EARLY_CLOSE_LATE_TRADING_END_MINUTE:
+        c = {**c, "session": A_CLOSED, "late_trading_override": HIST.LATE_TRADING_OVERRIDE_VERSION}   # 2026-2027 early close: late trading ended 17:00
     status = market_day_status(d)
     return {"session": _MAP[c["session"]], "session_date": d, "et_minute": minute, "day_status": status,
             "market_day": None if status == NOT_COVERED else status == MARKET_DAY, "close_minute": c.get("close_minute"),
-            "covered": bool(d and covered(d)), "calendar": c.get("calendar")}
+            "covered": bool(d and covered(d)), "calendar": c.get("calendar"),
+            **({"late_trading_override": c["late_trading_override"]} if "late_trading_override" in c else {})}
 
 
 def session_of(now: datetime) -> str:

@@ -14,8 +14,11 @@ Fail-closed rules (load, then check again at run time):
   positive integer caps, a non-empty grantor, timezone-aware times, a validity window of at most 24 hours that contains `now`;
 * at run time the file is READ AGAIN and must hash exactly as when it was loaded (an edited file is refused);
 * the request in the file equals the request being run, the plan recomputed AT RUN TIME from that request is valid and hashes to
-  plan_sha256 (a plan cannot be mutated after approval), a SIP request needs sip_approved, and the caps bound the plan's estimate;
-* an approval is used ONCE: the run records it in mi_approval_uses in the transaction that creates its dataset.
+  plan_sha256 (a plan cannot be mutated after approval), a SIP request needs sip_approved, and the caps bound the plan's estimate (requests,
+  and the most rows the provider may deliver - rows_delivered_max);
+* the STORE runs this check itself before any BACKFILL dataset exists (store.MarketIntelStore._authorize), whichever code asks, and stores
+  the caps with the claim: the delivered-row cap it enforces is min(max_rows, store.MAX_DATASET_ROWS);
+* an approval is used ONCE: the store records it in mi_approval_uses in the transaction that creates its dataset.
 
 What this is NOT: a security boundary against a local process that can write the approvals directory (such a process could write a
 file). It is an integrity control against mistakes, scope drift, stale or reused approvals and mutated plans. A transport stage should
@@ -141,5 +144,5 @@ def check(approval, fresh_plan: dict, *, now: datetime, root: Optional[Path] = N
     if fresh_plan["request"]["feed"] == "sip" and not approval.sip_approved:
         raise ApprovalError("a SIP request needs its own approval (sip_approved)")
     est = fresh_plan["estimate"]
-    if approval.max_requests < est["requests"] or approval.max_rows < est["rows_total"]:
-        raise ApprovalError("the approval's caps are below the plan's own estimate")
+    if approval.max_requests < est["requests"] or approval.max_rows < est["rows_delivered_max"]:
+        raise ApprovalError("the approval's caps are below the plan's own estimate (requests, rows the provider may deliver)")

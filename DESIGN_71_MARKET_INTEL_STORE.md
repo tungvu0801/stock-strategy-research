@@ -3,20 +3,27 @@
 Stage 7.1 is code-only. It adds the historical, point-in-time storage foundation that the later Quant Metrics, AI Research, scanner and
 backtesting stages will read. Nothing in the live path imports it. No collector runs, no backfill runs, no paid API is called and no
 trading behaviour changes. The plan lives in `DESIGN_MARKET_INTELLIGENCE_SCANNER.md` (C.1–C.9 and the 7.1 row of E.1, outside the repo).
-The contracts it stores are Stage 7.0's (`DESIGN_70_MARKET_INTEL_CONTRACTS.md`); the remediation of the PR #42 review changes none of them.
+The contracts it stores are Stage 7.0's (`DESIGN_70_MARKET_INTEL_CONTRACTS.md`).
+
+Two review rounds hardened it before merge:
+- **Round 1 (B1–B12):** the PR #42 adversarial review.
+- **Round 2 (F1–F12):** the independent Codex review.
+
+Neither round changes a Stage 7.0 contract. The one exception is the declared calendar exception of section 5, which the operator
+approved.
 
 ## 1. Files
 
 | File | Role |
 |---|---|
-| `market_intel/migrations.py` | the versioned schema; append-only triggers; a DDL hash per migration; live schema-object verification |
-| `market_intel/store.py` | `MarketIntelStore`: lazy creation, scope / chronology / payload checks, revisions, absences, dataset membership, point-in-time reads, quality reports, integrity verification |
+| `market_intel/migrations.py` | the versioned schema; append-only triggers; sealed-dataset guards; a DDL hash per migration; live schema-object verification |
+| `market_intel/store.py` | `MarketIntelStore`. It handles: lazy creation, the operator-authority check, scope, derived-label, fetch, chronology and payload checks, revisions, absences, dataset membership, row caps, point-in-time reads, freshness-graded status, quality reports and integrity verification |
 | `market_intel/archive.py` | `RawArchive`: gzipped raw responses, a SHA-256 manifest, and the external anchors of sealed datasets |
-| `market_intel/approvals.py` | the fail-closed, operator-controlled backfill approval (a file, never written by code) |
-| `market_intel/sources/alpaca_bars.py` | Alpaca bars to envelopes, parse-only; there is no network code |
-| `market_intel/ingest.py` | the offline planner and CLI, and the gated `run_backfill` for a future approved run |
-| `market_intel/calendar_history.py` | the verified 2025 NYSE history |
-| `market_intel/calendar.py` | edited to cover 2025 from that table (`SEMANTIC_71`) |
+| `market_intel/approvals.py` | the fail-closed, operator-controlled backfill approval (a file; no code writes one) |
+| `market_intel/sources/alpaca_bars.py` | Alpaca bars to envelopes, parse-only and strict about the response shape; there is no network code |
+| `market_intel/ingest.py` | the offline planner and CLI; the gated `run_backfill` for a future approved run; `recover_pending` |
+| `market_intel/calendar_history.py` | the verified 2025 NYSE history, plus the 2026–2027 late-trading override |
+| `market_intel/calendar.py` | edited to cover 2025 and to end late trading at 17:00 on early closes (`SEMANTIC_71`) |
 
 ## 2. Database (`data/market_intel.db`, schema version 1)
 
@@ -29,29 +36,35 @@ The store is its own SQLite file, separate from the trading database, so ingesti
 - **Versioning.** `mi_schema_migrations` stores the version, name, DDL SHA-256 and time; `PRAGMA user_version` is the version.
   - A newer schema refuses to open (`SchemaTooNew`).
   - A recorded DDL hash that differs from the code refuses too (`SchemaMismatch`).
+  - **A populated file whose `user_version` reads 0 is refused** (`SchemaMismatch`). It is never read as an empty store.
   - **Every open also compares the live schema objects** (each table, index and trigger in `sqlite_master`) with a reference built
-    from the migrations in an in-memory database. A missing, extra or altered object (a dropped append-only trigger, an added
-    column, an extra trigger or index) refuses reads and writes alike (`SchemaMismatch`, `test_N04`).
-  - The v1 hash is pinned by `test_D03`. v1 was re-pinned once, by the review remediation, while unmerged and before any data existed;
-    from the merge on, a schema change is a new migration.
+    from the migrations in an in-memory database. A missing, extra or altered object refuses reads and writes alike.
+  - The v1 hash is pinned by `test_D03`. v1 was re-pinned by the two review rounds, while unmerged and before any data existed; from
+    the merge on, a schema change is a new migration.
 
 | Table | Content |
 |---|---|
 | `mi_datasets` | one explicit backfill, import or fixture batch: kind, provider, **feed**, adjustment, timeframe, symbols, date range, request, plan hash, approval reference, code version |
-| `mi_dataset_events` | its status history (`RUNNING`, then exactly one of `COMPLETED` / `PARTIAL` / `FAILED` / `EMPTY`) with counts, the content manifest and the records digest |
-| `mi_dataset_members` | every row a dataset delivered: `INSERTED`, `REVISED`, `DUPLICATE`, `ABSENCE` or `REJECTED` (with the reason), its content hash and the full-row record hash |
-| `mi_approval_uses` | each operator approval, claimed once, in the transaction that creates its dataset |
-| `mi_fetches` | every provider request (`FetchRecord`): parameters (never a credential), times, status, HTTP status, latency, bytes, content hash, raw-archive path |
+| `mi_dataset_events` | its status history (`RUNNING`, then exactly one of `COMPLETED` / `PARTIAL` / `FAILED` / `EMPTY`), with counts (excluded rows included), the content manifest, the records digest and the metadata digest |
+| `mi_dataset_members` | every row a dataset delivered, as `INSERTED`, `REVISED`, `DUPLICATE`, `ABSENCE`, `REJECTED` (with the reason) or `EXCLUDED` (outside the approved sessions). Each carries its content hash, the full-row record hash, **the fetch that delivered it and its delivery times**, a duplicate included |
+| `mi_approval_uses` | each operator approval, claimed once with its caps (`max_requests`, `max_rows`), in the transaction that creates its dataset |
+| `mi_fetches` | every provider attempt (`FetchRecord`), in **durable attempt order** (`seq`): parameters (never a credential), times, status, HTTP status, latency, bytes, content hash, raw-archive path |
 | `mi_observations` | VALUES: the Stage 7.0 envelope plus `event_end` and `usable`, one row per **revision** of one fact |
 | `mi_absences` | ABSENCES: `UNAVAILABLE` / `INSUFFICIENT_DATA` / `NOT_APPLICABLE` envelopes, "we looked and found nothing" |
 | `mi_budget_events` | provider request-budget history: allow, refuse, response, back-off and pressure events, with the daily count |
-| `mi_quality_audits` | recorded data-quality reports |
+| `mi_quality_audits` | recorded data-quality reports (an audit of a sealed dataset is allowed: it evaluates the dataset, it is not part of it) |
 
 - **Append-only.** Every table has no-UPDATE and no-DELETE triggers.
+- **Sealed is final, in the schema itself.** Seven tables carry a `BEFORE INSERT` guard: members, events, approval uses, fetches,
+  observations, absences and budget events. Once a dataset's latest event is final, no row for it is accepted, whether it comes through
+  a store method or raw SQL. Every public write method also refuses first, with `SealedError`.
 - **No instruction column.** No column is named for an order, quantity, side, signal or target; `test_D02` scans the schema.
 - **Timestamp format.** CHECK constraints pin one UTC format, `YYYY-MM-DDTHH:MM:SS.ffffffZ`, so text order is time order.
-- **Row invariants (CHECK).** `available_at >= retrieved_at`; a backfilled row has `available_at = retrieved_at`; `event_end >= observed_at`;
-  a value row is never an absence status; `usable = 1` only for `AVAILABLE`.
+- **Row invariants (CHECK).**
+  - `available_at >= retrieved_at`, and a backfilled row has `available_at = retrieved_at`;
+  - `event_end >= observed_at`;
+  - a value row never carries an absence status;
+  - `usable = 1` only for `AVAILABLE`.
 
 ## 3. Point-in-time guarantees
 
@@ -64,98 +77,129 @@ The store is its own SQLite file, separate from the trading database, so ingesti
   - `retrieved_at`;
   - `available_at`;
   - `ingested_at`: the store's clock.
-- **`event_end` (decided before v1 is pinned):**
+- **`event_end`:**
   - a minute bar ends 1 minute after its start, an hour bar 1 hour after;
   - a daily bar ends at its session's **late-trading end**, the latest moment a print can enter the daily aggregate: 20:00 New York
-    time, or 17:00 on a 2025 early-close day (section 5);
+    time, or 17:00 on an NYSE early close in 2025–2027 (section 5);
   - any other kind ends at its observed time, or else its published or retrieved time.
-- **Chronology at the store boundary (B5).** A row cannot have been observed, completed or published after it was retrieved, beyond the
-  pinned skews (2 s; 5 minutes for `published_at`). `OBSERVED_AFTER_RETRIEVAL`, `BAR_NOT_COMPLETE_AT_RETRIEVAL` (a forming bar is not
-  yet a fact) and `PUBLISHED_AFTER_RETRIEVAL` are refused, or quarantined as `REJECTED` members (`test_N05`).
+- **Chronology at the store boundary.** A row cannot have been observed, completed or published after it was retrieved.
+  - **The admission skews:** 2 s, or 5 minutes for `published_at`.
+  - **What is refused:** `OBSERVED_AFTER_RETRIEVAL`, `BAR_NOT_COMPLETE_AT_RETRIEVAL` (a forming bar) and `PUBLISHED_AFTER_RETRIEVAL`,
+    either outright or as quarantined `REJECTED` members.
+  - **The skew admits a row; it never makes one readable early** (section 3.2).
 
 ### 3.2 Operational as-of — the only as-of Stage 7.1 offers
 
-- **Known at T** means `available_at <= T` **and** `ingested_at <= T` **and** `observed_at <= T`. Every point-in-time read filters on
-  all three: `latest_usable`, `latest_status`, `snapshot`, `history(as_of=…)` and `quality_report(as_of=…)`.
+- **Known at T** means all of `available_at <= T`, `ingested_at <= T`, `observed_at <= T` **and `event_end <= T`**.
+  - A bar still forming at T is never a completed fact at T, even when the skew admitted it a second early (`test_G09`, `test_X05`).
+  - Every point-in-time read filters on all four: `latest_usable`, `latest_status`, `snapshot`, `history(as_of=…)` and
+    `quality_report(as_of=…)`.
   - A 2026 backfill of 2025 bars is invisible to any evaluation time before it was fetched.
-  - A row ingested late cannot leak backwards, whatever availability it claims (`test_I03`).
-- **Research as-of is a separate, later design (Stage 7.6).** "When could a 2025 bar have been known in 2025" is `event_end` plus a
-  pinned publication latency, with a vintage policy for revisions. No Stage 7.1 API offers it: no query takes an `event_end`,
-  latency, vintage or research parameter (`test_N10`).
-  - Do not use `history(as_of=<2025 time>)` on backfilled data to simulate 2025. It correctly returns nothing.
-  - Do not read backfilled rows by `observed_at` alone and call that point-in-time. That is the shortcut this split forbids.
+- **Research as-of is a separate, later design (Stage 7.6):** `event_end` plus a pinned publication latency, with a vintage policy. No
+  Stage 7.1 API offers it (`test_N10`).
+  - Do not use `history(as_of=<2025 time>)` on backfilled data to simulate 2025.
+  - Do not read backfilled rows by `observed_at` alone.
 
-### 3.3 Values, revisions and absences
+### 3.3 Values, revisions, absences and current status
 
 - **Revisions.** A fact's natural key is: kind, symbol or series, provider, **feed**, adjustment, `observed_at`, and source identifier.
-  - Identical content is a duplicate: not stored again, but recorded as a `DUPLICATE` member of the dataset that delivered it.
-  - Different content from a later dataset is a new revision that names the one it supersedes. A→B→A gives three revisions.
-  - Within one dataset a key has one fact. A conflicting second record is refused (`CONFLICT_IN_DATASET`).
-  - The revision known at T is the highest one known at T (`test_I02`).
-  - Content is the fact itself, in store-canonical form; retrieval times, freshness and the dataset are not content. A content hash
-    supplied by a source must equal the store's own, or the row is refused.
-- **Absences (B9).** `UNAVAILABLE`, `INSUFFICIENT_DATA` and `NOT_APPLICABLE` rows go to `mi_absences`. They never supersede, revise or
-  hide a value, and they never carry a zero.
-- **Latest usable versus latest known (B9).** These are separate questions:
-  - `latest_usable(...)` is the newest usable value known at T. It may be older than the newest record.
-  - `latest_status(...)` and `snapshot(...)` return the newest known record (a value of any usability, or an absence) **beside** that
-    value, plus `usable_is_latest`.
-  - The status is `AVAILABLE` only when the newest record is that usable value. Otherwise it is `STALE_OR_SUPERSEDED_BY_ABSENCE` or
-    `UNAVAILABLE`. A stale price is never presented as current (`test_N09`).
-- **Usable.** A value is usable when its status is `AVAILABLE` and it carries no blocking code. An `AVAILABLE` bar must have finite,
-  numeric open, high, low, close and volume (not booleans, not strings), or it is refused (`PAYLOAD_*`). Bar shape codes are annotated
-  at ingest; a blocking code makes the row unusable, never repaired.
+  - Identical content is a duplicate: not stored again, but recorded as a `DUPLICATE` member with **its own fetch and delivery times**.
+  - Different content from a later dataset is a new revision that names the one it supersedes. Within one dataset a key has one fact
+    (`CONFLICT_IN_DATASET`).
+  - Content is the fact itself, in store-canonical form. A content hash supplied by a source must equal the store's own.
+- **Absences** go to `mi_absences`. They never supersede, revise or hide a value, and never carry a zero.
+- **The latest known record** is the newest by event time, then by its **latest delivery** (`test_G07`). So a value, then an absence,
+  then the same value re-delivered makes the value the latest record again.
+- **Current status follows the Stage 7.0 freshness policy (F7).** `freshness.py` itself is unchanged.
+  - `latest_status(...)` and `snapshot(...)` return:
+    - the newest record;
+    - the latest usable value;
+    - `usable_is_latest`;
+    - the Stage 7.0 assessment (`freshness`) and its `status`.
+  - **How each kind is assessed:**
+    - BAR_1DAY by its session date;
+    - BAR_1MIN by the end of the last completed minute;
+    - BAR_1HOUR by the start of the last completed hour.
+  - **The status:**
+    - `AVAILABLE` only when the newest record is that usable value **and** the policy says it is current;
+    - an old value is `STALE` (`SESSION_MISSING` / `AGE_LIMIT`);
+    - a value superseded by a newer absence or an unusable record is `UNAVAILABLE`;
+    - a kind without a 7.1 policy mapping is `UNAVAILABLE` (`FRESHNESS_NOT_ASSESSED`).
+  - **Never current by default.** A value is never "current" only because its row says `AVAILABLE` (`test_X08`).
+- **Usable.** A value is usable when its status is `AVAILABLE` and it carries no blocking code. An `AVAILABLE` bar needs finite
+  numeric OHLCV.
 
-### 3.4 Dataset scope, membership and sealing
+### 3.4 Dataset scope, provenance, caps and sealing
 
-- **Specs are validated (B2).** Before a dataset exists the store checks:
-  - kind, provider, feed and adjustment against the Stage 7.0 vocabularies, and the job kind;
-  - for bars: the timeframe of the kind, an explicit `iex` or `sip` feed, upper-case unique symbols, and a start and end date;
-  - every weekday of the range is covered by the calendar.
-- **A BACKFILL dataset** also needs the operator approval of its own plan (section 4).
-- **Every row is checked against its dataset (B2).** Kind, provider, feed, adjustment, symbol, session date within the range, the
-  dataset id, the backfilled flag, calendar coverage, and the fetch it names (a successful fetch of this dataset and provider).
-  - `on_reject="raise"` refuses the whole batch.
-  - `on_reject="quarantine"`, which the runner uses, records each invalid row as a `REJECTED` member with its reason and stores the
-    rest. The raw body stays in the archive.
-- **Membership (B6).** Every delivered row is a member, whatever the store already held.
-  - The **content manifest** is the SHA-256 of the dataset's distinct (natural key, content hash) values, duplicates included.
-  - So a re-download into the same store hashes the same as the first one, never the empty hash (`test_N06`).
-  - The **records digest** covers the full rows the dataset wrote (section 3.5).
-- **Sealing (B7, B8).** A dataset is sealed once; a second seal is refused (`test_N08`).
+- **Specs are validated.**
+  - Kind, provider, feed, adjustment and job kind are checked.
+  - For bars: the timeframe of the kind, an explicit `iex` or `sip` feed, upper-case unique symbols, and a start and end date.
+  - Every weekday of the range must be covered by the calendar.
+- **Labels are derived, never trusted (F2).**
+  - A row's session date and session must equal the ones its `observed_at` gives in New York (`SESSION_DATE_MISMATCH`,
+    `SESSION_MISMATCH`).
+  - A daily bar must start at New York midnight, a minute bar on the minute, an hour bar on the hour (`TIMEFRAME_MISALIGNED`).
+  - A payload's own `timeframe` must be the dataset's (`TIMEFRAME_MISMATCH`).
+- **Fetch binding (F2).** A row that names a fetch must match what that fetch asked for:
+  - the endpoint (`/v2/stocks/{symbol}/bars`), symbol, feed, adjustment and timeframe;
+  - the time window `[start, end)`;
+  - that fetch's retrieval time.
+  - **A BACKFILL row must name its fetch.** A QQQ fetch never carries a SPY row, and a SIP fetch never an IEX row.
+- **Session scope (F3).** An intraday bar belongs to the approved sessions when its interval `[start, start + timeframe)` overlaps them.
+  - **A regular-hours dataset:** the regular session, 09:30 to the close.
+  - **An extended-hours dataset** (`request.extended_hours`): 04:00 to the late-trading end.
+  - **Consequences:** the 09:00 hour bar (09:00–10:00) is a regular-hours bar, while the 16:00 bar, and the 13:00 bar on an early
+    close, are not.
+  - **EXCLUDED rows.** Bars outside the scope, such as the pre- and post-market bars a provider sends with a regular-hours request,
+    become `EXCLUDED` members. They are never stored as values, and they do not make a run `PARTIAL`.
+- **Caps at every entry point (F3).**
+  - **Delivered rows.** A dataset never holds more delivered rows (all members) than `min(MAX_DATASET_ROWS = 2,500,000, the approval's
+    max_rows)`. `ingest` and `record_problems` refuse a whole batch that would pass it (`RowCapError`).
+  - **Requests.** An approved dataset never records more fetch attempts than the approval's `max_requests`.
+- **Membership.** Every delivered row is a member.
+  - The content manifest is the SHA-256 of the dataset's distinct (natural key, content hash) values, so a re-download hashes the same
+    and never as the empty hash.
+  - The records digest covers the full rows the dataset wrote.
+  - The **metadata digest** covers: the dataset row (spec, request, plan hash, approval reference), its approval use (with caps), its
+    opening event, every fetch attempt in order, and the sealed status and counts.
+- **Sealing.** A dataset is sealed once.
   - `COMPLETED` needs every failed fetch recovered and no rejected row.
   - `EMPTY` additionally needs no delivered value.
-  - A failed fetch counts as recovered only when the identical request (same provider, endpoint and canonical, non-empty parameters)
-    later succeeded in the same dataset (`test_N07`).
-  - Anything else is `PARTIAL` or `FAILED`.
+  - A failure is recovered only by the identical request (same provider, endpoint and canonical, non-empty parameters) in a **later
+    attempt**. Attempt order is the durable `seq`, never a clock (`test_G10`).
 
-### 3.5 Integrity: what is verified, and its limits (B4)
+### 3.5 Integrity: VERIFIED, UNVERIFIED, CORRUPT (F4)
 
-- **Schema verification proves the schema, not the rows.** It runs on every open (section 2). It cannot prove that no row was changed
-  while a trigger was dropped and later restored exactly; `test_N04` demonstrates that limit.
-- **`verify_integrity(anchors=…)` is the row-level evidence.** It is read-only and recomputes:
-  - every value and absence row's content hash from its columns, which catches an edited fact;
-  - every member's full-row record hash, which catches an edited time or flag, for example an earlier `available_at` (a look-ahead
-    forgery that leaves the content unchanged);
-  - every sealed dataset's content manifest and records digest, from its members.
-- **External anchors.** At each seal, the runner appends the dataset's content manifest and records digest to
-  `runtime/market_intel/raw/anchors.jsonl`, outside the database file. Passing `RawArchive.anchors()` detects a writer who edited rows
-  **and** recomputed every hash inside the database.
-- **Out of scope.** A writer able to rewrite both the database and the anchors file. An operator signature kept off the machine is the
-  next step, if this store ever becomes evidence for an automated decision.
+`verify_integrity(anchors=RawArchive.anchors())` is read-only. It reconciles the database with the external anchors **in both
+directions**:
+- **CORRUPT** when any of these holds:
+  - a schema problem, including a reset `user_version`;
+  - a value or absence whose content hash does not recompute;
+  - a member whose content or full-row record hash differs from its row;
+  - a sealed dataset whose manifest, records digest, metadata digest or counts do not recompute, or that has an event after its seal;
+  - a row whose dataset no longer exists (an orphan);
+  - **an anchored dataset missing from the store** (deleted rows, or the whole database gone);
+  - an anchor that disagrees with its seal or conflicts with another anchor.
+- **UNVERIFIED** when nothing contradicts but something is unconfirmed: no anchors were given; a sealed dataset has no anchor yet
+  (pending anchor); or a dataset is unsealed (pending finalization).
+- **VERIFIED** only when every sealed dataset recomputes and matches its anchor, every anchor matches a sealed dataset, and nothing is
+  pending. `ok` is true only for VERIFIED.
+- **Limits (unchanged, documented):**
+  - Schema verification cannot prove that no row was changed while a trigger was dropped and restored exactly; the row hashes and
+    anchors are what catch that (`test_N04`).
+  - A writer who can rewrite **both** the database and the anchors file consistently is out of scope. An operator signature kept off
+    the machine is the next step, if this store ever becomes evidence for an automated decision.
 
 **Query APIs** (all read-only; none creates the store):
-- `latest_usable(kind, at=…, symbol/series, feed)` and `latest_status(...)`
+- `latest_usable(...)`, `latest_status(...)` and `snapshot(...)`
 - `history(kind, symbol, feed, start, end, as_of, usable_only)`
-- `snapshot(kind, symbols, at, feed)`
 - `revisions(natural_key)`, `absences(natural_key)` and `members(dataset_id)`
-- `provenance(obs_id)`: the value, its revisions and absences, its fetch with the raw path, and its dataset with events
-- `dataset(dataset_id)`, including its approval use
-- `quality_report(BAR_1DAY, symbol, feed, start, end)`: expected and present sessions, missing ones, holes, validation codes, and
-  `PASS` / `WARN` / `BLOCKED`
-- `status_counts()` (including `unsealed_datasets`), `budget_used(provider, day)` and `verify_integrity(anchors)`
+- `provenance(obs_id)`: revisions, absences, **every delivery**, the first fetch with its raw path, and the dataset with its events
+- `dataset(dataset_id)` and `dataset_states()`
+- `quality_report(BAR_1DAY, …)`
+- `status_counts()`, `budget_used(provider, day)` and `verify_integrity(anchors)`
 
-## 4. Backfill CLI, runner and approval
+## 4. Backfill CLI, runner, approval and finalization
 
 ```
 python -m market_intel.ingest plan     --symbols SPY,AAPL --start 2025-01-02 --end 2025-12-31 --timeframe 1Day --feed iex
@@ -165,26 +209,29 @@ python -m market_intel.ingest inspect  --db PATH      (an existing store, read-o
 python -m market_intel.ingest execute  ...            (always refused in Stage 7.1, exit 3)
 ```
 
-No CLI command makes a network request or writes a database or a file; `test_C01` checks this with the socket blocked. Exit codes:
-0 for a valid plan, 2 for a refused one, 3 when execute is refused, and 1 for a usage error.
+No CLI command makes a network request or writes a database or a file (`test_C01`, with the socket blocked). Exit codes: 0 for a
+valid plan, 2 for a refused one, 3 when execute is refused, and 1 for a usage error.
 
-The planner validates:
-- symbols: the API's ticker rule, upper case, unique, at most 100;
-- dates: start before end, only completed sessions, and at most 10 years;
-- timeframe (`1Day`, `1Hour`, `1Min`), feed and adjustment, which must be explicit;
-- calendar coverage: any uncovered weekday refuses the plan with `CALENDAR_NOT_COVERED`;
-- the SIP 15-minute rule: on Basic a SIP window must end at least 16 minutes ago (`SIP_WITHIN_15_MIN`);
-- the generic-store cap: more than 2,500,000 rows is refused with `ROWS_EXCEED_GENERIC_STORE_CAP` (section 7).
+**The planner validates:**
+- symbols: the ticker rule, upper case, unique, at most 100;
+- dates: only completed sessions, at most 10 years;
+- timeframe, feed and adjustment, which must be explicit;
+- calendar coverage;
+- the SIP 15-minute rule;
+- the generic-store cap: a plan whose provider may deliver more than 2,500,000 rows is refused (`ROWS_EXCEED_GENERIC_STORE_CAP`).
 
-It estimates sessions, rows, pages (Alpaca's 10 000-bar page), requests, minutes at the backfill budget of 60 a minute, and bytes at a
-measured 1,500 bytes per row. The plan hash binds the request, its coverage (calendar versions included), the estimate and the run
-policy: budget, retries, window, cap, endpoint and page limit. Every plan lists `REAL_BACKFILL` among the approvals it needs, and a SIP
-plan also lists `SIP_FEED`.
+**It estimates two row counts:**
+- `rows_total`: the bars the approved sessions keep;
+- `rows_delivered_max`: what the provider may send, meaning every bar from 04:00 to the late-trading end for intraday timeframes, even
+  when the request is regular-hours only.
 
-### 4.1 The approval (B1)
+Pages, requests and the approval's row cap follow `rows_delivered_max`. The plan hash binds the request, its coverage (calendar versions
+included), the estimate and the run policy (budget, retries, window, cap, endpoint, page limit).
+
+### 4.1 The approval (round 1 B1; round 2 F1)
 
 A real backfill, in a future stage (Stage 7.1 ships no transport), needs an operator-written approval file in
-`runtime/market_intel/approvals/` (git-ignored). No code writes one, and the CLI never builds one.
+`runtime/market_intel/approvals/` (git-ignored; `MarketIntelStore(approvals_root=…)` names it). No code writes one.
 
 ```json
 {"version": "mi_backfill_approval_v1", "approval_id": "OPS-2026-11-07-01", "plan_sha256": "<the plan's hash>",
@@ -194,64 +241,85 @@ A real backfill, in a future stage (Stage 7.1 ships no transport), needs an oper
  "granted_at": "2026-11-07T23:00:00Z", "expires_at": "2026-11-08T05:00:00Z"}
 ```
 
-The approval fails closed at every step:
-- **Load.** The file must be a regular `.json` inside the approvals directory, not a link. It must have exactly these fields: an id of
-  6–64 `[A-Za-z0-9_-]`, a 64-hex plan hash, the full request, a boolean `sip_approved`, positive integer caps, a grantor, and
-  timezone-aware times with a validity of at most 24 hours that contains now.
-- **Run.** `run_backfill` takes the `BackfillRequest` itself, never a plan dict, and **recomputes the plan at run time**. It then:
-  - re-reads the approval file, which must hash exactly as when it was loaded;
-  - requires the recomputed plan to be valid and to hash to `plan_sha256`;
-  - requires the request to equal the approved one;
-  - requires `sip_approved` for a SIP request;
-  - requires the caps to cover the plan's own estimate;
-  - requires a budget no larger than the plan's.
-- **Once.** The approval is claimed in `mi_approval_uses`, in the transaction that creates the dataset. A second run with it is refused
-  before any request is sent. The store itself also refuses a BACKFILL dataset that lacks the approval of its own plan.
-- **During the run.** `max_requests` and `max_rows` stop it (`APPROVAL_REQUEST_CAP`, `APPROVAL_ROW_CAP`).
+- **Load.** A regular `.json` file inside the approvals directory, not a link. It has exactly the schema above, an id of 6–64
+  `[A-Za-z0-9_-]`, positive integer caps, and a validity of at most 24 hours that contains now.
+- **Verified by the store itself, at every entry point (F1).** `MarketIntelStore.create_dataset` refuses a BACKFILL dataset unless
+  `_authorize` passes, whoever calls:
+  - the approval is a `BackfillApproval` whose file still exists in the store's approvals directory, hashes exactly as when loaded, and
+    is valid now;
+  - the plan **recomputed now from the dataset's own request** is valid and hashes to `plan_sha256`;
+  - the request equals the approved one, SIP has `sip_approved`, and the caps cover `requests` and `rows_delivered_max`;
+  - the dataset spec equals, field by field, the one spec that plan allows (`ingest.dataset_spec`).
+  - So a fabricated object, a missing or edited file, an expired approval, a file outside the directory or a widened scope (another
+    symbol, feed, date, adjustment, timeframe, hash or approval id) is refused before anything is written (`test_G01`, `test_X01`).
+- **The runner checks it too.** `run_backfill` takes the `BackfillRequest` itself (never a plan dict), recomputes the plan and checks the
+  approval before it sends anything. It also requires a budget no larger than the plan's.
+- **Once.** The approval is claimed, with its caps, in the same transaction that creates the dataset. A second use in the same database
+  is refused before any request is sent.
+- **During the run.** `max_requests` and `max_rows` stop the runner (`APPROVAL_REQUEST_CAP`, `APPROVAL_ROW_CAP`), and the store enforces
+  the same caps underneath.
+- **Not a security boundary** against a local process that can write the approvals directory. It is an integrity control against
+  mistakes, scope drift, stale or reused approvals and mutated plans. A transport stage should add an off-machine operator signature.
 
-What it is **not**: a security boundary against a local process that can write the approvals directory. It is an integrity control
-against mistakes, scope drift, stale or reused approvals and mutated plans. A transport stage should add an operator signature with a
-key kept off the machine.
+### 4.2 Failure handling and finalization (round 1 B3; round 2 F5)
 
-### 4.2 Failure handling (B3)
-
-Every response is archived and recorded as a fetch row, and only then parsed and ingested.
-- **Transport exceptions** become `TIMEOUT` / `ERROR` fetch rows (the class name only, never a message that could carry a URL). They
-  are retried up to 2 times, then the symbol is unrecovered.
-- **A transport contract violation** (a non-integer status, a body that is not bytes) becomes `INVALID_RESPONSE`.
-- **Retry-After** is accepted as a non-negative finite number or an HTTP date. Anything else is ignored, and the budget's own back-off
-  applies.
-- **Page problems** (invalid JSON, wrong shape, symbol mismatch, bad page token, a parser crash) make the fetch `INVALID_RESPONSE`.
-- **Row problems** (malformed, `OUT_OF_RANGE`, refused by the envelope, or refused by the store) become `REJECTED` members.
-- **Unexpected exceptions.** An unexpected exception (a store or disk error) becomes the stop reason. A `KeyboardInterrupt` is
-  re-raised after the seal.
-- **The dataset is always sealed**: `COMPLETED`, `PARTIAL`, `FAILED` or `EMPTY`, never left `RUNNING`. Its anchor is then written.
-  `status_counts()["unsealed_datasets"]` exposes any dataset a crashed process left open.
+- **Every response is archived first.** It is archived and recorded as a fetch row, and only then parsed and ingested.
+- **Transport failures:**
+  - exceptions become `TIMEOUT` / `ERROR` fetch rows (the class name only) and are retried up to 2 times;
+  - a transport contract violation is `INVALID_RESPONSE`;
+  - Retry-After is accepted as a non-negative finite number or an HTTP date, and otherwise ignored.
+- **Response validation (F11).** An HTTP 200 body is a page only when it has the exact Alpaca shape:
+  - a JSON object with exactly `bars` / `symbol` / `next_page_token` (`currency` allowed);
+  - `bars` a list or null, of at most 10 000;
+  - `symbol` the requested one;
+  - the token null or a plain string of up to 512 characters.
+  - An error envelope (`message` / `code`) is `ERROR_ENVELOPE`; any other deviation is `UNEXPECTED_SHAPE`, `SYMBOL_MISMATCH`,
+    `BAD_PAGE_TOKEN` or `PAGE_TOO_LARGE`.
+  - Any of those makes the fetch `INVALID_RESPONSE`, so a malformed 200 can never seal a dataset `EMPTY` (`test_G11`, `test_X06`).
+  - A bar must be a JSON object of the known keys, with a string time and numeric (never boolean, never string) prices and volume.
+    Anything else is `MALFORMED_ROW`.
+- **The dataset is sealed** `COMPLETED`, `PARTIAL`, `FAILED` or `EMPTY`. An unexpected exception becomes the stop reason. A
+  `KeyboardInterrupt` is re-raised after the seal.
+- **If the seal itself cannot be written** (a disk failure), `run_backfill` raises `FinalizationError(dataset_id,
+  "PENDING_FINALIZATION")`. The dataset stays `RUNNING`, visible in `dataset_states()` and as UNVERIFIED in the integrity check, and its
+  approval stays used. A persistent disk failure is never claimed to be sealed.
+- **If the anchor cannot be written**, the result says `finalization: PENDING_ANCHOR`. The seal is durable, and integrity reads
+  UNVERIFIED until the anchor exists.
+- **`recover_pending(store, archive, clock=…)`** completes both, deterministically (`test_G05`):
+  - it seals a dataset whose last activity is older than `stale_after` (1 hour) as `PARTIAL` if it delivered a value, else `FAILED`
+    (`RECOVERED_ABANDONED_RUN`);
+  - it leaves recent ones alone, since they may belong to a live run;
+  - it anchors sealed-but-unanchored datasets with the seal the database holds, **only if the store verifies without a CORRUPT
+    finding**. A corrupt store is never re-anchored.
 
 **Stage 7.1 ships no fetch function, and the CLI never builds an approval, so no real request can be made by this stage.**
 
 ## 5. Calendar coverage
 
-2025 is now covered by `market_intel/calendar_history.py`, a table owned by `market_intel`; the frozen `autorun/calendar.py` is
-untouched. It was verified three ways:
+2025 is covered by `market_intel/calendar_history.py`, a table owned by `market_intel`; the frozen `autorun/calendar.py` is untouched.
+It was verified three ways:
 - the NYSE Group 2025–2027 holiday and early-closings calendar: 10 holidays, and early closes at 13:00 ET on 07-03, 11-28 and 12-24;
 - the NYSE notice that all markets closed on 2025-01-09 for the national day of mourning;
 - the archived IEX daily bars of 82 symbols: exactly those 11 weekdays have no session, giving 250 sessions.
 
-The same method reproduces the frozen 2026 table. 2024 and earlier, and 2028 onward, stay `NOT_COVERED` and fail closed. Extending
-coverage is a separate, verified step.
+2024 and earlier, and 2028 onward, stay `NOT_COVERED` and fail closed.
 
-**Early-close post-market (B11).** The same NYSE release states that on the early-close days "NYSE American Equities, NYSE Arca
-Equities, NYSE Chicago, and NYSE National late trading sessions will close at 5:00 p.m." The 2025 history therefore runs POST from
-13:00 to 17:00 and CLOSED after (`post_market_end_minute`, `test_N11`).
-
-**Decision pending — 2026–2027.** The frozen Stage 6.10A classifier, which DESIGN_70 section 5 makes the single source for 2026–2027,
-runs POST to 20:00 on every market day, including the 2026 and 2027 early closes. Correcting it would change a Stage 7.0 contract and
-the frozen executor's session table. So this remediation leaves 2026–2027 unchanged; `test_N11` pins the current behaviour so that any
-change is deliberate. The options are:
-- (a) a market_intel-owned override for 2026–2027 early closes, which changes the 7.0 single-source rule;
-- (b) a declared change to `autorun/calendar.py` and the 6.10A classifier, which touches the frozen executor path;
-- (c) keep 20:00 and document it, the status quo.
+**Early-close late trading: the one declared exception to the Stage 7.0 single-source rule.** The operator approved it on 2026-10-31.
+The NYSE release footnotes every 2025–2027 early-close date: the late trading sessions "will close at 5:00 p.m." This was re-verified
+on 2026-10-31 for the 2026-11-27, 2026-12-24 and 2027-11-26 dates.
+- **2025:** the history table ends POST at 17:00 on its three early closes.
+- **2026–2027:** a market_intel-owned, versioned override (`LATE_TRADING_EARLY_CLOSES`, `nyse_late_trading_2026_2027_v1`) turns the
+  6.10A classifier's `AFTER_HOURS` into `CLOSED` from 17:00 on exactly those three dates. `CAL.session()` marks it with
+  `late_trading_override`. A test pins the override dates equal to the frozen table's `EARLY_CLOSES` (`test_G12`).
+- **What it changes:** `post_market_end_minute`, daily-bar `event_end`, the planner's extended estimates, the session scope, and the
+  7.0 `EXTENDED` freshness window on those evenings.
+- **What it does not change:**
+  - `autorun/calendar.py`, the 6.10A classifier, the executor's session health;
+  - every holiday and every 13:00 close;
+  - all other days.
+- **The 12:59 / 13:00 / 16:59 / 17:00 boundaries** read REG / POST / POST / CLOSED.
+- **The Stage 7.0 test that compares the two classifiers minute by minute** now excepts exactly that window on its early-close day,
+  through the REPLAY bookkeeping.
 
 ## 6. Provider and feed limitations
 
@@ -259,68 +327,66 @@ change is deliberate. The options are:
   Basic is delayed by 15 minutes, and access needs a check on the first approved run.
 - **Facts still to verify on the first approved run:**
   - the page limit;
-  - extended-hours coverage on IEX;
+  - the exact response shape: the strict parser fails closed on any deviation, as intended;
+  - whether bars without extended hours requested still include pre- and post-market bars (they would be `EXCLUDED`, and the
+    estimate already allows for them);
+  - IEX extended-hours coverage;
   - the default adjustment;
-  - whether delisted symbols are served;
-  - whether Alpaca's daily bar aggregates extended hours. This decides whether a daily bar's `event_end` could move to the regular
-    close; see the Stage 7.3 note in section 9.
+  - delisted symbols;
+  - whether Alpaca's daily bar aggregates extended hours, which decides whether a daily bar's `event_end` could move to the regular
+    close.
 
-## 7. Measured limits and the generic-store cap (B10)
+## 7. Measured limits and the generic-store cap
 
-Measured on this machine with synthetic minute bars:
+Measured on this machine with synthetic minute bars (round 2 schema):
 
-| Rows | Bytes per row (value + member + indexes) | Ingest | `latest_usable` at now | as-of before ingestion |
+| Rows | Bytes per stored row (value + member + indexes) | Ingest | `latest_usable` at now | as-of before ingestion |
 |---|---|---|---|---|
-| 780 | 1,675 | 5.9k rows/s | 1.3 ms | 2.2 ms |
-| 7,800 | 1,524 | 5.0k rows/s | 1.5 ms | 11.9 ms |
-| 23,400 | 1,513 | 4.8k rows/s | 1.4 ms | 23.3 ms |
+| 780 | 1,638 | 4.3k rows/s | 1.1 ms | 1.7 ms |
+| 7,800 | 1,638 | 3.8k rows/s | 1.1 ms | 6.9 ms |
+| 23,400 | 1,640 | 3.8k rows/s | 1.2 ms | 17.4 ms |
+
+An `EXCLUDED` member (a delivered bar outside the approved sessions) costs about 500 bytes, and a daily-bar row about 1,630.
 
 - **Bounded latest reads.** A latest read walks the `(symbol, kind, feed, observed_at, natural_key)` index backwards and stops at the
-  first row known and usable at T. There is no sort of the partition, and its cost does not grow with the rows (`test_N12`, which
-  counts SQLite VM steps at 780 and 7,800 rows).
+  first row known, complete and usable at T. Its cost does not grow with the rows (`test_N12` counts SQLite VM steps).
 - **The remaining limit.** When nothing in a symbol's partition was known at T (an as-of before the backfill was ingested), the walk
-  visits that symbol's rows up to T. That is about 23 ms per 23,400 rows, or about 0.2 s for a symbol-year of extended-hours minute
-  bars. It is bounded by one symbol, kind and feed, not by the store.
-- **Disk.** A generic row with its membership row is about 1,500 bytes, against 70–90 bytes for C.9's typed per-kind tables. 100
-  symbols of extended-hours minute bars for a year (24 M rows) would be about 36 GB.
-- **The cap.** A plan above **2,500,000 rows** (about 3.75 GB) is refused (`ROWS_EXCEED_GENERIC_STORE_CAP`). A minute-bar history of
-  that size needs the typed `mi_bars` table first.
+  visits that symbol's rows up to T. That is bounded by one symbol, kind and feed.
+- **Disk.** A generic row with its membership row is about 1,650 bytes, against 70-90 bytes for C.9's typed per-kind tables. 100 symbols of extended-hours minute bars for a year (24 M rows) would be about 40 GB, and the 2.5 M-row cap is about 4.1 GB. Ingest runs at about 4k rows a second, so a full capped dataset takes about 10 minutes.
+- **The cap.** `MAX_DATASET_ROWS = 2,500,000` delivered rows per dataset, enforced by the store at every entry point. A plan whose
+  `rows_delivered_max` exceeds it is refused. A minute-bar history of that size needs the typed `mi_bars` table first.
 
 ## 8. Future interfaces
 
 - **Quant Metrics (7.4 and later).** Read `history(...)` and `latest_usable(...)` with an explicit feed and adjustment; filter on
-  `usable`; treat a missing value as missing; show `latest_status(...)` when staleness matters.
-- **AI Research.** Read `snapshot(..., at=decision time)` and `provenance(obs_id)`. Every value carries its fetch, its raw archive and
-  its dataset.
+  `usable`; treat a missing value as missing; use `latest_status(...)` when currency matters, since it applies the 7.0 freshness policy.
+- **AI Research.** Read `snapshot(..., at=decision time)` and `provenance(obs_id)`. Every value carries its fetches, deliveries, raw
+  archive and dataset.
 - **Scanner (7.5).** Use `history(..., as_of=decision time)` for operational point-in-time correctness.
 - **Backtests (7.6).** Need the research as-of of section 3.2. Until then, no backtest may treat backfilled rows as known before they
   were ingested.
 
 ## 9. Known limitations and risks
 
-- Stage 7.1 stores bars only. News, filings, macro and halt sources are Stage 7.2. The daemon and API are Stage 7.3.
-- **Stage 7.3 note (`event_end` and freshness).** The 7.0 freshness policy expects the daily bar from 18:00 New York time. Under
-  section 3.1 a daily bar retrieved before 20:00 (17:00 on an early close) is refused as not yet complete. The daemon must fetch daily
-  bars after the late-trading end, or the first approved run must show that Alpaca's daily bar ends at the regular close. This is a
-  Stage 7.3 decision; Stage 7.1 fetches nothing live.
-- Budget counters are persisted as events. The in-memory `ProviderBudget` is not yet rebuilt from them across a restart; Stage 7.3
-  will do that, since the daemon is the long-running writer.
-- `quality_report` covers daily-bar completeness; other kinds report counts only.
-- **Single writer.** The single-writer rule is SQLite's own lock with a busy timeout. A long-running daemon (7.3) should also hold a
-  lease.
-- **A crash during a run.** A process killed mid-run (power loss) leaves its dataset `RUNNING`. It is visible in `unsealed_datasets`,
-  and its rows are those of committed batches only. Stage 7.3 should seal such datasets `FAILED` at start-up.
+- **Scope of 7.1.** Stage 7.1 stores bars only. News, filings, macro and halt sources are Stage 7.2. The daemon and API are Stage 7.3.
+- **Stage 7.3: daily-bar `event_end` against freshness.** The 7.0 freshness policy expects the daily bar from 18:00 New York time, but a
+  daily bar retrieved before its late-trading end is refused as not yet complete. The daemon must fetch daily bars after 20:00 (17:00 on
+  an early close), unless the first approved run shows that Alpaca's daily bar ends at the regular close.
+- **Recovery's live-run test is a heuristic.** `stale_after` defaults to 1 hour of no activity. A long-running daemon (7.3) should hold
+  a lease instead, and seal its own abandoned datasets at start-up.
+- **Budget counters** are persisted as events but not yet rebuilt into the in-memory budget across a restart (Stage 7.3).
+- **Quality reports** cover daily-bar completeness only; other kinds report counts.
+- **The approval and integrity limits** are those of sections 4.1 and 3.5.
 
 ## 10. Bookkeeping
 
 - `BASE_71` is main `4e2f115`. `NEW_71` covers the new modules (including `approvals.py`), the tests and this note.
 - `EDITED_71` covers:
-  - `market_intel/calendar.py` (`SEMANTIC_71`: 2025 coverage and the 2025 early-close post-market end);
-  - the package docstring, the `DESIGN_70` note and `.gitignore` (the store's files);
-  - the CI manifest, plus test bookkeeping.
-- `.gitignore` is registered as a new ledger key, following the Stage 5.4.2 `sec_edgar.py` recipe, so the earlier freeze tests read it
-  as on `main`. Stage 7.1 F03 pins the three appended lines exactly.
-- The earlier F01 sets are widened by `NEW_71 | EDITED_71`, and the Stage 7.0 F tests read what 7.0 left at `BASE_71`.
-- Stage 7.0's behaviour tests use 2024 instead of 2025 as the uncovered history year, with the same fail-closed assertions. 2028 is
-  unchanged.
+  - `market_intel/calendar.py` (`SEMANTIC_71`: 2025 coverage, and the 17:00 early-close late-trading end for 2025 and the 2026–2027
+    override);
+  - the package docstring, the `DESIGN_70` notes (the 2025 step and the declared exception) and `.gitignore`;
+  - the CI manifest, plus test bookkeeping. One of those test edits is the Stage 7.0 calendar test's narrowed minute-by-minute
+    comparison (a REPLAY pair).
+- `.gitignore` is a new ledger key, following the Stage 5.4.2 recipe, and F03 pins its three lines.
+- The earlier F01 sets are widened by `NEW_71 | EDITED_71`.
 - `test_S01` keeps a closed registry of every `market_intel/**/*.py` file, so a module nobody declared fails the build.

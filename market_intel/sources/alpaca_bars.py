@@ -14,10 +14,18 @@ Mapping (Alpaca market-data v2 bars: {"bars": [{"t", "o", "h", "l", "c", "v", "n
   (OUT_OF_RANGE) or that the envelope refuses, is NOT stored (no zero, no guess): it is reported as a problem (index + code), the run
   records it as a REJECTED dataset member and the dataset can only end PARTIAL. One bad row never stops the rest of the page.
 * the feed and the adjustment requested are recorded on every row; IEX and SIP rows never share a dataset or a natural key.
+
+Response validation (fail closed; the exact shape to re-verify on the first approved run, DESIGN_71 section 6). An HTTP 200 body is a
+page only when it is a JSON object with exactly the keys bars / symbol / next_page_token (currency allowed), bars a list or null, symbol
+the requested one, next_page_token null or a plain token string, at most PAGE_LIMIT bars. An error envelope ({"message": ...} or
+{"code": ...}) is ERROR_ENVELOPE; anything else is UNEXPECTED_SHAPE / SYMBOL_MISMATCH / BAD_PAGE_TOKEN / PAGE_TOO_LARGE - a page problem,
+so the fetch is INVALID_RESPONSE and the dataset can never be EMPTY because of it. A bar is a JSON object of the known keys only, with
+a string time and numeric (never boolean, never string) o / h / l / c / v (n and vw numeric or null), else MALFORMED_ROW.
 """
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -32,6 +40,10 @@ FEEDS = ("iex", "sip")
 ADJUSTMENTS = ("raw", "split", "dividend", "all")
 PAGE_LIMIT = 10_000                      # Alpaca's documented maximum bars per page (design C.9: verify on the first approved run)
 REQUIRED = ("t", "o", "h", "l", "c", "v")
+BAR_KEYS = frozenset((*REQUIRED, "n", "vw"))
+PAGE_KEYS_REQUIRED = frozenset(("bars", "symbol", "next_page_token"))
+PAGE_KEYS_ALLOWED = PAGE_KEYS_REQUIRED | {"currency"}
+_TOKEN = re.compile("^[A-Za-z0-9+/=_.:-]{1,512}$")
 
 
 def request_params(symbol: str, timeframe: str, start: datetime, end: datetime, feed: str, adjustment: str,
@@ -55,7 +67,16 @@ def _t(s) -> Optional[datetime]:
     return d.astimezone(timezone.utc) if d.tzinfo else None
 
 
-PAGE_PROBLEMS = ("INVALID_JSON", "UNEXPECTED_SHAPE", "SYMBOL_MISMATCH", "BAD_PAGE_TOKEN")     # the whole page is unusable
+PAGE_PROBLEMS = ("INVALID_JSON", "UNEXPECTED_SHAPE", "ERROR_ENVELOPE", "SYMBOL_MISMATCH", "BAD_PAGE_TOKEN", "PAGE_TOO_LARGE")   # the whole page is unusable
+
+
+def _number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _bar_ok(b) -> bool:
+    return (isinstance(b, dict) and set(b) <= BAR_KEYS and all(k in b for k in REQUIRED) and isinstance(b["t"], str)
+            and all(_number(b[k]) for k in ("o", "h", "l", "c", "v")) and all(b.get(k) is None or _number(b[k]) for k in ("n", "vw")))
 
 
 def parse_page(body: bytes, *, symbol: str, timeframe: str, feed: str, adjustment: str, retrieved_at: datetime,
@@ -67,17 +88,23 @@ def parse_page(body: bytes, *, symbol: str, timeframe: str, feed: str, adjustmen
         doc = json.loads(body)
     except (ValueError, TypeError):
         return [], None, [{"problem": "INVALID_JSON"}]
-    if not isinstance(doc, dict) or not isinstance(doc.get("bars", []), (list, type(None))):
+    if isinstance(doc, dict) and ("message" in doc or "code" in doc):
+        return [], None, [{"problem": "ERROR_ENVELOPE"}]
+    if not isinstance(doc, dict) or not PAGE_KEYS_REQUIRED <= set(doc) or not set(doc) <= PAGE_KEYS_ALLOWED \
+            or not isinstance(doc["bars"], (list, type(None))):
         return [], None, [{"problem": "UNEXPECTED_SHAPE"}]
-    if doc.get("symbol") not in (None, symbol.upper()):
-        return [], None, [{"problem": "SYMBOL_MISMATCH", "got": str(doc.get("symbol"))[:12]}]
+    if doc["symbol"] != symbol.upper():
+        return [], None, [{"problem": "SYMBOL_MISMATCH", "got": str(doc["symbol"])[:12]}]
+    token = doc["next_page_token"]
+    if token is not None and not (isinstance(token, str) and _TOKEN.match(token)):
+        return [], None, [{"problem": "BAD_PAGE_TOKEN"}]
+    bars = doc["bars"] or []
+    if len(bars) > PAGE_LIMIT:
+        return [], None, [{"problem": "PAGE_TOO_LARGE", "bars": len(bars)}]
     out: List[Observation] = []
     problems: List[dict] = []
-    token = doc.get("next_page_token") or None
-    if token is not None and not (isinstance(token, str) and 0 < len(token) <= 512):
-        return [], None, [{"problem": "BAD_PAGE_TOKEN"}]
-    for i, b in enumerate(doc.get("bars") or []):
-        if not isinstance(b, dict) or any(b.get(k) is None for k in REQUIRED):
+    for i, b in enumerate(bars):
+        if not _bar_ok(b):
             problems.append({"problem": "MALFORMED_ROW", "index": i})
             continue
         t = _t(b["t"])

@@ -10,6 +10,10 @@ market_intel/migrations.py - Stage 7.1: the versioned schema of the market-intel
   trigger was temporarily dropped and restored. Row-level evidence is store.verify_integrity() (content hashes, sealed dataset manifests,
   the raw archive's external anchors) - see DESIGN_71 section 3.
 * Append-only. Every table carries no-UPDATE / no-DELETE triggers: a revision, a correction, an absence or a status change is a new row.
+* Sealed is final, in the database itself. Every table that belongs to a dataset carries a BEFORE INSERT guard: once the dataset's latest
+  event is COMPLETED / PARTIAL / FAILED / EMPTY no row for it is accepted - not a fetch, a member, a value, an absence, a budget event,
+  an approval use or another event - whichever code path (or raw SQL) tries.
+* A populated file whose user_version reads 0 is refused (SchemaMismatch), never mistaken for an empty, uninitialised store.
 * No instruction field. There is no order, quantity, side, signal, target or position column anywhere (tested over the schema).
 * Nothing here runs at import. The file is created only by MarketIntelStore on an explicit write (store.py).
 """
@@ -31,6 +35,16 @@ class SchemaTooNew(RuntimeError):
 
 class SchemaMismatch(RuntimeError):
     """The schema on disk differs from this code's: recorded migration metadata or the live objects (tables, indexes, triggers)."""
+
+
+FINAL = "('COMPLETED', 'PARTIAL', 'FAILED', 'EMPTY')"
+SEALED_GUARDED = ("mi_dataset_events", "mi_dataset_members", "mi_approval_uses", "mi_fetches", "mi_observations", "mi_absences", "mi_budget_events")
+
+
+def _sealed_guard(table: str) -> str:
+    return (f"CREATE TRIGGER IF NOT EXISTS {table}_sealed BEFORE INSERT ON {table} WHEN NEW.dataset_id IS NOT NULL AND "
+            f"(SELECT e.status FROM mi_dataset_events e WHERE e.dataset_id = NEW.dataset_id ORDER BY e.event_id DESC LIMIT 1) IN {FINAL} "
+            f"BEGIN SELECT RAISE(ABORT, 'dataset is sealed: {table} takes no new row for it'); END")
 
 
 def _immutable(table: str) -> List[str]:
@@ -59,21 +73,25 @@ V1: Tuple[str, ...] = (
         status TEXT NOT NULL CHECK (status IN ('PLANNED', 'RUNNING', 'COMPLETED', 'PARTIAL', 'FAILED', 'EMPTY')),
         at TEXT NOT NULL, rows_inserted INTEGER NOT NULL DEFAULT 0, rows_duplicate INTEGER NOT NULL DEFAULT 0,
         rows_revised INTEGER NOT NULL DEFAULT 0, rows_absent INTEGER NOT NULL DEFAULT 0, rows_rejected INTEGER NOT NULL DEFAULT 0,
-        content_sha256 TEXT, records_sha256 TEXT, detail TEXT NOT NULL DEFAULT '', {_ts('at')})""",
-    # what each dataset delivered, row by row, including duplicates (the reproducible manifest) and rejections (never silently dropped);
+        rows_excluded INTEGER NOT NULL DEFAULT 0, content_sha256 TEXT, records_sha256 TEXT, metadata_sha256 TEXT,
+        detail TEXT NOT NULL DEFAULT '', {_ts('at')})""",
+    # what each dataset delivered, row by row, including duplicates (the reproducible manifest), rejections (never silently dropped) and
+    # exclusions (rows outside the approved sessions); every delivery keeps its own fetch and times, a duplicate value included;
     # record_sha256 = the full stored row the dataset wrote (every column, times included) - store.verify_integrity()
     f"""CREATE TABLE IF NOT EXISTS mi_dataset_members (
         member_id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), natural_key TEXT NOT NULL,
-        content_hash TEXT, record_id TEXT, record_sha256 TEXT,
-        disposition TEXT NOT NULL CHECK (disposition IN ('INSERTED', 'REVISED', 'DUPLICATE', 'ABSENCE', 'REJECTED')),
-        reason TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, {_ts('at')})""",
+        content_hash TEXT, record_id TEXT, record_sha256 TEXT, fetch_id TEXT, retrieved_at TEXT, available_at TEXT,
+        disposition TEXT NOT NULL CHECK (disposition IN ('INSERTED', 'REVISED', 'DUPLICATE', 'ABSENCE', 'REJECTED', 'EXCLUDED')),
+        reason TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, {_ts('retrieved_at', 'available_at', 'at')})""",
     # an operator approval is used once (the run binds it to its dataset in the same transaction that creates the dataset)
     f"""CREATE TABLE IF NOT EXISTS mi_approval_uses (
         approval_id TEXT PRIMARY KEY, plan_sha256 TEXT NOT NULL, approval_file_sha256 TEXT NOT NULL,
-        dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), used_at TEXT NOT NULL, {_ts('used_at')})""",
-    # every provider request; the raw response body lives gzipped in the raw archive (runtime/market_intel/raw), named here
+        dataset_id TEXT NOT NULL REFERENCES mi_datasets(dataset_id), used_at TEXT NOT NULL,
+        max_requests INTEGER NOT NULL CHECK (max_requests > 0), max_rows INTEGER NOT NULL CHECK (max_rows > 0), {_ts('used_at')})""",
+    # every provider request (seq = the durable attempt order); the raw response body lives gzipped in the raw archive, named here
     f"""CREATE TABLE IF NOT EXISTS mi_fetches (
-        fetch_id TEXT PRIMARY KEY, dataset_id TEXT REFERENCES mi_datasets(dataset_id), provider TEXT NOT NULL, endpoint TEXT NOT NULL,
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, fetch_id TEXT NOT NULL UNIQUE, dataset_id TEXT REFERENCES mi_datasets(dataset_id),
+        provider TEXT NOT NULL, endpoint TEXT NOT NULL,
         params_json TEXT NOT NULL, started_at TEXT NOT NULL, retrieved_at TEXT, status TEXT NOT NULL, http_status INTEGER,
         latency_ms INTEGER, bytes INTEGER NOT NULL DEFAULT 0, content_hash TEXT, retry_after_s REAL, error TEXT NOT NULL DEFAULT '',
         raw_path TEXT, ingested_at TEXT NOT NULL, {_ts('started_at', 'retrieved_at', 'ingested_at')})""",
@@ -121,10 +139,12 @@ V1: Tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS mi_abs_symbol_kind_time ON mi_absences(symbol, kind, feed, observed_at, retrieved_at)",
     "CREATE INDEX IF NOT EXISTS mi_abs_key ON mi_absences(natural_key)",
     "CREATE INDEX IF NOT EXISTS mi_members_dataset ON mi_dataset_members(dataset_id, natural_key)",
+    "CREATE INDEX IF NOT EXISTS mi_members_key ON mi_dataset_members(natural_key)",
     "CREATE INDEX IF NOT EXISTS mi_dataset_events_ds ON mi_dataset_events(dataset_id, event_id)",
     "CREATE INDEX IF NOT EXISTS mi_fetches_dataset ON mi_fetches(dataset_id)",
     "CREATE INDEX IF NOT EXISTS mi_budget_provider_at ON mi_budget_events(provider, at)",
     *[t for table in APPEND_ONLY_TABLES for t in _immutable(table)],
+    *[_sealed_guard(table) for table in SEALED_GUARDED],
 )
 MIGRATIONS: Sequence[Tuple[int, str, Tuple[str, ...]]] = ((1, "initial market-intelligence store", V1),)
 _EXPECTED: Dict[int, Dict[Tuple[str, str], str]] = {}
@@ -164,6 +184,8 @@ def verify(conn: sqlite3.Connection) -> int:
     v = current_version(conn)
     if v > SCHEMA_VERSION:
         raise SchemaTooNew(f"market_intel.db is schema version {v}; this code knows up to {SCHEMA_VERSION}")
+    if v == 0 and _objects(conn):
+        raise SchemaMismatch("market_intel.db has schema objects but user_version 0: a reset version is refused, never read as an empty store")
     if v:
         recorded = {r[0]: r[1] for r in conn.execute("SELECT version, ddl_sha256 FROM mi_schema_migrations")}
         for version, _name, stmts in MIGRATIONS:

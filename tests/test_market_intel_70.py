@@ -347,8 +347,11 @@ def test_K01_sessions_holidays_early_closes_and_dst_days_come_from_the_stage_610
         assert CAL.session_of(t) == want, t
     mapping = {"PREMARKET": "PRE", "REGULAR": "REG", "AFTER_HOURS": "POST", "CLOSED": "CLOSED"}
     t = ny(2026, 11, 27, 0, 0)
-    for _ in range(0, 24 * 60, 7):                                                                   # one source of truth, minute by minute
-        assert CAL.session_of(t) == mapping[SES.session_of(t)]
+    for _ in range(0, 24 * 60, 7):                                                                   # one source of truth, minute by minute -
+        want = mapping[SES.session_of(t)]                                                            # except the ONE declared Stage 7.1 exception:
+        if want == "POST" and t >= ny(2026, 11, 27, 17, 0):                                          # late trading ends at 17:00 on an NYSE early close
+            want = "CLOSED"                                                                          # (DESIGN_71 section 5; 6.10A itself is unchanged)
+        assert CAL.session_of(t) == want
         t += timedelta(minutes=7)
     s = CAL.session(ny(2026, 11, 27, 10, 0))
     assert (s["session_date"], s["close_minute"], s["covered"], s["calendar"]) == (date(2026, 11, 27), 13 * 60, True, CAL.CALENDAR_VERSION)

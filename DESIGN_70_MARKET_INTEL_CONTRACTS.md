@@ -124,6 +124,13 @@ A 2025 backfill or a 2028 date can therefore never be read as verified sessions 
 
 One fact to verify: post-market end on early-close days is taken from the 6.10A classifier as 20:00 ET.
 
+**Stage 7.1 resolved that fact, as the one declared exception to the single-source rule** (operator-approved 2026-10-31; `DESIGN_71`
+section 5). The NYSE release footnotes every 2025-2027 early-close date: the late trading sessions "will close at 5:00 p.m." So
+`market_intel` ends POST at 17:00 New York time on those dates. For 2025 the history table does this. For 2026-2027 a versioned,
+`market_intel`-owned override (`nyse_late_trading_2026_2027_v1`) turns the 6.10A classifier's AFTER_HOURS into CLOSED from 17:00 on
+exactly 2026-11-27, 2026-12-24 and 2027-11-26. `autorun/calendar.py`, the 6.10A classifier and the executor are unchanged, and every
+holiday and 13:00 close still comes from them.
+
 ## 6. Budgets (design C.8)
 
 These are defaults; a value outside its range reads as the default and is reported.
