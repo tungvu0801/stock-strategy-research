@@ -10,7 +10,8 @@ Tables: cs_runs (one row per run start: source, scope, window, gap, worker, leas
 (the log; the current watermark is the latest row per source and scope), cs_leases + cs_lease_releases, cs_breaker_events.
 
 The schema itself enforces the watermark rules - whoever writes, raw SQL included:
-* a watermark names a run of ITS source and scope that ended COMPLETED or EMPTY (every page fetched, validated and ingested);
+* a watermark names a run of ITS source and scope that ended COMPLETED or EMPTY (every page fetched, validated and ingested) AND VERIFIED
+  (its seal anchored and read back from the store - the runner records `verified`);
 * it is never later than that run's end (nothing is "covered" in the future) and never earlier than the current one (it never moves back);
 * one watermark per run.
 """
@@ -56,14 +57,16 @@ DDL: Tuple[str, ...] = (
     "CREATE INDEX cs_runs_pair ON cs_runs (source, scope_key, started_at)",
     f"""CREATE TABLE cs_run_ends (run_id TEXT PRIMARY KEY REFERENCES cs_runs(run_id), status TEXT NOT NULL CHECK (status IN
         ('COMPLETED', 'EMPTY', 'PARTIAL', 'FAILED', 'INTERRUPTED', 'PENDING_FINALIZATION')), ended_at TEXT NOT NULL, stop TEXT, failed INTEGER NOT NULL
-        CHECK (failed IN (0, 1)), clock_skew INTEGER NOT NULL CHECK (clock_skew IN (0, 1)), last_error TEXT NOT NULL, content_sha256 TEXT,
+        CHECK (failed IN (0, 1)), clock_skew INTEGER NOT NULL CHECK (clock_skew IN (0, 1)), verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+        last_error TEXT NOT NULL, content_sha256 TEXT,
         counts_json TEXT NOT NULL, {_ts_check('ended_at')})""",
     f"""CREATE TABLE cs_watermarks (seq INTEGER PRIMARY KEY, source TEXT NOT NULL, scope_key TEXT NOT NULL, run_id TEXT NOT NULL UNIQUE
         REFERENCES cs_runs(run_id), watermark TEXT NOT NULL, at TEXT NOT NULL, {_ts_check('watermark', 'at')})""",
     "CREATE INDEX cs_watermarks_pair ON cs_watermarks (source, scope_key, seq)",
     """CREATE TRIGGER cs_watermarks_need_complete_run BEFORE INSERT ON cs_watermarks WHEN NOT EXISTS (SELECT 1 FROM cs_run_ends e JOIN cs_runs r
-        ON r.run_id = e.run_id WHERE e.run_id = NEW.run_id AND e.status IN ('COMPLETED', 'EMPTY') AND r.source = NEW.source AND r.scope_key = NEW.scope_key)
-        BEGIN SELECT RAISE(ABORT, 'WATERMARK_NEEDS_COMPLETE_RUN: a watermark names a COMPLETED or EMPTY run of its own source and scope'); END""",
+        ON r.run_id = e.run_id WHERE e.run_id = NEW.run_id AND e.status IN ('COMPLETED', 'EMPTY') AND e.verified = 1 AND r.source = NEW.source
+        AND r.scope_key = NEW.scope_key)
+        BEGIN SELECT RAISE(ABORT, 'WATERMARK_NEEDS_COMPLETE_RUN: a watermark names a verified COMPLETED or EMPTY run of its own source and scope'); END""",
     """CREATE TRIGGER cs_watermarks_not_after_run BEFORE INSERT ON cs_watermarks WHEN NEW.watermark > (SELECT e.ended_at FROM cs_run_ends e
         WHERE e.run_id = NEW.run_id) BEGIN SELECT RAISE(ABORT, 'WATERMARK_IN_FUTURE: a watermark is never later than its run end'); END""",
     """CREATE TRIGGER cs_watermarks_monotonic BEFORE INSERT ON cs_watermarks WHEN EXISTS (SELECT 1 FROM cs_watermarks w WHERE w.source = NEW.source
@@ -239,16 +242,17 @@ class CollectorState:
                        dataset_id, int(trial)))
 
     def end_run(self, run_id: str, *, status: str, now: datetime, stop: Optional[str], failed: bool, clock_skew: bool, last_error: str,
-                content_sha256: Optional[str], counts: dict, watermark: Optional[datetime] = None, breaker_failed: Optional[bool] = None) -> None:
+                content_sha256: Optional[str], counts: dict, watermark: Optional[datetime] = None, verified: bool = False,
+                breaker_failed: Optional[bool] = None) -> None:
         """The run end, its watermark (the schema refuses one for an incomplete run) and the breaker transition (read and written here, so
         two runs ending at once never lose one) - all or nothing."""
         with self._rw() as c:
             run = c.execute("SELECT source, scope_key FROM cs_runs WHERE run_id = ?", (run_id,)).fetchone()
             if run is None:
                 raise StateError(f"unknown run {run_id}")
-            c.execute("""INSERT INTO cs_run_ends (run_id, status, ended_at, stop, failed, clock_skew, last_error, content_sha256, counts_json)
-                         VALUES (?,?,?,?,?,?,?,?,?)""", (run_id, status, ts(now), stop, int(failed), int(clock_skew), last_error[:300], content_sha256,
-                                                         json.dumps(counts, sort_keys=True)))
+            c.execute("""INSERT INTO cs_run_ends (run_id, status, ended_at, stop, failed, clock_skew, verified, last_error, content_sha256, counts_json)
+                         VALUES (?,?,?,?,?,?,?,?,?,?)""", (run_id, status, ts(now), stop, int(failed), int(clock_skew), int(bool(verified)), last_error[:300],
+                                                           content_sha256, json.dumps(counts, sort_keys=True)))
             if watermark is not None:
                 c.execute("INSERT INTO cs_watermarks (source, scope_key, run_id, watermark, at) VALUES (?,?,?,?,?)",
                           (run["source"], run["scope_key"], run_id, ts(watermark), ts(now)))
@@ -288,7 +292,7 @@ class CollectorState:
             return [] if c is None else [dict(r) for r in c.execute("SELECT * FROM cs_watermarks WHERE source = ? AND scope_key = ? ORDER BY seq",
                                                                     (source, scope_key))]
 
-    _RUNS = ("SELECT r.*, e.status, e.ended_at, e.stop, e.failed, e.clock_skew, e.last_error, e.content_sha256, e.counts_json FROM cs_runs r "
+    _RUNS = ("SELECT r.*, e.status, e.ended_at, e.stop, e.failed, e.clock_skew, e.verified, e.last_error, e.content_sha256, e.counts_json FROM cs_runs r "
              "LEFT JOIN cs_run_ends e ON e.run_id = r.run_id")
 
     @staticmethod
@@ -317,7 +321,7 @@ class CollectorState:
     def last_success(self, source: str, scope_key: str) -> Optional[dict]:
         with self._ro() as c:
             r = None if c is None else c.execute(self._RUNS + " WHERE r.source = ? AND r.scope_key = ? AND e.status IN ('COMPLETED', 'EMPTY') "
-                                                 "ORDER BY e.ended_at DESC, r.rowid DESC LIMIT 1", (source, scope_key)).fetchone()
+                                                 "AND e.verified = 1 ORDER BY e.ended_at DESC, r.rowid DESC LIMIT 1", (source, scope_key)).fetchone()
         return None if r is None else self._run(r)
 
     def last_ended_run(self, source: str, scope_key: str) -> Optional[dict]:

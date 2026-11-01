@@ -4,14 +4,16 @@ market_intel/collector/health.py - Stage 7.3: feed health per source and scope (
 status, first match wins:
   BLOCKED_PENDING_APPROVAL  the plan is blocked (both SEC plans: SEC_ACCEPTANCE_TZ_UNVERIFIED)
   NOT_CONFIGURED            its credential is not present (presence only)
+  UNAVAILABLE               the store failed its integrity check (STORE_INTEGRITY_FAILED): no run until an operator repairs it
   CIRCUIT_OPEN              the breaker is open, or its one trial run is in flight
   BUDGET_EXHAUSTED          the daily cap is spent (or the budget is disabled)
   UNAVAILABLE               never succeeded; the freshness assessment says UNAVAILABLE; or the provider denied access this cycle
   STALE                     the Stage 7.0 freshness policy says STALE (a stale feed is never shown as current)
-  DEGRADED                  the latest ended run was not COMPLETED / EMPTY, or it saw clock skew - while freshness is still within policy
+  DEGRADED                  the latest ended run was not COMPLETED / EMPTY, or was complete but not verified (PENDING_ANCHOR, UNVERIFIED_SEAL),
+                            or it saw clock skew - while freshness is still within policy
   AVAILABLE                 otherwise
 
-The freshness is the plan's Stage 7.0 policy measured from the start of the last successful (COMPLETED / EMPTY) run - the time the data
+The freshness is the plan's Stage 7.0 policy measured from the start of the last successful (COMPLETED / EMPTY and verified) run - the time the data
 was asked for, never later. The daily jobs use the 7.0 daily-refresh rule (assess_earnings_calendar's numbers: FRESH on the same New York
 day, AGING within 36 h, STALE after). No threshold is new (decision D). Values already stored keep their own point-in-time status
 (store.latest_status); this is the health of the FEED.
@@ -50,7 +52,7 @@ def merge_gaps(rows: List[dict]) -> List[List[str]]:
 
 
 def source_health(plan: PL.CollectionPlan, scope: PL.Scope, *, state: CollectorState, now: datetime, credentials: Callable[[str], bool],
-                  budget_refusal: Optional[str] = None) -> dict:
+                  budget_refusal: Optional[str] = None, integrity: Optional[str] = None) -> dict:
     key = scope.key()
     last = state.last_run(plan.source, key)
     ended = state.last_ended_run(plan.source, key)
@@ -64,6 +66,8 @@ def source_health(plan: PL.CollectionPlan, scope: PL.Scope, *, state: CollectorS
         status, reason = BLOCKED_PENDING_APPROVAL, plan.blocked_reason.split(":")[0]
     elif plan.credential is not None and credentials(plan.credential) is not True:
         status, reason = NOT_CONFIGURED, f"{plan.credential} is not configured"
+    elif integrity:
+        status, reason = UNAVAILABLE, integrity
     elif PO.gate(b, now) in (PO.CIRCUIT_OPEN, PO.TRIAL_RUNNING):
         status, reason = CIRCUIT_OPEN, PO.gate(b, now)
     elif budget_refusal == "BUDGET_EXHAUSTED":
@@ -78,6 +82,8 @@ def source_health(plan: PL.CollectionPlan, scope: PL.Scope, *, state: CollectorS
         status, reason = STALE, fr["reason"]
     elif ended is not None and ended["status"] not in COMPLETE:
         status, reason = DEGRADED, f"LAST_RUN_{ended['status']}"
+    elif ended is not None and not ended["verified"]:
+        status, reason = DEGRADED, ended["last_error"] or "UNVERIFIED"
     elif skew:
         status, reason = DEGRADED, "CLOCK_SKEW"
     else:

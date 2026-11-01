@@ -26,6 +26,9 @@ written outside tmp_path.
           run ever has a watermark and no malformed response is ever EMPTY or COMPLETED.
   S01-S03 isolation and laziness; the state file's schema verification; the Stage 7.1 store unchanged and VERIFIED.
   M01     bounded resources.
+  V01-V06 final review: an unanchored or unconfirmed seal never moves a watermark; a CORRUPT store takes no run; an interrupted seal; every
+          request has a persisted ALLOW and retries never pass a daily cap; FRED's exact 400-calendar-day window, enforced by the store;
+          an incomplete daily job is never complete.
   F01-F03 scope (freeze bookkeeping).
 """
 from __future__ import annotations
@@ -469,11 +472,24 @@ def test_W01_the_schema_refuses_a_watermark_for_an_incomplete_run_a_future_or_ba
                         watermark=e.clk())
     assert e.state.last_run("alpaca_news", NV.key())["status"] is None                               # all or nothing: no end was written either
     e.state.end_run("manual", status="COMPLETED", now=e.clk(), stop=None, failed=False, clock_skew=False, last_error="", content_sha256=None, counts={},
-                    breaker_failed=True)
+                    verified=True, breaker_failed=True)
     assert e.state.breaker("alpaca_news").failures == 1
+    e.state.start_run(run_id="unverified", source="alpaca_news", scope_key=NV.key(), scope={}, worker="w9", lease_id=lease, plan_sha256="x",
+                      started_at=e.clk(), window=None, gap=None, dataset_id="d2", trial=False)
+    with pytest.raises(sqlite3.DatabaseError, match="WATERMARK_NEEDS_COMPLETE_RUN"):                 # COMPLETED in the store, not verified
+        e.state.end_run("unverified", status="COMPLETED", now=e.clk(), stop=None, failed=False, clock_skew=False, last_error="", content_sha256=None,
+                        counts={}, watermark=e.clk())
+    e.state.end_run("unverified", status="COMPLETED", now=e.clk(), stop=None, failed=False, clock_skew=False, last_error="PENDING_ANCHOR:OSError",
+                    content_sha256=None, counts={})
+    e.state.start_run(run_id="mislabelled", source="alpaca_news", scope_key=NV.key(), scope={}, worker="w9", lease_id=lease, plan_sha256="x",
+                      started_at=e.clk(), window=None, gap=None, dataset_id="d3", trial=False)
+    with pytest.raises(sqlite3.DatabaseError, match="WATERMARK_NEEDS_COMPLETE_RUN"):                 # PARTIAL is never complete, whatever its flag
+        e.state.end_run("mislabelled", status="PARTIAL", now=e.clk(), stop=None, failed=False, clock_skew=False, last_error="", content_sha256=None,
+                        counts={}, watermark=e.clk(), verified=True)
     c = sqlite3.connect(str(e.state.path))
     try:
         for args, msg in (((("halts", NV.key(), "manual", ST.ts(e.clk()), ST.ts(e.clk())),), "WATERMARK_NEEDS_COMPLETE_RUN"),
+                          ((("alpaca_news", NV.key(), "unverified", ST.ts(e.clk()), ST.ts(e.clk())),), "WATERMARK_NEEDS_COMPLETE_RUN"),
                           ((("alpaca_news", NV.key(), "manual", ST.ts(e.clk() + timedelta(seconds=1)), ST.ts(e.clk())),), "WATERMARK_IN_FUTURE"),
                           ((("alpaca_news", NV.key(), "manual", ST.ts(TUE - timedelta(days=1)), ST.ts(e.clk())),), "WATERMARK_BACKWARDS"),
                           ((("alpaca_news", NV.key(), done["run_id"], ST.ts(e.clk()), ST.ts(e.clk())),), "UNIQUE")):
@@ -631,7 +647,8 @@ def test_Z02_after_a_hard_kill_recovery_waits_for_the_lease_then_interrupts_the_
     assert fresh.store.verify_integrity(anchors=fresh.archive.anchors())["state"] == "VERIFIED"
     r = fresh.col.collect(NEWS, NV)
     assert (r["status"], r["duplicates"]) == ("COMPLETED", 1) and fresh.col.recover() == {"interrupted": [], "left_running": [],
-                                                                                          "store": {"sealed": [], "anchored": [], "left_running": [], "refused": None}}
+                                                                                          "store": {"sealed": [], "anchored": [], "left_running": [], "refused": None},
+                                                                                          "integrity": "OK"}
 
 
 def test_Z03_request_stop_ends_the_run_at_the_next_page_boundary_and_no_further_pair_starts(tmp_path):
@@ -1039,7 +1056,7 @@ def test_L03_races_a_breaker_opened_after_the_read_and_a_watermark_advanced_by_a
         w.state.start_run(run_id="b-run", source="alpaca_news", scope_key=NV.key(), scope={}, worker="B", lease_id=lease, plan_sha256="x",
                           started_at=now + timedelta(seconds=100), window=None, gap=None, dataset_id="d", trial=False)
         w.state.end_run("b-run", status="COMPLETED", now=now + timedelta(seconds=100), stop=None, failed=False, clock_skew=False, last_error="",
-                        content_sha256=None, counts={}, watermark=now + timedelta(seconds=100))
+                        content_sha256=None, counts={}, watermark=now + timedelta(seconds=100), verified=True)
         return news([])
     w.ft._responder = other_worker
     r = w.col.collect(NEWS, NV)
@@ -1054,6 +1071,153 @@ def test_Z05_a_run_stops_at_the_next_page_boundary_after_its_time_limit(tmp_path
     r = e.col.collect(NEWS, NV)
     assert (r["status"], r["stop"], r["pages"]) == ("PARTIAL", "RUN_TIME_LIMIT", 10) and RU.MAX_RUN_S == 900.0
     assert (e.clk() - TUE).total_seconds() < RU.LEASE_TTL_S and r["watermark"] is None
+
+
+# ============================================================================================================ final review (V)
+def test_V01_an_unanchored_or_unconfirmed_seal_is_never_a_verified_run_and_never_moves_the_watermark(tmp_path, monkeypatch):
+    t0 = TUE - timedelta(hours=1)
+    e = env(tmp_path / "a", outcomes=[news([art(1, t0)])])
+    monkeypatch.setattr(e.archive, "anchor", lambda *a, **k: (_ for _ in ()).throw(OSError("anchors file read-only")))
+    r = e.col.collect(NEWS, NV)
+    assert (r["status"], r["finalization"], r["verified"], r["watermark"], r["last_error"]) == ("COMPLETED", "PENDING_ANCHOR", False, None,
+                                                                                                 "PENDING_ANCHOR:OSError")
+    assert e.state.watermark("alpaca_news", NV.key()) is None and e.store.verify_integrity(anchors=e.archive.anchors())["state"] == "UNVERIFIED"
+    h = e.col.health(NEWS, NV)
+    assert (h["status"], h["reason"], h["last_success_at"]) == (HE.UNAVAILABLE, "NEVER_SUCCEEDED", None)          # unverified: not a success
+    monkeypatch.undo()
+    assert e.col.recover()["store"]["anchored"] == [r["dataset_id"]]                                               # anchored afterwards ...
+    assert e.state.watermark("alpaca_news", NV.key()) is None                                                      # ... but never retroactively
+    e.clk.tick(120)
+    e.ft.push(news([art(1, t0)]))
+    again = e.col.collect(NEWS, NV)                                                                                # the window is read again
+    assert (again["status"], again["verified"], again["duplicates"], again["watermark"]) == ("COMPLETED", True, 1, ST.ts(e.clk()))
+    monkeypatch.setattr(e.archive, "anchor", lambda *a, **k: (_ for _ in ()).throw(OSError("anchors file read-only")))
+    e.clk.tick(120)
+    e.ft.push(news([]))
+    assert e.col.collect(NEWS, NV)["watermark"] is None and e.state.watermark("alpaca_news", NV.key()) == ST.parse_ts(again["watermark"])
+    h = e.col.health(NEWS, NV)
+    assert (h["status"], h["reason"], h["last_success_at"]) == (HE.DEGRADED, "PENDING_ANCHOR:OSError", again["window"][1])   # the last VERIFIED run
+    monkeypatch.undo()
+    f = env(tmp_path / "b", outcomes=[news([art(1, t0)])])
+    real = f.store.dataset
+    monkeypatch.setattr(f.store, "dataset", lambda did: {**real(did), "status": "PARTIAL"})                       # the read-back disagrees
+    r = f.col.collect(NEWS, NV)
+    assert (r["status"], r["verified"], r["watermark"], r["last_error"]) == ("COMPLETED", False, None, "UNVERIFIED_SEAL")
+    for k in ("content_sha256", "records_sha256", "metadata_sha256"):                                              # same status, another seal
+        monkeypatch.setattr(f.store, "dataset", lambda did, k=k: (lambda d: {**d, "events": d["events"][:-1] + [{**d["events"][-1], k: "0" * 64}]})(real(did)))
+        f.clk.tick(120)
+        f.ft.push(news([]))
+        r = f.col.collect(NEWS, NV)
+        assert (r["status"], r["verified"], r["watermark"], r["last_error"]) == ("EMPTY", False, None, "UNVERIFIED_SEAL"), k
+    monkeypatch.setattr(f.store, "dataset", lambda did: (_ for _ in ()).throw(sqlite3.OperationalError("locked")))
+    f.clk.tick(120)
+    f.ft.push(news([art(2, f.clk() - timedelta(seconds=30))]))
+    r = f.col.collect(NEWS, NV)
+    assert (r["verified"], r["watermark"], r["last_error"]) == (False, None, "UNVERIFIED_SEAL:OperationalError")
+    monkeypatch.undo()
+    h = f.col.health(NEWS, NV)
+    assert (h["status"], h["reason"]) == (HE.UNAVAILABLE, "NEVER_SUCCEEDED") and f.state.watermarks("alpaca_news", NV.key()) == []
+
+
+def test_V02_a_store_that_fails_its_integrity_check_takes_no_run_until_repaired(tmp_path):
+    t0 = TUE - timedelta(minutes=30)
+    e = env(tmp_path, outcomes=[news([art(1, t0)])])
+    assert e.col.collect(NEWS, NV)["verified"] is True
+    p = e.archive.root / "anchors.jsonl"
+    entry = json.loads(p.read_text(encoding="utf-8").splitlines()[0])
+    p.write_bytes((json.dumps({**entry, "content_sha256": "0" * 64}) + "\n").encode("utf-8"))                     # an anchor that disagrees
+    out = e.col.recover()
+    assert (out["store"]["refused"], out["integrity"], e.col.integrity) == ("CORRUPT", "STORE_INTEGRITY_FAILED", "STORE_INTEGRITY_FAILED")
+    e.clk.tick(120)
+    n, wm = len(e.ft.sent), e.state.watermark("alpaca_news", NV.key())
+    assert [e.col.collect(pl, s)["refused"] for pl, s in ((NEWS, NV), (HALTS, NONE), (FRED, DGS10))] == ["STORE_INTEGRITY_FAILED"] * 3
+    assert len(e.ft.sent) == n and e.state.watermark("alpaca_news", NV.key()) == wm
+    assert (e.col.health(NEWS, NV)["status"], e.col.health(NEWS, NV)["reason"]) == (HE.UNAVAILABLE, "STORE_INTEGRITY_FAILED")
+    fresh = env(tmp_path, clock=e.clk, outcomes=[news([])])                                                         # a restart ...
+    sch = Scheduler(fresh.col, [(NEWS, NV)])
+    assert [x["refused"] for x in sch.tick()] == ["STORE_INTEGRITY_FAILED"] and fresh.ft.sent == []                # ... recovers before its first run
+    assert sch.recovery["integrity"] == "STORE_INTEGRITY_FAILED"
+
+
+def test_V03_an_interrupted_seal_leaves_no_end_and_no_watermark_until_recovery_and_the_next_run(tmp_path, monkeypatch):
+    t0 = TUE - timedelta(hours=1)
+    e = env(tmp_path, outcomes=[news([art(1, t0)])])
+    monkeypatch.setattr(e.store, "finish_dataset", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        e.col.collect(NEWS, NV)
+    monkeypatch.undo()
+    run = e.state.last_run("alpaca_news", NV.key())
+    assert run["status"] is None and e.store.dataset(run["dataset_id"])["status"] == "RUNNING" and e.state.watermark("alpaca_news", NV.key()) is None
+    assert not e.state.lease_active(run["lease_id"], e.clk())                                                      # released on the way out
+    out = e.col.recover()
+    assert (out["interrupted"], out["store"]["left_running"]) == ([run["run_id"]], [run["dataset_id"]])            # recent: the store waits
+    e.clk.tick(RU.LEASE_TTL_S + 1)
+    assert e.col.recover()["store"]["sealed"] == [{"dataset_id": run["dataset_id"], "status": "PARTIAL"}]
+    e.ft.push(news([art(1, t0)]))
+    r = e.col.collect(NEWS, NV)
+    assert (r["status"], r["verified"], r["duplicates"]) == ("COMPLETED", True, 1) and e.state.watermark("alpaca_news", NV.key()) == e.clk()
+    assert e.store.verify_integrity(anchors=e.archive.anchors())["state"] == "VERIFIED"
+
+
+def test_V04_every_request_sent_has_a_persisted_allow_and_retries_never_pass_a_daily_cap(tmp_path):
+    t0 = TUE - timedelta(hours=1)
+    a = env(tmp_path, outcomes=[TR.TransportTimeout("t"), Response(429, {"Retry-After": "3"}), news([art(1, t0)], "t1"), Response(500), news([art(2, t0)])],
+            worker="A")
+    b = env(tmp_path, clock=a.clk, outcomes=[Response(503), news([])], worker="B")
+    runs = [a.col.collect(NEWS, NV)]
+    a.clk.tick(120)
+    runs.append(b.col.collect(NEWS, NV))
+    c = sqlite3.connect(f"file:{a.store.path.as_posix()}?mode=ro", uri=True)
+    try:
+        per_ds = dict(c.execute("SELECT dataset_id, COUNT(*) FROM mi_budget_events WHERE event = 'ALLOW' GROUP BY dataset_id").fetchall())
+    finally:
+        c.close()
+    assert [per_ds[r["dataset_id"]] for r in runs] == [r["requests"] for r in runs] == [5, 2]                        # retries included
+    assert sum(per_ds.values()) == len(a.ft.sent) + len(b.ft.sent) == a.store.budget_used("ALPACA", TUE.date())
+    v = env(tmp_path / "av", responder=lambda req: Response(200, {}, AV_CSV))
+    for _ in range(5):
+        assert v.col.collect(EARN, AAPL)["status"] == "COMPLETED"
+        v.clk.tick(61)
+    v.ft._responder = lambda req: Response(500)
+    r = v.col.collect(EARN, AAPL)                                                                                   # the 6th request fails ...
+    assert (r["status"], r["stop"], r["requests"], r["unrecovered"]) == ("FAILED", "BUDGET_DAILY_CAP", 1, 1)       # ... and is not retried past 6
+    assert len(v.ft.sent) == 6 == v.store.budget_used("ALPHA_VANTAGE", TUE.date())
+
+
+def test_V05_the_fred_window_is_400_calendar_days_of_observation_dates_inclusive_on_the_new_york_date_and_enforced_by_the_store(tmp_path):
+    assert RU.fred_dates(FRED, datetime(2025, 12, 3, 4, 30, tzinfo=UTC)) == (datetime(2024, 10, 28).date(), datetime(2025, 12, 2).date())   # 23:30 NY Dec 2
+    assert RU.fred_dates(FRED, datetime(2025, 12, 3, 5, 0, tzinfo=UTC)) == (datetime(2024, 10, 29).date(), datetime(2025, 12, 3).date())    # 00:00 NY Dec 3
+    assert RU.fred_dates(FRED, datetime(2025, 7, 1, 3, 59, tzinfo=UTC))[1] == datetime(2025, 6, 30).date()                                  # EDT
+    first, last = RU.fred_dates(FRED, TUE)
+    assert ((last - first).days, first.isoformat(), last.isoformat()) == (400, "2024-10-28", "2025-12-02")         # 401 calendar dates, both inclusive
+    e = env(tmp_path / "edges", outcomes=[fred_page([fobs("2024-10-28", "4.0", "2024-10-29"), fobs("2025-12-02", "4.1", "2025-12-02")])])
+    r = e.col.collect(FRED, DGS10)
+    assert (r["status"], r["inserted"], r["verified"]) == ("COMPLETED", 2, True)                                   # both edges are inside
+    ds = e.store.dataset(r["dataset_id"])
+    assert (ds["start_date"], ds["end_date"]) == ("2024-10-28", "2025-12-02")                                      # the dataset declares the window
+    for i, d in enumerate(("2024-10-27", "2023-01-01")):
+        f = env(tmp_path / f"out{i}", outcomes=[fred_page([fobs(d, "3.9", "2024-10-27"), fobs("2025-11-28", "4.1", "2025-12-01")])])
+        r = f.col.collect(FRED, DGS10)
+        assert (r["status"], r["inserted"], r["rejected"], r["watermark"]) == ("PARTIAL", 1, 1, None), d           # outside: never complete
+        assert rejected(f, r["dataset_id"]) == [("REJECTED", f"SCOPE_DATE:{d}")]
+    g = env(tmp_path / "future", outcomes=[fred_page([fobs("2025-12-03", "4.2", "2025-12-02")])])
+    r = g.col.collect(FRED, DGS10)
+    assert (r["status"], r["rejected"], r["watermark"]) == ("PARTIAL", 1, None) and rejected(g, r["dataset_id"]) == [("REJECTED", "SCOPE_DATE:2025-12-03")]
+
+
+def test_V06_an_incomplete_daily_job_is_never_complete_and_runs_again_the_next_new_york_day(tmp_path):
+    ny7 = datetime(2025, 12, 2, 12, 0, tzinfo=UTC)                                                                  # 07:00 New York
+    e = env(tmp_path, t=ny7, outcomes=[KeyboardInterrupt()])
+    sch = Scheduler(e.col, [(FRED, DGS10)])
+    with pytest.raises(KeyboardInterrupt):
+        sch.tick()
+    e.clk.tick(3600)
+    assert sch.due() == [] and e.state.watermark("fred", DGS10.key()) is None                                       # once a New York day (decision pending)
+    h = e.col.health(FRED, DGS10)
+    assert h["status"] in (HE.UNAVAILABLE, HE.DEGRADED) and h["last_success_at"] is None                            # never shown as complete
+    e.clk.t = ny7 + timedelta(days=1)
+    e.ft.push(fred_page([fobs("2025-11-28", "4.1", "2025-12-01")]))
+    assert [(x["status"], x["verified"]) for x in sch.tick()] == [("COMPLETED", True)]
 
 
 # ============================================================================================================ isolation (S)

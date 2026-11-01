@@ -5,7 +5,8 @@ A Scheduler is a plain object a caller drives: nothing here starts a thread, a t
 
 * due(now): the (plan, scope) pairs whose cadence window is open at `now` and whose last run (by any worker sharing the state file)
   started at least one interval ago; a daily job is due once per New York day, from its time. A refused attempt is not a run.
-* tick(): runs the due pairs SEQUENTIALLY in a fixed order (source, then scope), each under its lease. A repeated tick in the same
+* tick(): the first tick recovers first (interrupted runs, unsealed datasets, the store's integrity: a CORRUPT store takes no run); then it
+  runs the due pairs SEQUENTIALLY in a fixed order (source, then scope), each under its lease. A repeated tick in the same
   interval runs nothing. A pair's exception is its result (the next pair still runs); a KeyboardInterrupt stops the tick.
 * a new New York day starts a new collection cycle (an ACCESS_DENIED provider may be tried again).
 * request_stop(): the current run ends at its next page boundary (SHUTDOWN, PARTIAL, watermark unchanged); no further pair starts.
@@ -37,6 +38,7 @@ class Scheduler:
         self.pairs = sorted(pairs, key=lambda x: (x[0].source, x[1].key()))
         self._stop = False
         self._day = None
+        self.recovery: Optional[dict] = None
 
     def request_stop(self) -> None:
         self._stop = True
@@ -63,6 +65,8 @@ class Scheduler:
         return out
 
     def tick(self) -> List[dict]:
+        if self.recovery is None:
+            self.recovery = self.collector.recover()                    # once, before the first run: never collect over a broken store
         now = self.collector.clock().astimezone(timezone.utc)
         day = _ny(now).date()
         if self._day is not None and day != self._day:

@@ -61,12 +61,22 @@ successful poll. Grading a consumer's quote against a quote time stays the 7.0 p
 - AGING within 36 h;
 - STALE after that.
 
-**FRED's read (a proposal to confirm).** FRED is not watermark-windowed. A monthly or quarterly series' observation date lies weeks
-before its release, so a short observation window would never see it. The daily refresh therefore reads:
-- the last **400 observation dates**, with every vintage (ALFRED realtime 1776-07-04 to 9999-12-31);
-- at most 10,000 rows a page and 5 pages a run.
+**FRED's read (operator decision 4: retained for offline testing only).** FRED is not watermark-windowed. A monthly or quarterly
+series' observation date lies weeks before its release, so a short observation window would never see it.
+
+*Exact meaning* (`runner.fred_dates`):
+- **The window.** The run reads observation dates from **D − 400 calendar days through D, both inclusive** (401 calendar dates). D is
+  the **New York date of the run's start**: a run at 23:30 New York on 2 December reads up to 2 December, never 3 December.
+- **Vintages.** Every vintage of those dates is read (ALFRED realtime 1776-07-04 to 9999-12-31).
+- **Pages.** At most 10,000 rows a page and 5 pages a run.
+- **Enforcement.** The dataset declares the same date range, so the unchanged 7.1 store rejects any row outside it (`SCOPE_DATE`), and
+  such a run is PARTIAL, never COMPLETED.
+- **Incomplete reads.** A response that needs more than 5 pages is `PAGE_LIMIT`; a page short of its `limit` that does not end the
+  series is `INVALID_RESPONSE`. Both runs are PARTIAL, with no watermark.
 
 An identical fact is a DUPLICATE, a new vintage is a new fact, and a vintage that was closed (its `realtime_end` set) is a revision.
+**Observation dates older than 400 days are not refreshed**, so a late revision to them (for example the annual CPI seasonal revision)
+is not seen.
 
 **News** is the only windowed source (section 6). Snapshots, halts and the earnings calendar are current-state polls.
 
@@ -87,6 +97,8 @@ They are checked in this order, and the result is `REFUSED` with the code:
 - the transport is anything but the fake (`REAL_NETWORK_NOT_APPROVED`);
 - the sink would be anything but a FIXTURE dataset (`LIVE_INGESTION_NOT_APPROVED`, section 5);
 - a stop was requested (`SHUTDOWN`);
+- the store failed its integrity check (`STORE_INTEGRITY_FAILED`): `recover()` found it CORRUPT, so no run happens until an operator
+  repairs it;
 - our clock is behind the pair's watermark (`CLOCK_BEHIND_WATERMARK`), or the window starts before the plan's live lookback
   (`HISTORICAL_WINDOW_NEEDS_APPROVAL`, section 6);
 - the circuit is open, or its one trial run is in flight (`CIRCUIT_OPEN`, `CIRCUIT_TRIAL_RUNNING`);
@@ -111,12 +123,18 @@ They are checked in this order, and the result is `REFUSED` with the code:
 4. **Seal.** The dataset is sealed `COMPLETED` only with no failure, rejection or stop, `EMPTY` when nothing came, and `PARTIAL` or
    `FAILED` otherwise. An exception becomes the stop reason and the dataset is still sealed. A `KeyboardInterrupt` is re-raised after
    the seal.
-5. **Watermark.** It is advanced **only after a COMPLETED or EMPTY seal**, that is, after every page was fetched, validated and
-   ingested (EMPTY means the provider had nothing).
+5. **Watermark.** It is advanced **only after a VERIFIED, COMPLETED or EMPTY seal**: every page was fetched, validated and
+   ingested (EMPTY means the provider had nothing). Verified means two things:
+   - the seal's **anchor was written**;
+   - the **store, read back, holds that seal**: the same status and the same content, records and metadata hashes.
+
+   An anchor failure (`PENDING_ANCHOR`) or a read-back that disagrees (`UNVERIFIED_SEAL`) leaves the run COMPLETED in the store but
+   unverified. It gets no watermark, so the window is read again, and health shows it as DEGRADED. `recover()` anchors such a dataset
+   later, but never moves a watermark retroactively.
    - It is written in the same state transaction as the run end.
    - For news it is the window end; for a current-state poll it is the run start.
-   - Schema triggers refuse a watermark (section 4): one for a run that did not end COMPLETED or EMPTY, one later than its run's end,
-     one earlier than the current watermark, and a second one for the same run.
+   - Schema triggers refuse a watermark (section 4): one for a run that did not end COMPLETED or EMPTY **and verified**, one later than
+     its run's end, one earlier than the current watermark, and a second one for the same run.
 6. **Breaker.** The circuit breaker is updated, the lease released, and the run ended.
 
 **Error classes:**
@@ -182,6 +200,10 @@ The state file is `runtime/market_intel/collector.db`, outside git (`runtime/` i
   DUPLICATE member, and a changed one is a revision.
 - `recover()` marks runs with no end `INTERRUPTED` and seals the store datasets they left open, through 7.1 `recover_pending`, which
   never touches a recent run.
+- **Integrity.** If `recover_pending` finds the store CORRUPT, the collector records `STORE_INTEGRITY_FAILED` and refuses every run
+  from then on. The scheduler runs `recover()` once before its first run, so a restart never collects over a broken store.
+- **Watermark ordering.** `cs_run_ends.verified` is written by the runner only for an anchored, read-back seal, and the watermark
+  trigger requires it. So no watermark can exist without verified, completed ingestion, whatever order the two files were written in.
 
 ## 5. Live ingestion needs a schema decision
 
@@ -202,8 +224,8 @@ collector has no parameter that takes it.
   refused as `HISTORICAL_WINDOW_NEEDS_APPROVAL`.
 - **An outage longer than that** leaves a recorded **gap**, `[watermark, now − 36 h]`, shown by health. Only a historical approval
   could fill it.
-- **FRED's fixed 400-day observation window** (section 2) is the one current-state read that reaches back. It is listed for
-  confirmation.
+- **FRED's fixed 400-calendar-day observation window** (section 2) is the one current-state read that reaches back. It is retained
+  for offline testing only (operator decision 4), and no non-bar historical download is authorized (decision 3).
 
 **Proposed for a later stage: `mi_source_backfill_approval_v1`.**
 - **The file.** It is a separate approval file per source and scope, naming the source, scope, window, `max_requests`, `max_rows` and
@@ -240,18 +262,18 @@ overwrite.
 ## 9. Health (`collector/health.py`)
 
 `source_health(plan, scope, ...)` reports, per source and scope:
-- **`status`**, one of:
-  - `AVAILABLE`;
-  The first status that applies wins, in this order:
+- **`status`**. The first status that applies wins, in this order:
   - `BLOCKED_PENDING_APPROVAL`;
   - `NOT_CONFIGURED`;
+  - `UNAVAILABLE` with reason `STORE_INTEGRITY_FAILED`;
   - `CIRCUIT_OPEN` (open, or its trial in flight);
   - `BUDGET_EXHAUSTED`;
   - `UNAVAILABLE`: never succeeded, freshness UNAVAILABLE, or access denied this cycle;
   - `STALE`: freshness STALE under the 7.0 policy;
-  - `DEGRADED`: the latest ended run was not COMPLETED or EMPTY, or it saw clock skew, while freshness is still within policy;
+  - `DEGRADED`: the latest ended run was not COMPLETED or EMPTY, was complete but unverified (`PENDING_ANCHOR`, `UNVERIFIED_SEAL`), or
+    saw clock skew, while freshness is still within policy;
   - `AVAILABLE`;
-- **the 7.0 freshness assessment**, measured from the start of the last successful (COMPLETED or EMPTY) run;
+- **the 7.0 freshness assessment**, measured from the start of the last successful run (COMPLETED or EMPTY, **and verified**);
 - **gaps**: windows no complete run covered;
 - **`last_success_at`, `last_attempt_at`, `consecutive_failures` and the breaker state;**
 - **`clock_skew` and the last error.**
@@ -311,3 +333,18 @@ Responses are processed one page at a time, so nothing accumulates across pages 
   processes each keep their own bucket: the provider lease serializes their runs but not their combined rate, so one collector process is
   assumed (the W1 decision). The daily caps are persisted and exact.
 - **Budgets come from config.** The default budgets read config's settings, which are absent today, so every budget is its 7.0 default.
+
+## 14. Operator decisions (2026-11-01, final review of PR #44)
+
+1. **Daemon, startup hook, config and API wiring (W1): deferred.**
+2. **Schema v2 (a live `COLLECT` job kind): deferred** to a separately approved stage. The collector writes FIXTURE datasets only.
+3. **Non-bar historical downloads: no authorization.** `HISTORICAL_WINDOW_NEEDS_APPROVAL` stays a refusal.
+4. **FRED's 400-calendar-day observation lookback: retained for offline testing only**, with the exact meaning in section 2.
+5. **News clusters and mentions persistence: deferred** to schema v2.
+6. **The SEC acceptance timezone remains UNVERIFIED**, so both SEC plans stay blocked.
+
+Still open, each needing a decision before W1:
+- **Same-day retry of an incomplete daily job.** Today a FAILED or interrupted daily run is not retried until the next New York day.
+  It is never shown as complete (DEGRADED or UNAVAILABLE, no watermark).
+- **Cross-process rate limits.** The per-minute bucket and the 429 back-off are kept per process. Either one collector process is run,
+  or a persisted per-minute limiter is added. Daily caps are already persisted and exact across processes.

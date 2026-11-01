@@ -9,8 +9,10 @@ dataset), HISTORICAL_WINDOW_NEEDS_APPROVAL, CLOCK_BEHIND_WATERMARK, CIRCUIT_OPEN
 ACCESS_DENIED_THIS_CYCLE, LEASE_HELD / PROVIDER_CONCURRENCY, SHUTDOWN.
 
 Then, in this order: the lease (and a half-open trial claim) in one state transaction; a FIXTURE dataset in the 7.1 store and the run
-record; the pages; the seal; the anchor; the run end WITH its watermark (only for a COMPLETED or EMPTY seal) and the breaker transition in
-one state transaction; the lease release. Per attempt: the budget is spent and persisted (mi_budget_events), the response archived (the
+record; the pages; the seal; the anchor; the seal read back; the run end WITH its watermark and the breaker transition in one state
+transaction; the lease release. A run is VERIFIED - and only a verified run moves its watermark - when its seal is COMPLETED or EMPTY, its
+anchor was written and the store, read back, holds that seal (status and its three hashes). A store whose integrity check failed
+(recover() found it CORRUPT) takes no run at all (STORE_INTEGRITY_FAILED) until an operator has repaired it. Per attempt: the budget is spent and persisted (mi_budget_events), the response archived (the
 7.1 RawArchive; a body above the cap is not kept), recorded as a 7.1 fetch row with its error class and provenance, parsed by the 7.2
 adapter (never raises), its row problems recorded as REJECTED members and its rows ingested in quarantine mode.
 
@@ -63,6 +65,14 @@ def nothing_configured(name: str) -> bool:
     return False
 
 
+def fred_dates(plan: PL.CollectionPlan, started: datetime):
+    """FRED's observation window for a run that started at `started`: from the New York date of the start minus `observation_days`
+    CALENDAR days through that date, both inclusive (observation_days + 1 calendar dates; every vintage of each). The dataset declares
+    the same range, so the 7.1 store rejects any row outside it (SCOPE_DATE) and such a run is never COMPLETED."""
+    today = ny_date(started)
+    return today - timedelta(days=plan.observation_days), today
+
+
 def _utc(d: datetime) -> datetime:
     if d.tzinfo is None or d.tzinfo.utcoffset(d) is None:
         raise ValueError("times must be timezone-aware")
@@ -103,6 +113,7 @@ class Collector:
         self.clock, self.sleep, self.credentials, self.worker = clock, sleep, credentials, str(worker)[:60]
         self.budgets = budgets if budgets is not None else default_budgets(clock)
         self._stop = False
+        self.integrity: Optional[str] = None                             # STORE_INTEGRITY_FAILED once recover() finds the store CORRUPT
 
     # ------------------------------------------------------------------------------------------------ control
     def request_stop(self) -> None:
@@ -192,9 +203,9 @@ class Collector:
         if s == "halts":
             return halts.request()
         if s == "fred":
-            today = ny_date(r.started)
-            return fred.request(sc.series, observation_start=today - timedelta(days=r.plan.observation_days), observation_end=today,
-                                offset=int(token or 0), limit=FRED_PAGE_ROWS, configured=r.configured)
+            first, last = fred_dates(r.plan, r.started)
+            return fred.request(sc.series, observation_start=first, observation_end=last, offset=int(token or 0), limit=FRED_PAGE_ROWS,
+                                configured=r.configured)
         if s == "earnings_av":
             return earnings_av.request(horizon="3month", configured=r.configured)
         raise PermissionError(f"{s}: no request is built for this plan")
@@ -213,10 +224,12 @@ class Collector:
         return earnings_av.parse(body, retrieved_at=retrieved, symbols=sc.symbols or None, dataset_id=r.dataset_id)
 
     @staticmethod
-    def dataset_spec(plan: PL.CollectionPlan, scope: PL.Scope, run_id: str, window) -> ST.DatasetSpec:
+    def dataset_spec(plan: PL.CollectionPlan, scope: PL.Scope, run_id: str, window, started: Optional[datetime] = None) -> ST.DatasetSpec:
         symbols = sorted(scope.symbols) if plan.source in ("alpaca_snapshots", "earnings_av") else []
+        first, last = fred_dates(plan, started) if plan.observation_days is not None else (None, None)
         return ST.DatasetSpec(job_kind=SINK_JOB_KIND, kind=plan.kind, provider=plan.provider,
                               feed=scope.feed if plan.source == "alpaca_snapshots" else "none", adjustment="none", symbols=symbols,
+                              start_date=first, end_date=last,
                               request={"collector": COLLECTOR_VERSION, "source": plan.source, "scope": scope.key(), "run_id": run_id,
                                        "plan_sha256": plan_sha256(plan), "window": [ST.ts(w) for w in window] if window else None})
 
@@ -242,6 +255,8 @@ class Collector:
             return self._refuse(plan, scope, "LIVE_INGESTION_NOT_APPROVED", "live collection needs a schema v2 job kind (DESIGN_73 section 5)")
         if self._stop:
             return self._refuse(plan, scope, "SHUTDOWN")
+        if self.integrity:
+            return self._refuse(plan, scope, self.integrity, "the store failed its integrity check (recover()): an operator repairs it first")
         now = self._now()
         window, gap, why = self.window(plan, scope, now, window_start)
         if why:
@@ -263,7 +278,7 @@ class Collector:
             return self._refuse(plan, scope, why)
         run_id = uuid.uuid4().hex
         try:
-            did = self.store.create_dataset(self.dataset_spec(plan, scope, run_id, window))
+            did = self.store.create_dataset(self.dataset_spec(plan, scope, run_id, window, now))
             self.state.start_run(run_id=run_id, source=plan.source, scope_key=scope.key(), scope=asdict(scope), worker=self.worker, lease_id=lease,
                                  plan_sha256=plan_sha256(plan), started_at=now, window=window, gap=gap, dataset_id=did, trial=trial)
         except BaseException:
@@ -309,19 +324,25 @@ class Collector:
             self.state.end_run(r.run_id, status="PENDING_FINALIZATION", now=self._now(), stop=stop, failed=failed, clock_skew=r.clock_skew,
                                last_error=f"SEAL:{type(exc).__name__}", content_sha256=None, counts=r.stats)
             raise IG.FinalizationError(r.dataset_id, "PENDING_FINALIZATION", type(exc).__name__) from (interrupt or exc)
-        finalization = "ANCHORED"
+        finalization, unverified = "ANCHORED", None
         try:
             self.archive.anchor(r.dataset_id, sealed["content_sha256"], records_sha256=sealed["records_sha256"], metadata_sha256=sealed["metadata_sha256"],
                                 status=final, sealed_at=self._now())
-        except Exception:                                                    # noqa: BLE001 - sealed, not yet anchored: recover() anchors it
-            finalization = "PENDING_ANCHOR"
+        except Exception as exc:                                             # noqa: BLE001 - sealed, not yet anchored: recover() anchors it
+            finalization, unverified = "PENDING_ANCHOR", f"PENDING_ANCHOR:{type(exc).__name__}"
+        if final in COMPLETE and unverified is None:
+            unverified = self._seal_unconfirmed(r.dataset_id, final, sealed)
+        verified = final in COMPLETE and unverified is None
         end = self._now()
-        watermark = (r.window[1] if r.window else r.started) if final in COMPLETE else None
+        watermark = (r.window[1] if r.window else r.started) if verified else None
         current = self.state.watermark(r.plan.source, r.scope.key())
         if watermark is not None and current is not None and watermark < current:
             watermark, r.last_error = None, "WATERMARK_BEHIND_CURRENT"        # another worker's clock ran ahead: never moved back
+        if final in COMPLETE and unverified:
+            r.last_error = unverified                                        # complete in the store, not verified: no watermark, DEGRADED
         self.state.end_run(r.run_id, status=final, now=end, stop=stop, failed=failed, clock_skew=r.clock_skew, last_error=r.last_error or (stop or ""),
-                           content_sha256=sealed["content_sha256"], counts=r.stats, watermark=watermark, breaker_failed=failed if tried else None)
+                           content_sha256=sealed["content_sha256"], counts=r.stats, watermark=watermark, verified=verified,
+                           breaker_failed=failed if tried else None)
         if trial and not tried:
             self.state.hand_back_trial(r.plan.source, end)
         if interrupt is not None:
@@ -329,7 +350,19 @@ class Collector:
         return {"source": r.plan.source, "scope": r.scope.key(), "status": final, "refused": None, "detail": "", "run_id": r.run_id,
                 "dataset_id": r.dataset_id, "stop": stop, "window": [ST.ts(w) for w in r.window] if r.window else None,
                 "gap": [ST.ts(g) for g in gap] if gap else None, "watermark": ST.ts(watermark) if watermark else None, "trial": trial,
-                "clock_skew": r.clock_skew, "last_error": r.last_error, "finalization": finalization, "content_sha256": sealed["content_sha256"], **r.stats}
+                "clock_skew": r.clock_skew, "last_error": r.last_error, "finalization": finalization, "verified": verified,
+                "content_sha256": sealed["content_sha256"], **r.stats}
+
+    def _seal_unconfirmed(self, dataset_id: str, final: str, sealed: dict) -> Optional[str]:
+        """Why the seal just written is not confirmed by reading the store back (None: confirmed) - its status and its three hashes."""
+        try:
+            ds = self.store.dataset(dataset_id)
+        except Exception as exc:                                             # noqa: BLE001 - an unreadable store confirms nothing
+            return f"UNVERIFIED_SEAL:{type(exc).__name__}"
+        last = ((ds or {}).get("events") or [{}])[-1]
+        if ds is None or ds.get("status") != final or any(last.get(k) != sealed[k] for k in ("content_sha256", "records_sha256", "metadata_sha256")):
+            return "UNVERIFIED_SEAL"
+        return None
 
     def _pages(self, r: _Run) -> Optional[str]:
         """The page loop. Returns the stop reason (None: the last page said there is no more)."""
@@ -461,10 +494,13 @@ class Collector:
                                last_error="", content_sha256=None, counts={})
             out["interrupted"].append(run["run_id"])
         out["store"] = IG.recover_pending(self.store, self.archive, clock=self.clock, stale_after=stale_after)
+        if out["store"].get("refused") == ST.CORRUPT:
+            self.integrity = "STORE_INTEGRITY_FAILED"                        # fail closed: no run, no watermark, until an operator repairs it
+        out["integrity"] = self.integrity or "OK"
         return out
 
     def health(self, plan: PL.CollectionPlan, scope: PL.Scope) -> dict:
         b = self.budgets.get(plan.budget_name)
         now = self._now()
         return HE.source_health(plan, scope, state=self.state, now=now, credentials=self.credentials,
-                                budget_refusal=None if b is None else self.budget_refusal(b, now))
+                                budget_refusal=None if b is None else self.budget_refusal(b, now), integrity=self.integrity)
