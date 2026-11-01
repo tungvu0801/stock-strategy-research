@@ -63,7 +63,7 @@ def test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file():
     assert FL.BASE_611FIX == "2fe29f3a48359a365a1506c9f70093129be72602" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_611FIX}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_611FIX).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731
+    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74
     changed = set(_git("diff", "--name-only", FL.BASE_611FIX, FL.BASE_OPS).split())
     assert changed == FL.NEW_611FIX | FL.EDITED_611FIX, {"unexpected": sorted(changed - FL.NEW_611FIX - FL.EDITED_611FIX), "missing": sorted((FL.NEW_611FIX | FL.EDITED_611FIX) - changed)}
     assert FL.SEMANTIC_611FIX == {} and {p for p in changed if not p.startswith((".github/", "tests/"))} == {CSS}   # one production file, CSS only

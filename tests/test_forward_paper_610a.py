@@ -1373,7 +1373,7 @@ def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_
     assert {p for p in stage610a if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
     changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
+    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610A | FL.EDITED_610A | later, {"unexpected": sorted(changed - FL.NEW_610A - FL.EDITED_610A - later),
                                                               "missing": sorted((FL.NEW_610A | FL.EDITED_610A | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
