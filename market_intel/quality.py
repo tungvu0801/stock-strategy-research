@@ -22,6 +22,10 @@ database is copied byte for byte into a private temporary directory, and the cop
 -wal or -journal, or a file that changes during the copy). Every read - this module's and the 7.1 / 7.3.1 interfaces it reuses - runs on
 that copy, which is deleted afterwards. Nothing is written beside the inputs, no row changes, and no network is used.
 
+Quiet or offline stores only. The copy is a faithful image of a store only when nothing writes it while the report runs. The refusals catch
+the usual signs of a writer; they are not a lock and not an atomic snapshot, so a run that is not refused still does not prove that nothing
+wrote the store. A store that a daemon writes needs its own, separately designed consistent-snapshot mechanism (DESIGN_74 section 2.1).
+
 Point in time. A row counts at T only when the store's own rule says it was known at T (observed, complete, available and ingested by T).
 Datasets, fetches, budget events and collector runs count when they were recorded by T. Two sections describe the FILE, not the moment:
 integrity, and malformed timestamps (a value that cannot be parsed cannot be placed in time).
@@ -98,6 +102,11 @@ _ABS_KNOWN = f"{_le('b.available_at')} AND {_le('b.ingested_at')}"
 _MEMBER_KNOWN = f"{_le('m.at')} AND {_le('m.available_at')}"
 
 
+def _nonfinite(v) -> bool:
+    """NaN or an infinity. An int is always finite (and math.isfinite would overflow on a huge one rather than answer)."""
+    return isinstance(v, float) and not math.isfinite(v)
+
+
 @dataclass(frozen=True)
 class Thresholds:
     """The research thresholds the report applies. The pinned ones (pinned()) come from Stage 7.0 / 7.1, so they are reported, not
@@ -107,11 +116,16 @@ class Thresholds:
     max_feed_p95_s: Optional[float] = None
 
     def __post_init__(self):
-        if isinstance(self.min_coverage, bool) or not isinstance(self.min_coverage, (int, float)) or not 0 < self.min_coverage <= 1:
+        v = self.min_coverage
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("min_coverage must be a number in (0, 1]")
+        if _nonfinite(v):                                                   # refused by name, never left to a comparison (NaN compares false)
+            raise ValueError(f"min_coverage must be finite, not {v!r}")
+        if not 0 < v <= 1:
             raise ValueError("min_coverage must be a number in (0, 1]")
         for name in ("max_fetch_p95_ms", "max_feed_p95_s"):
             v = getattr(self, name)
-            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0):
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or _nonfinite(v) or v <= 0):
                 raise ValueError(f"{name} must be a positive finite number, or None")
 
     def as_dict(self) -> dict:
@@ -198,7 +212,8 @@ def _side_sizes(p: Path) -> Dict[str, int]:
 
 
 def _snapshot(src: Path, dst: Path) -> dict:
-    """Copies `src` byte for byte to `dst`. Refused (nothing copied) when a writer may be active or the file changes meanwhile."""
+    """Copies `src` byte for byte to `dst`. Refused (nothing copied) when a writer may be active or the file changes meanwhile. For a quiet
+    or offline store only: the checks are a guard against running beside a writer, not an atomic snapshot (module docstring)."""
     out = {"path": str(src), "present": src.exists()}
     if not out["present"]:
         return out
@@ -1215,7 +1230,9 @@ def _iso(s: str) -> datetime:
 
 def main(argv: Optional[List[str]] = None, out=None) -> int:
     out = out or sys.stdout
-    ap = argparse.ArgumentParser(prog="python -m market_intel.quality", description="Stage 7.4 data quality and latency report (offline, read-only)")
+    ap = argparse.ArgumentParser(prog="python -m market_intel.quality", description="Stage 7.4 data quality and latency report (offline, read-only)",
+                                 epilog="Quiet or offline stores only: nothing may write --store or --state while the report runs. The copy "
+                                        "it reads is not an atomic snapshot of a store being written.")
     ap.add_argument("--store", required=True)
     ap.add_argument("--state")
     ap.add_argument("--archive-root")

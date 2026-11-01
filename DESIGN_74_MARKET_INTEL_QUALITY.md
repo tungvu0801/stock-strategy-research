@@ -37,14 +37,42 @@ report that must leave its inputs untouched and must not miss data.
    created exclusively.
 3. If the file's size or modification time changed, or a journal appeared, during the copy: refused (`CHANGED_DURING_SNAPSHOT`), and the
    partial copy is removed.
-4. Every read — this module's SQL and every 7.1 / 7.3.1 interface — runs on the copy. All sections therefore see one consistent snapshot.
-   The temporary directory, and any side files SQLite creates there, are deleted when the report returns.
+4. Every read — this module's SQL and every 7.1 / 7.3.1 interface — runs on the copy. All sections therefore read the same copy and agree
+   with one another; whether that copy is a consistent image of the store depends on the store being quiet (section 2.1). The temporary
+   directory, and any side files SQLite creates there, are deleted when the report returns.
 
 The raw archive is read with plain file reads; nothing is written there. Cost: temporary disk space equal to the store's size while the
 report runs (section 9).
 
 A store that does not exist is `INSUFFICIENT_DATA` (`STORE_NOT_CREATED`) and is never created. A collector state the operator named but that
 does not exist is `INSUFFICIENT_DATA` too (`STATE_NOT_CREATED`): a mistyped path is never silently ignored.
+
+### 2.1 Quiet or offline stores only: not an atomic snapshot
+
+The protocol assumes a **quiet or offline** store: nothing writes the store or the collector state from before the report starts until it
+returns (the collector stopped; no backfill, import or migration running). Other readers are harmless. Only then is the copy a faithful image
+of the store.
+
+The refusals in steps 1 and 3 guard against the common mistake of running beside a writer. They are not a lock and not an atomic snapshot,
+and the report claims no consistency with a concurrent writer:
+
+- Nothing stops a writer from starting after step 1. In WAL mode, committed changes reach the main file at checkpoints, and a checkpoint
+  that runs during the copy can leave the copy with pages from before and after it.
+- Step 3 sees a writer only through the file system: a non-empty `-wal` or `-journal` afterwards, or a changed size or modification time.
+  A journal is not always there to be seen. By default SQLite deletes the `-wal` when the last connection closes, a `TRUNCATE` checkpoint
+  empties it, and a rollback journal is deleted at commit. A modification time is only as precise and as prompt as the file system keeps it.
+- A torn copy can still read as a valid database. SQLite's integrity check finds structural damage, not a mix of two committed states.
+
+So `WRITER_MAY_BE_ACTIVE` and `CHANGED_DURING_SNAPSHOT` mean "do not trust this run", but their absence does not prove that nothing wrote
+the store. The read-only promise (nothing written beside the inputs, no row changed) holds either way. The consistency of what was read
+holds only for a quiet store.
+
+**Future daemon integration** (the deferred Stage 7.3.2 collector, or any wiring that runs this report beside a live writer) needs a
+separately designed consistent-snapshot mechanism, with its own design, review and tests. It must capture one committed state of the store,
+must not write beside the production file unexpectedly, and must not stall the collector indefinitely. The candidates to evaluate then
+include a copy made by the collector itself under its lease (SQLite's online backup API, or `VACUUM INTO` within one read transaction), and
+a lease handoff that pauses writes for the copy. None is built or chosen here. Until one is, this report must not be pointed at a store
+that a daemon or any other process may be writing.
 
 ## 3. Point in time
 
@@ -232,6 +260,11 @@ distribution. Divergence warns and is never a correction (the stored bars are un
 | `max_fetch_p95_ms` | none | no latency target or SLA exists. Without one, latency is measured, not judged |
 | `max_feed_p95_s` | none | as above |
 
+`min_coverage` must be a finite number in (0, 1]. NaN and the infinities are refused by name (`min_coverage must be finite, not nan`) before
+any comparison, because a NaN compares false with everything. A latency target must be a positive finite number. An int is always finite,
+so a huge one is checked by value and never overflows the check. The CLI refuses the same values in the same words, before anything is
+read (exit 4; test R08).
+
 ## 6. Verdict
 
 Each check is `PASS`, `WARN`, `BLOCK` or `INSUFFICIENT_DATA` with its codes. The verdict is:
@@ -284,10 +317,11 @@ the freshness histogram, the latency groups, coverage and the digest.
 
 - **Temporary disk space** equal to the store's size is needed while the report runs. A store too large for the temporary directory fails
   the copy (an `OSError`, before any figure).
-- **A store that is always busy cannot be reported on.** A live writer (the deferred 7.3.2 daemon) keeps a `-wal`: the report refuses it
-  rather than read around it. The wiring stage will need either a quiet moment or a snapshot taken under the collector's own lease.
-- **The change check uses size and modification time.** A writer that changes a file without changing either during the copy is not
-  detected. WAL writers always leave a `-wal`, which is refused first.
+- **Quiet or offline stores only; the copy is not an atomic snapshot** (section 2.1). A store being written is refused when the signs of a
+  writer are visible, and the absence of a refusal does not prove that nothing wrote it. A store that is always busy (the deferred 7.3.2
+  daemon) cannot be reported on: daemon integration needs a separately designed consistent-snapshot mechanism.
+- **The change check uses size and modification time, as the file system reports them.** A write during the copy that changes neither,
+  and leaves no non-empty `-wal` or `-journal` behind, is not detected (section 2.1).
 - **Schedule coverage is sampled every 60 s**: a feed current for less than a minute between samples can be missed, and the cost grows with
   the window (a `since` bounds it).
 - **Integrity and malformed timestamps describe the file, not the moment**, so they are not point-in-time (section 3).
@@ -309,11 +343,13 @@ the freshness histogram, the latency groups, coverage and the digest.
 
 ## 11. Decisions for the operator
 
-1. **Latency targets.** None exist; set `max_fetch_p95_ms` / `max_feed_p95_s` only if a target is agreed.
-2. **A coverage bar below 100 %**, if partial coverage should pass.
-3. **A read-only route** for this report belongs to the deferred wiring stage (proposal only; not authorized here).
-4. **Reporting on the production store** is allowed read-only by naming it with `--store`, but it needs a quiet moment (no writer) and free
-   temporary space. No production store exists yet.
+Decided by the operator at the review of `0ebfd3c` (section 13):
+
+1. **Latency targets** stay unset until an SLA is justified; `max_fetch_p95_ms` / `max_feed_p95_s` are set only if a target is agreed.
+2. **The coverage bar** stays at its default, 1.0.
+3. **No API route and no daemon wiring.** A read-only route for this report would belong to the deferred wiring stage.
+4. **The report is not run against production data.** It could read a production store only by naming it with `--store`, and only while
+   that store is quiet or offline (section 2.1), with free temporary space. No production store exists yet.
 
 ## 12. Independent review
 
@@ -335,3 +371,10 @@ A reviewer working from the requirements and the code alone (not from this docum
 
 The reviewer also confirmed: nothing written beside the inputs and no private copy left behind even after a crash; point in time across a
 dataset sealed after T and later rows; the refusals; v2 stores; verdict precedence; thresholds; determinism; isolation.
+
+## 13. Operator review (CODE-ONLY, of `0ebfd3c`)
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | `Thresholds` did not explicitly require a finite `min_coverage` | Refused by name before any comparison (`min_coverage must be finite, not …`): on construction, on `dataclasses.replace`, and on the CLI (exit 4, nothing read). Test R08 fails on `0ebfd3c`. NaN and the infinities were already refused before, but only because they fail the range comparison. Making the check explicit found a second defect: `math.isfinite` raises `OverflowError` on a huge int, so `max_fetch_p95_ms=10**400` crashed instead of being checked. All three checks now treat an int as finite (`_nonfinite`), and R08 pins that too |
+| 2 | The byte-copy snapshot must be explicitly restricted to quiet or offline stores, must not claim atomic consistency with concurrent writers, and must record that daemon integration needs its own consistent-snapshot mechanism | Section 2.1; the module and `_snapshot` docstrings; the CLI help. Two overstatements corrected: section 2 said every section sees "one consistent snapshot" (true of the copy, not of a store being written), and section 9 said WAL writers always leave a `-wal` (by default the last connection's close deletes it, and a `TRUNCATE` checkpoint empties it). No behaviour changed |

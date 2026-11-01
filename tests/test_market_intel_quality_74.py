@@ -9,11 +9,13 @@ created.
           SEC still blocked; thresholds
   V01     independent verification: the figures recomputed from raw SQL and from the 7.1 store's own reads
   X01     isolation: no network, broker, trading or model; no write path; nothing outside market_intel imports the report
+  R01-R08 the review findings (DESIGN_74 sections 12 and 13), each reproduced first
   F01-F03 scope (freeze bookkeeping)
 """
 from __future__ import annotations
 
 import ast
+import dataclasses
 import gzip
 import hashlib
 import io
@@ -923,6 +925,33 @@ def test_R07_the_schedule_window_is_bounded_and_since_brings_it_back(tmp_path):
     assert "SCHEDULE_WINDOW_TOO_LONG" in chk(rep(e, far), "coverage")["codes"]
     s = next(x for x in rep(e, far, since=far - timedelta(days=1))["coverage"]["schedules"] if x["source"] == "halts")
     assert s["status"] == "EVALUATED"
+
+
+def test_R08_a_non_finite_threshold_is_refused_by_name_in_python_and_on_the_command_line(tmp_path, monkeypatch):
+    for v in (float("nan"), float("inf"), float("-inf"), float("1e999")):                   # the operator's review of 0ebfd3c
+        with pytest.raises(ValueError, match="^min_coverage must be finite, not "):
+            Q.Thresholds(min_coverage=v)
+        with pytest.raises(ValueError, match="^min_coverage must be finite, not "):
+            dataclasses.replace(Q.Thresholds(), min_coverage=v)                                # a changed copy is validated as well
+        for name in ("max_fetch_p95_ms", "max_feed_p95_s"):
+            with pytest.raises(ValueError, match=f"^{name} must be a positive finite number"):
+                Q.Thresholds(**{name: v})
+    huge = 10 ** 400                                                                           # finite, but no float holds it: never an OverflowError
+    with pytest.raises(ValueError, match=r"^min_coverage must be a number in \(0, 1\]$"):
+        Q.Thresholds(min_coverage=huge)
+    assert (Q.Thresholds(max_fetch_p95_ms=huge).max_fetch_p95_ms, Q.Thresholds(max_feed_p95_s=huge).max_feed_p95_s) == (huge, huge)
+    assert [Q.Thresholds(min_coverage=x).min_coverage for x in (1, 0.5, 1e-9)] == [1, 0.5, 1e-9]
+    e = v1_world(tmp_path / "w")
+    monkeypatch.setattr(Q, "build_report", lambda *a, **k: pytest.fail("a refused invocation must not read anything"))
+    base = ["--store", str(e.store.path), "--as-of", ST.ts(TUE)]
+    for flag, msg in (("--min-coverage", "min_coverage must be finite, not "), ("--max-fetch-p95-ms", "max_fetch_p95_ms must be a positive finite"),
+                      ("--max-feed-p95-s", "max_feed_p95_s must be a positive finite")):
+        for text in ("nan", "NaN", "inf", "Infinity", "-inf", "1e999"):
+            out = io.StringIO()
+            assert Q.main(base + [f"{flag}={text}"], out=out) == Q.USAGE_ERROR and out.getvalue().startswith("refused: " + msg), (flag, text)
+    assert Q.main(base + ["--min-coverage", "-inf"], out=io.StringIO()) == Q.USAGE_ERROR                     # read as an option by argparse
+    run = subprocess.run([sys.executable, "-m", "market_intel.quality", *base, "--min-coverage", "nan"], cwd=ROOT, capture_output=True, text=True)
+    assert (run.returncode, run.stdout) == (Q.USAGE_ERROR, "refused: min_coverage must be finite, not nan\n"), run.stderr[-600:]
 
 
 # ============================================================================================================ scope (F)
