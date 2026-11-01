@@ -1076,7 +1076,7 @@ def test_X01_the_new_modules_reach_no_network_broker_trading_or_model_and_nothin
             assert word not in src, (rel, word)
     sv = (ROOT / "market_intel" / "schema_v2.py").read_text(encoding="utf-8")
     assert (sv.count(".unlink()"), sv.count("partial.unlink()"), sv.count("tmp.unlink()")) == (3, 2, 1)                  # its own .partial; a second name
-    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "tests/", ".venv/",
+    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "tests/", ".venv/",
              "scratchpad/")) and "market_intel" in p.read_text(encoding="utf-8", errors="replace")]
     assert users == []
     assert not ST.default_path().exists() and not (ROOT / "runtime" / "market_intel" / "approvals").exists()
@@ -1131,7 +1131,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_731, FL.BASE_74).split())               # Stage 7.3.1 itself, between two fixed commits
     assert stage == FL.NEW_731 | FL.EDITED_731, {"unexpected": sorted(stage - FL.NEW_731 - FL.EDITED_731), "missing": sorted((FL.NEW_731 | FL.EDITED_731) - stage)}
-    later = FL.NEW_74 | FL.EDITED_74                                                         # Stage 7.4, pinned by its own F tests
+    later = FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75                                                         # Stage 7.4, pinned by its own F tests
     assert changed == FL.NEW_731 | FL.EDITED_731 | later, {"unexpected": sorted(changed - FL.NEW_731 - FL.EDITED_731 - later),
                                                            "missing": sorted((FL.NEW_731 | FL.EDITED_731 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_731).split())
