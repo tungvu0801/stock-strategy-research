@@ -279,11 +279,13 @@ def test_Q03c_a_dataset_that_re_delivers_an_unchanged_value_covered_it(tmp_path)
 def test_Q04_a_missing_empty_or_unreadable_store_is_never_created_and_never_passes(tmp_path):
     none = tmp_path / "none" / "mi.db"
     r = Q.build_report(none, as_of=TUE)
-    assert (r["verdict"]["result"], chk(r, "inputs")["codes"]) == ("INSUFFICIENT_DATA", ["STORE_NOT_CREATED"]) and not none.parent.exists()
+    assert (r["verdict"]["result"], chk(r, "inputs")["result"], chk(r, "inputs")["codes"]) == ("INSUFFICIENT_DATA", "INSUFFICIENT_DATA", ["STORE_NOT_CREATED"])
+    assert not none.parent.exists()
     assert all(r[s] is None for s in Q.SECTIONS) and {c["check"] for c in r["checks"] if c["required"]} == {"inputs", "integrity", "timestamps"}
     zero = tmp_path / "zero.db"
     zero.write_bytes(b"")
-    assert chk(Q.build_report(zero, as_of=TUE), "inputs")["codes"] == ["STORE_EMPTY"] and zero.read_bytes() == b""
+    z = chk(Q.build_report(zero, as_of=TUE), "inputs")
+    assert (z["result"], z["codes"], zero.read_bytes()) == ("INSUFFICIENT_DATA", ["STORE_EMPTY"], b"")
     junk = tmp_path / "junk.db"
     junk.write_bytes(b"not a database " * 100)
     r = Q.build_report(junk, as_of=TUE)
@@ -347,7 +349,8 @@ def test_Q06_integrity_reuses_the_71_and_731_verification_and_a_critical_failure
     body = sorted(archive.rglob("*.gz"))[0]
     body.write_bytes(gzip.compress(b"another body"))
     r = Q.build_report(db, as_of=at, state=state, archive_root=archive)
-    assert (chk(r, "integrity")["codes"], r["integrity"]["archive"]["manifest_problems"][0]["problem"]) == (["RAW_ARCHIVE_MISMATCH"], "SHA256_MISMATCH")
+    assert (chk(r, "integrity")["result"], chk(r, "integrity")["codes"], r["integrity"]["archive"]["manifest_problems"][0]["problem"]) == (
+        "BLOCK", ["RAW_ARCHIVE_MISMATCH"], "SHA256_MISMATCH")                                  # a body that is not what was fetched blocks
     db, state, archive = copy("anchors")
     with open(archive / "anchors.jsonl", "a", encoding="utf-8") as f:
         f.write("not an anchor\n")
@@ -386,6 +389,13 @@ def test_Q07_evaluation_times_are_explicit_instants_and_every_boundary_follows_t
     assert Q.dumps(rep(e, est)) == Q.dumps(rep(e, TUE + 4 * S))                              # one instant, whatever its offset
     assert stream(rep(e, TUE), "QUOTE_SNAPSHOT", "AAPL")["values"] == 1                       # ingested and available exactly at as_of: known
     assert chk(rep(e, TUE - timedelta(microseconds=1)), "inputs")["codes"] == ["STORE_EMPTY_AT_AS_OF"]
+    did = e.store.create_dataset(fixture("NEWS"))                                         # ingested now, usable only from TUE + 10 min
+    e.store.ingest(did, [Observation(kind="NEWS", provider="ALPACA", observed_at=TUE - 60 * S, published_at=TUE - 60 * S, retrieved_at=TUE,
+                                     available_at=TUE + timedelta(minutes=10), session=CAL.session(TUE)["session"], session_date=CAL.session(TUE)["session_date"],
+                                     status="AVAILABLE", source_identifier="embargo", payload={"headline": "embargoed"})])
+    seal(e, did)
+    assert [sum(s["values"] for s in rep(e, TUE + d)["freshness"]["streams"] if s["kind"] == "NEWS")
+            for d in (timedelta(minutes=10) - timedelta(microseconds=1), timedelta(minutes=10))] == [0, 1]   # known only once available
     for t in (datetime(2025, 12, 3, 4, 59, 59, 999999, UTC), datetime(2025, 12, 3, 5, 0, tzinfo=UTC),     # New York midnight: 05:00 UTC in winter
               datetime(2025, 7, 1, 3, 59, 59, 999999, UTC), datetime(2025, 7, 1, 4, 0, tzinfo=UTC)):        # and 04:00 UTC in summer
         e.clk.t = t
