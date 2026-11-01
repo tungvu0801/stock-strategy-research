@@ -89,10 +89,23 @@ def ny(d: date, hh=0, mm=0) -> datetime:
     return datetime(d.year, d.month, d.day, hh, mm, tzinfo=NYZ).astimezone(UTC)
 
 
-def dbar(sym, d, close, *, feed, retrieved, backfilled=True):
+def dbar(sym, d, close, *, feed, retrieved, backfilled=True, flags=()):
     return Observation(kind="BAR_1DAY", symbol=sym, provider="ALPACA", feed=feed, adjustment="raw", observed_at=ny(d), retrieved_at=retrieved,
-                       available_at=retrieved, session="REG", session_date=d, status="AVAILABLE", backfilled=backfilled,
+                       available_at=retrieved, session="REG", session_date=d, status="AVAILABLE", backfilled=backfilled, quality_flags=tuple(flags),
                        payload={"open": close, "high": close + 1, "low": close - 1, "close": close, "volume": 1000})
+
+
+def clone_obs(path, symbol, dataset_id, **changes):
+    """A copy of a stored observation row written around the store (raw SQL): a tool, or a bug."""
+    c = sqlite3.connect(str(path))
+    try:
+        cols = [x[1] for x in c.execute("PRAGMA table_info(mi_observations)")]
+        row = dict(zip(cols, c.execute("SELECT * FROM mi_observations WHERE symbol = ? ORDER BY rowid LIMIT 1", (symbol,)).fetchone()))
+        row.update(dataset_id=dataset_id, fetch_id=None, **changes)
+        c.execute(f"INSERT INTO mi_observations ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[k] for k in cols])
+        c.commit()
+    finally:
+        c.close()
 
 
 def seal(e, did, status="COMPLETED"):
@@ -100,11 +113,11 @@ def seal(e, did, status="COMPLETED"):
     IG.recover_pending(e.store, e.archive, clock=e.clk)                       # anchors the seal, as the 7.1 recovery does
 
 
-def add_daily(e, sym, days, *, feed="iex", job="IMPORT", closes=None, start=None, end=None):
+def add_daily(e, sym, days, *, feed="iex", job="IMPORT", closes=None, start=None, end=None, flags=()):
     """One sealed, anchored BAR_1DAY dataset of `days`; its window is [start, end] (by default the days' own span)."""
     did = e.store.create_dataset(DatasetSpec(job_kind=job, kind="BAR_1DAY", provider="ALPACA", feed=feed, adjustment="raw", symbols=[sym], timeframe="1Day",
                                              start_date=start or days[0], end_date=end or days[-1]))
-    e.store.ingest(did, [dbar(sym, d, (closes or {}).get(d, 100.0), feed=feed, retrieved=e.clk(), backfilled=job != "FIXTURE") for d in days])
+    e.store.ingest(did, [dbar(sym, d, (closes or {}).get(d, 100.0), feed=feed, retrieved=e.clk(), backfilled=job != "FIXTURE", flags=flags) for d in days])
     seal(e, did)
     return did
 
@@ -167,6 +180,12 @@ def test_Q01_fresh_aging_and_stale_follow_the_70_policy_per_stream_and_feed_and_
     late = rep(e, TUE + 700 * S)
     assert {f["source"]: f["status"] for f in late["freshness"]["feeds"]}["alpaca_news"] == "STALE" and "STALE_FEEDS" in chk(late, "freshness")["codes"]
     assert late["freshness"]["histogram"]["QUOTE_DAY"]["status"] == {"STALE": 1, "UNAVAILABLE": 1}
+    e.clk.t = TUE + 20 * S
+    e.ft.push(snaps(MSFT=TUE + 19 * S))                                                    # AAPL absent now: its old value is not current
+    e.col.collect(SNAP, AAPL_MSFT)
+    gone = stream(rep(e, TUE + 21 * S), "QUOTE_SNAPSHOT", "AAPL")
+    assert {k: (g["status"], g["reason"]) for k, g in gone["grades"].items()} == {k: ("UNAVAILABLE", "LATEST_RECORD_IS_ABSENCE")
+                                                                                for k in ("QUOTE_DAY", "QUOTE_SWING")}
 
 
 def test_Q02_missing_timestamps_are_counted_apart_and_malformed_ones_block_without_breaking_the_report(tmp_path):
@@ -243,7 +262,8 @@ def test_Q03b_schedule_coverage_is_the_share_of_a_plans_open_minutes_its_70_poli
     r = rep(e, e.clk() + 60 * S, since=TUE - timedelta(hours=1))
     n = next(x for x in r["coverage"]["schedules"] if x["source"] == "alpaca_news")
     assert n["gaps_recorded"] == [gap] and {"COLLECTOR_GAPS", "SCHEDULE_BELOW_MIN_COVERAGE"} <= set(chk(r, "coverage")["codes"])
-    assert 0 < n["ratio"] < 1 and n["not_current_interval_count"] >= 1
+    assert n["current_minutes"] == 13 and 0 < n["ratio"] < 1                               # 11 after the first run, 2 after the second: a
+    assert n["not_current_interval_count"] >= 1                                            # success counts only once it has ended
 
 
 def test_Q03c_a_dataset_that_re_delivers_an_unchanged_value_covered_it(tmp_path):
@@ -296,14 +316,8 @@ def test_Q05_negative_latency_within_the_skew_is_measured_and_beyond_it_or_in_a_
     f = next(x for x in r["latency"]["fetch"] if x["evidence"] == "UNATTRIBUTED")
     assert (f["successful_fetches"], f["latency_ms"]["n"], f["duration_ms"]["n"]) == (1, 0, 0)                 # a contradiction is never a figure
     did = e.store.create_dataset(fixture("QUOTE_SNAPSHOT", feed="iex", symbols=["AAPL"]))
-    c = sqlite3.connect(str(e.store.path))
-    cols = [x[1] for x in c.execute("PRAGMA table_info(mi_observations)")]
-    row = dict(zip(cols, c.execute("SELECT * FROM mi_observations WHERE symbol = 'AAPL'").fetchone()))
     late = ST.ts(TUE + 12 * S)
-    row.update(obs_id="ahead", natural_key=row["natural_key"] + "|ahead", dataset_id=did, fetch_id=None, observed_at=late, event_end=late)
-    c.execute(f"INSERT INTO mi_observations ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[k] for k in cols])
-    c.commit()
-    c.close()
+    clone_obs(e.store.path, "AAPL", did, obs_id="ahead", natural_key="QUOTE_SNAPSHOT|AAPL|ahead", observed_at=late, event_end=late)
     r = rep(e, TUE + 30 * S)
     assert "OBSERVED_AFTER_RETRIEVAL" in chk(r, "timestamps")["codes"]                     # 12 s ahead: beyond the skew
     g = next(x for x in r["latency"]["feed"] if x["kind"] == "QUOTE_SNAPSHOT")
@@ -397,14 +411,31 @@ def test_Q08_a_report_as_of_t_never_sees_what_was_recorded_after_t(tmp_path):
     days = sessions(date(2025, 11, 24), date(2025, 11, 28))
     add_daily(e, "SPY", days)
     add_daily(e, "SPY", days, feed="sip", closes={days[0]: 100.2})
+    pending = e.store.create_dataset(fixture("NEWS"))                                     # open at t1, sealed after it
     t1 = TUE + 60 * S
     first = rep(e, t1)
+    mine = next(d for d in first["coverage"]["datasets"] if d["dataset_id"] == pending)
+    assert (mine["status_at_as_of"], mine["codes"]) == ("RUNNING", ["DATASET_NOT_FINAL"])
     e.clk.t = TUE + 120 * S                                                               # everything below is recorded after t1
-    e.ft.push(snaps(AAPL=e.clk() - S, MSFT=e.clk() - S), news([art(1, TUE - timedelta(minutes=5), headline="revised", updated=e.clk()),
-                                                                art(2, e.clk() - 30 * S)]), *[TR.TransportConnectionError("x")] * 3)
-    e.col.collect(SNAP, AAPL_MSFT)
+    seen = TUE + 30 * S                                                                   # retrieved and available before t1, ingested after it
+    e.store.ingest(pending, [Observation(kind="NEWS", provider="ALPACA", observed_at=seen - 60 * S, published_at=seen - 60 * S, retrieved_at=seen,
+                                         available_at=seen, session=CAL.session(seen)["session"], session_date=CAL.session(seen)["session_date"],
+                                         status="AVAILABLE", source_identifier="late-ingest", payload={"headline": "ingested late"})])
+    seal(e, pending)
+    raw_fetch(e.store.path, "slow", started=ST.ts(TUE + 50 * S), retrieved=ST.ts(TUE + 55 * S), ingested=ST.ts(TUE + 120 * S), latency_ms=5000)
+    raw_fetch(e.store.path, "neg-late", started=ST.ts(TUE + 130 * S), retrieved=ST.ts(TUE + 125 * S), ingested=ST.ts(TUE + 130 * S))
+    e.ft.push(snaps(MSFT=e.clk() - S), news([art(1, TUE - timedelta(minutes=5), headline="revised", updated=e.clk()),
+                                             art(2, e.clk() - 30 * S)]), *[TR.TransportConnectionError("x")] * 3)
+    e.col.collect(SNAP, AAPL_MSFT)                                                        # AAPL absent this time
     e.col.collect(NEWS, NV)
     assert e.col.collect(HALTS, NONE)["status"] == "FAILED"
+    e.ft.push(*[TR.TransportConnectionError("x")] * 9)
+    for _ in range(3):
+        e.clk.tick(120)
+        assert e.col.collect(NEWS, NV)["status"] == "FAILED"                              # the news breaker opens after t1
+    ahead = e.store.create_dataset(fixture("QUOTE_SNAPSHOT", feed="iex", symbols=["AAPL"]))
+    clone_obs(e.store.path, "AAPL", ahead, obs_id="ahead", natural_key="QUOTE_SNAPSHOT|AAPL|ahead", observed_at=ST.ts(TUE + 12 * S),
+              event_end=ST.ts(TUE + 12 * S), ingested_at=ST.ts(TUE + 140 * S))                # last: a violation, recorded after t1
     add_daily(e, "SPY", [date(2025, 12, 1)])
     add_daily(e, "SPY", days, feed="sip", closes={d: 101.0 for d in days})                   # a revision of every SIP bar
     e.store.record_budget_event("ALPACA", "ALLOW")
@@ -412,13 +443,28 @@ def test_Q08_a_report_as_of_t_never_sees_what_was_recorded_after_t(tmp_path):
     again = rep(e, t1)
     for s in ("evidence", "freshness", "coverage", "latency", "timestamps", "provider_health", "feed_divergence"):
         assert again[s] == first[s], s
-    assert results(again, "integrity") == results(first, "integrity") and again["integrity"]["state"] == first["integrity"]["state"] == "VERIFIED"
+    assert results(again, "integrity") == results(first, "integrity")
+    assert (first["integrity"]["state"], again["integrity"]["state"]) == ("UNVERIFIED", "CORRUPT")  # integrity describes the file (section 3)
     later = rep(e, e.clk() + 60 * S)                                                       # after every later write (the failed run's back-off moved the clock)
-    for s in ("freshness", "coverage", "latency", "provider_health", "feed_divergence"):
+    for s in ("freshness", "coverage", "latency", "timestamps", "provider_health", "feed_divergence"):
         assert later[s] != first[s], s                                                    # the later facts exist: the test is not vacuous
     for s in first["freshness"]["streams"]:                                               # and t1 reads as the 7.1 store reads at t1
         ls = e.store.latest_status(s["kind"], at=t1, symbol=s["symbol"], series_id=s["series_id"], feed=s["feed"], adjustment=s["adjustment"])
         assert (s["store_status"], s["store_reason"], s["latest_usable_observed_at"]) == (ls["status"], ls["reason"], (ls["latest_usable"] or {}).get("observed_at"))
+
+
+def test_Q08b_runs_started_after_t_ends_after_t_and_unverified_successes_never_count():
+    T = TUE
+    runs = [{"run_id": "a", "started_at": ST.ts(T - 60 * S), "ended_at": ST.ts(T - 30 * S), "status": "COMPLETED", "verified": 1},
+            {"run_id": "b", "started_at": ST.ts(T - 20 * S), "ended_at": ST.ts(T + 10 * S), "status": "COMPLETED", "verified": 1},   # ends after T
+            {"run_id": "c", "started_at": ST.ts(T + 5 * S), "ended_at": ST.ts(T + 6 * S), "status": "COMPLETED", "verified": 1},     # starts after T
+            {"run_id": "d", "started_at": ST.ts(T - 10 * S), "ended_at": ST.ts(T - 5 * S), "status": "COMPLETED", "verified": 0},    # unverified
+            {"run_id": "e", "started_at": ST.ts(T - 8 * S), "ended_at": ST.ts(T - 4 * S), "status": "FAILED", "verified": 0}]
+    at = Q._runs_at(runs, T)
+    assert [(r["run_id"], r["status"]) for r in at] == [("a", "COMPLETED"), ("b", None), ("d", "COMPLETED"), ("e", "FAILED")]
+    assert Q._successes(at) == [(T - 30 * S, T - 60 * S)]                                  # (ended, started) of verified, ended successes
+    assert Q._dist(list(range(1, 21))) == {"n": 20, "p50": 10, "p95": 19, "min": 1, "max": 20}   # nearest rank, no interpolation
+    assert Q._dist([]) == {"n": 0}
 
 
 def test_Q09_the_report_reads_copies_only_and_leaves_every_input_byte_for_byte_as_it_was(tmp_path, monkeypatch):
@@ -465,6 +511,16 @@ def test_Q09_the_report_reads_copies_only_and_leaves_every_input_byte_for_byte_a
     monkeypatch.setattr(Q, "_side_sizes", a_writer_starts)
     moved = Q.build_report(db, as_of=at, tmp_root=scratch)
     assert (chk(moved, "inputs")["codes"], list(scratch.iterdir())) == (["STORE_CHANGED_DURING_SNAPSHOT"], [])
+    monkeypatch.undo()
+    odd = tmp_path / "odd.db"
+    shutil.copyfile(state, odd)
+    c = sqlite3.connect(str(odd))
+    c.execute("CREATE TABLE intruder (x)")
+    c.commit()
+    c.close()
+    r = Q.build_report(db, as_of=at, state=odd, archive_root=archive)
+    assert (chk(r, "provider_health")["result"], chk(r, "provider_health")["codes"]) == ("BLOCK", ["STATE_SCHEMA_MISMATCH"])
+    assert r["inputs"]["collector_state"]["schema"]["state"] == "SCHEMA_MISMATCH" and r["verdict"]["result"] == "BLOCK"
     assert not ST.default_path().exists()
 
 
@@ -498,15 +554,21 @@ def test_Q11_every_figure_says_whether_it_comes_from_fixtures_offline_verificati
     days = sessions(date(2025, 11, 24), date(2025, 12, 1))
     add_daily(e, "SPY", days)                                                             # IMPORT: operator data
     add_daily(e, "SPY", days[:2], job="FIXTURE", closes={days[0]: 101.0})                # a fixture in the same stream: one revision, one re-delivery
+    add_daily(e, "QQQ", days)
+    add_daily(e, "QQQ", days[:1], job="FIXTURE")                                         # a fixture that only re-delivered: still in that stream
     r = rep(e, TUE + 10 * S)
-    assert (r["evidence"]["scope"], r["evidence"]["datasets_by_class"]) == ("INCLUDES_OPERATOR_DATA", {"FIXTURE": 2, "OPERATOR": 1})
-    spy = stream(r, "BAR_1DAY", "SPY", "iex")
-    assert (spy["evidence"], spy["mixed_evidence"]) == (["FIXTURE", "OPERATOR"], True) and "MIXED_EVIDENCE" in chk(r, "freshness")["codes"]
+    assert (r["evidence"]["scope"], r["evidence"]["datasets_by_class"]) == ("INCLUDES_OPERATOR_DATA", {"FIXTURE": 3, "OPERATOR": 2})
+    for sym in ("SPY", "QQQ"):
+        s = stream(r, "BAR_1DAY", sym, "iex")
+        assert (s["evidence"], s["mixed_evidence"]) == (["FIXTURE", "OPERATOR"], True), sym
+    assert "MIXED_EVIDENCE" in chk(r, "freshness")["codes"]
     assert {(a["kind"], a["evidence"]) for a in r["coverage"]["by_provider_kind_evidence"]} == {("BAR_1DAY", "FIXTURE"), ("BAR_1DAY", "OPERATOR"),
                                                                                                ("QUOTE_SNAPSHOT", "FIXTURE")}
     assert {(g["kind"], g["evidence"]): g["delivery_s"]["n"] for g in r["latency"]["feed"]} == {("QUOTE_SNAPSHOT", "FIXTURE"): 1, ("BAR_1DAY", "FIXTURE"): 1}
+    bar = next(g for g in r["latency"]["feed"] if g["kind"] == "BAR_1DAY")
+    assert (bar["reference"], bar["delivery_s"]["p50"]) == ("event_end", (TUE - datetime(2025, 11, 25, 1, tzinfo=UTC)).total_seconds())  # 24 Nov ends 20:00 ET
     # IMPORT rows are history, not latency; the fixture's re-delivery of an unchanged bar is no new sample, its revision is one
-    assert r["latency"]["excluded"]["backfilled_rows"] == len(days)
+    assert r["latency"]["excluded"]["backfilled_rows"] == 2 * len(days)
     assert {(f["endpoint"], f["evidence"]) for f in r["provider_health"]["fetches"]} == {("/v2/stocks/snapshots", "FIXTURE")}
     s, clk = v2_store(tmp_path / "v2")
     did = s.create_dataset(collect_spec(), approval=load(tmp_path / "v2", auth_file(tmp_path / "v2"), clk))
@@ -545,7 +607,7 @@ def test_Q12_provider_health_summarizes_fetch_outcomes_errors_plan_pressure_budg
     assert h["budget"]["ALPHA_VANTAGE"]["days_over_daily_cap"] == ["2025-12-02"]
     assert set(chk(r, "provider_health")["codes"]) == {"PLAN_LIMIT_PRESSURE", "CIRCUIT_OPEN", "LATEST_RUN_NOT_COMPLETE", "RUN_ERRORS_RECORDED",
                                                          "FETCH_ERRORS_RECORDED", "CLOCK_SKEW", "DAILY_CAP_EXCEEDED"}
-    assert chk(r, "provider_health")["result"] == "WARN"
+    assert chk(r, "provider_health")["result"] == "WARN" and "DATASET_FAILED" in chk(r, "coverage")["codes"]
 
 
 def test_Q13_iex_and_sip_bars_at_one_time_are_compared_by_the_70_divergence_rule_and_never_corrected(tmp_path):
@@ -556,12 +618,15 @@ def test_Q13_iex_and_sip_bars_at_one_time_are_compared_by_the_70_divergence_rule
     assert (chk(r, "feed_divergence")["result"], chk(r, "feed_divergence")["codes"]) == ("INSUFFICIENT_DATA", ["NO_FEED_OVERLAP"])
     sip = dict(zip(days, (100.05, 100.2, 100.0)))
     add_daily(e, "SPY", days, feed="sip", closes=sip)
+    fri = date(2025, 11, 28)
+    add_daily(e, "SPY", [fri])
+    add_daily(e, "SPY", [fri], feed="sip", closes={fri: 130.0}, flags=("NON_POSITIVE_PRICE",))   # unusable: never compared
     r = rep(e, TUE + 10 * S)
     bps = sorted(round(abs(100.0 - c) / c * 10_000, 6) for c in sip.values())
     assert r["feed_divergence"]["pairs"] == [{"kind": "BAR_1DAY", "symbol": "SPY", "adjustment": "raw", "pairs": 3, "divergent": 1, "not_computable": 0,
                                               "bps": {"n": 3, "p50": bps[1], "p95": bps[2], "min": bps[0], "max": bps[2]}, "evidence": ["OPERATOR"]}]
     assert (chk(r, "feed_divergence")["result"], chk(r, "feed_divergence")["codes"]) == ("WARN", ["FEED_DIVERGENCE"])
-    assert [x["payload"]["close"] for x in e.store.history("BAR_1DAY", symbol="SPY", feed="sip", as_of=TUE + 10 * S)] == [100.05, 100.2, 100.0]   # reported only
+    assert [x["payload"]["close"] for x in e.store.history("BAR_1DAY", symbol="SPY", feed="sip", as_of=TUE + 10 * S) if x["usable"]] == [100.05, 100.2, 100.0]
 
 
 def test_Q14_sec_times_stay_blocked_they_are_neither_graded_nor_measured(tmp_path):
@@ -577,7 +642,7 @@ def test_Q14_sec_times_stay_blocked_they_are_neither_graded_nor_measured(tmp_pat
     assert (f["assessed_by"], f["reason"], f["grades"]) == ("NOT_ASSESSED", "SEC_ACCEPTANCE_TZ_UNVERIFIED", {})
     assert (r["latency"]["excluded"]["SEC_ACCEPTANCE_TZ_UNVERIFIED"], r["latency"]["feed"]) == (1, [])
     assert (chk(r, "freshness")["result"], chk(r, "freshness")["codes"]) == ("INSUFFICIENT_DATA", ["SEC_ACCEPTANCE_TZ_UNVERIFIED"])
-    assert "FILING" not in r["freshness"]["event_age_s"]
+    assert "FILING" not in r["freshness"]["event_age_s"] and chk(r, "coverage")["result"] == "INSUFFICIENT_DATA"
     assert [PL.PLANS[s].blocked_reason for s in ("sec_filings", "sec_facts")] == [PL.SEC_TZ_BLOCK] * 2          # still blocked, unchanged
 
 
@@ -603,6 +668,9 @@ def test_Q15_thresholds_are_pinned_or_explicit_and_a_check_without_one_is_measur
     slow = rep(e, at, thresholds=Q.Thresholds(max_feed_p95_s=60))                            # the article arrived 300 s after it was written
     assert (chk(slow, "latency")["result"], chk(slow, "latency")["codes"]) == ("WARN", ["DELIVERY_P95_ABOVE_TARGET"])
     assert ok["thresholds"] == {"configurable": {"min_coverage": 1.0, "max_fetch_p95_ms": 1000, "max_feed_p95_s": 3600}, "pinned": p}
+    raw_fetch(e.store.path, "slow", started=ST.ts(TUE + S), retrieved=ST.ts(TUE + 6 * S), ingested=ST.ts(TUE + 6 * S), latency_ms=5000)
+    late = rep(e, at, thresholds=Q.Thresholds(max_fetch_p95_ms=1000))
+    assert (chk(late, "latency")["result"], chk(late, "latency")["codes"]) == ("WARN", ["FETCH_P95_ABOVE_TARGET"])
 
 
 # ============================================================================================================ verification (V)
