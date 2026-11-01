@@ -1036,7 +1036,7 @@ def _divergence(ctx: _Ctx) -> Tuple[dict, dict]:
         except (TypeError, ValueError, AttributeError):
             g["not_computable"] += 1
             continue
-        codes = VA.feed_divergence(a, b) if math.isfinite(a) and math.isfinite(b) else ["NON_FINITE"]
+        codes = VA.feed_divergence(a, b)                                     # the 7.0 rule: a non-finite close is NON_FINITE
         if "NON_FINITE" in codes:
             g["not_computable"] += 1
             continue
