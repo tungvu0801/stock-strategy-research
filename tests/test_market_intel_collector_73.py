@@ -1342,7 +1342,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_73, FL.BASE_731).split())               # Stage 7.3 itself, between two fixed commits
     assert stage == FL.NEW_73 | FL.EDITED_73, {"unexpected": sorted(stage - FL.NEW_73 - FL.EDITED_73), "missing": sorted((FL.NEW_73 | FL.EDITED_73) - stage)}
-    later = FL.NEW_731 | FL.EDITED_731                                                       # Stage 7.3.1, pinned by its own F tests
+    later = FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74                           # Stages 7.3.1, 7.4: pinned by their own F tests
     assert changed == FL.NEW_73 | FL.EDITED_73 | later, {"unexpected": sorted(changed - FL.NEW_73 - FL.EDITED_73 - later),
                                                          "missing": sorted((FL.NEW_73 | FL.EDITED_73 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_73).split())
