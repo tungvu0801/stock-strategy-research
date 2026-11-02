@@ -18,6 +18,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import math
 import os
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -25,9 +26,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from research_data import (ADJUSTMENTS, ALLOWED_URLS, API_FEED, BARS_URL, BENCHMARK, BUILDER_VERSION, CHUNK, DAILY_BAR_STAMPS, DEFAULT_START, FEED,
-                           MAX_PAGES_PER_REQUEST, MIN_INTERVAL_S, PAGE_LIMIT, RESEARCH_UNIVERSE, SEC_MIN_INTERVAL_S, SEC_TICKERS_URL, approved)
+                           MAX_PAGES_PER_REQUEST, MIN_INTERVAL_S, PAGE_LIMIT, RESEARCH_UNIVERSE, SEC_MIN_INTERVAL_S, SEC_TICKERS_URL, approved,
+                           output_problem)
 
 BUNDLE_NAME = "sip_bundle.json"
+BARS_PARAMS = {"symbols", "timeframe", "start", "end", "feed", "adjustment", "limit", "sort"}   # exactly these, per bar request
 
 
 class BuildError(ValueError):
@@ -83,13 +86,15 @@ def http_transport(timeout: float = 30.0) -> Transport:
     def get(url: str, params: dict, headers: dict) -> Tuple[int, bytes]:
         if url not in ALLOWED_URLS:
             raise FetchRefused(f"not an allowed URL: {url}")
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        r = requests.get(url, params=params, headers=headers, timeout=timeout, allow_redirects=False)   # a 3xx is a non-200: the fetch stops
         return r.status_code, r.content
+    get.network = True                                                      # type: ignore[attr-defined]  its archive is HISTORICAL
     return get
 
 
 def _credentials(env_file: Optional[str]) -> Tuple[str, str, str]:
-    """(alpaca key, alpaca secret, SEC user agent) by NAME from the process environment, else from env_file. Never printed or stored."""
+    """(alpaca key, alpaca secret, SEC user agent) by NAME: from an explicit env_file first, else the process environment. Never printed or
+    stored."""
     vals = {}
     if env_file and Path(env_file).is_file():
         for line in Path(env_file).read_text(encoding="utf-8").splitlines():
@@ -97,7 +102,7 @@ def _credentials(env_file: Optional[str]) -> Tuple[str, str, str]:
             if "=" in s and not s.startswith("#"):
                 k, v = s.split("=", 1)
                 vals[k.strip()] = v.strip().strip('"').strip("'")
-    get = lambda n: (os.environ.get(n) or vals.get(n) or "").strip()  # noqa: E731
+    get = lambda n: (vals.get(n) or os.environ.get(n) or "").strip()  # noqa: E731
     return get("ALPACA_API_KEY"), get("ALPACA_SECRET_KEY"), get("SEC_USER_AGENT")
 
 
@@ -110,23 +115,34 @@ def fetch(plan: dict, *, out: Path, approval: str, plan_sha256: str, transport: 
         raise FetchRefused("the plan's sha256 does not match the approved one")
     if plan.get("builder") != BUILDER_VERSION or set(plan.get("guards", {}).get("allowed_urls") or []) != set(ALLOWED_URLS):
         raise FetchRefused("not a plan of this builder")
+    win = plan.get("window")
+    if not isinstance(win, dict) or not win.get("start") or not win.get("end"):
+        raise FetchRefused("the plan has no window")
     allowed_syms = set(symbols())
     for req in plan.get("requests") or []:                                       # every request is checked before the first one is made
         p = req.get("params") or {}
         if req.get("url") not in ALLOWED_URLS or req.get("kind") not in ("SEC", "BARS") or (req["kind"] == "SEC") != (req["url"] == SEC_TICKERS_URL):
             raise FetchRefused(f"{req.get('name')}: not an allowed request")
-        if req["kind"] == "BARS" and (p.get("feed") != API_FEED or p.get("timeframe") != "1Day" or int(p.get("limit") or 0) > PAGE_LIMIT
-                                      or (p.get("start"), p.get("end")) != (plan["window"].get("start"), plan["window"].get("end"))
-                                      or p.get("adjustment") not in ADJUSTMENTS or not set(str(p.get("symbols") or "").split(",")) <= allowed_syms):
-            raise FetchRefused(f"{req.get('name')}: outside the builder's scope (feed, timeframe, page size, window, adjustment or symbols)")
-    win = plan.get("window") or {}
+        if req["kind"] == "SEC" and p:
+            raise FetchRefused(f"{req.get('name')}: the SEC request takes no parameter")
+        if req["kind"] == "BARS" and (set(p) != BARS_PARAMS or p.get("feed") != API_FEED or p.get("timeframe") != "1Day" or p.get("sort") != "asc"
+                                      or not isinstance(p.get("limit"), int) or p["limit"] > PAGE_LIMIT
+                                      or (p.get("start"), p.get("end")) != (win["start"], win["end"])
+                                      or p.get("adjustment") not in ADJUSTMENTS or p.get("adjustment") != req.get("adjustment")
+                                      or not req.get("symbols") or p.get("symbols") != ",".join(req["symbols"]) or not set(req["symbols"]) <= allowed_syms):
+            raise FetchRefused(f"{req.get('name')}: outside the builder's scope (parameters, feed, timeframe, page size, window, adjustment or "
+                               "symbols)")
     if str(win.get("end") or "9999")[:10] > now()[:10]:                          # the window's end is exclusive: the last day is before today
         raise FetchRefused(f"the window ends {win.get('end')}: only sessions before today (UTC) - the current session's bar may be incomplete")
     if not (alpaca_key and alpaca_secret and sec_user_agent):
         raise FetchRefused("credentials (ALPACA_API_KEY, ALPACA_SECRET_KEY) and SEC_USER_AGENT are required (read by name only)")
     out = Path(out)
+    problem = output_problem(out)
+    if problem:
+        raise FetchRefused(problem)
     if out.exists() and any(out.iterdir()):
         raise FetchRefused(f"{out} is not empty: a fetch never overwrites")
+    network = bool(getattr(transport, "network", False))                       # recorded: an archive fetched over the network is HISTORICAL
     (out / "raw").mkdir(parents=True, exist_ok=True)
     responses: List[dict] = []
     last = {"SEC": 0.0, "BARS": 0.0}
@@ -149,10 +165,15 @@ def fetch(plan: dict, *, out: Path, approval: str, plan_sha256: str, transport: 
             if wait > 0:
                 sleep(wait)
             params = dict(req["params"], **({"page_token": token} if token else {}))
-            status, body = transport(req["url"], params, headers)
+            try:
+                status, body = transport(req["url"], params, headers)
+            except Exception as exc:                                             # noqa: BLE001  stops the fetch like a non-200 (no retry)
+                _write_manifest(out, plan, plan_sha256, approval, responses, complete=False, network=network,
+                                stopped=f"{req['name']} page {page}: {type(exc).__name__}")
+                raise FetchRefused(f"{req['name']} page {page}: {type(exc).__name__} - stopped (no retry)") from None
             last[req["kind"]] = time.monotonic()
             if status != 200:
-                _write_manifest(out, plan, plan_sha256, approval, responses, complete=False, stopped=f"{req['name']} page {page}: HTTP {status}")
+                _write_manifest(out, plan, plan_sha256, approval, responses, complete=False, network=network, stopped=f"{req['name']} page {page}: HTTP {status}")
                 raise FetchRefused(f"{req['name']} page {page}: HTTP {status} - stopped (no retry)")
             keep(req["name"], req, page, params, body)
             page += 1
@@ -160,15 +181,17 @@ def fetch(plan: dict, *, out: Path, approval: str, plan_sha256: str, transport: 
             if not token:
                 break
             if page >= MAX_PAGES_PER_REQUEST:
-                _write_manifest(out, plan, plan_sha256, approval, responses, complete=False, stopped=f"{req['name']}: more than {MAX_PAGES_PER_REQUEST} pages")
+                _write_manifest(out, plan, plan_sha256, approval, responses, complete=False, network=network,
+                                stopped=f"{req['name']}: more than {MAX_PAGES_PER_REQUEST} pages")
                 raise FetchRefused(f"{req['name']}: more than {MAX_PAGES_PER_REQUEST} pages - a materially broader request; stopped")
-    return _write_manifest(out, plan, plan_sha256, approval, responses, complete=True, stopped=None)
+    return _write_manifest(out, plan, plan_sha256, approval, responses, complete=True, network=network, stopped=None)
 
 
-def _write_manifest(out: Path, plan: dict, plan_sha256: str, approval: str, responses: List[dict], *, complete: bool, stopped: Optional[str]) -> Path:
+def _write_manifest(out: Path, plan: dict, plan_sha256: str, approval: str, responses: List[dict], *, complete: bool, network: bool,
+                    stopped: Optional[str]) -> Path:
     path = Path(out) / "manifest.json"
     path.write_text(json.dumps({"builder": BUILDER_VERSION, "plan": plan, "plan_sha256": plan_sha256, "approval": approval, "complete": complete,
-                                "stopped": stopped, "retrieved_at": max((r["fetched_at"] for r in responses), default=None), "responses": responses},
+                                "network": network, "stopped": stopped, "retrieved_at": max((r["fetched_at"] for r in responses), default=None), "responses": responses},
                                indent=1, sort_keys=True), encoding="utf-8")
     return path
 
@@ -218,6 +241,11 @@ def build(out: Path, kind: str = "HISTORICAL") -> Path:
         raise BuildError(f"the fetch is incomplete ({man.get('stopped')}): no dataset is built from it")
     if man.get("plan_sha256") != sha256_of(man["plan"]):
         raise BuildError("the archived plan does not match its sha256")
+    if kind == "SYNTHETIC" and man.get("network"):
+        raise BuildError("an archive fetched over the network is HISTORICAL, never SYNTHETIC")
+    path = out / BUNDLE_NAME
+    if path.exists():
+        raise BuildError(f"{path} exists: a dataset is never overwritten")
     tickers = _pages(out, man, "sec_company_tickers")[0]
     cik_of = {str(v["ticker"]).upper(): (int(v["cik_str"]), str(v.get("title") or "")) for v in tickers.values()}
     universe = list(man["plan"]["universe"])                                    # the plan's symbols (default: the research universe + SPY)
@@ -236,7 +264,7 @@ def build(out: Path, kind: str = "HISTORICAL") -> Path:
         keep = []
         for r in rows:
             o, h, lo, c = r["open"], r["high"], r["low"], r["close"]
-            if min(o, h, lo, c) <= 0 or lo > min(o, c) + 1e-9 or h < max(o, c) - 1e-9:
+            if not all(math.isfinite(x) for x in (o, h, lo, c)) or min(o, h, lo, c) <= 0 or lo > min(o, c) + 1e-9 or h < max(o, c) - 1e-9:
                 removed.append({"symbol": sym, "date": r["date"], "ohlc": [o, h, lo, c]})
             else:
                 keep.append(r)
@@ -261,10 +289,9 @@ def build(out: Path, kind: str = "HISTORICAL") -> Path:
                     "available: SURVIVORSHIP_BIAS_PRESENT",
         "point_in_time": "prices only: every bar is a completed session; the issuer map is today's SEC ticker map (not point in time)",
         "builder": BUILDER_VERSION, "start": man["plan"]["start"], "end": man["plan"]["end"], "window": man["plan"]["window"],
-        "invalid_bars_removed": removed, "sec_symbols_without_cik": missing, "plan_sha256": man["plan_sha256"],
+        "invalid_bars_removed": removed, "sec_symbols_without_cik": missing, "plan_sha256": man["plan_sha256"], "fetch_approval": man.get("approval"),
         "raw_manifest_sha256": hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest(),
     }
-    path = out / BUNDLE_NAME
     path.write_text(json.dumps({"kind": kind, "provenance": provenance, "bars": bars, "aux": {"series": series, "static": {"issuers": issuers}}},
                                sort_keys=True), encoding="utf-8")
     return path
@@ -289,8 +316,9 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "plan":
         plan = request_plan(a.start, a.end)
-        if Path(a.out).exists():
-            print(f"REFUSED: {a.out} exists (a plan is never overwritten)")
+        problem = output_problem(a.out)
+        if problem or Path(a.out).exists():
+            print(f"REFUSED: {problem or f'{a.out} exists (a plan is never overwritten)'}")
             return 2
         Path(a.out).write_text(json.dumps(plan, indent=1, sort_keys=True), encoding="utf-8")
         print(f"plan: {len(plan['requests'])} requests (+ pages); sha256 {sha256_of(plan)}")

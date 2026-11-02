@@ -4,11 +4,12 @@ stops; harness integrity). Nothing here changes a run, a candidate, a stop or a 
 
   fold_rows()      the six folds of swing_pullback.diagnostics.fold_bounds (unchanged): closed RULES trades by signal date, mean r_net, net P/L
   stability()      R9: evaluable folds (>= 20 trades), >= 5 evaluable, net > 0 in >= ceil(2/3 E), median fold mean R > 0.05, no fold >= 80 % of net
+                   (a total net P/L <= 0 is never STABLE: the lock leaves the 80 % rule undefined there, so it fails closed)
   comparison()     R10: OOS mean r_net difference in BOTH cost runs (>= 0.05 R), paired-fold consistency on the BASE run (whole signal period:
                    TRAIN included - a time-consistency check, not OOS confirmation), the trade-count requirement, and the reported measures
   stop_findings()  M-5: every candidate with a stop <= 0 (the four runs and the eight TRAIN-view neighbours): BLOCKING
   integrity_findings()  a run whose harness causality is CRITICAL, whose audit failed or whose arms got different candidates: BLOCKING
-  eligibility()    R11: all six items, each with its evidence"""
+  eligibility()    R11: all six items, each with its evidence; REVIEW_REQUIRED findings count as accepted only with a recorded acceptance"""
 from __future__ import annotations
 
 import math
@@ -53,8 +54,9 @@ def stability(rec: dict, sessions: List[str], t: dict = R9) -> dict:
     med = statistics.median(r["mean_R"] for r in ev)
     total = sum(r["net_pnl"] for r in rows)
     dominant = [r["fold"] for r in rows if total > 0 and r["net_pnl"] >= t["max_fold_share_of_net"] * total]
-    checks = {"positive_folds": pos, "positive_needed": need, "median_fold_mean_R": med, "total_net_pnl": total, "dominant_folds": dominant}
-    ok = pos >= need and med > t["median_fold_mean_r_min"] and not dominant
+    checks = {"positive_folds": pos, "positive_needed": need, "median_fold_mean_R": med, "total_net_pnl": total, "dominant_folds": dominant,
+              "concentration": "CHECKED" if total > 0 else "NOT_SATISFIABLE: total net P/L <= 0"}
+    ok = pos >= need and med > t["median_fold_mean_r_min"] and total > 0 and not dominant
     return {**out, **checks, "outcome": "STABLE" if ok else "UNSTABLE"}
 
 
@@ -197,16 +199,20 @@ def integrity_findings(recs: Dict[Tuple[str, str], dict]) -> List[dict]:
     return out
 
 
-def eligibility(recs: Dict[Tuple[str, str], dict], stab: dict, comp: dict, report: dict, blocking: List[dict], invalid: List[str]) -> dict:
+def eligibility(recs: Dict[Tuple[str, str], dict], stab: dict, comp: dict, report: dict, blocking: List[dict], invalid: List[str],
+                findings_accepted_by: Optional[str] = None) -> dict:
     v1b, v1s = recs[("V1", "BASE")], recs[("V1", "STRESS_2X")]
     stress_oos = ((((v1s.get("arms") or {}).get("RULES") or {}).get("metrics") or {}).get("OOS") or {}).get("expectancy_R")
     sens = (((v1b.get("diagnostics") or {}).get("strategy") or {}).get("sensitivity") or {}).get("label")
+    rs = report.get("status")
     items = [{"item": "harness PASS on V1 BASE", "ok": (v1b.get("verdict") or {}).get("verdict") == "PASS", "evidence": (v1b.get("verdict") or {}).get("verdict")},
              {"item": "V1 OOS expectancy > 0 at STRESS_2X", "ok": stress_oos is not None and stress_oos > 0, "evidence": stress_oos},
              {"item": "R9 STABLE", "ok": stab.get("outcome") == "STABLE", "evidence": stab.get("outcome")},
              {"item": "R10 BEATS_CONTROL", "ok": comp.get("outcome") == "BEATS_CONTROL", "evidence": comp.get("outcome")},
              {"item": "V1 TRAIN-view sensitivity ROBUST", "ok": sens == "ROBUST", "evidence": sens},
-             {"item": "pre-run report accepted and no blocking validation finding", "ok": report.get("status") in ("CLEAN", "REVIEW_REQUIRED") and not blocking
-              and not invalid, "evidence": {"report": report.get("status"), "blocking": len(blocking), "invalid_runs": invalid}}]
+             {"item": "pre-run report accepted and no blocking validation finding",
+              "ok": (rs == "CLEAN" or (rs == "REVIEW_REQUIRED" and bool(findings_accepted_by))) and not blocking and not invalid,
+              "evidence": {"report": rs, "findings_accepted_by": findings_accepted_by if rs == "REVIEW_REQUIRED" else None, "blocking": len(blocking),
+                           "invalid_runs": invalid}}]
     return {"eligible_for_review": all(i["ok"] for i in items), "items": items,
             "note": "eligible for review is never a promotion; the edge stays NOT_ESTABLISHED (survivorship); the next step would be the 7.9 shadow"}

@@ -4,7 +4,9 @@ everything the strategy's pre-registration hash does not cover. The strategy has
     python -m swing_eval.manifest build --dataset FILE --report REPORT.json --out MANIFEST.json [--evidence-location DIR] [--provenance OVERRIDE.json]
                                         [--created-at ISO]
 
-verify()      the manifest agrees with the strategy code (pre-registration hash, the four runs and their friction) and with the locked values
+verify()      the manifest agrees with the strategy code (pre-registration hash, the four runs and their friction) and with the locked values;
+              the dataset is a sip_daily_v1 SIP dataset (R14) whose override sets no protected field, and the pre-run report was made under
+              the same provenance (override, dataset id, volume feed, kind) as the one evaluated
 pre_checks()  before any run: the code's hash and commit, a clean tree, the dataset file's sha256 and content, the accepted report
 post_checks() after each run: the run record's friction, commission, fee, split, sizing, arms, adapter, execution assumptions, cost label,
               pre-registration hash, dataset and harness version equal the manifest's (final-review M-2 / M-3). Any mismatch: the run is INVALID."""
@@ -18,10 +20,12 @@ from typing import List, Optional
 
 import swing_pullback as SP
 import strategy_validation as SV
+from research_data import BUILDER_VERSION, FEED, output_problem
 from swing_eval import ARMS, EVALUATOR_VERSION, EVIDENCE_ROOT, EXECUTION, LOCK, MANIFEST_VERSION, R9, R10, R11, R12, R13, SIZING, TRAIN_RATIO
 from swing_pullback import plan as PL
 
 VERSIONS = {"V1": (SP.STRATEGY_ID, SP.STRATEGY_VERSION), "C1": (SP.CONTROL_ID, SP.CONTROL_VERSION)}
+PROTECTED = ("volume_feed", "builder", "source", "window", "plan_sha256", "raw_manifest_sha256")   # never set by a provenance override
 
 
 def _canon(obj) -> bytes:
@@ -40,6 +44,17 @@ def runs() -> List[dict]:
     return [{"version": v, "strategy": list(VERSIONS[v]), "cost": c, "friction": PL.friction(c)} for v, c in PL.RUNS]
 
 
+def _report_provenance(report: dict) -> dict:
+    rd = report.get("dataset") or {}
+    return {"provenance_override": dict(report.get("provenance_override") or {}), "dataset_id": rd.get("dataset_id"), "volume_feed": rd.get("volume_feed"),
+            "kind": rd.get("kind")}
+
+
+def _evaluated_provenance(d: dict) -> dict:
+    return {"provenance_override": dict(d.get("provenance_override") or {}), "dataset_id": d.get("dataset_id"), "volume_feed": d.get("volume_feed"),
+            "kind": d.get("kind")}
+
+
 def build(*, dataset_path: str, report: dict, code_commit: str, created_at: str, evidence_location: str, provenance: Optional[dict] = None) -> dict:
     from strategy_validation.dataset import load
     ds = load(str(dataset_path), provenance=provenance)
@@ -50,7 +65,7 @@ def build(*, dataset_path: str, report: dict, code_commit: str, created_at: str,
                      "provenance_override": dict(provenance or {}), "builder": ds.declared.get("builder"),
                      "expected": {"symbols": len(ds.bars), "sessions": len(ds.sessions), "start": ds.start, "end": ds.end}},
          "pre_run_report": {"report_sha256": report.get("report_sha256"), "status": report.get("status"),
-                            "dataset_sha256": (report.get("dataset") or {}).get("sha256")},
+                            "dataset_sha256": (report.get("dataset") or {}).get("sha256"), **_report_provenance(report)},
          "experiment": {"train_ratio": TRAIN_RATIO, "boundary_policy": SV.BOUNDARY_POLICY, "arms": list(ARMS), "execution": dict(EXECUTION),
                         "sizing": dict(SIZING), "runs": runs()},
          "thresholds": {"R9": R9, "R10": R10, "R11": list(R11)},
@@ -85,11 +100,17 @@ def verify(m: dict) -> List[str]:
     if m.get("fees") != {"R12": R12, "R13": R13}:
         p.append("the R12 / R13 fee records differ from the lock")
     d = m.get("dataset") or {}
-    if d.get("volume_feed") not in ("SIP", "IEX") or not d.get("file_sha256") or not d.get("dataset_id"):
-        p.append("the dataset identity or its volume feed is missing")
+    if not d.get("file_sha256") or not d.get("dataset_id"):
+        p.append("the dataset identity is missing")
+    if (d.get("volume_feed"), d.get("builder")) != (FEED, BUILDER_VERSION):
+        p.append(f"not a {BUILDER_VERSION} SIP dataset (R14): volume feed {d.get('volume_feed')!r}, builder {d.get('builder')!r}")
+    if set(d.get("provenance_override") or {}) & set(PROTECTED):
+        p.append(f"the provenance override sets a protected field {sorted(set(d['provenance_override']) & set(PROTECTED))}")
     r = m.get("pre_run_report") or {}
     if not r.get("report_sha256") or r.get("dataset_sha256") != d.get("file_sha256"):
         p.append("the pre-run report is missing or was made on another dataset file")
+    if _evaluated_provenance(r) != _evaluated_provenance(d):
+        p.append("the pre-run report was made under another provenance (override, dataset id, volume feed or kind) than the one evaluated")
     if r.get("status") not in ("CLEAN", "REVIEW_REQUIRED"):
         p.append(f"the pre-run report's status {r.get('status')!r} does not allow a run")
     if not (m.get("evidence") or {}).get("location"):
@@ -117,6 +138,8 @@ def pre_checks(m: dict, *, dataset_path: str, dataset, report: dict, code_commit
         p.append("the pre-run report is not the accepted one (its sha256 differs)")
     if report.get("status") == "BLOCKED":
         p.append("the pre-run report is BLOCKED")
+    if _report_provenance(report) != _evaluated_provenance(d):
+        p.append("the report file was made under another provenance than the one evaluated")
     return p
 
 
@@ -180,8 +203,9 @@ def main(argv=None) -> int:
     location = a.evidence_location or str(Path(EVIDENCE_ROOT) / created.replace(":", "").replace("+0000", "Z"))
     m = build(dataset_path=a.dataset, report=rep, code_commit=git_commit_sha() or "", provenance=prov, evidence_location=location, created_at=created)
     out = Path(a.out)
-    if out.exists():
-        print(f"REFUSED: {out} exists (a manifest is never overwritten)")
+    problem = output_problem(out)
+    if problem or out.exists():
+        print(f"REFUSED: {problem or f'{out} exists (a manifest is never overwritten)'}")
         return 2
     out.write_text(json.dumps(m, indent=1, sort_keys=True), encoding="utf-8")
     problems = verify(m)

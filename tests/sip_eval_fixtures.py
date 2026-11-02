@@ -3,8 +3,8 @@
   fake_provider(...)   a transport for research_data.sip_bundle.fetch that serves invented daily bars in the Alpaca /v2/stocks/bars JSON shape
                        (o h l c v, t at midnight New York: 04:00Z in daylight time, 05:00Z otherwise), honouring symbols, the window, `limit`
                        and next_page_token, plus an invented SEC company_tickers.json; it records every call (url, params, header names)
-  sip_dataset(...)     a SYNTHETIC dataset on the real NYSE sessions (research_data.nyse_calendar) declaring volume_feed SIP, with the raw
-                       series and an issuer map (the swing_pullback_fixtures generator, unchanged)"""
+  sip_dataset(...)     a SYNTHETIC dataset on the real NYSE sessions (research_data.nyse_calendar) declaring volume_feed SIP and the builder
+                       sip_daily_v1, with the raw series and an issuer map (the swing_pullback_fixtures generator, unchanged)"""
 from __future__ import annotations
 
 import json
@@ -16,8 +16,10 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import swing_pullback_fixtures as SPF  # noqa: E402
+from research_data import BUILDER_VERSION  # noqa: E402
 from research_data import nyse_calendar as CAL  # noqa: E402
 
+SIP_PROVENANCE = {**SPF.PROVENANCE, "builder": BUILDER_VERSION}   # what the evaluation manifest requires (R14)
 KEY, SECRET, UA = "FAKE-KEY-ID-123", "FAKE-SECRET-456", "Synthetic Tests tests@example.invalid"
 
 
@@ -95,6 +97,7 @@ def sip_dataset(n_symbols: int = 6, *, start: str = "2016-01-04", end: str = "20
     n = len(sess)
     specs = [SPF.stock(s, SPF.wave(n, price=40.0 + 7 * i, drift=0.0006 + 0.0001 * (i % 4), amp=0.035 + 0.005 * (i % 3), period=19.0 + 2 * i,
                                    phase=0.7 * i)) for i, s in enumerate(SPF.SYMBOLS[:n_symbols])]
+    kw.setdefault("provenance", dict(SIP_PROVENANCE))
     return SPF.dataset(specs, sessions=sess, spy=SPF.wave(n, price=300.0, drift=0.0005, amp=0.01, period=37.0), **kw), sess
 
 
@@ -119,4 +122,4 @@ def wide_range_dataset(high_mult: float, low_mult: float, *, dips=(), start: str
     spy = SPF.bars_of(SPF.wave(n, price=300.0, drift=0.0005, amp=0.01, period=37.0), sess)
     aux = {"series": {"raw_close": {"AAPL": dict(zip(sess, closes))}, "raw_volume": {"AAPL": {d: 1e6 for d in sess}}},
            "static": {"issuers": {"CIK-AAPL": {"name": "AAPL Synthetic", "symbols": ["AAPL"]}}}}
-    return Dataset({"AAPL": rows, "SPY": spy}, kind="SYNTHETIC", source="sip_eval_fixture", provenance=dict(SPF.PROVENANCE), aux=aux), sess
+    return Dataset({"AAPL": rows, "SPY": spy}, kind="SYNTHETIC", source="sip_eval_fixture", provenance=dict(SIP_PROVENANCE), aux=aux), sess

@@ -6,7 +6,13 @@ The Stage 6.4 IEX builder (value_quality/ingest.py), the global feed setting (co
 runs on its own: fetching needs an operator approval reference AND the sha256 of a pre-generated request plan; a report on a HISTORICAL dataset
 needs an approval reference too. No broker or trading endpoint exists here: market data and SEC public files only. Nothing writes a database.
 """
+import os
+from pathlib import Path
+from typing import Optional
+
 from value_quality import BENCHMARK, RESEARCH_UNIVERSE  # noqa: F401  - the same 81 stocks + SPY as Stages 6.4-7.8
+
+ROOT = Path(__file__).resolve().parents[1]                      # the repository: nothing of this stage is written inside it (R17)
 
 BUILDER_VERSION = "sip_daily_v1"
 FEED = "SIP"                                     # the dataset's declared volume feed (provenance "volume_feed")
@@ -23,7 +29,23 @@ MIN_INTERVAL_S = 0.35                            # < 200 requests per minute (th
 SEC_MIN_INTERVAL_S = 0.15                        # < 10 requests per second (SEC fair-access policy)
 DAILY_BAR_STAMPS = ("T04:00:00Z", "T05:00:00Z")  # a daily bar is stamped midnight New York (EDT / EST); anything else refuses the build
 APPROVAL_PREFIX = "OPERATOR-APPROVAL:"           # a real fetch or a report on HISTORICAL data needs "OPERATOR-APPROVAL:<reference>"
+DB_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal")   # R16: never written
 
 
 def approved(reference) -> bool:
     return isinstance(reference, str) and reference.startswith(APPROVAL_PREFIX) and len(reference) > len(APPROVAL_PREFIX) + 3
+
+
+def output_problem(path) -> Optional[str]:
+    """Why this stage may not write `path` (R16 / R17), or None: a database file name, or a place inside the repository. The repository test
+    compares FILES (os.path.samefile on every existing ancestor), so a \\\\?\\ or \\\\localhost\\C$ spelling of a repository path is caught too."""
+    p = Path(os.path.abspath(str(path)))
+    if p.name.lower().endswith(DB_SUFFIXES):
+        return f"{p.name}: a database path (R16: JSON evidence only)"
+    for q in (p, *p.parents):
+        try:
+            if q.exists() and os.path.samefile(q, ROOT):
+                return f"{path} is inside the repository (R17)"
+        except OSError:
+            continue
+    return None

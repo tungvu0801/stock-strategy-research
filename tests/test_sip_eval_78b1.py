@@ -5,13 +5,13 @@ database; every output under tmp_path. Operator decision lock: STAGE_7_8B1_DECIS
 
   A01-A02 the locked values; the strategy's fingerprint untouched
   C01-C04 the NYSE calendar 2016-2026: published session counts, the IEX-bundle closures, the comparison, autorun's 2026 table
-  B01-B07 the SIP builder: the plan, the approval gate, the fetch (pagination, page guard, no retry, no credential stored), the build, its
-          refusals, the IEX path untouched, the CLI
-  Q01-Q05 the pre-run report: CLEAN, every BLOCK, every FINDING (holes, raw gaps, zero volume, Stage 6.7 inconsistency, M-7), the approval gate,
-          no strategy computation
+  B01-B09 the SIP builder: the plan, the approval gate, the fetch (pagination, page guard, no retry, no credential stored), the build, its
+          refusals, the IEX path untouched, the CLI, the real transport (no redirect), the credentials
+  Q01-Q06 the pre-run report: CLEAN, every BLOCK, every FINDING (holes, raw gaps, zero volume, Stage 6.7 inconsistency, M-7), the approval gate,
+          no strategy computation, the requested window, raw volume gaps
   M01-M05 the manifest: build / verify, tampering, pre-checks, post-checks (M-2 / M-3), the CLI
-  E01-E08 the evaluator: end to end, refusals (R17, approval, pre-checks), the offline guard, an INVALID run, M-5 blocking (base and neighbour),
-          the provenance override, the CLI
+  E01-E10 the evaluator: end to end, refusals (R17, approval, pre-checks), the offline guard, an INVALID run, M-5 blocking (base and neighbour),
+          SIP only under the report's provenance, the CLI, INVALID with a blocking finding, the real tree check
   N01-N06 the analysis: R9 stability, R10 comparison, the bootstrap, exposure, R11 eligibility, the stop and integrity findings
   X01-X02 isolation
   G01     the documents
@@ -26,10 +26,12 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import socket
 import sqlite3
 import subprocess
 import sys
+import types
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -224,16 +226,30 @@ def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_sc
     longer = copy.deepcopy(plan)
     longer["requests"][3]["params"]["end"] = "2026-10-31T00:00:00Z"                     # one request's window wider than the plan's
     current = SB.request_plan("2016-01-04", "2026-11-02", universe=U)                   # ends today: the session may be incomplete
+    sec_params = copy.deepcopy(plan)
+    sec_params["requests"][0]["params"] = {"q": "x"}
+    extra = copy.deepcopy(plan)
+    extra["requests"][1]["params"]["asof"] = "2016-01-04"
+    swapped = copy.deepcopy(plan)
+    swapped["requests"][1]["symbols"] = ["AAPL"]                                         # the archived symbol list no longer matches the request
+    windowless = {k: v for k, v in plan.items() if k != "window"}
     cases = [(plan, dict(approval=None)), (plan, dict(approval="approved")), (plan, dict(approval="OPERATOR-APPROVAL:")), (plan, dict(plan_sha256="0" * 64)),
              (plan, dict(approval="APPROVED-BY-THE-OPERATOR-REFERENCE-123")),
              (dict(plan, builder="other"), dict(plan_sha256=SB.sha256_of(dict(plan, builder="other")))), (plan, dict(alpaca_key="")),
              (plan, dict(sec_user_agent="")), (bad_url, dict(plan_sha256=SB.sha256_of(bad_url))), (iex, dict(plan_sha256=SB.sha256_of(iex))),
              (broad, dict(plan_sha256=SB.sha256_of(broad))), (longer, dict(plan_sha256=SB.sha256_of(longer))),
-             (current, dict(plan_sha256=SB.sha256_of(current), now=lambda: "2026-11-02T20:59:00+00:00"))]
+             (current, dict(plan_sha256=SB.sha256_of(current), now=lambda: "2026-11-02T20:59:00+00:00")),
+             (sec_params, dict(plan_sha256=SB.sha256_of(sec_params))), (extra, dict(plan_sha256=SB.sha256_of(extra))),
+             (swapped, dict(plan_sha256=SB.sha256_of(swapped))), (windowless, dict(plan_sha256=SB.sha256_of(windowless))),
+             (plan, dict(out=ROOT / "sip_fetch_test_78b1")), (plan, dict(out=tmp_path / "raw.db"))]
     for p, over in cases:
         with pytest.raises(SB.FetchRefused):
             SB.fetch(p, **{**kw, **over})
-    assert tr.calls == [] and not (tmp_path / "o").exists()
+    assert tr.calls == [] and not (tmp_path / "o").exists() and not (ROOT / "sip_fetch_test_78b1").exists()
+    if os.name == "nt":                                                                  # another spelling of a repository path is caught too
+        with pytest.raises(SB.FetchRefused, match="inside the repository"):
+            SB.fetch(plan, **{**kw, "out": Path("\\\\?\\" + str(ROOT / "sip_fetch_test_78b1"))})
+        assert tr.calls == []
     (tmp_path / "full").mkdir()
     (tmp_path / "full" / "x").write_text("x")
     with pytest.raises(SB.FetchRefused, match="never overwrites"):
@@ -268,6 +284,20 @@ def test_B03b_a_failed_request_or_too_many_pages_stops_the_fetch_without_retry(t
         fetched(tmp_path / "b", monkeypatch=monkeypatch, page_limit=50)
     with pytest.raises(SB.BuildError, match="incomplete"):
         SB.build(tmp_path / "b" / "sip", kind="SYNTHETIC")
+    plan = SB.request_plan("2016-01-04", "2016-03-31", universe=U)
+    real = SF.fake_provider(SF.synthetic_bars(U, CAL.sessions("2016-01-04", "2016-03-31")), SF.sec_tickers(U))
+    calls = []
+
+    def flaky(url, params, headers):
+        calls.append(url)
+        if len(calls) == 3:
+            raise ConnectionError("reset by " + SF.SECRET)                             # an exception text is never written
+        return real(url, params, headers)
+    with pytest.raises(SB.FetchRefused, match="ConnectionError"):
+        SB.fetch(plan, out=tmp_path / "c", approval=OK_REF, plan_sha256=SB.sha256_of(plan), transport=flaky, alpaca_key=SF.KEY,
+                 alpaca_secret=SF.SECRET, sec_user_agent=SF.UA, sleep=lambda s: None)
+    man = (tmp_path / "c" / "manifest.json").read_text(encoding="utf-8")
+    assert len(calls) == 3 and json.loads(man)["complete"] is False and SF.SECRET not in man and json.loads(man)["network"] is False
 
 
 def test_B04_the_build_declares_sip_keeps_raw_series_and_issuers_and_never_repairs_a_bar(tmp_path):
@@ -278,6 +308,7 @@ def test_B04_the_build_declares_sip_keeps_raw_series_and_issuers_and_never_repai
     body = json.loads(gzip.decompress(raw_page.read_bytes()))
     body["bars"]["ABBV"][10]["l"] = 0.0
     body["bars"]["ABBV"][20]["h"] = round(body["bars"]["ABBV"][20]["c"] * 0.9, 4)                 # high below the close
+    body["bars"]["ABBV"][30]["o"] = float("nan")                                          # not a finite price
     nb = json.dumps(body).encode("utf-8")
     raw_page.write_bytes(gzip.compress(nb, mtime=0))
     man = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
@@ -289,11 +320,14 @@ def test_B04_the_build_declares_sip_keeps_raw_series_and_issuers_and_never_repai
     assert obj["kind"] == "SYNTHETIC" and pv["volume_feed"] == "SIP" and pv["builder"] == RD.BUILDER_VERSION and "SIP feed" in pv["source"]
     assert pv["plan_sha256"] == SB.sha256_of(plan) and pv["raw_manifest_sha256"] == hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest()
     b10, b20 = bars["all"]["ABBV"][10], bars["all"]["ABBV"][20]
-    assert pv["sec_symbols_without_cik"] == ["ABT"] and pv["invalid_bars_removed"] == [
+    removed = pv["invalid_bars_removed"]
+    assert pv["sec_symbols_without_cik"] == ["ABT"] and removed[:2] == [
         {"symbol": "ABBV", "date": sess[10], "ohlc": [b10["o"], b10["h"], 0.0, b10["c"]]},
         {"symbol": "ABBV", "date": sess[20], "ohlc": [b20["o"], round(b20["c"] * 0.9, 4), b20["l"], b20["c"]]}]
+    assert [(x["symbol"], x["date"]) for x in removed[2:]] == [("ABBV", sess[30])] and math.isnan(removed[2]["ohlc"][0])
+    assert pv["fetch_approval"] == OK_REF
     ds = load(str(p))
-    assert ds.sessions == sess and [b.date for b in ds.bars["AAPL"]] == sess and len(ds.bars["ABBV"]) == len(sess) - 2
+    assert ds.sessions == sess and [b.date for b in ds.bars["AAPL"]] == sess and len(ds.bars["ABBV"]) == len(sess) - 3
     assert [b.close for b in ds.bars["AAPL"]] == [b["c"] for b in bars["all"]["AAPL"]]
     s = ds.aux["series"]
     assert s["raw_close"]["AAPL"][sess[0]] == bars["raw"]["AAPL"][0]["c"] and s["raw_volume"]["AAPL"][sess[0]] == 1_500_000
@@ -342,6 +376,16 @@ def test_B05_the_build_refuses_tampered_or_malformed_responses(tmp_path):
     (out / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
     with pytest.raises(SB.BuildError, match="archived plan"):
         SB.build(out, kind="SYNTHETIC")
+    _, ok_out, *_ = fetched(tmp_path / "n")
+    assert SB.build(ok_out, kind="SYNTHETIC").exists()
+    with pytest.raises(SB.BuildError, match="never overwritten"):
+        SB.build(ok_out, kind="SYNTHETIC")
+    (ok_out / "sip_bundle.json").unlink()
+    man = json.loads((ok_out / "manifest.json").read_text(encoding="utf-8"))
+    (ok_out / "manifest.json").write_text(json.dumps({**man, "network": True}), encoding="utf-8")
+    with pytest.raises(SB.BuildError, match="never SYNTHETIC"):
+        SB.build(ok_out, kind="SYNTHETIC")
+    assert json.loads(SB.build(ok_out).read_text(encoding="utf-8"))["kind"] == "HISTORICAL"
 
 
 def test_B07_the_cli_plans_once_and_builds_a_historical_dataset_that_then_needs_approval(tmp_path, capsys):
@@ -356,6 +400,51 @@ def test_B07_the_cli_plans_once_and_builds_a_historical_dataset_that_then_needs_
     assert json.loads(built.read_text(encoding="utf-8"))["kind"] == "HISTORICAL"                               # the CLI default
     with pytest.raises(Q.ReportRefused):
         Q.report(str(built))
+
+
+class FakeRequests:
+    """Stands in for the requests library: records every call, never touches the network."""
+    def __init__(self, status=500):
+        self.calls, self.status = [], status
+
+    def get(self, url, **kw):
+        self.calls.append((url, kw))
+        return types.SimpleNamespace(status_code=self.status, content=b'{"message": "fake"}')
+
+
+def test_B08_the_http_transport_allows_two_urls_and_never_follows_a_redirect(monkeypatch):
+    fake = FakeRequests(status=302)
+    monkeypatch.setitem(sys.modules, "requests", fake)
+    get = SB.http_transport(timeout=5)
+    assert get.network is True
+    with pytest.raises(SB.FetchRefused):
+        get("https://paper-api.alpaca.markets/v2/orders", {}, {})
+    assert fake.calls == []
+    assert get(RD.BARS_URL, {"a": 1}, {"h": "x"}) == (302, b'{"message": "fake"}')
+    assert fake.calls == [(RD.BARS_URL, {"params": {"a": 1}, "headers": {"h": "x"}, "timeout": 5, "allow_redirects": False})]
+
+
+def test_B09_credentials_are_read_by_name_and_the_fetch_cli_neither_prints_nor_stores_them(tmp_path, monkeypatch, capsys):
+    env = tmp_path / "fake.env"
+    env.write_text('ALPACA_API_KEY="FILE-KEY-1"\nALPACA_SECRET_KEY=FILE-SECRET-2\n# SEC_USER_AGENT=commented\n', encoding="utf-8")
+    monkeypatch.setenv("ALPACA_API_KEY", "ENV-KEY-3")
+    monkeypatch.setenv("SEC_USER_AGENT", "Env Agent env@example.invalid")
+    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    assert SB._credentials(str(env)) == ("FILE-KEY-1", "FILE-SECRET-2", "Env Agent env@example.invalid")   # the explicit file first
+    fake = FakeRequests(status=500)
+    monkeypatch.setitem(sys.modules, "requests", fake)
+    p = tmp_path / "plan.json"
+    assert SB.main(["plan", "--out", str(p), "--start", "2016-01-04", "--end", "2016-03-31"]) == 0
+    plan_sha = SB.sha256_of(json.loads(p.read_text(encoding="utf-8")))
+    args = ["fetch", "--plan", str(p), "--approval", OK_REF, "--env-file", str(env)]
+    assert SB.main(args + ["--plan-sha256", "0" * 64, "--out", str(tmp_path / "a")]) == 2 and fake.calls == []
+    assert SB.main(args + ["--plan-sha256", plan_sha, "--out", str(tmp_path / "b")]) == 2                     # the fake answers HTTP 500
+    assert len(fake.calls) == 1 and fake.calls[0][1]["allow_redirects"] is False and fake.calls[0][0] == RD.SEC_TICKERS_URL
+    printed = capsys.readouterr().out
+    stored = (tmp_path / "b" / "manifest.json").read_text(encoding="utf-8")
+    assert "HTTP 500" in printed and json.loads(stored)["network"] is True
+    for secret in ("FILE-KEY-1", "FILE-SECRET-2"):
+        assert secret not in printed and secret not in stored
 
 
 def test_B06_the_iex_builder_global_feed_and_live_paths_are_untouched():
@@ -414,7 +503,8 @@ def test_Q02_every_blocking_condition_blocks(tmp_path):
     _blocked(tmp_path / "e", Dataset(bars, kind="SYNTHETIC", source="x", provenance=d.declared, aux=d.aux), "Q04")
     nospy = Dataset({"AAPL": d.bars["AAPL"]}, kind="SYNTHETIC", source="x", provenance=d.declared, aux=d.aux)
     _blocked(tmp_path / "f", nospy, "Q03")
-    _blocked(tmp_path / "g", SPF.dataset([st("AAPL", raw_gaps=range(n))], **ok), "Q06")                                # no raw close (M-4)
+    g = _blocked(tmp_path / "g", SPF.dataset([st("AAPL", raw_gaps=range(n))], **ok), "Q06")                            # no raw close (M-4)
+    assert [c["symbols"] for c in checks(g, "Q06", "BLOCK") if c["title"] == "symbols without a raw_close series"] == [["AAPL"]]
     _blocked(tmp_path / "h", SPF.dataset([st("AAPL", volume=None)], **ok), "Q06")                                       # SIP without raw volume
     iex = Q.report(str(write(tmp_path, SPF.dataset([st("AAPL", volume=None)], feed="IEX", **ok), "iex.json")))
     assert not checks(iex, "Q06", "BLOCK") and checks(iex, "Q06", "INFO")                                            # IEX: raw volume never read
@@ -450,11 +540,33 @@ def test_Q04_a_historical_dataset_needs_an_approval_and_the_report_seals_itself(
     with pytest.raises(Q.ReportRefused):
         Q.report(str(p))
     rep = Q.report(str(p), approval=OK_REF)
-    assert rep["dataset"]["kind"] == "HISTORICAL" and rep["report_sha256"] == Q.report_sha256(rep)
+    assert rep["dataset"]["kind"] == "HISTORICAL" and rep["report_sha256"] == Q.report_sha256(rep) and rep["approval"] == OK_REF
+    assert Q.report_sha256({**rep, "approval": "OPERATOR-APPROVAL:other"}) != rep["report_sha256"]
     assert Q.report_sha256({**rep, "status": "CLEAN"}) != rep["report_sha256"]
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json")]) == 2                                     # no approval: refused
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json"), "--approval", OK_REF]) == 0
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json"), "--approval", OK_REF]) == 2              # never overwritten
+
+
+def test_Q06_the_requested_window_and_raw_volume_gaps(tmp_path):
+    sess = CAL.sessions("2016-01-04", "2017-12-29")
+    n = len(sess)
+    win = {"start": "2016-01-04T00:00:00Z", "end": "2017-12-30T00:00:00Z"}
+    prov = {**SF.SIP_PROVENANCE, "window": win}
+    full = SPF.dataset([SPF.stock("AAPL", SPF.wave(n))], sessions=sess, provenance=prov)
+    assert not checks(Q.report(str(write(tmp_path, full, "full.json"))), "Q04", "BLOCK")
+    inner = sess[3:-3]                                                                   # three sessions missing at each edge of the window
+    short = SPF.dataset([SPF.stock("AAPL", SPF.wave(len(inner)))], sessions=inner, provenance=prov)
+    rep = Q.report(str(write(tmp_path, short, "short.json")))
+    edge = [c for c in checks(rep, "Q04", "BLOCK") if "requested window" in c["title"]]
+    assert rep["status"] == "BLOCKED" and edge and edge[0]["missing"] == sess[:3] + sess[-3:] and checks(rep, "Q04", "INFO")
+    d = SPF.dataset([SPF.stock("AAPL", SPF.wave(n))], sessions=sess)
+    aux = copy.deepcopy(d.aux)
+    for k in (5, 6, 7):
+        aux["series"]["raw_volume"]["AAPL"].pop(sess[k])
+    gappy = Dataset({s: [b.model_dump() for b in rows] for s, rows in d.bars.items()}, kind="SYNTHETIC", source="x", provenance=d.declared, aux=aux)
+    rep = Q.report(str(write(tmp_path, gappy, "gappy.json")))
+    assert [c["by_symbol"] for c in checks(rep, "Q06", "FINDING") if "raw volume" in c["title"]] == [{"AAPL": sess[5:8]}]
 
 
 def test_Q05_the_report_computes_no_strategy_rule():
@@ -480,7 +592,9 @@ TAMPER = [(("experiment", "runs", 0, "friction", "commission_per_order"), 1.0), 
           (("experiment", "arms"), ["RULES", "GATED"]), (("experiment", "execution", "time_exit_fill"), "OPEN"), (("thresholds", "R9", "fold_min_trades"), 10),
           (("thresholds", "R10", "delta_r_min"), 0.0), (("fees", "R12", "fee_per_share"), 0.001), (("fees", "R13", "status"), "VERIFIED"),
           (("strategy", "preregistration_hash"), "0" * 64), (("pre_run_report", "status"), "BLOCKED"), (("pre_run_report", "dataset_sha256"), "f" * 64),
-          (("dataset", "volume_feed"), None), (("evidence", "location"), "")]
+          (("dataset", "volume_feed"), None), (("evidence", "location"), ""), (("dataset", "builder"), None), (("dataset", "volume_feed"), "IEX"),
+          (("dataset", "provenance_override"), {"volume_feed": "SIP"}), (("pre_run_report", "provenance_override"), {"universe": "x"}),
+          (("pre_run_report", "volume_feed"), "IEX")]
 
 
 @pytest.mark.parametrize("path,value", TAMPER)
@@ -507,12 +621,14 @@ def test_M03_pre_checks_refuse_a_wrong_commit_a_dirty_tree_another_dataset_or_re
     assert any("sha256" in x for x in MF.pre_checks(m, dataset_path=str(other), dataset=load(str(other)), report=rep, code_commit="c0ffee", tree_clean=True))
     bad = {**rep, "status": "CLEAN"}
     assert any("accepted" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=bad, code_commit="c0ffee", tree_clean=True))
-    for key, value, word in ((("expected", "sessions"), 1, "content"), (("kind",), "HISTORICAL", "kind")):
+    for edits, word in (([(("dataset", "expected", "sessions"), 1)], "content"),
+                        ([(("dataset", "kind"), "HISTORICAL"), (("pre_run_report", "kind"), "HISTORICAL")], "kind")):
         t = copy.deepcopy(m)
-        node = t["dataset"]
-        for k in key[:-1]:
-            node = node[k]
-        node[key[-1]] = value
+        for key, value in edits:
+            node = t
+            for k in key[:-1]:
+                node = node[k]
+            node[key[-1]] = value
         t["manifest_sha256"] = MF.manifest_sha256(t)
         assert MF.verify(t) == [] and any(word in x for x in MF.pre_checks(t, dataset_path=str(dp), dataset=ds, report=rep, code_commit="c0ffee",
                                                                            tree_clean=True)), key
@@ -558,7 +674,8 @@ def test_M05_the_cli_writes_a_manifest_once_at_the_r17_default_location_with_the
 # ============================================================================================================ the evaluator (E)
 def test_E01_end_to_end_on_synthetic_sip_data_writes_sealed_evidence(tmp_path):
     s, out = run_eval(tmp_path, base()[0])
-    assert s["status"] == "COMPLETED" and s["outcomes_accepted"] and s["dataset_kind"] == "SYNTHETIC"
+    assert s["status"] == "COMPLETED" and s["outcomes_accepted"] and s["dataset_kind"] == "SYNTHETIC" and s["statuses"] == ["COMPLETED"]
+    assert s["approval_reference"] is None and s["evaluated_at"][:2] == "20" and "NOT ACCEPTED" not in s["comparison"]
     assert {"REGULATORY_FEES_NOT_MODELLED", "REGULATORY_FEE_HISTORY_MISSING", "MODIFIED_D3_BASELINE"} <= set(s["flags"])
     names = sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
     assert names == ["RESULTS_SUMMARY.md", "comparison.json", "dataset.sha256", "eligibility.json", "environment.json", "evidence.sha256", "manifest.json",
@@ -575,6 +692,9 @@ def test_E01_end_to_end_on_synthetic_sip_data_writes_sealed_evidence(tmp_path):
     assert got["candidate_set_hash"] == fresh["candidate_set_hash"] and got["arms"]["RULES"]["metrics"] == fresh["arms"]["RULES"]["metrics"]
     comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
     assert comp["outcome"] in ("BEATS_CONTROL", "NO_ADDED_VALUE", "INCONCLUSIVE") and set(comp["delta_R_oos"]) == {"BASE", "STRESS_2X"}
+    assert (comp["accepted"], comp["status"], comp["note"]) == (True, "COMPLETED", None)
+    assert json.loads((out / "stability.json").read_text(encoding="utf-8"))["accepted"] is True
+    assert json.loads((out / "environment.json").read_text(encoding="utf-8"))["evaluated_at"] == s["evaluated_at"]
     assert comp["bootstrap"]["BASE"]["status"] == "REPORTED" and set(comp["reported"]) == {"V1 BASE", "V1 STRESS_2X", "C1 BASE", "C1 STRESS_2X"}
     oos, rm = comp["reported"]["V1 BASE"]["OOS"], fresh["arms"]["RULES"]["metrics"]["OOS"]                   # R10.1 exclusions counted, R10.6 measures
     assert (oos["boundary_purged"], oos["simulation_skipped"]) == (rm["boundary_purged_count"], rm["simulation_skipped_count"])
@@ -620,18 +740,41 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
     (hp / "m.json").write_text(json.dumps(m2), encoding="utf-8")
     (hp / "r.json").write_text(json.dumps(rep2), encoding="utf-8")
     for approval, sha in ((None, None), (OK_REF, None), (OK_REF, "0" * 64), ("approved", m2["manifest_sha256"])):
-        with pytest.raises(EV.EvaluationRefused, match="HISTORICAL"):
+        with pytest.raises(EV.EvaluationRefused, match="HISTORICAL dataset needs"):
             EV.evaluate(str(hp / "m.json"), str(dp2), str(hp / "r.json"), str(tmp_path / "o4"), approval=approval, approved_manifest_sha256=sha, **ok)
+    with pytest.raises(EV.EvaluationRefused, match="directly under"):                   # approved, but not under EVIDENCE_ROOT (R17)
+        EV.evaluate(str(hp / "m.json"), str(dp2), str(hp / "r.json"), str(tmp_path / "o4"), approval=OK_REF,
+                    approved_manifest_sha256=m2["manifest_sha256"], **ok)
+    assert not issubclass(EV.EvaluationRefused, OSError)
     assert calls == []                                                                   # nothing ran
 
 
 def test_E03_no_socket_and_no_database_while_the_runs_execute(tmp_path, monkeypatch):
-    orig = (socket.socket, socket.create_connection, socket.getaddrinfo, sqlite3.connect)
-    for attempt in (lambda: socket.create_connection(("example.invalid", 80)), lambda: sqlite3.connect(":memory:"), lambda: socket.getaddrinfo("x", 80)):
+    import _socket
+    import _sqlite3
+    real = PL.run
+    entry = lambda: (socket.socket, socket.create_connection, socket.getaddrinfo, _socket.socket, sqlite3.connect, sqlite3.dbapi2.connect,  # noqa: E731
+                     _sqlite3.connect)
+    orig = entry()
+    attempts = (lambda: socket.create_connection(("example.invalid", 80)), lambda: socket.socket(), lambda: socket.getaddrinfo("x", 80),
+                lambda: _socket.socket(), lambda: sqlite3.connect(":memory:"), lambda: sqlite3.dbapi2.connect(":memory:"),
+                lambda: _sqlite3.connect(":memory:"))
+    for attempt in attempts:
         monkeypatch.setattr(EV.PL, "run", lambda *a, _f=attempt, **k: _f())
         with pytest.raises(EV.EvaluationRefused, match="offline"):
             run_eval(tmp_path / str(len(list(tmp_path.iterdir()))), base()[0])
-        assert (socket.socket, socket.create_connection, socket.getaddrinfo, sqlite3.connect) == orig      # restored
+        assert entry() == orig                                                           # restored
+
+    def swallowing(*a, **k):
+        try:
+            sqlite3.connect(":memory:")
+        except Exception:                                                                # noqa: BLE001  a run path that hides the refusal
+            pass
+        return real(*a, **k)
+    monkeypatch.setattr(EV.PL, "run", swallowing)
+    with pytest.raises(EV.EvaluationRefused, match="attempt"):
+        run_eval(tmp_path / "swallowed", base()[0])
+    assert entry() == orig and not (tmp_path / "swallowed" / "ev").exists()
 
 
 def test_E04_a_run_that_differs_from_the_manifest_is_invalid_and_never_accepted(tmp_path, monkeypatch):
@@ -648,6 +791,9 @@ def test_E04_a_run_that_differs_from_the_manifest_is_invalid_and_never_accepted(
     v = json.loads((out / "validation.json").read_text(encoding="utf-8"))
     assert list(v["invalid_runs"]) == ["C1 BASE"] and any("friction" in p for p in v["invalid_runs"]["C1 BASE"])
     assert json.loads((out / "eligibility.json").read_text(encoding="utf-8"))["accepted"] is False
+    comp = json.loads((out / "comparison.json").read_text(encoding="utf-8"))
+    assert comp["accepted"] is False and comp["note"] == EV.NOT_ACCEPTED and s["comparison"].startswith("NOT ACCEPTED")
+    assert "NOT ACCEPTED (diagnostic only): " in (out / "RESULTS_SUMMARY.md").read_text(encoding="utf-8")
 
 
 def test_E05_a_non_positive_stop_blocks_acceptance_and_nothing_is_modified(tmp_path):
@@ -661,15 +807,72 @@ def test_E05_a_non_positive_stop_blocks_acceptance_and_nothing_is_modified(tmp_p
     rec = json.loads((out / "runs" / "C1_BASE.json").read_text(encoding="utf-8"))
     assert sorted(c["invalidation_reference"] for c in rec["candidates"]) == sorted(x["stop"] for x in f if x["cost"] == "BASE")   # kept as produced
     assert json.loads((out / "eligibility.json").read_text(encoding="utf-8"))["accepted"] is False
+    assert json.loads((out / "stability.json").read_text(encoding="utf-8"))["note"] == EV.NOT_ACCEPTED and s["stability_V1"].startswith("NOT ACCEPTED")
 
 
-def test_E07_the_manifests_provenance_override_is_the_one_evaluated(tmp_path):
-    dp, rep, mp, rp = package(tmp_path, base()[0], provenance={"volume_feed": "IEX"})
-    assert rep["dataset"]["volume_feed"] == "IEX" and json.loads(mp.read_text(encoding="utf-8"))["dataset"]["volume_feed"] == "IEX"
-    s = EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True)
-    assert s["status"] == "COMPLETED"
-    rec = json.loads((tmp_path / "ev" / "runs" / "V1_BASE.json").read_text(encoding="utf-8"))
-    assert rec["provenance"]["volume_feed"] == "IEX" and "LIQUIDITY_RULE_NOT_APPLIED_IEX_VOLUME" in rec["research_flags"]
+def test_E09_an_invalid_run_with_a_blocking_finding_reports_both(tmp_path, monkeypatch):
+    real = EV.PL.run
+
+    def off(version, cost, dataset, created_at=None):
+        if (version, cost) != ("V1", "STRESS_2X"):
+            return real(version, cost, dataset, created_at=created_at)
+        from strategy_validation import engine as E
+        return E.run_validation(PL.adapter("V1"), dataset, arms=("RULES",), friction={**PL.friction("STRESS_2X"), "fee_per_share": 0.01},
+                                created_at=created_at)
+    monkeypatch.setattr(EV.PL, "run", off)
+    s, out = run_eval(tmp_path, SF.wide_range_dataset(3.0, 0.3)[0])
+    assert s["statuses"] == ["INVALID", "BLOCKED_VALIDATION_FINDING"] and s["status"] == "INVALID + BLOCKED_VALIDATION_FINDING"
+    assert not s["outcomes_accepted"] and s["blocking_findings"] > 0 and list(s["invalid_runs"]) == ["V1 STRESS_2X"]
+
+
+def test_E10_the_tree_check_reads_the_git_index_without_a_subprocess(tmp_path):
+    git = lambda *a: subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.autocrlf=false",  # noqa: E731
+                                     *a], check=True, capture_output=True)
+    git("init", "-q")
+    (tmp_path / ".gitattributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_bytes(b"x = 1\n")
+    (tmp_path / "pkg" / "b.py").write_bytes(b"y = 2\n")
+    (tmp_path / "notes.txt").write_bytes(b"n\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "c")
+    assert EV.tree_problems(tmp_path) == [] and EV.tree_clean(tmp_path) is True
+    (tmp_path / "pkg" / "a.py").write_bytes(b"x = 1\r\n")                                # line ends only: the same code, not a change here
+    assert EV.tree_problems(tmp_path) == []
+    (tmp_path / "pkg" / "a.py").write_bytes(b"x = 2\n")
+    (tmp_path / "notes.txt").unlink()
+    (tmp_path / "pkg" / "c.py").write_bytes(b"z = 3\n")
+    assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"] and EV.tree_clean(tmp_path) is False
+    plain = tmp_path.parent / (tmp_path.name + "_plain")
+    plain.mkdir()
+    assert EV.tree_problems(plain)[0].startswith("the git index cannot be read")          # not a repository: never clean
+    src = (ROOT / "swing_eval" / "evaluate.py").read_text(encoding="utf-8")
+    assert "subprocess" not in src.split('"""', 2)[2].split("def tree_problems")[0] and "import subprocess" not in src
+
+
+def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenance(tmp_path):
+    ok = dict(commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True)
+    dp, rep, mp, rp = package(tmp_path / "a", base()[0], provenance={"volume_feed": "IEX"})          # relabelled feed
+    problems = MF.verify(json.loads(mp.read_text(encoding="utf-8")))
+    assert any("SIP dataset" in x for x in problems) and any("protected field" in x for x in problems)
+    with pytest.raises(EV.EvaluationRefused, match="does not verify"):
+        EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "a" / "ev"), **ok)
+    sess = CAL.sessions("2016-01-04", "2019-12-31")
+    iex = SPF.dataset([SPF.stock("AAPL", SPF.wave(len(sess)))], sessions=sess, feed="IEX")        # the Stage 6.4 kind of bundle: no builder
+    _, _, mp2, _ = package(tmp_path / "b", iex)
+    assert any("SIP dataset" in x for x in MF.verify(json.loads(mp2.read_text(encoding="utf-8"))))
+    no_rv = SPF.dataset([SPF.stock("AAPL", SPF.wave(len(sess)), volume=None)], sessions=sess, provenance=dict(SF.SIP_PROVENANCE))
+    dp3 = write(tmp_path / "c", no_rv)
+    assert Q.report(str(dp3))["status"] == "BLOCKED"                                      # SIP without raw volume (Q06)
+    rep3 = Q.report(str(dp3), provenance={"volume_feed": "IEX"})                         # the same file reported as IEX
+    assert rep3["status"] != "BLOCKED"
+    m3 = MF.build(dataset_path=str(dp3), report=rep3, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "c" / "ev"))
+    assert any("another provenance" in x for x in MF.verify(m3))
+    m3["pre_run_report"].update(provenance_override={}, volume_feed="SIP")                # the recorded fields forged, the hash recomputed
+    m3["manifest_sha256"] = MF.manifest_sha256(m3)
+    assert MF.verify(m3) == []
+    assert any("report file was made under another provenance" in x for x in MF.pre_checks(m3, dataset_path=str(dp3), dataset=load(str(dp3)),
+                                                                                            report=rep3, code_commit="c0ffee", tree_clean=True))
 
 
 def test_E08_the_cli_refuses_a_manifest_of_another_commit_before_any_run(tmp_path, monkeypatch, capsys):
@@ -729,6 +932,8 @@ def test_N01_r9_stability_outcomes():
     assert (five["evaluable"], five["positive_folds"], five["positive_needed"], five["outcome"]) == (5, 3, 4, "UNSTABLE")     # ceil(2/3 x 5) = 4
     tie = AN.stability(fake_rec([(25, 0.05, 10.0)] * 6), SESS)
     assert tie["median_fold_mean_R"] == 0.05 and tie["outcome"] == "UNSTABLE"                                         # strictly above 0.05
+    loss = AN.stability(fake_rec([(25, 0.5, 1.0)] * 4 + [(25, 0.5, -10.0)] * 2), SESS)                             # 4 of 6 positive, total < 0
+    assert (loss["positive_folds"], loss["total_net_pnl"], loss["outcome"]) == (4, -400.0, "UNSTABLE") and loss["concentration"].startswith("NOT_SATISFIABLE")
     edge = AN.stability(fake_rec([(25, 0.2, 1.0)] * 5 + [(25, 0.2, 20.0)]), SESS)                                    # 500 / 625 = exactly 80 %
     assert edge["dominant_folds"] == [6] and edge["outcome"] == "UNSTABLE"
 
@@ -749,13 +954,17 @@ def test_N02_r10_outcomes_follow_the_confirmed_wording():
     c = AN.comparison(_four(0.30, 0.20, n=4), SESS)
     assert c["outcome"] == "INCONCLUSIVE" and "insufficient trades" in c["why"]                                     # never NO_ADDED_VALUE on counts
     few = _four(0.30, 0.20)
-    few[("C1", "BASE")] = fake_rec([(80, 0.20, 0.2), (80, 0.20, 0.2), (80, 0.20, 0.2)] + [(5, 0.20, 0.2)] * 3)       # 3 paired folds only
+    few[("C1", "BASE")] = fake_rec([(25, 0.20, 0.2)] * 3 + [(19, 0.20, 0.2)] * 3)                                  # enough trades, 3 paired folds
     c = AN.comparison(few, SESS)
-    assert c["outcome"] == "INCONCLUSIVE" and len(c["paired_folds"]) == 3
+    assert (c["outcome"], c["C_a"], c["C_b"], len(c["paired_folds"])) == ("INCONCLUSIVE", True, False, 3) and "paired folds" in c["why"]
+    late = _four(0.30, 0.20)
+    late[("V1", "BASE")] = fake_rec([(25, 0.10, 1.0)] * 3 + [(25, 0.30, 1.0)] * 3)                                  # behind in TRAIN, ahead in OOS
+    c = AN.comparison(late, SESS)
+    assert (c["outcome"], c["C_a"], c["C_b"], c["v1_ahead"]) == ("INCONCLUSIVE", True, False, 3) and c["why"] == "C-a or C-b not met"
     lag = _four(0.30, 0.20)
     lag[("V1", "BASE")] = fake_rec([(25, 0.30, 1.0)] * 3 + [(25, 0.10, 1.0)] * 3)                                   # V1 ahead in 3 of 6 folds only
     c = AN.comparison(lag, SESS)
-    assert c["C_b"] is False and c["outcome"] in ("INCONCLUSIVE", "NO_ADDED_VALUE")
+    assert c["C_b"] is False and c["outcome"] == "NO_ADDED_VALUE"                                                  # its OOS folds trail
     assert any("not a significance test" in s for s in c["interpretation"])
     oos_only = _four(0.30, 0.20)
     oos_only[("V1", "BASE")] = fake_rec([(0, 0, 0)] * 5 + [(25, 0.30, 1.0)])                                        # 25 OOS, 25 in total < 30
@@ -788,6 +997,9 @@ def test_N03_the_bootstrap_is_deterministic_joint_by_month_and_descriptive():
 
 def test_N04_exposure_counts_position_bars_and_concurrent_open_trades():
     rec = fake_rec([(0, 0, 0)] * 5 + [(2, 0.1, 1.0)])
+    rec["arms"]["RULES"]["trades"][1]["exit_reason"] = "DATA_END"
+    m = AN.measures(rec, SESS)["OOS"]
+    assert (m["data_end_exits"], m["by_exit"]) == (1, {"DATA_END": 1, "TIME_EXIT": 1})
     e = AN.exposure(rec, SESS, "OOS")
     tr = AN.trades(rec, "OOS")
     assert e["trades"] == len(tr) == 2 and e["position_bars"] == 10 and e["net_pnl_per_1000_position_bars"] == pytest.approx(200.0)
@@ -806,7 +1018,10 @@ def test_N05_r11_needs_all_six_items():
     assert AN.eligibility(recs, stab, {"outcome": "INCONCLUSIVE"}, {"status": "CLEAN"}, [], [])["eligible_for_review"] is False
     assert AN.eligibility(recs, {"outcome": "INSUFFICIENT"}, comp, {"status": "CLEAN"}, [], [])["eligible_for_review"] is False
     assert AN.eligibility(recs, stab, comp, {"status": "BLOCKED"}, [], [])["eligible_for_review"] is False
-    assert AN.eligibility(recs, stab, comp, {"status": "REVIEW_REQUIRED"}, [], ["C1 BASE"])["eligible_for_review"] is False
+    assert AN.eligibility(recs, stab, comp, {"status": "REVIEW_REQUIRED"}, [], ["C1 BASE"], findings_accepted_by="x")["eligible_for_review"] is False
+    assert AN.eligibility(recs, stab, comp, {"status": "REVIEW_REQUIRED"}, [], [])["eligible_for_review"] is False       # no acceptance recorded
+    acc = AN.eligibility(recs, stab, comp, {"status": "REVIEW_REQUIRED"}, [], [], findings_accepted_by="OPERATOR-APPROVAL:r of manifest m")
+    assert acc["eligible_for_review"] is True and acc["items"][5]["evidence"]["findings_accepted_by"] == "OPERATOR-APPROVAL:r of manifest m"
     for mutate in (lambda r: r[("V1", "BASE")].update(verdict={"verdict": "FAIL"}),
                    lambda r: r[("V1", "STRESS_2X")]["arms"]["RULES"].update(metrics={"OOS": {"expectancy_R": 0.0}}),
                    lambda r: r[("V1", "BASE")].update(diagnostics={"strategy": {"sensitivity": {"label": "SENSITIVE"}}})):
@@ -972,8 +1187,10 @@ REPLAY_78B1 = {
          "| 8 | Cooldown | after a candidate at session t′, no candidate for the symbol at t′+1 … t′+9 (dataset sessions; signal dates only; a blocked session never restarts it); 9 sessions in every sensitivity neighbour |\n| 9 | Entry | the open of the symbol's next bar after t (`NEXT_BAR_OPEN`; t+1 unless the symbol has no bar there); an entry opening at or below the stop, or at or above the target, is skipped (the harness) |\n| 10 | Stop / target | signal close − 2 × ATR(14) / signal close + 3 × ATR(14), Wilder ATR, fixed at the signal |\n"),
         ("| 10 | Stop / target | signal close − 2 × ATR(14) / signal close + 3 × ATR(14), Wilder ATR, fixed at the signal |\n| 11 | Time exit | the close of the 10th session in the trade (the entry session is the first): `max_hold_bars` = 10, the adapter's, never a candidate's |\n| 12 | Exits | the harness only: gap through the stop at the open, stop, target, stop-first on an ambiguous bar, time, data end |\n",
          "| 10 | Stop / target | signal close − 2 × ATR(14) / signal close + 3 × ATR(14), Wilder ATR, fixed at the signal |\n| 11 | Time exit | the close of the 10th bar of the symbol in the trade (the entry bar is the first; a session without a bar does not count): `max_hold_bars` = 10, the adapter's, never a candidate's |\n| 12 | Exits | the harness only: gap through the stop at the open, stop, target, stop-first on an ambiguous bar, time, data end |\n"),
-        ('| 14 | Score | the Strategy Standard needs a 0–100 score; V1 does not rank, so every candidate carries 50 (never read by the RULES arm) |\n\n',
-         "| 14 | Score | the Strategy Standard needs a 0–100 score; V1 does not rank, so every candidate carries 50 (never read by the RULES arm) |\n\nRules 9 and 11 count the symbol's own bars, as the harness does, not dataset sessions: a missing bar moves the entry or the time exit to a later\nsession. (Wording corrected in Stage 7.8B-1, final-review M-6; the behaviour is unchanged, and the `swing_pullback/` docstrings are left as they\nare so that the package stays byte-identical.)\n\n"),
+        ('\nThe indicators are written in plain Python (`swing_pullback/indicators.py`). They reproduce the `analysis/indicators.py` formulas: the RSI\n',
+         "\nRules 9 and 11 count the symbol's own bars, as the harness does, not dataset sessions: a missing bar moves the entry or the time exit to a later\nsession. (Wording corrected in Stage 7.8B-1, final-review M-6; the behaviour is unchanged, and the `swing_pullback/` docstrings are left as they\nare so that the package stays byte-identical.)\n\nThe indicators are written in plain Python (`swing_pullback/indicators.py`). They reproduce the `analysis/indicators.py` formulas: the RSI\n"),
+        ('average loss is 0. They are causal by construction: a prefix gives the same values. `analysis/` itself is not imported. The SMA is the correctly rounded mean\nof each window (`math.fsum` / n). The three strict comparisons with a mean are decided exactly, so a tie never passes: close > SMA200,\nSPY close > SMA200, and SMA50 rising.\n\n',
+         'average loss is 0. They are causal by construction: a prefix gives the same values. `analysis/` itself is not imported. The SMA is the correctly rounded mean\nof each window (`math.fsum` / n). The three strict comparisons with a mean (close > SMA200, SPY close > SMA200, and SMA50 rising) are\ndecided exactly on the stored double values, so a tie between those values never passes. A tie between decimal prices that the doubles do\nnot represent exactly can still pass, and a near-tie can be decided wrongly on a series whose early adjusted prices are about 10⁶ times its\nrecent ones\n(final-review M-1, wording corrected in Stage 7.8B-1; negligible on large-cap adjusted data; the behaviour is unchanged).\n\n'),
         ("  They are computed on the **TRAIN view** only (`dataset.until(train_end)`: no later bar exists), at the run's friction and sizing. A\n  candidate is purged by the harness's own boundary rule (its symbol's next 10 bars reach past the TRAIN end: dates only, never a price), so\n  the base row equals the run's own TRAIN result. The neighbourhood is labelled by the harness's own rule. A SENSITIVE or UNSTABLE label makes the result not promotable. The harness's own neighbour hook is not used, because it would evaluate\n",
          "  They are computed on the **TRAIN view** only (`dataset.until(train_end)`: no later bar exists), at the run's friction and sizing. A\n  candidate is purged by the harness's own boundary rule (its symbol's next `max_hold_bars` bars reach past the TRAIN end: 10, or 8 / 12 in the time-exit neighbours; dates only, never a price), so\n  the base row equals the run's own TRAIN result. The neighbourhood is labelled by the harness's own rule. A SENSITIVE or UNSTABLE label makes the result not promotable. The harness's own neighbour hook is not used, because it would evaluate\n"),
     ],

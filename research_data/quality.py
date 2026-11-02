@@ -11,26 +11,29 @@ Data checks only: no strategy rule, indicator, price statistic or result is comp
   Q02 provenance     the harness's required and conditional fields, and a volume_feed of SIP or IEX (BLOCK if missing)
   Q03 coverage       the benchmark present (BLOCK); every universe symbol present (FINDING lists the absent ones); late starters (INFO)
   Q04 calendar       every date is a benchmark session (BLOCK otherwise); the benchmark's sessions equal the static NYSE calendar over its span:
-                     an extra date, a missing session or a weekend BLOCKS; a span outside 2016-2026 BLOCKS
+                     an extra date, a missing session or a weekend BLOCKS; a span outside 2016-2026 BLOCKS; when the builder declares its
+                     requested window, the benchmark has exactly the window's sessions (a session missing at an edge BLOCKS)
   Q05 missing bars   per symbol, sessions inside its own span without a bar (FINDING), and the share of symbol-sessions whose 200 sessions are
                      complete (INFO; the data side of the swing baseline's warm-up rule)
   Q06 raw series     raw_close for every universe symbol (BLOCK if absent: final-review M-4); raw_volume for every universe symbol when the volume
-                     feed is SIP (BLOCK if absent); bar dates without a raw value (FINDING)
+                     feed is SIP (BLOCK if absent); bar dates without a raw close, or on SIP without a raw volume (FINDING)
   Q07 issuers        every universe symbol mapped, none under two issuers (BLOCK); per issuer with several listings, each listing's first / last
                      bar and the kept listing (alphabetically first held); a kept listing that starts later than another (FINDING: M-7)
   Q08 corporate      split-ratio changes (INFO) and raw / split / adjusted inconsistencies found by the Stage 6.7 scanner (FINDING each)
   Q09 invalid bars   bars the builder removed (INFO); bars with zero volume (FINDING)
 
-The report carries its own sha256 (canonical JSON without that field). A report on a HISTORICAL dataset needs an approval reference."""
+The report carries its own sha256 (canonical JSON without that field) and the approval reference it was made under. A report on a HISTORICAL
+dataset needs an approval reference."""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from research_data import BENCHMARK, RESEARCH_UNIVERSE, approved
+from research_data import BENCHMARK, RESEARCH_UNIVERSE, approved, output_problem
 from research_data import nyse_calendar as CAL
 
 REPORT_VERSION = "pre_run_report_v1"
@@ -98,6 +101,18 @@ def report(path: str, *, provenance: Optional[dict] = None, approval: Optional[s
         else:
             add("Q04", "INFO", "the benchmark calendar equals the NYSE calendar", sessions=cmp["sessions"], first=cmp["start"], last=cmp["end"],
                 source=CAL.SOURCE)
+        win = prov.get("window")
+        if isinstance(win, dict) and win.get("start") and win.get("end"):              # the builder's requested window [start, end)
+            try:
+                last = (date.fromisoformat(str(win["end"])[:10]) - timedelta(days=1)).isoformat()
+                want = CAL.sessions(str(win["start"])[:10], last)
+            except (CAL.CalendarError, ValueError) as exc:
+                add("Q04", "BLOCK", "the requested window cannot be checked against the NYSE table", window=win, detail=str(exc))
+            else:
+                missing, outside = sorted(set(want) - set(spy)), sorted(set(spy) - set(want))
+                if missing or outside:
+                    add("Q04", "BLOCK", "the benchmark does not hold exactly the requested window's sessions", window=win, missing=missing[:50],
+                        outside=outside[:50], count=len(missing) + len(outside))
     # Q05 missing bars inside each symbol's span, and the data side of the 200-session window
     if spy:
         holes: Dict[str, List[str]] = {}
@@ -140,6 +155,12 @@ def report(path: str, *, provenance: Optional[dict] = None, approval: Optional[s
     gaps = {s: v for s, v in gaps.items() if v}
     if gaps:
         add("Q06", "FINDING", "bar dates without a raw close", by_symbol={s: v[:20] for s, v in gaps.items()}, count=sum(len(v) for v in gaps.values()))
+    if feed == "SIP":
+        vgaps = {s: [b.date for b in ds.bars[s] if b.date not in (rv.get(s) or {})] for s in present if rv.get(s)}
+        vgaps = {s: v for s, v in vgaps.items() if v}
+        if vgaps:
+            add("Q06", "FINDING", "bar dates without a raw volume (SIP)", by_symbol={s: v[:20] for s, v in vgaps.items()},
+                count=sum(len(v) for v in vgaps.values()))
     # Q07 issuers
     iss = (((ds.aux or {}).get("static") or {}).get("issuers")) or {}
     of: Dict[str, List[str]] = {}
@@ -186,7 +207,7 @@ def report(path: str, *, provenance: Optional[dict] = None, approval: Optional[s
     rep = {"report_version": REPORT_VERSION, "dataset": {"path_name": Path(path).name, "sha256": hashlib.sha256(raw).hexdigest(), "kind": ds.kind,
                                                          "dataset_id": ds.dataset_id, "volume_feed": feed, "first": ds.start, "last": ds.end,
                                                          "sessions": len(ds.sessions), "symbols": len(ds.bars)},
-           "provenance_override": dict(provenance or {}), "status": status, "checks": checks,
+           "provenance_override": dict(provenance or {}), "approval": approval, "status": status, "checks": checks,
            "counts": {k: sum(1 for c in checks if c["severity"] == k) for k in ("BLOCK", "FINDING", "INFO")}}
     rep["report_sha256"] = report_sha256(rep)
     return rep
@@ -206,8 +227,9 @@ def main(argv=None) -> int:
         print(f"REFUSED: {exc}")
         return 2
     out = Path(a.out)
-    if out.exists():
-        print(f"REFUSED: {out} exists (a report is never overwritten)")
+    problem = output_problem(out)
+    if problem or out.exists():
+        print(f"REFUSED: {problem or f'{out} exists (a report is never overwritten)'}")
         return 2
     out.write_text(json.dumps(rep, indent=1, sort_keys=True), encoding="utf-8")
     print(f"{rep['status']}: {rep['counts']} - report sha256 {rep['report_sha256']}")

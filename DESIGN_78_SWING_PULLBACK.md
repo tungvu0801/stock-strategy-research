@@ -43,8 +43,11 @@ are so that the package stays byte-identical.)
 The indicators are written in plain Python (`swing_pullback/indicators.py`). They reproduce the `analysis/indicators.py` formulas: the RSI
 and ATR use the pandas `ewm(alpha = 1/n, adjust = False, min_periods = n)` recursion seeded with the first value, and RSI is 100 when the
 average loss is 0. They are causal by construction: a prefix gives the same values. `analysis/` itself is not imported. The SMA is the correctly rounded mean
-of each window (`math.fsum` / n). The three strict comparisons with a mean are decided exactly, so a tie never passes: close > SMA200,
-SPY close > SMA200, and SMA50 rising.
+of each window (`math.fsum` / n). The three strict comparisons with a mean (close > SMA200, SPY close > SMA200, and SMA50 rising) are
+decided exactly on the stored double values, so a tie between those values never passes. A tie between decimal prices that the doubles do
+not represent exactly can still pass, and a near-tie can be decided wrongly on a series whose early adjusted prices are about 10⁶ times its
+recent ones
+(final-review M-1, wording corrected in Stage 7.8B-1; negligible on large-cap adjusted data; the behaviour is unchanged).
 
 ## 2. C1 — `SWING_TREND_PULLBACK_CONTROL` 1.0
 
