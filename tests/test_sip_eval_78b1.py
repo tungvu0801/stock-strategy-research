@@ -417,6 +417,7 @@ def test_B07_the_cli_plans_once_and_builds_a_historical_dataset_that_then_needs_
     plan = json.loads(p.read_text(encoding="utf-8"))
     assert plan == SB.request_plan("2016-01-04", "2016-03-31") and SB.sha256_of(plan) in capsys.readouterr().out
     assert SB.main(["plan", "--out", str(p), "--start", "2016-01-04", "--end", "2016-03-31"]) == 2                 # never overwritten
+    assert SB.main(["plan", "--out", str(tmp_path / "plan.sqlite")]) == 2 and not (tmp_path / "plan.sqlite").exists()   # never a database path
     _, out, *_ = fetched(tmp_path)
     assert SB.main(["build", "--out", str(out)]) == 0
     built = out / "sip_bundle.json"
@@ -569,6 +570,7 @@ def test_Q04_a_historical_dataset_needs_an_approval_and_the_report_seals_itself(
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json")]) == 2                                     # no approval: refused
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json"), "--approval", OK_REF]) == 0
     assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.json"), "--approval", OK_REF]) == 2              # never overwritten
+    assert Q.main(["--dataset", str(p), "--out", str(tmp_path / "r.db"), "--approval", OK_REF]) == 2 and not (tmp_path / "r.db").exists()
 
 
 def test_Q06_the_requested_window_and_raw_volume_gaps(tmp_path):
@@ -692,6 +694,8 @@ def test_M05_the_cli_writes_a_manifest_once_at_the_r17_default_location_with_the
     assert MF.verify(m) == [] and m["manifest_sha256"] in capsys.readouterr().out
     assert m["evidence"]["location"] == str(Path(SE.EVIDENCE_ROOT) / "2026-11-02T000000Z") and m["strategy"]["code_commit"] == git_commit_sha()
     assert MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(out), "--created-at", AT]) == 2   # never overwritten
+    db = tmp_path / "manifest.db"
+    assert MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(db), "--created-at", AT]) == 2 and not db.exists()
 
 
 # ============================================================================================================ the evaluator (E)
@@ -904,6 +908,12 @@ def test_E10_the_tree_check_reads_the_git_index_without_a_subprocess(tmp_path):
 
 def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenance(tmp_path):
     ok = dict(commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True)
+    allowed = {"corporate_actions": "synthetic override: none"}                          # an override of an unprotected field is evaluated
+    dp0, rep0, mp0, rp0 = package(tmp_path / "o", base()[0], provenance=allowed)
+    assert MF.verify(json.loads(mp0.read_text(encoding="utf-8"))) == [] and rep0["provenance_override"] == allowed
+    assert EV.evaluate(str(mp0), str(dp0), str(rp0), str(tmp_path / "o" / "ev"), **ok)["status"] == "COMPLETED"
+    rec0 = json.loads((tmp_path / "o" / "ev" / "runs" / "V1_BASE.json").read_text(encoding="utf-8"))
+    assert rec0["provenance"]["corporate_actions"] == allowed["corporate_actions"]
     dp, rep, mp, rp = package(tmp_path / "a", base()[0], provenance={"volume_feed": "IEX"})          # relabelled feed
     problems = MF.verify(json.loads(mp.read_text(encoding="utf-8")))
     assert any("SIP dataset" in x for x in problems) and any("protected field" in x for x in problems)
