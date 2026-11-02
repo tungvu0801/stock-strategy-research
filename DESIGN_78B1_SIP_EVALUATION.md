@@ -139,8 +139,8 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
     `swing_eval/preflight.ps1 -Out FILE`. The script runs git and refuses, writing nothing, unless all eight checks find nothing:
     * staged changes (`git diff --cached HEAD`), unstaged changes (`git diff`), untracked files of any type, unmerged paths;
     * index entries hidden from `git status` by a flag (assume-unchanged, skip-worktree);
-    * ignored code files outside `.venv/` and `__pycache__/`: `.py`, `.pyw`, `.pyc`, `.pyd`, `.so` (ignored code can still be imported;
-      a sourceless `.pyc` too);
+    * ignored code files in any letter case, outside directories named `.venv` or `__pycache__`: `.py`, `.pyw`, `.pyc`, `.pyd`, `.so`
+      (ignored code can still be imported, and so can a sourceless `.pyc`);
     * replace refs (`refs/replace/*`);
     * a non-empty `git status --porcelain --untracked-files=all`.
 
@@ -150,16 +150,20 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
       checked out or configured. `git diff` may refresh the index's cached file timestamps; it never changes an entry.
     * Every call runs with `--no-replace-objects` (and `GIT_NO_REPLACE_OBJECTS=1`), because a replace ref can make `HEAD:` show another
       commit's tree while `git status` stays empty.
-    * The variables that would redirect git (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
-      `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`) are removed for the
-      script's process.
+    * The variables that would redirect git or change how it reads a pathspec are removed for the script's process: `GIT_DIR`,
+      `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`,
+      `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`, `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
+      `GIT_ICASE_PATHSPECS`.
+    * **Run it in a dedicated clean worktree.** Copies of code under an untracked folder, such as another worktree or a scratch folder, are
+      refused. The main checkout, with its untracked `.claude/worktrees/` and `scratchpad/` copies, would be refused.
   * **Where the record goes.** It must be written to a new file on a local drive, outside the repository, with no database name:
     * the path is normalised as Windows does (trailing dots and spaces dropped);
     * 8.3 short names are expanded before the comparison;
     * `\\?\` and UNC paths are refused.
 
-    A junction is not resolved. A record placed inside the repository through one would still be an untracked file, so the next preflight
-    (`-Manifest`, before approval) refuses.
+    A junction, a directory symlink, a `subst` drive or a mapped drive letter is not resolved. A record placed inside the repository through
+    one of them is still an untracked file, so the next preflight (`-Manifest`, before approval) refuses, unless that folder is ignored
+    (`runtime/`, `logs/`). This affects only where the record lands (R17), never the code identity.
   * **Why PowerShell, and why here.** The Stage 3.9 rule forbids `subprocess` in any non-test Python module, so the git checks are PowerShell.
     The script lives in the stage's own package because `scripts/` is pinned by the Stage 6.0–6.10A freeze tests.
   * **The re-check without git.** The manifest CLI checks the record against this checkout through `swing_eval/codetree.py`:
@@ -170,7 +174,7 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
 
     A change made after the preflight is therefore refused too: a new commit, a staged change, an unstaged change, or an untracked or ignored
     importable file anywhere in the repository. That last case covers a new package directory, which would shadow a tracked module of the
-    same name, and a sourceless `.pyc`. Only `.git`, `.venv` and `__pycache__` are not scanned.
+    same name, and a sourceless `.pyc`. Only directories named `.git`, `.venv` or `__pycache__` are not scanned, at any depth.
   * **What the manifest pins.** Only then is the manifest built. It pins `code_commit` and `code_tree` and carries the record, so the manifest
     sha256 that the operator approves names the exact committed tree.
   * **Limits (procedural).**
@@ -229,8 +233,8 @@ Each step is fail-closed:
    * the working tree equals the index:
      * every tracked file matches its index blob (a line-end-only difference is not a change);
      * no file is deleted or unmerged;
-     * there is no untracked or ignored importable file (`.py`, `.pyw`, `.pyc`, `.pyd`, `.so`) anywhere outside `.git`, `.venv` and
-       `__pycache__`;
+     * there is no untracked or ignored importable file (`.py`, `.pyw`, `.pyc`, `.pyd`, `.so`, any letter case) outside directories
+       named `.git`, `.venv` or `__pycache__`;
      * no entry is hidden by an index flag (assume-unchanged, skip-worktree, intent-to-add);
      * there is no symlink or submodule.
 
@@ -362,7 +366,8 @@ For reference only. Each step needs its own operator approval.
 3. `fetch` with the approval reference.
 4. `build` (HISTORICAL).
 5. `python -m research_data.quality` with an approval reference; the operator accepts or rejects every FINDING.
-6. On the checkout to be evaluated, prepare and check the manifest:
+6. On a dedicated clean worktree of the commit to be evaluated (not the main checkout: its untracked copies of code are refused), prepare
+   and check the manifest:
    * `swing_eval\preflight.ps1 -Out <file outside the repository>`;
    * `python -m swing_eval.manifest build --preflight <that file> ...`;
    * `swing_eval\preflight.ps1 -Manifest <the manifest>`.

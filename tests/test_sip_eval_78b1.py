@@ -153,9 +153,9 @@ def conflict(repo):
     git(repo, "merge", "-q", "other", check=False)
 
 
-def preflight(*a):
+def preflight(*a, env=None):
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PREFLIGHT), "-Git", GIT, *a], capture_output=True, text=True,
-                       timeout=180)
+                       timeout=180, env=None if env is None else {**os.environ, **env})
     return r.returncode, r.stdout + r.stderr
 
 
@@ -1175,7 +1175,9 @@ def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_
     assert '& $script:GitExe --no-replace-objects --no-optional-locks -C $script:Top @GitArgs' in raw.decode("ascii")
     repo = git_repo(tmp_path / "r")
     (repo / ".venv").mkdir()
-    (repo / ".venv" / "lib.py").write_bytes(b"v = 1\n")                                   # ignored code under .venv is allowed
+    (repo / ".venv" / "lib.py").write_bytes(b"v = 1\n")                                   # ignored code under a .venv is allowed
+    (repo / "pkg" / ".venv").mkdir()
+    (repo / "pkg" / ".venv" / "lib.py").write_bytes(b"v = 1\n")                           # at any depth, as the product check skips it
     (repo / "pkg" / "__pycache__").mkdir()
     (repo / "pkg" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"\0" * 16)          # and the cache of a tracked source
     before = (git(repo, "ls-files", "-s"), git(repo, "for-each-ref"), git(repo, "rev-parse", "HEAD"))
@@ -1207,7 +1209,8 @@ def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_
 
 DIRTY = {"staged": "staged: pkg/a.py", "unstaged": "unstaged: pkg/a.py", "untracked": "untracked: data.csv", "unmerged": "unmerged: 100644 ",
          "assume-unchanged": "hidden_by_index_flags: h pkg/a.py", "skip-worktree": "hidden_by_index_flags: S notes.txt",
-         "ignored .py": "ignored_code: pkg/made.gen.py", "ignored .pyc": "ignored_code: pkg/helper.pyc", "replace ref": "replace_refs: refs/replace/"}
+         "ignored .py": "ignored_code: pkg/made.gen.py", "ignored .pyc": "ignored_code: pkg/helper.pyc", "replace ref": "replace_refs: refs/replace/",
+         "ignored .PY": "ignored_code: pkg/MADE.GEN.PY", "ignored .py, literal pathspecs": "ignored_code: pkg/made.gen.py"}
 
 
 @needs_ps
@@ -1228,8 +1231,10 @@ def test_T05_the_operator_preflight_refuses_every_unclean_state_and_writes_nothi
         a.write_bytes(b"x = 5\n")                                                        # hidden from git status and git diff
     elif case == "skip-worktree":
         git(repo, "update-index", "--skip-worktree", "notes.txt")
-    elif case == "ignored .py":
+    elif case in ("ignored .py", "ignored .py, literal pathspecs"):
         (repo / "pkg" / "made.gen.py").write_bytes(b"g = 1\n")                            # ignored by .gitignore, still importable
+    elif case == "ignored .PY":
+        (repo / "pkg" / "MADE.GEN.PY").write_bytes(b"g = 1\n")                            # Windows imports it as made.gen
     elif case == "ignored .pyc":
         (repo / "pkg" / "helper.pyc").write_bytes(b"\0" * 16)                             # a sourceless .pyc: importable too
     else:
@@ -1243,7 +1248,8 @@ def test_T05_the_operator_preflight_refuses_every_unclean_state_and_writes_nothi
         assert git(repo, "rev-parse", "HEAD") == first and git(repo, "rev-parse", "HEAD:") == git(repo, "rev-parse", f"{other}^{{tree}}")
         assert git(repo, "status", "--porcelain") == ""
     out = tmp_path / "preflight.json"
-    code, text = preflight("-Repo", str(repo), "-Out", str(out))
+    env = {"GIT_LITERAL_PATHSPECS": "1"} if case.endswith("literal pathspecs") else None   # would turn the pathspecs into plain names
+    code, text = preflight("-Repo", str(repo), "-Out", str(out), env=env)
     assert code == 2 and "PREFLIGHT REFUSED" in text and DIRTY[case] in text and not out.exists(), text
     if case == "replace ref":                                                            # and the commit's real tree differs from the checkout
         assert "staged: pkg/a.py" in text and CT.index_tree(repo) != git(repo, "--no-replace-objects", "rev-parse", "HEAD:")

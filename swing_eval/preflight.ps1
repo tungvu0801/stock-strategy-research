@@ -5,12 +5,13 @@
 .DESCRIPTION
   Asks git whether the working tree is exactly the checked-out commit, and refuses otherwise: nothing staged, nothing unstaged, no untracked
   file, no unmerged path, no index entry hidden from git status (assume-unchanged, skip-worktree), no ignored code file (.py, .pyw, .pyc,
-  .pyd, .so) outside .venv/ and __pycache__/, no replace ref, and an empty `git status --porcelain`. Product code never starts a process (the
+  .pyd, .so, in any letter case) outside directories named .venv or __pycache__, no replace ref, and an empty `git status --porcelain`. Product code never starts a process (the
   Stage 3.9 rule), so these git checks live here, outside it.
 
   Every git command reads: nothing is staged, committed, checked out or configured (`git diff` may refresh the index's cached file timestamps,
   never an entry). Each runs with --no-replace-objects (a replace ref could otherwise show another commit's tree), and the variables that
-  redirect git (GIT_DIR, GIT_INDEX_FILE, ...) are removed for this process.
+  redirect git or change how it reads a pathspec (GIT_DIR, GIT_INDEX_FILE, GIT_LITERAL_PATHSPECS, ...) are removed for this process.
+  Run it in a dedicated clean worktree: copies of code under an untracked folder (another worktree, a scratch folder) are refused.
 
   -Out FILE       writes the CLEAN record (commit, tree, every check NONE) that `python -m swing_eval.manifest build --preflight FILE`
                   requires; the manifest CLI re-checks the record against this checkout. FILE must be new, on a local drive, outside the
@@ -37,7 +38,8 @@ $ErrorActionPreference = "Stop"
 $Checks = @("staged", "unstaged", "untracked", "unmerged", "hidden_by_index_flags", "ignored_code", "replace_refs", "status")   # = swing_eval.codetree.PREFLIGHT_CHECKS
 $DbSuffixes = @(".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal")                                                 # = research_data.DB_SUFFIXES
 foreach ($v in @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
-                 "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")) {
+                 "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",
+                 "GIT_ICASE_PATHSPECS")) {
     Remove-Item -LiteralPath "Env:$v" -ErrorAction SilentlyContinue
 }
 $env:GIT_NO_REPLACE_OBJECTS = "1"
@@ -93,8 +95,9 @@ try {
         "untracked" = @(Invoke-Git @("ls-files", "--others", "--exclude-standard"))
         "unmerged" = @(Invoke-Git @("ls-files", "--unmerged"))
         "hidden_by_index_flags" = @(Invoke-Git @("ls-files", "-v") | Where-Object { $_ -cmatch '^([a-z]|S) ' })
-        "ignored_code" = @(Invoke-Git @("ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyw", "*.pyc", "*.pyd", "*.so") |
-                           Where-Object { $_ -notmatch '^\.venv/' -and $_ -notmatch '(^|/)__pycache__/' })
+        "ignored_code" = @(Invoke-Git @("ls-files", "--others", "--ignored", "--exclude-standard", "--", ":(icase)*.py", ":(icase)*.pyw", ":(icase)*.pyc",
+                                        ":(icase)*.pyd", ":(icase)*.so") |
+                           Where-Object { $_ -notmatch '(^|/)\.venv/' -and $_ -notmatch '(^|/)__pycache__/' })   # as codetree.SKIP_DIRS: any so named
         "replace_refs" = @(Invoke-Git @("for-each-ref", "--format=%(refname)", "refs/replace/"))
         "status" = @(Invoke-Git @("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
     }
