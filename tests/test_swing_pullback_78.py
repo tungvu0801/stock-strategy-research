@@ -980,8 +980,8 @@ def test_X01_the_package_imports_nothing_but_the_harness_and_the_standard_librar
 def test_X02_nothing_imports_the_package_it_is_not_registered_and_no_setting_names_it():
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("swing_pullback/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
-            continue
+        if rel.startswith(("swing_pullback/", "swing_eval/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
+            continue                                                                     # swing_eval/: the Stage 7.8B-1 offline evaluator
         assert "swing_pullback" not in p.read_text(encoding="utf-8", errors="replace"), rel
     for rel in ("strategy_validation/adapters.py", "strategy_registry/registry.py", "config.py"):
         text = (ROOT / rel).read_text(encoding="utf-8")
@@ -1013,6 +1013,13 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #48 (Stage 7.8 merged; the Stage 7.8B-1 base): what Stage 7.8 left, whatever a later stage changed since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_78B1}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_78B1} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 NEW_MODULES_78 = ("__init__.py", "adapter.py", "core.py", "data.py", "diagnostics.py", "indicators.py", "plan.py")
 APP_EDITS_78 = {".github/ci/pytest_groups.json"}
 FROZEN_DIRS_78 = ("setups", "ppe", "evidence", "evidence_refresh", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe",
@@ -1025,9 +1032,13 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     assert FL.BASE_78 == "d1de7514d551f9eb261f60117fea58586af89a9b" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_78}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_78).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_78 | FL.EDITED_78, {"unexpected": sorted(changed - FL.NEW_78 - FL.EDITED_78), "missing": sorted((FL.NEW_78 | FL.EDITED_78) - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_78, FL.BASE_78B1).split())               # Stage 7.8 itself, between two fixed commits
+    assert stage == FL.NEW_78 | FL.EDITED_78, {"unexpected": sorted(stage - FL.NEW_78 - FL.EDITED_78), "missing": sorted((FL.NEW_78 | FL.EDITED_78) - stage)}
+    later = FL.NEW_78B1 | FL.EDITED_78B1                                                     # Stage 7.8B-1, pinned by its own F tests
+    assert changed == FL.NEW_78 | FL.EDITED_78 | later, {"unexpected": sorted(changed - FL.NEW_78 - FL.EDITED_78 - later),
+                                                         "missing": sorted((FL.NEW_78 | FL.EDITED_78 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_78).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_78 and {p for p in changed if p in in_base} == FL.EDITED_78
+    assert {p for p in stage if p not in in_base} == FL.NEW_78 and {p for p in stage if p in in_base} == FL.EDITED_78
     assert FL.NEW_78 == ({"DESIGN_78_SWING_PULLBACK.md", "tests/test_swing_pullback_78.py", "tests/swing_pullback_fixtures.py"}
                          | {f"swing_pullback/{m}" for m in NEW_MODULES_78})
     assert {p for p in FL.EDITED_78 if not p.startswith("tests/")} == APP_EDITS_78
@@ -1036,14 +1047,14 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
         for p in sorted((ROOT / d).rglob("*")):
             rel = p.relative_to(ROOT).as_posix()
             if p.is_file() and rel in in_base and "__pycache__" not in rel:
-                assert now_text(rel) == at_base(rel), rel
+                assert post(rel) == at_base(rel), rel
     for rel in ("config.py", "api/server.py", "autorun/calendar.py", "autorun/session.py", ".gitignore", "requirements.txt", "watchlist.txt",
                 "STRATEGY_STANDARD_V1.md", "STRATEGY_VALIDATION_HARNESS.md", "main.py", ".github/workflows/tests.yml"):
-        assert now_text(rel) == at_base(rel), rel                                          # no config key, route, lifespan hook, dependency or workflow edit
+        assert post(rel) == at_base(rel), rel                                              # no config key, route, lifespan hook, dependency or workflow edit
     for rel in sorted(FL.NEW_78 | FL.EDITED_78):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel
+            assert m61 not in post(rel) and m54 not in post(rel), rel
 
 
 def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_a_strategy():
@@ -1068,13 +1079,13 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_a_
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_78.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_78) == FL.EDITED_78 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}     # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nStage 7.8 Part B (the swing trend pullback")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_74 + NEW_75 + NEW_78 plus this ledger.", " + NEW_74 + NEW_75 plus this ledger.", 1)
@@ -1084,8 +1095,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                       # no new ledger key
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_78 & set(old)
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 7.8 left
+    assert set(new_led) == set(old)                                                         # no new ledger key
+    assert {k for k in old if old[k] != new_led[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_78 & set(old)
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

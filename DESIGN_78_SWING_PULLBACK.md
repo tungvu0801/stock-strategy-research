@@ -29,12 +29,16 @@ the price and liquidity rules read the raw series in `aux`.
 | 6 | Trend | close > SMA200 and SMA50 > SMA50 of 20 sessions earlier |
 | 7 | Pullback rule | (Wilder RSI(2) ≤ 10, or close[t] < close[t−1] < close[t−2] < close[t−3]) and close ≥ 0.97 × SMA50 |
 | 8 | Cooldown | after a candidate at session t′, no candidate for the symbol at t′+1 … t′+9 (dataset sessions; signal dates only; a blocked session never restarts it); 9 sessions in every sensitivity neighbour |
-| 9 | Entry | the open of t+1 (`NEXT_BAR_OPEN`); an entry opening at or below the stop, or at or above the target, is skipped (the harness) |
+| 9 | Entry | the open of the symbol's next bar after t (`NEXT_BAR_OPEN`; t+1 unless the symbol has no bar there); an entry opening at or below the stop, or at or above the target, is skipped (the harness) |
 | 10 | Stop / target | signal close − 2 × ATR(14) / signal close + 3 × ATR(14), Wilder ATR, fixed at the signal |
-| 11 | Time exit | the close of the 10th session in the trade (the entry session is the first): `max_hold_bars` = 10, the adapter's, never a candidate's |
+| 11 | Time exit | the close of the 10th bar of the symbol in the trade (the entry bar is the first; a session without a bar does not count): `max_hold_bars` = 10, the adapter's, never a candidate's |
 | 12 | Exits | the harness only: gap through the stop at the open, stop, target, stop-first on an ambiguous bar, time, data end |
 | 13 | Sizing | the harness research sizing: 0.5 % of 100 000 per trade, capped at 10 %, not compounded; overlapping trades of different symbols allowed |
 | 14 | Score | the Strategy Standard needs a 0–100 score; V1 does not rank, so every candidate carries 50 (never read by the RULES arm) |
+
+Rules 9 and 11 count the symbol's own bars, as the harness does, not dataset sessions: a missing bar moves the entry or the time exit to a later
+session. (Wording corrected in Stage 7.8B-1, final-review M-6; the behaviour is unchanged, and the `swing_pullback/` docstrings are left as they
+are so that the package stays byte-identical.)
 
 The indicators are written in plain Python (`swing_pullback/indicators.py`). They reproduce the `analysis/indicators.py` formulas: the RSI
 and ATR use the pandas `ewm(alpha = 1/n, adjust = False, min_periods = n)` recursion seeded with the first value, and RSI is 100 when the
@@ -90,7 +94,7 @@ code.
   * time exit 8 / 12, with the cooldown still 9.
 
   They are computed on the **TRAIN view** only (`dataset.until(train_end)`: no later bar exists), at the run's friction and sizing. A
-  candidate is purged by the harness's own boundary rule (its symbol's next 10 bars reach past the TRAIN end: dates only, never a price), so
+  candidate is purged by the harness's own boundary rule (its symbol's next `max_hold_bars` bars reach past the TRAIN end: 10, or 8 / 12 in the time-exit neighbours; dates only, never a price), so
   the base row equals the run's own TRAIN result. The neighbourhood is labelled by the harness's own rule. A SENSITIVE or UNSTABLE label makes the result not promotable. The harness's own neighbour hook is not used, because it would evaluate
   the neighbours on every session, OOS included.
 * **Funnel.** The first failing rule per symbol-session.
