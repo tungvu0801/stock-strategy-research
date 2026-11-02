@@ -12,8 +12,9 @@ database; every output under tmp_path. Operator decision lock: STAGE_7_8B1_DECIS
   M01-M05 the manifest: build / verify, tampering, pre-checks, post-checks (M-2 / M-3), the CLI
   E01-E10 the evaluator: end to end, refusals (R17, approval, pre-checks), the offline guard, an INVALID run, M-5 blocking (base and neighbour),
           SIP only under the report's provenance, the CLI, INVALID with a blocking finding, the real tree check
-  T01-T06 the code identity: the index's tree as git computes it (a staged change), entries hidden from git status, the preflight record, the
-          operator-side git preflight (swing_eval/preflight.ps1: every unclean state refused), the manifest built only from it and checked again
+  T01-T07 the code identity: the index's tree as git computes it (a staged change), entries hidden from git status, the preflight record, the
+          operator-side git preflight (swing_eval/preflight.ps1: every unclean state refused), the manifest built only from it and checked again,
+          the evaluator's own reading of the checkout (no fake)
   N01-N06 the analysis: R9 stability, R10 comparison, the bootstrap, exposure, R11 eligibility, the stop and integrity findings
   X01-X02 isolation
   G01     the documents
@@ -138,6 +139,18 @@ def git_record(repo):
     """The record the operator preflight writes for a clean repository, made here from git's answers (the preflight itself: T04-T06)."""
     return {**PRE, "repository": git(repo, "rev-parse", "--show-toplevel"), "commit": git(repo, "rev-parse", "HEAD"),
             "tree": git(repo, "rev-parse", "HEAD^{tree}")}
+
+
+def conflict(repo):
+    """An unmerged pkg/a.py: two branches change the same line."""
+    a = repo / "pkg" / "a.py"
+    git(repo, "checkout", "-q", "-b", "other")
+    a.write_bytes(b"x = 3\n")
+    git(repo, "commit", "-q", "-am", "o")
+    git(repo, "checkout", "-q", "-")
+    a.write_bytes(b"x = 4\n")
+    git(repo, "commit", "-q", "-am", "m")
+    git(repo, "merge", "-q", "other", check=False)
 
 
 def preflight(*a):
@@ -1117,6 +1130,11 @@ def test_T02_an_index_entry_hidden_from_git_status_is_refused(tmp_path):
     assert CT.tree_problems(repo) == ["intent-to-add: pkg/new.py"] and CT.index_tree_or_none(repo) is None
     with pytest.raises(ValueError, match="intent-to-add"):
         CT.index_tree(repo)
+    other = git_repo(tmp_path / "u")
+    conflict(other)
+    assert CT.tree_problems(other) == ["unmerged: pkg/a.py"] and CT.index_tree_or_none(other) is None
+    with pytest.raises(ValueError, match="unmerged"):
+        CT.index_tree(other)
 
 
 def test_T03_a_preflight_record_must_be_clean_and_describe_this_checkout(tmp_path):
@@ -1170,8 +1188,8 @@ def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_
         code, text = preflight("-Repo", str(repo), *bad)
         assert code == 2 and "PREFLIGHT REFUSED" in text and word in text, (bad, text)
     assert not (repo / "p.json").exists() and not (tmp_path / "p.db").exists() and not (tmp_path / "x.json").exists()
-    code, text = preflight("-Repo", str(tmp_path / "pf"), "-Out", str(tmp_path / "y.json"))   # not a repository
-    assert code == 2 and "PREFLIGHT REFUSED" in text and not (tmp_path / "y.json").exists(), text
+    code, text = preflight("-Repo", str(tmp_path / "pf"), "-Out", str(tmp_path / "y.json"))   # not a repository: git's failure refuses
+    assert code == 2 and "git rev-parse --show-toplevel failed" in text and not (tmp_path / "y.json").exists(), text
 
 
 DIRTY = {"staged": "staged: pkg/a.py", "unstaged": "unstaged: pkg/a.py", "untracked": "untracked: data.csv", "unmerged": "unmerged: 100644 ",
@@ -1191,13 +1209,7 @@ def test_T05_the_operator_preflight_refuses_every_unclean_state_and_writes_nothi
     elif case == "untracked":
         (repo / "data.csv").write_bytes(b"1\n")                                          # not code: the product check cannot see it, git does
     elif case == "unmerged":
-        git(repo, "checkout", "-q", "-b", "other")
-        a.write_bytes(b"x = 3\n")
-        git(repo, "commit", "-q", "-am", "o")
-        git(repo, "checkout", "-q", "-")
-        a.write_bytes(b"x = 4\n")
-        git(repo, "commit", "-q", "-am", "m")
-        git(repo, "merge", "-q", "other", check=False)                                   # a conflict
+        conflict(repo)
     elif case == "assume-unchanged":
         git(repo, "update-index", "--assume-unchanged", "pkg/a.py")
         a.write_bytes(b"x = 5\n")                                                        # hidden from git status and git diff
@@ -1248,6 +1260,45 @@ def test_T06_a_manifest_is_built_only_from_the_operator_preflight_and_names_the_
     git(repo, "commit", "-q", "-m", "d")
     code, text = preflight("-Repo", str(repo), "-Manifest", str(mp))
     assert code == 2 and "is not the checked-out commit" in text, text
+
+
+def test_T07_the_evaluator_reads_its_own_checkout_and_refuses_any_change_since_the_manifest_before_a_run(tmp_path, monkeypatch):
+    repo = git_repo(tmp_path / "r")
+    monkeypatch.setattr(CT, "ROOT", repo)                                                # this checkout: a temporary repository, nothing faked
+    reached = []
+
+    def run(*a, **k):
+        reached.append(a)
+        raise RuntimeError("the runs were reached")
+    monkeypatch.setattr(EV.PL, "run", run)
+    rec = git_record(repo)
+    dp = write(tmp_path / "d", base()[0])
+    rep = Q.report(str(dp))
+    rp = tmp_path / "d" / "report.json"
+    rp.write_text(json.dumps(rep), encoding="utf-8")
+
+    def attempt(name):
+        m = MF.build(dataset_path=str(dp), report=rep, code_commit=rec["commit"], code_tree=rec["tree"], preflight=rec, created_at=AT,
+                     evidence_location=str(tmp_path / name))
+        (tmp_path / f"{name}.json").write_text(json.dumps(m), encoding="utf-8")
+        return EV.evaluate(str(tmp_path / f"{name}.json"), str(dp), str(rp), str(tmp_path / name))
+    with pytest.raises(RuntimeError, match="the runs were reached"):
+        attempt("clean")
+    (repo / "pkg" / "new.py").write_bytes(b"z = 3\n")
+    with pytest.raises(EV.EvaluationRefused, match="untracked: pkg/new.py"):
+        attempt("untracked")
+    (repo / "pkg" / "new.py").unlink()
+    (repo / "pkg" / "a.py").write_bytes(b"x = 2\n")
+    with pytest.raises(EV.EvaluationRefused, match="modified: pkg/a.py"):
+        attempt("unstaged")
+    git(repo, "add", "pkg/a.py")
+    with pytest.raises(EV.EvaluationRefused, match="code_tree") as staged:
+        attempt("staged")
+    assert "working tree" not in str(staged.value)                                       # only the index's tree shows a staged change
+    git(repo, "commit", "-q", "-m", "d")
+    with pytest.raises(EV.EvaluationRefused, match="code_commit"):
+        attempt("committed")
+    assert len(reached) == 1                                                             # every refusal came before a run
 
 
 # ============================================================================================================ the analysis (N)

@@ -149,6 +149,11 @@ def index_tree_or_none(root: Optional[Path] = None) -> Optional[str]:
         return None
 
 
+def head_commit(root: Optional[Path] = None) -> Optional[str]:
+    """The checked-out commit (HEAD, read from the .git files), or None."""
+    return git_commit_sha(Path(root or ROOT))
+
+
 def record_problems(rec) -> List[str]:
     """A preflight record's own form (what a manifest must carry): a CLEAN record of this kind and version, every check NONE, a sha1 commit
     and tree."""
@@ -178,7 +183,7 @@ def preflight_problems(rec, root: Optional[Path] = None) -> List[str]:
         same = False
     if not same:
         p.append(f"the preflight was run on another repository: {rec.get('repository')!r}")
-    head = git_commit_sha(root)
+    head = head_commit(root)
     if not head or head != rec.get("commit"):
         p.append(f"the checked-out commit {head} is not the preflight's {rec.get('commit')}")
     tree = index_tree_or_none(root)

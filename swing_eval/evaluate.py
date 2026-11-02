@@ -102,7 +102,6 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
              approved_manifest_sha256: Optional[str] = None, commit_fn: Optional[Callable[[], Optional[str]]] = None,
              tree_clean_fn: Optional[Callable[[], bool]] = None, tree_fn: Optional[Callable[[], Optional[str]]] = None) -> dict:
     from strategy_validation.dataset import load
-    from strategy_validation.engine import git_commit_sha
     m = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     problems = MF.verify(m)
     if problems:
@@ -118,7 +117,7 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
     if ds.kind == "HISTORICAL" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", out_dir.name):
         raise EvaluationRefused(f"a HISTORICAL evidence folder is named by its UTC timestamp (YYYY-MM-DDTHHMMSSZ, R17), not {out_dir.name!r}")
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    commit = (commit_fn or git_commit_sha)()
+    commit = (commit_fn or CT.head_commit)()
     tree = (tree_fn or CT.index_tree_or_none)()
     tree_issues = CT.tree_problems() if tree_clean_fn is None else ([] if tree_clean_fn() else ["the supplied tree check says not clean"])
     clean = not tree_issues
