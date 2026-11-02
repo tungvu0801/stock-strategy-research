@@ -27,6 +27,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -211,7 +212,18 @@ def test_B01_the_plan_lists_every_request_one_exclusive_window_and_nothing_broad
     assert SB.request_plan()["end"] < datetime.now(timezone.utc).date().isoformat()                       # completed sessions only
 
 
-def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_scope_or_credentials(tmp_path):
+@pytest.fixture
+def repo_stray():
+    """A path inside the repository that a fetch must refuse. Whatever a broken guard writes there is removed, and the test fails."""
+    p = ROOT / "sip_fetch_test_78b1"
+    assert not p.exists()
+    yield p
+    created = p.exists()
+    shutil.rmtree(p, ignore_errors=True)
+    assert not created, "a fetch wrote inside the repository"
+
+
+def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_scope_or_credentials(tmp_path, repo_stray):
     plan = SB.request_plan("2016-01-04", "2016-03-31", universe=U)
     sha = SB.sha256_of(plan)
     tr = SF.fake_provider({"all": {}, "raw": {}, "split": {}}, {})
@@ -247,14 +259,14 @@ def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_sc
              (sec_params, dict(plan_sha256=SB.sha256_of(sec_params))), (extra, dict(plan_sha256=SB.sha256_of(extra))),
              (swapped, dict(plan_sha256=SB.sha256_of(swapped))), (windowless, dict(plan_sha256=SB.sha256_of(windowless))),
              (outside, dict(plan_sha256=SB.sha256_of(outside))), (boolean, dict(plan_sha256=SB.sha256_of(boolean))),
-             (plan, dict(out=ROOT / "sip_fetch_test_78b1")), (plan, dict(out=tmp_path / "raw.db"))]
+             (plan, dict(out=repo_stray)), (plan, dict(out=tmp_path / "raw.db"))]
     for p, over in cases:
         with pytest.raises(SB.FetchRefused):
             SB.fetch(p, **{**kw, **over})
-    assert tr.calls == [] and not (tmp_path / "o").exists() and not (ROOT / "sip_fetch_test_78b1").exists()
+    assert tr.calls == [] and not (tmp_path / "o").exists() and not repo_stray.exists()
     if os.name == "nt":                                                                  # another spelling of a repository path is caught too
         with pytest.raises(SB.FetchRefused, match="inside the repository"):
-            SB.fetch(plan, **{**kw, "out": Path("\\\\?\\" + str(ROOT / "sip_fetch_test_78b1"))})
+            SB.fetch(plan, **{**kw, "out": Path("\\\\?\\" + str(repo_stray))})
         assert tr.calls == []
     (tmp_path / "full").mkdir()
     (tmp_path / "full" / "x").write_text("x")
@@ -872,6 +884,10 @@ def test_E10_the_tree_check_reads_the_git_index_without_a_subprocess(tmp_path):
     git("update-index", "--split-index")
     assert EV.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a split index")
     git("update-index", "--no-split-index")
+    git("sparse-checkout", "set", "--cone", "--sparse-index", "pkg")                     # a sparse index: entries outside the cone collapse
+    assert EV.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a sparse index")
+    git("sparse-checkout", "disable")
+    (tmp_path / "notes.txt").unlink(missing_ok=True)                                     # disable restores it: delete it again
     assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"]
     empty = tmp_path.parent / (tmp_path.name + "_empty")                                 # an index that holds no file is not "clean"
     subprocess.run(["git", "init", "-q", str(empty)], check=True)

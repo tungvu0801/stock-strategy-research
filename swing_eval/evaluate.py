@@ -70,7 +70,8 @@ def _gitdir(root: Path) -> Path:
 
 
 def _index(root: Path) -> Dict[str, Tuple[bytes, int, int]]:
-    """{path: (blob sha1, stage, mode)} from the git index file (versions 2 and 3; a split index is refused: its entries live elsewhere)."""
+    """{path: (blob sha1, stage, mode)} from the git index file (versions 2 and 3). A split or sparse index is refused: some of its entries
+    live elsewhere or are collapsed into directories."""
     data = (_gitdir(root) / "index").read_bytes()
     if data[:4] != b"DIRC":
         raise ValueError("not a git index")
@@ -90,6 +91,8 @@ def _index(root: Path) -> Dict[str, Tuple[bytes, int, int]]:
     while pos < len(data) - 20:                                                   # the extensions
         if data[pos:pos + 4] == b"link":
             raise ValueError("a split index (link extension): its shared entries are not read here")
+        if data[pos:pos + 4] == b"sdir":
+            raise ValueError("a sparse index (sdir extension): directories outside the cone are not read here")
         pos += 8 + struct.unpack(">I", data[pos + 4:pos + 8])[0]
     if not any(stage == 0 for _, stage, _ in out.values()):
         raise ValueError("the git index holds no file")

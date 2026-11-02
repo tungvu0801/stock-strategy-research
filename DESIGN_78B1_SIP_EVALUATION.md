@@ -150,8 +150,8 @@ Each step is fail-closed:
    SYNTHETIC datasets are for tests.
 4. The pre-checks pass. The checked-out commit and the clean working tree are read from the `.git` files, because product code never
    starts a process (the Stage 3.9 rule). The tree check compares every tracked file with its git index blob (a line-end-only difference is
-   not a change), and finds deleted and unmerged files and untracked `.py` files beside tracked ones. A split index and an index whose
-   checksum does not match are refused. **Limit:** a change staged but not committed is not seen without git's object store, so the operator
+   not a change), and finds deleted and unmerged files and untracked `.py` files beside tracked ones. A split index, a sparse index and an
+   index whose checksum does not match are refused. **Limit:** a change staged but not committed is not seen without git's object store, so the operator
    builds the manifest on a checkout whose `git status` is empty; `environment.json` states this scope (`tree_check`).
 5. The four pre-registered runs of `swing_pullback.plan.run()` execute, and the eight sensitivity neighbours are regenerated on the TRAIN
    view. Every socket and SQLite connection is refused meanwhile (`socket.socket`, `SocketType`, `create_connection`, `getaddrinfo`,
