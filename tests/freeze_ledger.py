@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -104,6 +104,11 @@ run): the pre-registered D.1 features and flags, the Stage 7.4 quality gate, per
 document per scan. It reads byte copies of its inputs only (the Stage 7.4 protocol) and reuses the Stage 7.0-7.4 interfaces unchanged. No
 write, transport, key, config, server, route, thread, job, network, migration, execution or UI change. The earlier stages' isolation guards
 name market_scan/ as the one declared reader. tests/test_market_scan_75.py pins it (BASE_75 / NEW_75 / EDITED_75).
+
+Stage 7.8 Part B (the swing trend pullback research baseline V1 and its control C1, synthetic data only; DESIGN_78_SWING_PULLBACK.md) adds
+one new package, swing_pullback/ (indicators, data, core, adapter, diagnostics, plan), and its synthetic fixtures. It runs the Stage 6.2
+validation harness unchanged and registers nothing: no harness adapter entry, no strategy registry entry. No config, route, scheduler,
+network, database, execution or UI change. tests/test_swing_pullback_78.py pins it (BASE_78 / NEW_78 / EDITED_78).
 """
 import hashlib
 import subprocess
@@ -234,8 +239,13 @@ NEW_75 = {"DESIGN_75_MARKET_SCAN.md", "market_scan/__init__.py", "market_scan/fe
 EDITED_75 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_dynamic_universe_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py", "tests/test_market_intel_quality_74.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier F01 unions and isolation guards, the 7.4 F tests, bookkeeping
 SEMANTIC_75: dict = {}                                                                    # Stage 7.5: no behaviour change of an existing file
 INSTRUMENTATION_75: dict = {}                                                             # Stage 7.5: no executor instrumentation
+BASE_78 = "d1de7514d551f9eb261f60117fea58586af89a9b"                                    # main: Stage 7.5 merged (PR #47)
+NEW_78 = {"DESIGN_78_SWING_PULLBACK.md", "swing_pullback/__init__.py", "swing_pullback/adapter.py", "swing_pullback/core.py", "swing_pullback/data.py", "swing_pullback/diagnostics.py", "swing_pullback/indicators.py", "swing_pullback/plan.py", "tests/swing_pullback_fixtures.py", "tests/test_swing_pullback_78.py"}   # Stage 7.8 Part B (the swing trend pullback baseline, synthetic only): its new files
+EDITED_78 = {".github/ci/pytest_groups.json", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py", "tests/test_market_intel_quality_74.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_market_scan_75.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the earlier F01 unions, the 7.5 F tests, bookkeeping
+SEMANTIC_78: dict = {}                                                                    # Stage 7.8: no behaviour change of an existing file
+INSTRUMENTATION_78: dict = {}                                                             # Stage 7.8: no executor instrumentation
 LEDGER = {
-    ".github/ci/pytest_groups.json": "910acef6f8a73205e036096130d0b6e4d61446e4feba770de45fbe36f0d991ac",
+    ".github/ci/pytest_groups.json": "557a9656f798b142da4bd023a2bd0397abf74beed50c6714d2f8055d59636523",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
@@ -273,7 +283,7 @@ LEDGER = {
     "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "7a1a6e8a6f5b55469b740ed58e77abb42825fc218a96988aa62a72e04bf76d4c",
+    "tests/test_strategy_validation_62.py": "8911a562db020c65a347f304d1f5f9c302e96de3b3fd2857c14c597ffe666f75",
     "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
