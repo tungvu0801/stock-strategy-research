@@ -1111,6 +1111,11 @@ def test_T01_the_index_tree_is_computed_as_git_writes_it_and_reveals_a_staged_ch
     if git(ROOT, "diff", "--cached", "--name-only") == "":                               # this repository, when nothing is staged
         assert CT.index_tree(ROOT) == git(ROOT, "rev-parse", "HEAD^{tree}")
     assert CT.index_tree_or_none(tmp_path / "not-a-repository") is None
+    b = git(repo, "hash-object", "-w", "--stdin", input=b"b")                            # a tree object orders its own entries (git mktree does)
+    sub = git(repo, "mktree", input=f"100644 blob {b}\tx\n".encode())
+    want = git(repo, "mktree", input=f"100755 blob {b}\ta0\n040000 tree {sub}\ta\n100644 blob {b}\ta-b\n".encode())
+    shuffled = {"a0": (0o100755, bytes.fromhex(b)), "a": {"x": (0o100644, bytes.fromhex(b))}, "a-b": (0o100644, bytes.fromhex(b))}
+    assert CT._tree_sha(shuffled).hex() == want
 
 
 def test_T02_an_index_entry_hidden_from_git_status_is_refused(tmp_path):
