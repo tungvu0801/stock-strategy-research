@@ -294,6 +294,7 @@ def build(out: Path, kind: str = "HISTORICAL") -> Path:
         "point_in_time": "prices only: every bar is a completed session; the issuer map is today's SEC ticker map (not point in time)",
         "builder": BUILDER_VERSION, "start": man["plan"]["start"], "end": man["plan"]["end"], "window": man["plan"]["window"],
         "invalid_bars_removed": removed, "sec_symbols_without_cik": missing, "plan_sha256": man["plan_sha256"], "fetch_approval": man.get("approval"),
+        "fetch_approval_check": APPROVAL_CHECK,
         "raw_manifest_sha256": hashlib.sha256((out / "manifest.json").read_bytes()).hexdigest(),
     }
     path.write_text(json.dumps({"kind": kind, "provenance": provenance, "bars": bars, "aux": {"series": series, "static": {"issuers": issuers}}},

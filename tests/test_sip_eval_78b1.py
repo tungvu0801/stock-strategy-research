@@ -12,9 +12,9 @@ database; every output under tmp_path. Operator decision lock: STAGE_7_8B1_DECIS
   M01-M05 the manifest: build / verify, tampering, pre-checks, post-checks (M-2 / M-3), the CLI
   E01-E10 the evaluator: end to end, refusals (R17, approval, pre-checks), the offline guard, an INVALID run, M-5 blocking (base and neighbour),
           SIP only under the report's provenance, the CLI, INVALID with a blocking finding, the real tree check
-  T01-T07 the code identity: the index's tree as git computes it (a staged change), entries hidden from git status, the preflight record, the
-          operator-side git preflight (swing_eval/preflight.ps1: every unclean state refused), the manifest built only from it and checked again,
-          the evaluator's own reading of the checkout (no fake)
+  T01-T08 the code identity: the index's tree as git computes it (a staged change), entries hidden from git status, the preflight record, the
+          operator-side git preflight (swing_eval/preflight.ps1: every unclean state refused, replace refs included), the manifest built only
+          from it and checked again, the evaluator's own reading of the checkout (no fake), untracked importable code anywhere
   N01-N06 the analysis: R9 stability, R10 comparison, the bootstrap, exposure, R11 eligibility, the stop and integrity findings
   X01-X02 isolation
   G01     the documents
@@ -126,8 +126,8 @@ def git_repo(path, files=None):
     path.mkdir(parents=True)
     path = Path(os.path.realpath(path))
     git(path, "init", "-q")
-    for rel, data in (files or {".gitattributes": b"* -text\n", ".gitignore": b".venv/\n*.gen.py\n", "pkg/a.py": b"x = 1\n", "pkg/b.py": b"y = 2\n",
-                                "notes.txt": b"n\n"}).items():
+    for rel, data in (files or {".gitattributes": b"* -text\n", ".gitignore": b".venv/\n__pycache__/\n*.pyc\n*.gen.py\n", "pkg/a.py": b"x = 1\n",
+                                "pkg/b.py": b"y = 2\n", "notes.txt": b"n\n"}).items():
         (path / rel).parent.mkdir(parents=True, exist_ok=True)
         (path / rel).write_bytes(data)
     git(path, "add", "-A")
@@ -432,7 +432,7 @@ def test_B04_the_build_declares_sip_keeps_raw_series_and_issuers_and_never_repai
         {"symbol": "ABBV", "date": sess[10], "ohlc": [b10["o"], b10["h"], 0.0, b10["c"]]},
         {"symbol": "ABBV", "date": sess[20], "ohlc": [b20["o"], round(b20["c"] * 0.9, 4), b20["l"], b20["c"]]}]
     assert [(x["symbol"], x["date"]) for x in removed[2:]] == [("ABBV", sess[30])] and math.isnan(removed[2]["ohlc"][0])
-    assert pv["fetch_approval"] == OK_REF
+    assert pv["fetch_approval"] == OK_REF and pv["fetch_approval_check"] == RD.APPROVAL_CHECK
     ds = load(str(p))
     assert ds.sessions == sess and [b.date for b in ds.bars["AAPL"]] == sess and len(ds.bars["ABBV"]) == len(sess) - 3
     assert [b.close for b in ds.bars["AAPL"]] == [b["c"] for b in bars["all"]["AAPL"]]
@@ -1170,10 +1170,15 @@ def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_
     assert all(b < 128 for b in raw)                                                     # Windows PowerShell 5.1 reads a BOM-less file as ANSI
     listed = re.search(r'\$Checks = @\(([^)]*)\)', raw.decode("ascii")).group(1)
     assert tuple(x.strip().strip('"') for x in listed.split(",")) == CT.PREFLIGHT_CHECKS
-    assert not re.search(r"(?i)\bgit\b[^\n]*\b(add|commit|reset|checkout|stash|push|update-index|config)\b", raw.decode("ascii").split("try {", 1)[1])
+    used = set(re.findall(r'Invoke-Git @\("([a-z-]+)"', raw.decode("ascii")))
+    assert used == {"rev-parse", "diff", "ls-files", "for-each-ref", "status", "branch", "--version"}, used   # git commands that only read
+    assert '& $script:GitExe --no-replace-objects --no-optional-locks -C $script:Top @GitArgs' in raw.decode("ascii")
     repo = git_repo(tmp_path / "r")
     (repo / ".venv").mkdir()
     (repo / ".venv" / "lib.py").write_bytes(b"v = 1\n")                                   # ignored code under .venv is allowed
+    (repo / "pkg" / "__pycache__").mkdir()
+    (repo / "pkg" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"\0" * 16)          # and the cache of a tracked source
+    before = (git(repo, "ls-files", "-s"), git(repo, "for-each-ref"), git(repo, "rev-parse", "HEAD"))
     out = tmp_path / "pf" / "preflight.json"
     code, text = preflight("-Repo", str(repo), "-Out", str(out))
     assert code == 0 and "PREFLIGHT CLEAN" in text, text
@@ -1181,20 +1186,28 @@ def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_
     assert CT.record_problems(rec) == [] and CT.preflight_problems(rec, repo) == [] and "not signed" in rec["note"]
     assert (rec["commit"], rec["tree"], rec["tool"]) == (git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD^{tree}"), CT.PREFLIGHT_TOOL)
     assert git(repo, "status", "--porcelain", "--untracked-files=all") == ""              # the preflight changed nothing
+    assert (git(repo, "ls-files", "-s"), git(repo, "for-each-ref"), git(repo, "rev-parse", "HEAD")) == before   # no index entry, ref or commit
+    assert CT.preflight_problems(rec, repo) == []
     code, text = preflight("-Repo", str(repo), "-Out", str(out))
     assert code == 2 and "never overwritten" in text, text
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    short = buf.value if ctypes.windll.kernel32.GetShortPathNameW(str(repo), buf, 1024) else str(repo)   # an 8.3 spelling, where the volume has one
     for bad, word in (([], "exactly one"), (["-Out", str(repo / "p.json")], "inside the repository"), (["-Out", str(tmp_path / "p.db")], "database path"),
-                      (["-Out", str(tmp_path / "x.json"), "-Manifest", str(tmp_path / "m.json")], "exactly one")):
+                      (["-Out", str(tmp_path / "x.json"), "-Manifest", str(tmp_path / "m.json")], "exactly one"),
+                      (["-Out", str(tmp_path / "p.db.")], "database path"), (["-Out", str(tmp_path / "q.db ")], "database path"),
+                      (["-Out", "\\\\?\\" + str(repo / "p.json")], "local drive"), (["-Out", "\\\\localhost\\C$\\x\\p.json"], "local drive"),
+                      (["-Out", short + "\\p2.json"], "inside the repository")):
         code, text = preflight("-Repo", str(repo), *bad)
         assert code == 2 and "PREFLIGHT REFUSED" in text and word in text, (bad, text)
-    assert not (repo / "p.json").exists() and not (tmp_path / "p.db").exists() and not (tmp_path / "x.json").exists()
+    assert not (repo / "p.json").exists() and not (repo / "p2.json").exists() and not list(tmp_path.glob("*.db*")) and not (tmp_path / "x.json").exists()
     code, text = preflight("-Repo", str(tmp_path / "pf"), "-Out", str(tmp_path / "y.json"))   # not a repository: git's failure refuses
     assert code == 2 and "git rev-parse --show-toplevel failed" in text and not (tmp_path / "y.json").exists(), text
 
 
 DIRTY = {"staged": "staged: pkg/a.py", "unstaged": "unstaged: pkg/a.py", "untracked": "untracked: data.csv", "unmerged": "unmerged: 100644 ",
          "assume-unchanged": "hidden_by_index_flags: h pkg/a.py", "skip-worktree": "hidden_by_index_flags: S notes.txt",
-         "ignored .py": "ignored_python: pkg/made.gen.py"}
+         "ignored .py": "ignored_code: pkg/made.gen.py", "ignored .pyc": "ignored_code: pkg/helper.pyc", "replace ref": "replace_refs: refs/replace/"}
 
 
 @needs_ps
@@ -1215,11 +1228,25 @@ def test_T05_the_operator_preflight_refuses_every_unclean_state_and_writes_nothi
         a.write_bytes(b"x = 5\n")                                                        # hidden from git status and git diff
     elif case == "skip-worktree":
         git(repo, "update-index", "--skip-worktree", "notes.txt")
-    else:
+    elif case == "ignored .py":
         (repo / "pkg" / "made.gen.py").write_bytes(b"g = 1\n")                            # ignored by .gitignore, still importable
+    elif case == "ignored .pyc":
+        (repo / "pkg" / "helper.pyc").write_bytes(b"\0" * 16)                             # a sourceless .pyc: importable too
+    else:
+        first = git(repo, "rev-parse", "HEAD")
+        a.write_bytes(b"x = 9\n")
+        git(repo, "commit", "-q", "-am", "b")
+        other = git(repo, "rev-parse", "HEAD")
+        git(repo, "reset", "-q", "--hard", first)
+        git(repo, "replace", first, other)                                                # HEAD still names the first commit ...
+        git(repo, "reset", "-q", "--hard")                                                # ... but git now shows the other one's tree
+        assert git(repo, "rev-parse", "HEAD") == first and git(repo, "rev-parse", "HEAD:") == git(repo, "rev-parse", f"{other}^{{tree}}")
+        assert git(repo, "status", "--porcelain") == ""
     out = tmp_path / "preflight.json"
     code, text = preflight("-Repo", str(repo), "-Out", str(out))
     assert code == 2 and "PREFLIGHT REFUSED" in text and DIRTY[case] in text and not out.exists(), text
+    if case == "replace ref":                                                            # and the commit's real tree differs from the checkout
+        assert "staged: pkg/a.py" in text and CT.index_tree(repo) != git(repo, "--no-replace-objects", "rev-parse", "HEAD:")
 
 
 @needs_ps
@@ -1299,6 +1326,22 @@ def test_T07_the_evaluator_reads_its_own_checkout_and_refuses_any_change_since_t
     with pytest.raises(EV.EvaluationRefused, match="code_commit"):
         attempt("committed")
     assert len(reached) == 1                                                             # every refusal came before a run
+
+
+def test_T08_an_untracked_or_ignored_importable_file_anywhere_in_the_repository_is_refused(tmp_path):
+    repo = git_repo(tmp_path / "r")
+    rec = git_record(repo)
+    for rel in ("newpkg/__init__.py", "pkg/a/__init__.py", "json.pyc", "pkg/helper.pyd", "pkg/tool.pyw", "deep/er/ext.so"):
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_bytes(b"\0")
+    for rel in (".venv/lib/site.py", "pkg/__pycache__/a.cpython-312.pyc", "notes2.txt"):          # the environment, a cache, not code
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_bytes(b"\0")
+    got = ["untracked: deep/er/ext.so", "untracked: json.pyc", "untracked: newpkg/__init__.py", "untracked: pkg/a/__init__.py",
+           "untracked: pkg/helper.pyd", "untracked: pkg/tool.pyw"]
+    assert sorted(CT.tree_problems(repo)) == got                                         # a new package beside pkg/a.py would shadow it
+    assert sorted(CT.preflight_problems(rec, repo)) == [f"working tree: {x}" for x in got]
+    assert {".py", ".pyc", ".pyd", ".pyw", ".so"} <= set(CT.CODE_SUFFIXES) and set(CT.SKIP_DIRS) == {".git", ".venv", "__pycache__"}
 
 
 # ============================================================================================================ the analysis (N)
@@ -1485,7 +1528,8 @@ def test_G01_the_documents_state_the_lock_the_gates_and_the_limits():
     for s in ("STAGE_7_8B1_DECISION_LOCK.md", "OPERATOR-APPROVAL:", "volume_feed", "2016-01-04", "SIP", "IEX builder", "byte-identical", "manifest",
               "pre-run", "BLOCKED_VALIDATION_FINDING", "non-positive stop", "not a significance test", "TRAIN observations", "NO_ADDED_VALUE",
               "$50", "not a verified bound", "REGULATORY_FEE_HISTORY_MISSING", "evidence", "outside the repository", "synthetic", "No SIP history was fetched",
-              "checked for its form only", "not cryptographic authorization", "swing_eval/preflight.ps1", "code_tree", "staged", "--preflight"):
+              "checked for its form only", "not cryptographic authorization", "swing_eval/preflight.ps1", "code_tree", "staged", "--preflight",
+              "--no-replace-objects", "importable", "not signed", "outside the repository is not checked"):
         assert s in doc, s
     d78 = (ROOT / "DESIGN_78_SWING_PULLBACK.md").read_text(encoding="utf-8")
     assert "the close of the 10th bar of the symbol in the trade" in d78 and "its symbol's next `max_hold_bars` bars" in d78

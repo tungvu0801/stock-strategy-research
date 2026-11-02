@@ -43,7 +43,8 @@ and synthetic-only tests. It is not approval of a SIP backfill or a real-data ev
   * **What it does not.** They are **not cryptographic authorization**. Anyone who can run the commands can type a reference and compute a
     sha256, so the real control is the operator's procedure: approve a sha256 in writing, then supply it.
   * **Where it is recorded.** Every output that records a reference also records `approval_check`, which states all this
-    (`research_data.APPROVAL_CHECK`): the fetch manifest, the pre-run report, `summary.json`, `environment.json` and the summary memo.
+    (`research_data.APPROVAL_CHECK`): the fetch manifest, the built dataset's provenance (`fetch_approval_check`), the pre-run report,
+    `summary.json`, `environment.json` and the summary memo.
 
 ## 2. The SIP builder (`research_data/sip_bundle.py`)
 
@@ -135,15 +136,30 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
   * The evidence location.
 * **Preparation: an enforced clean-tree preflight.**
   * **The script.** `python -m swing_eval.manifest build` requires `--preflight FILE`, the record written by
-    `swing_eval/preflight.ps1 -Out FILE`. The script runs git (read-only commands, `--no-optional-locks`) and refuses, writing nothing, unless
-    all seven checks find nothing:
+    `swing_eval/preflight.ps1 -Out FILE`. The script runs git and refuses, writing nothing, unless all eight checks find nothing:
     * staged changes (`git diff --cached HEAD`), unstaged changes (`git diff`), untracked files of any type, unmerged paths;
     * index entries hidden from `git status` by a flag (assume-unchanged, skip-worktree);
-    * ignored `.py` files outside `.venv/` (ignored code can still be imported);
+    * ignored code files outside `.venv/` and `__pycache__/`: `.py`, `.pyw`, `.pyc`, `.pyd`, `.so` (ignored code can still be imported;
+      a sourceless `.pyc` too);
+    * replace refs (`refs/replace/*`);
     * a non-empty `git status --porcelain --untracked-files=all`.
 
-    The record holds the commit (`git rev-parse HEAD`), its tree (`git rev-parse HEAD:`) and every check as NONE. The record itself must be
-    written outside the repository.
+    The record holds the commit (`git rev-parse HEAD`), its tree (`git rev-parse HEAD:`) and every check as NONE.
+  * **How git is run.**
+    * Only reading commands are used: `rev-parse`, `diff`, `ls-files`, `for-each-ref`, `status`, `branch`. Nothing is staged, committed,
+      checked out or configured. `git diff` may refresh the index's cached file timestamps; it never changes an entry.
+    * Every call runs with `--no-replace-objects` (and `GIT_NO_REPLACE_OBJECTS=1`), because a replace ref can make `HEAD:` show another
+      commit's tree while `git status` stays empty.
+    * The variables that would redirect git (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+      `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`) are removed for the
+      script's process.
+  * **Where the record goes.** It must be written to a new file on a local drive, outside the repository, with no database name:
+    * the path is normalised as Windows does (trailing dots and spaces dropped);
+    * 8.3 short names are expanded before the comparison;
+    * `\\?\` and UNC paths are refused.
+
+    A junction is not resolved. A record placed inside the repository through one would still be an untracked file, so the next preflight
+    (`-Manifest`, before approval) refuses.
   * **Why PowerShell, and why here.** The Stage 3.9 rule forbids `subprocess` in any non-test Python module, so the git checks are PowerShell.
     The script lives in the stage's own package because `scripts/` is pinned by the Stage 6.0–6.10A freeze tests.
   * **The re-check without git.** The manifest CLI checks the record against this checkout through `swing_eval/codetree.py`:
@@ -152,7 +168,9 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
     * its tree is the tree computed from the git index;
     * the working tree equals the index.
 
-    A change made after the preflight is therefore refused too: a new commit, a staged change, an unstaged change, an untracked `.py` file.
+    A change made after the preflight is therefore refused too: a new commit, a staged change, an unstaged change, or an untracked or ignored
+    importable file anywhere in the repository. That last case covers a new package directory, which would shadow a tracked module of the
+    same name, and a sourceless `.pyc`. Only `.git`, `.venv` and `__pycache__` are not scanned.
   * **What the manifest pins.** Only then is the manifest built. It pins `code_commit` and `code_tree` and carries the record, so the manifest
     sha256 that the operator approves names the exact committed tree.
   * **Limits (procedural).**
@@ -161,6 +179,10 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
       answer in the preflight.
     * A hand-written record, or a direct call to `manifest.build()`, skips the script. Even then, the record must match the checkout's
       commit and index tree.
+    * Code outside the repository is not checked: `.venv`, site-packages and `PYTHONPATH`. `environment.json` records the Python version
+      only.
+    * A deliberately crafted `__pycache__` file is not checked either. Python loads a cached `.pyc` whose header matches its tracked
+      source's size and time.
 
     As an independent check before approving, `swing_eval/preflight.ps1 -Manifest FILE` repeats the git checks. It confirms that
     `code_commit` is the checked-out commit and that `git rev-parse <code_commit>^{tree}` equals `code_tree`. It writes nothing.
@@ -206,7 +228,9 @@ Each step is fail-closed:
    * the tree computed from the git index (the tree `git write-tree` would write; nothing is written) equals `code_tree`, so nothing is staged;
    * the working tree equals the index:
      * every tracked file matches its index blob (a line-end-only difference is not a change);
-     * no file is deleted or unmerged, and no untracked `.py` file sits beside tracked ones;
+     * no file is deleted or unmerged;
+     * there is no untracked or ignored importable file (`.py`, `.pyw`, `.pyc`, `.pyd`, `.so`) anywhere outside `.git`, `.venv` and
+       `__pycache__`;
      * no entry is hidden by an index flag (assume-unchanged, skip-worktree, intent-to-add);
      * there is no symlink or submodule.
 
@@ -316,7 +340,7 @@ shapes.
 | Q | the report: CLEAN, every BLOCK, every FINDING, the requested window, raw volume gaps, the approval gate and record, no strategy computation |
 | M | the manifest: verify (SIP builder only, protected overrides, the report's provenance), tamper detection even with a recomputed hash, pre-checks, post-checks per field, the CLI |
 | E | the evaluator: end to end with the evidence index verified, every refusal before a run, the offline guard (every entry point, a swallowed attempt), INVALID and BLOCKED marked NOT ACCEPTED, M-5 blocking from a base run and from a TRAIN-view neighbour alone, the real tree check |
-| T | the code identity: the index's tree computed as git writes it (name order, modes, a staged change), entries hidden from `git status`, the preflight record against the checkout, the operator preflight on temporary repositories (every unclean state refused, nothing written), the manifest built only from it, and `-Manifest` catching a manifest that names another tree |
+| T | the code identity: the index's tree computed as git writes it (name order, modes, a staged change), entries hidden from `git status`, the preflight record against the checkout, the operator preflight on temporary repositories (every unclean state refused, replace refs included, nothing written), the manifest built only from it, `-Manifest` catching a manifest that names another tree, the evaluator's own reading of a checkout, untracked importable code anywhere |
 | N | the analysis on crafted records |
 | X | isolation |
 | G | this document |

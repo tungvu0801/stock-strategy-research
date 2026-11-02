@@ -3,16 +3,20 @@
   Stage 7.8B-1: the operator-side clean-tree preflight of an evaluation manifest (DESIGN_78B1_SIP_EVALUATION.md section 5).
 
 .DESCRIPTION
-  Asks git (read-only commands, --no-optional-locks) whether the working tree is exactly the checked-out commit, and refuses otherwise:
-  nothing staged, nothing unstaged, no untracked file, no unmerged path, no index entry hidden from git status (assume-unchanged,
-  skip-worktree), no ignored .py file outside .venv, and an empty `git status --porcelain`. Product code never starts a process (the Stage
-  3.9 rule), so these git checks live here, outside it.
+  Asks git whether the working tree is exactly the checked-out commit, and refuses otherwise: nothing staged, nothing unstaged, no untracked
+  file, no unmerged path, no index entry hidden from git status (assume-unchanged, skip-worktree), no ignored code file (.py, .pyw, .pyc,
+  .pyd, .so) outside .venv/ and __pycache__/, no replace ref, and an empty `git status --porcelain`. Product code never starts a process (the
+  Stage 3.9 rule), so these git checks live here, outside it.
+
+  Every git command reads: nothing is staged, committed, checked out or configured (`git diff` may refresh the index's cached file timestamps,
+  never an entry). Each runs with --no-replace-objects (a replace ref could otherwise show another commit's tree), and the variables that
+  redirect git (GIT_DIR, GIT_INDEX_FILE, ...) are removed for this process.
 
   -Out FILE       writes the CLEAN record (commit, tree, every check NONE) that `python -m swing_eval.manifest build --preflight FILE`
-                  requires; the manifest CLI re-checks the record against this checkout. FILE must be new, outside the repository and not a
-                  database name. Nothing is written when a check fails.
-  -Manifest FILE  the same checks, then the manifest's code_commit must be the checked-out commit and its code_tree that commit's tree
-                  (git rev-parse). Writes nothing. Run it before approving a manifest and again before the evaluation.
+                  requires; the manifest CLI re-checks the record against this checkout. FILE must be new, on a local drive, outside the
+                  repository and not a database name. Nothing is written when a check fails.
+  -Manifest FILE  the same checks, then the manifest's code_commit must be the checked-out commit and its code_tree that commit's tree.
+                  Writes nothing. Run it before approving a manifest and again before the evaluation.
 
   The record is a procedural control: git's answers on this machine, not signed.
   Exit codes: 0 CLEAN (with -Manifest: and the manifest's code matches), 2 REFUSED (every finding printed).
@@ -30,8 +34,13 @@ param(
     [string]$Git = ""
 )
 $ErrorActionPreference = "Stop"
-$Checks = @("staged", "unstaged", "untracked", "unmerged", "hidden_by_index_flags", "ignored_python", "status")   # = swing_eval.codetree.PREFLIGHT_CHECKS
-$DbSuffixes = @(".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal")                                   # = research_data.DB_SUFFIXES
+$Checks = @("staged", "unstaged", "untracked", "unmerged", "hidden_by_index_flags", "ignored_code", "replace_refs", "status")   # = swing_eval.codetree.PREFLIGHT_CHECKS
+$DbSuffixes = @(".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal")                                                 # = research_data.DB_SUFFIXES
+foreach ($v in @("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR",
+                 "GIT_NAMESPACE", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")) {
+    Remove-Item -LiteralPath "Env:$v" -ErrorAction SilentlyContinue
+}
+$env:GIT_NO_REPLACE_OBJECTS = "1"
 
 function Find-Git([string]$Given) {
     if ($Given) { return $Given }
@@ -45,9 +54,21 @@ function Find-Git([string]$Given) {
 
 function Invoke-Git([string[]]$GitArgs) {
     $ErrorActionPreference = "Continue"                     # a git warning on stderr is not a failure; the exit code is
-    $lines = & $script:GitExe --no-optional-locks -C $script:Top @GitArgs
+    $lines = & $script:GitExe --no-replace-objects --no-optional-locks -C $script:Top @GitArgs
     if ($LASTEXITCODE -ne 0) { throw "git $($GitArgs -join ' ') failed (exit $LASTEXITCODE)" }
     return @($lines | Where-Object { $_ -ne "" })
+}
+
+function Expand-LongPath([string]$Path) {
+    # every 8.3 short component becomes its long name: a directory listing matches a short name too and returns the long one
+    $parts = $Path.TrimEnd('\').Split('\')
+    $cur = $parts[0] + '\'
+    for ($i = 1; $i -lt $parts.Count; $i++) {
+        $hit = @()
+        if (Test-Path -LiteralPath $cur -PathType Container) { $hit = @([System.IO.Directory]::GetFileSystemEntries($cur, $parts[$i])) }
+        if ($hit.Count -eq 1) { $cur = $hit[0] } else { $cur = Join-Path $cur $parts[$i] }
+    }
+    return $cur
 }
 
 function Refuse([string[]]$Why) {
@@ -72,7 +93,9 @@ try {
         "untracked" = @(Invoke-Git @("ls-files", "--others", "--exclude-standard"))
         "unmerged" = @(Invoke-Git @("ls-files", "--unmerged"))
         "hidden_by_index_flags" = @(Invoke-Git @("ls-files", "-v") | Where-Object { $_ -cmatch '^([a-z]|S) ' })
-        "ignored_python" = @(Invoke-Git @("ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py") | Where-Object { $_ -notmatch '^\.venv/' })
+        "ignored_code" = @(Invoke-Git @("ls-files", "--others", "--ignored", "--exclude-standard", "--", "*.py", "*.pyw", "*.pyc", "*.pyd", "*.so") |
+                           Where-Object { $_ -notmatch '^\.venv/' -and $_ -notmatch '(^|/)__pycache__/' })
+        "replace_refs" = @(Invoke-Git @("for-each-ref", "--format=%(refname)", "refs/replace/"))
         "status" = @(Invoke-Git @("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"))
     }
     foreach ($name in $Checks) {
@@ -96,14 +119,16 @@ try {
             if ($mt -ne $ct) { $why += "the manifest's code_tree $mt is not its commit's tree $ct" }
         }
         if ($why.Count -gt 0) { Refuse $why }
-        Write-Output "PREFLIGHT CLEAN: the manifest's code is the checked-out commit $commit, tree $tree (manifest sha256 $($m.manifest_sha256))"
+        Write-Output "PREFLIGHT CLEAN: the manifest's code is the checked-out commit $commit, tree $tree (its recorded manifest_sha256 $($m.manifest_sha256); the evaluator recomputes it)"
         exit 0
     }
 
-    $target = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
-    $topWin = [System.IO.Path]::GetFullPath(($Top -replace '/', '\')).TrimEnd('\')
+    $target = [System.IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out))   # trailing dots / spaces dropped, as Windows does
+    if ($target -notmatch '^[A-Za-z]:\\[^\\]') { Refuse @("${Out}: -Out must be a path on a local drive (X:\...)") }
+    $target = Expand-LongPath $target
+    $topWin = Expand-LongPath ([System.IO.Path]::GetFullPath(($Top -replace '/', '\')))
     $leaf = (Split-Path -Leaf $target).ToLowerInvariant()
-    if ($target.StartsWith($topWin + "\", [System.StringComparison]::OrdinalIgnoreCase)) { Refuse @("$target is inside the repository (R17)") }
+    if ($target.StartsWith($topWin.TrimEnd('\') + "\", [System.StringComparison]::OrdinalIgnoreCase)) { Refuse @("$target is inside the repository (R17)") }
     foreach ($s in $DbSuffixes) { if ($leaf.EndsWith($s)) { Refuse @("${leaf}: a database path (R16: JSON evidence only)") } }
     if (Test-Path -LiteralPath $target) { Refuse @("$target exists (a preflight record is never overwritten)") }
     $branch = @(Invoke-Git @("branch", "--show-current"))

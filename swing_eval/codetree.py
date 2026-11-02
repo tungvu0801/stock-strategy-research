@@ -6,10 +6,14 @@ What product code cannot read without git's object store is whether that tree is
 staged but not committed. The operator-side preflight `swing_eval/preflight.ps1` asks git (status, diff, ls-files, rev-parse) and writes a
 CLEAN record with the commit and its tree; the manifest CLI requires that record and re-checks here that it still describes this checkout
 (the checked-out commit, the index's computed tree, the working tree against the index). The manifest then pins the commit and the tree, and
-the evaluator compares both again before any run. The record is a procedural control: git's answers on the operator's machine, not signed."""
+the evaluator compares both again before any run. The record is a procedural control: git's answers on the operator's machine, not signed.
+
+Not covered: code outside the repository (.venv, site-packages, PYTHONPATH), and a deliberately crafted __pycache__ file (Python loads a
+cached .pyc whose header matches its tracked source's size and time)."""
 from __future__ import annotations
 
 import hashlib
+import importlib.machinery
 import os
 import re
 import struct
@@ -22,10 +26,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT_KIND = "sip_eval_preflight"
 PREFLIGHT_VERSION = 1
 PREFLIGHT_TOOL = "swing_eval/preflight.ps1"
-PREFLIGHT_CHECKS = ("staged", "unstaged", "untracked", "unmerged", "hidden_by_index_flags", "ignored_python", "status")   # each must be NONE
-TREE_CHECK = ("the working tree against the git index (modified, deleted, unmerged, untracked .py beside tracked ones; an entry hidden by an "
-              "index flag, a symlink or a submodule is refused) and the index's computed tree against the manifest's code_tree (a staged "
-              "change); that code_tree is the commit's tree as git reported it in the operator-side preflight")
+PREFLIGHT_CHECKS = ("staged", "unstaged", "untracked", "unmerged", "hidden_by_index_flags", "ignored_code", "replace_refs", "status")  # each NONE
+CODE_SUFFIXES = tuple(sorted({s.lower() for s in importlib.machinery.all_suffixes()} | {".py", ".pyw", ".pyc", ".pyd", ".so"}))  # importable
+SKIP_DIRS = (".git", ".venv", "__pycache__")       # not scanned for untracked code: git's own files, the environment, caches of tracked sources
+TREE_CHECK = ("the working tree against the git index (modified, deleted, unmerged; an untracked or ignored importable file anywhere outside "
+              ".git, .venv and __pycache__; an entry hidden by an index flag, a symlink or a submodule is refused) and the index's computed "
+              "tree against the manifest's code_tree (a staged change); that code_tree is the commit's tree as git reported it in the "
+              "operator-side preflight; code outside the repository is not checked")
 _SHA1 = re.compile(r"[0-9a-f]{40}")
 _HIDDEN = ((0x8000, 0, "assume-unchanged"), (0, 0x4000, "skip-worktree"), (0, 0x2000, "intent-to-add"))   # (flags bit, extended bit, name)
 
@@ -78,7 +85,8 @@ def tree_problems(root: Optional[Path] = None) -> List[str]:
     """The working tree against the git index. A problem: an unreadable index, an unmerged entry, an entry hidden from `git status` by an
     index flag (assume-unchanged, skip-worktree, intent-to-add), a symlink or a submodule (not checked here), a tracked file deleted or changed
     (neither its content nor its content with CRLF line ends read as LF matches the index blob: a line-end-only difference is not a change
-    here), an untracked .py file beside tracked ones. A staged change is index_tree()'s part."""
+    here), an untracked or ignored importable file (CODE_SUFFIXES) anywhere in the repository outside SKIP_DIRS: a new package directory or a
+    sourceless .pyc is code too. A staged change is index_tree()'s part."""
     root = Path(root or ROOT)
     try:
         idx = _index(root)
@@ -102,11 +110,11 @@ def tree_problems(root: Optional[Path] = None) -> List[str]:
         content = p.read_bytes()
         if sha not in (_blob(content), _blob(content.replace(b"\r\n", b"\n"))):
             problems.append(f"modified: {rel}")
-    code_dirs = {str(Path(rel).parent.as_posix()) for rel in idx if rel.endswith(".py")}
-    for d in sorted(code_dirs):
-        for p in sorted((root / d).glob("*.py")):
-            rel = p.relative_to(root).as_posix()
-            if rel not in idx:
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS)
+        for f in sorted(files):
+            rel = (Path(d) / f).relative_to(root).as_posix()
+            if f.lower().endswith(CODE_SUFFIXES) and rel not in idx:
                 problems.append(f"untracked: {rel}")
     return problems
 
@@ -172,7 +180,8 @@ def record_problems(rec) -> List[str]:
 def preflight_problems(rec, root: Optional[Path] = None) -> List[str]:
     """A preflight record against this checkout, before a manifest is built: its form, its repository, the checked-out commit, the index's
     computed tree, and the working tree against the index. A change made after the preflight is caught here (a new commit, a staged change,
-    an unstaged change, an untracked .py file); that the record's tree is its commit's tree is git's answer in the preflight."""
+    an unstaged change, an untracked or ignored importable file); that the record's tree is its commit's tree is git's answer in the
+    preflight."""
     root = Path(root or ROOT)
     p = record_problems(rec)
     if not isinstance(rec, dict):
