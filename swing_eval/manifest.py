@@ -1,14 +1,18 @@
 """swing_eval/manifest.py — the versioned evaluation manifest (decision lock R14): one frozen JSON document, with its own sha256, that pins
 everything the strategy's pre-registration hash does not cover. The strategy hash is referenced, never changed.
 
-    python -m swing_eval.manifest build --dataset FILE --report REPORT.json --out MANIFEST.json [--evidence-location DIR] [--provenance OVERRIDE.json]
-                                        [--created-at ISO]
+    python -m swing_eval.manifest build --dataset FILE --report REPORT.json --preflight PREFLIGHT.json --out MANIFEST.json
+                                        [--evidence-location DIR] [--provenance OVERRIDE.json] [--created-at ISO]
 
+build         only from a CLEAN record of the operator-side git preflight (swing_eval/preflight.ps1 -Out), re-checked against this checkout
+              (swing_eval.codetree.preflight_problems): the manifest pins the commit and its tree, so its sha256 names the exact committed code
 verify()      the manifest agrees with the strategy code (pre-registration hash, the four runs and their friction) and with the locked values;
               the dataset is a sip_daily_v1 SIP dataset (R14) whose override sets no protected field, and the pre-run report was made under
-              the same provenance (override, dataset id, volume feed, kind) as the one evaluated
-pre_checks()  before any run: the code's hash and commit, a clean tree, the dataset file's sha256 and content, the accepted report, which
-              must equal the report re-derived from the dataset (its own sha256 has no key: an edited report is caught here)
+              the same provenance (override, dataset id, volume feed, kind) as the one evaluated; it carries a CLEAN preflight record of its
+              code_commit and code_tree
+pre_checks()  before any run: the code's hash, the checked-out commit, the index's tree (code_tree: nothing staged), a clean working tree,
+              the dataset file's sha256 and content, the accepted report, which must equal the report re-derived from the dataset (its own
+              sha256 has no key: an edited report is caught here)
 post_checks() after each run: the run record's friction, commission, fee, split, sizing, arms, adapter, execution assumptions, cost label,
               pre-registration hash, dataset and harness version equal the manifest's (final-review M-2 / M-3). Any mismatch: the run is INVALID."""
 from __future__ import annotations
@@ -23,6 +27,7 @@ import swing_pullback as SP
 import strategy_validation as SV
 from research_data import BUILDER_VERSION, FEED, output_problem
 from swing_eval import ARMS, EVALUATOR_VERSION, EVIDENCE_ROOT, EXECUTION, LOCK, MANIFEST_VERSION, R9, R10, R11, R12, R13, SIZING, TRAIN_RATIO
+from swing_eval import codetree as CT
 from swing_pullback import plan as PL
 
 VERSIONS = {"V1": (SP.STRATEGY_ID, SP.STRATEGY_VERSION), "C1": (SP.CONTROL_ID, SP.CONTROL_VERSION)}
@@ -64,12 +69,14 @@ def _content(report: dict) -> dict:
     return r
 
 
-def build(*, dataset_path: str, report: dict, code_commit: str, created_at: str, evidence_location: str, provenance: Optional[dict] = None) -> dict:
+def build(*, dataset_path: str, report: dict, code_commit: str, code_tree: str, preflight: dict, created_at: str, evidence_location: str,
+          provenance: Optional[dict] = None) -> dict:
     from strategy_validation.dataset import load
     ds = load(str(dataset_path), provenance=provenance)
     m = {"manifest_version": MANIFEST_VERSION, "evaluator": EVALUATOR_VERSION, "lock": LOCK, "created_at": created_at,
          "strategy": {"v1": list(VERSIONS["V1"]), "c1": list(VERSIONS["C1"]), "preregistration_hash": SP.preregistration_hash(), "code_commit": code_commit,
-                      "harness_validation_version": SV.VERSION},
+                      "code_tree": code_tree, "harness_validation_version": SV.VERSION},
+         "code_preflight": dict(preflight),
          "dataset": {"file_sha256": file_sha256(dataset_path), "kind": ds.kind, "dataset_id": ds.dataset_id, "volume_feed": ds.declared.get("volume_feed"),
                      "provenance_override": dict(provenance or {}), "builder": ds.declared.get("builder"),
                      "expected": {"symbols": len(ds.bars), "sessions": len(ds.sessions), "start": ds.start, "end": ds.end}},
@@ -98,6 +105,12 @@ def verify(m: dict) -> List[str]:
         p.append("the strategy ids / versions differ")
     if st.get("harness_validation_version") != SV.VERSION:
         p.append("the harness validation version differs")
+    pf = m.get("code_preflight")
+    pp = CT.record_problems(pf)
+    if pp:
+        p += [f"code preflight: {x}" for x in pp]
+    elif (pf["commit"], pf["tree"]) != (st.get("code_commit"), st.get("code_tree")):
+        p.append("the code preflight's commit / tree are not the manifest's code_commit / code_tree")
     ex = m.get("experiment") or {}
     if ex.get("runs") != runs():
         p.append("the runs are not exactly the four pre-registered runs with their friction")
@@ -127,11 +140,13 @@ def verify(m: dict) -> List[str]:
     return p
 
 
-def pre_checks(m: dict, *, dataset_path: str, dataset, report: dict, code_commit: Optional[str], tree_clean: bool) -> List[str]:
+def pre_checks(m: dict, *, dataset_path: str, dataset, report: dict, code_commit: Optional[str], code_tree: Optional[str], tree_clean: bool) -> List[str]:
     p = verify(m)
     st, d = m.get("strategy") or {}, m.get("dataset") or {}
     if not code_commit or code_commit != st.get("code_commit"):
         p.append("the checked-out commit differs from the manifest's code_commit")
+    if not code_tree or code_tree != st.get("code_tree"):
+        p.append("the git index's tree differs from the manifest's code_tree (a staged change, or another commit)")
     if not tree_clean:
         p.append("the working tree is not clean")
     if file_sha256(dataset_path) != d.get("file_sha256"):
@@ -207,23 +222,33 @@ def main(argv=None) -> int:
     b = sub.add_parser("build")
     b.add_argument("--dataset", required=True)
     b.add_argument("--report", required=True)
+    b.add_argument("--preflight", required=True, help="the CLEAN record of swing_eval/preflight.ps1 -Out (git's clean-tree checks)")
     b.add_argument("--out", required=True)
     b.add_argument("--evidence-location", default=None, help="default: EVIDENCE_ROOT/<UTC timestamp> (R17)")
     b.add_argument("--provenance", default=None)
     b.add_argument("--created-at", default=None)
     a = ap.parse_args(argv)
     from datetime import datetime, timezone
-    from strategy_validation.engine import git_commit_sha
-    rep = json.loads(Path(a.report).read_text(encoding="utf-8"))
-    prov = json.loads(Path(a.provenance).read_text(encoding="utf-8")) if a.provenance else None
-    created = a.created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    location = a.evidence_location or str(Path(EVIDENCE_ROOT) / created.replace(":", "").replace("+0000", "Z"))
-    m = build(dataset_path=a.dataset, report=rep, code_commit=git_commit_sha() or "", provenance=prov, evidence_location=location, created_at=created)
     out = Path(a.out)
     problem = output_problem(out)
     if problem or out.exists():
         print(f"REFUSED: {problem or f'{out} exists (a manifest is never overwritten)'}")
         return 2
+    try:
+        pf = json.loads(Path(a.preflight).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        print(f"REFUSED: the preflight record cannot be read: {type(exc).__name__}")
+        return 2
+    pp = CT.preflight_problems(pf)
+    if pp:
+        print(f"REFUSED: the clean-tree preflight does not describe this checkout: {pp[:20]}")
+        return 2
+    rep = json.loads(Path(a.report).read_text(encoding="utf-8"))
+    prov = json.loads(Path(a.provenance).read_text(encoding="utf-8")) if a.provenance else None
+    created = a.created_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    location = a.evidence_location or str(Path(EVIDENCE_ROOT) / created.replace(":", "").replace("+0000", "Z"))
+    m = build(dataset_path=a.dataset, report=rep, code_commit=pf["commit"], code_tree=pf["tree"], preflight=pf, provenance=prov,
+              evidence_location=location, created_at=created)
     out.write_text(json.dumps(m, indent=1, sort_keys=True), encoding="utf-8")
     problems = verify(m)
     print(f"manifest sha256 {m['manifest_sha256']}" + (f" - PROBLEMS: {problems}" if problems else " - verified"))

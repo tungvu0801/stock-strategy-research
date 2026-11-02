@@ -8,10 +8,11 @@
 plan writes every request the fetch may make: per adjustment (all, raw, split) the 81 research stocks + SPY in chunks of 20, feed=sip, one
 window [start 00:00Z, the day after end 00:00Z) (the endpoint's end is inclusive and a daily bar is stamped midnight New York, so this end
 takes the end session and nothing after it), plus SEC's company_tickers.json (ticker -> CIK). fetch REFUSES without an operator approval
-reference and the plan's sha256; it only GETs the plan's URLs, follows next_page_token inside the same request (at most MAX_PAGES_PER_REQUEST
-pages, else it stops), keeps every response gzipped with its sha256 and never writes or prints a credential. build re-creates the dataset
-from the archived responses alone (every sha256 verified), declares volume_feed "SIP", and never repairs a bar: an invalid bar becomes a gap,
-listed. The Stage 6.4 IEX builder (value_quality/ingest.py) is not used and not changed."""
+reference and the plan's sha256 (procedural: the reference's form is checked, the sha256 must be the plan's own; APPROVAL_CHECK); it only
+GETs the plan's URLs, follows next_page_token inside the same request (at most MAX_PAGES_PER_REQUEST pages, else it stops), keeps every
+response gzipped with its sha256 and never writes or prints a credential. build re-creates the dataset from the archived responses alone (every
+sha256 verified), declares volume_feed "SIP", and never repairs a bar: an invalid bar becomes a gap, listed. The Stage 6.4 IEX builder
+(value_quality/ingest.py) is not used and not changed."""
 from __future__ import annotations
 
 import argparse
@@ -25,8 +26,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from research_data import (ADJUSTMENTS, ALLOWED_URLS, API_FEED, BARS_URL, BENCHMARK, BUILDER_VERSION, CHUNK, DAILY_BAR_STAMPS, DEFAULT_START, FEED,
-                           MAX_PAGES_PER_REQUEST, MIN_INTERVAL_S, PAGE_LIMIT, RESEARCH_UNIVERSE, SEC_MIN_INTERVAL_S, SEC_TICKERS_URL, approved,
+from research_data import (ADJUSTMENTS, ALLOWED_URLS, API_FEED, APPROVAL_CHECK, BARS_URL, BENCHMARK, BUILDER_VERSION, CHUNK, DAILY_BAR_STAMPS,
+                           DEFAULT_START, FEED, MAX_PAGES_PER_REQUEST, MIN_INTERVAL_S, PAGE_LIMIT, RESEARCH_UNIVERSE, SEC_MIN_INTERVAL_S, SEC_TICKERS_URL, approved,
                            output_problem)
 
 BUNDLE_NAME = "sip_bundle.json"
@@ -190,8 +191,8 @@ def fetch(plan: dict, *, out: Path, approval: str, plan_sha256: str, transport: 
 def _write_manifest(out: Path, plan: dict, plan_sha256: str, approval: str, responses: List[dict], *, complete: bool, network: bool,
                     stopped: Optional[str]) -> Path:
     path = Path(out) / "manifest.json"
-    path.write_text(json.dumps({"builder": BUILDER_VERSION, "plan": plan, "plan_sha256": plan_sha256, "approval": approval, "complete": complete,
-                                "network": network, "stopped": stopped, "retrieved_at": max((r["fetched_at"] for r in responses), default=None), "responses": responses},
+    path.write_text(json.dumps({"builder": BUILDER_VERSION, "plan": plan, "plan_sha256": plan_sha256, "approval": approval, "approval_check": APPROVAL_CHECK,
+                                "complete": complete, "network": network, "stopped": stopped, "retrieved_at": max((r["fetched_at"] for r in responses), default=None), "responses": responses},
                                indent=1, sort_keys=True), encoding="utf-8")
     return path
 

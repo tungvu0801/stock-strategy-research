@@ -4,7 +4,9 @@ calendar for 2016-2026, and the read-only pre-run data-quality report (DESIGN_78
 
 The Stage 6.4 IEX builder (value_quality/ingest.py), the global feed setting (config.DATA_FEED) and every live path are untouched. Nothing here
 runs on its own: fetching needs an operator approval reference AND the sha256 of a pre-generated request plan; a report on a HISTORICAL dataset
-needs an approval reference too. No broker or trading endpoint exists here: market data and SEC public files only. Nothing writes a database.
+needs an approval reference too. Those are procedural controls, not authorization (APPROVAL_CHECK): the reference is checked for its form
+only, and the sha256 only names which plan runs. No broker or trading endpoint exists here: market data and SEC public files only. Nothing
+writes a database.
 """
 import os
 from pathlib import Path
@@ -29,10 +31,13 @@ MIN_INTERVAL_S = 0.35                            # < 200 requests per minute (th
 SEC_MIN_INTERVAL_S = 0.15                        # < 10 requests per second (SEC fair-access policy)
 DAILY_BAR_STAMPS = ("T04:00:00Z", "T05:00:00Z")  # a daily bar is stamped midnight New York (EDT / EST); anything else refuses the build
 APPROVAL_PREFIX = "OPERATOR-APPROVAL:"           # a real fetch or a report on HISTORICAL data needs "OPERATOR-APPROVAL:<reference>"
+APPROVAL_CHECK = ("form only: an OPERATOR-APPROVAL: reference is not looked up, signed or verified against an approval record; a supplied plan or "
+                  "manifest sha256 is compared with the file's own; a procedural record, not cryptographic authorization")   # recorded beside every reference
 DB_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal")   # R16: never written
 
 
 def approved(reference) -> bool:
+    """The reference's FORM only (APPROVAL_CHECK): the prefix and at least four more characters. Nothing is looked up."""
     return isinstance(reference, str) and reference.startswith(APPROVAL_PREFIX) and len(reference) > len(APPROVAL_PREFIX) + 3
 
 

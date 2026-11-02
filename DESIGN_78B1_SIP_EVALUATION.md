@@ -12,12 +12,14 @@ and synthetic-only tests. It is not approval of a SIP backfill or a real-data ev
 
 | Package | Module | Role |
 |---|---|---|
-| `research_data/` | `__init__.py` | builder constants, the two allowed URLs, the approval-reference check, the output guard |
+| `research_data/` | `__init__.py` | builder constants, the two allowed URLs, the approval-reference form check, the output guard |
 | | `nyse_calendar.py` | the static NYSE closure table 2016–2026 (R8) |
 | | `sip_bundle.py` | the SIP daily-bar dataset builder: `plan`, `fetch`, `build` |
 | | `quality.py` | the read-only pre-run data-quality report |
 | `swing_eval/` | `__init__.py` | the locked values R9–R13 |
 | | `manifest.py` | the versioned evaluation manifest (R14) and its checks |
+| | `codetree.py` | the checked-out code read from the `.git` files: the commit, the index's computed tree, the working tree against the index |
+| | `preflight.ps1` | the operator-side clean-tree preflight (git commands; PowerShell, outside the Python product code) |
 | | `analysis.py` | R9 stability, R10 comparison, R11 eligibility, the blocking validation findings |
 | | `evaluate.py` | the offline evaluator and the evidence writer (R16, R17) |
 
@@ -31,6 +33,17 @@ and synthetic-only tests. It is not approval of a SIP backfill or a real-data ev
   report, manifest, evaluator) refuses a database file name and any place inside the repository; the repository test compares files
   (`os.path.samefile` on every existing ancestor), so a `\\?\` or `\\localhost\C$` spelling of a repository path is refused too. The
   evaluator refuses every socket and SQLite connection while the runs execute.
+* **Approval references are procedural records, not authorization.**
+  * **What is checked.** Every gate that takes `OPERATOR-APPROVAL:<reference>` checks only the reference's form: the prefix and at least four
+    more characters (`research_data.approved`). The reference is not looked up, signed or verified against any approval record, and any
+    well-formed text passes.
+  * **What is verified.** The sha256 supplied with the reference: a fetch runs only the plan whose own sha256 equals it, and a HISTORICAL
+    evaluation only the manifest whose own sha256 equals it.
+  * **What that achieves.** These controls stop a different plan or manifest from running by mistake, and they leave an audit record.
+  * **What it does not.** They are **not cryptographic authorization**. Anyone who can run the commands can type a reference and compute a
+    sha256, so the real control is the operator's procedure: approve a sha256 in writing, then supply it.
+  * **Where it is recorded.** Every output that records a reference also records `approval_check`, which states all this
+    (`research_data.APPROVAL_CHECK`): the fetch manifest, the pre-run report, `summary.json`, `environment.json` and the summary memo.
 
 ## 2. The SIP builder (`research_data/sip_bundle.py`)
 
@@ -39,7 +52,7 @@ Three separate steps. Only `fetch` touches the network, and only with an operato
 | Step | Network | Gate | Output |
 |---|---|---|---|
 | `plan` | none | none | the exact request list and its sha256 |
-| `fetch` | Alpaca market data (SIP daily bars) and the SEC ticker file, GET only | an approval reference `OPERATOR-APPROVAL:<reference>` **and** the plan's sha256 | every page gzipped under `raw/`, `manifest.json` with each page's sha256 |
+| `fetch` | Alpaca market data (SIP daily bars) and the SEC ticker file, GET only | an approval reference `OPERATOR-APPROVAL:<reference>` (its form is checked) **and** the plan's sha256 (compared with the plan's own) | every page gzipped under `raw/`, `manifest.json` with each page's sha256 |
 | `build` | none | a complete fetch whose plan and every page match their sha256 | `sip_bundle.json` (a harness dataset) |
 
 * **The plan.** One request for `company_tickers.json`, then, for each adjustment (`all`, `raw`, `split`), the universe in chunks of 20
@@ -104,27 +117,66 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
 * **Status.** BLOCKED, REVIEW_REQUIRED or CLEAN, with counts.
 * **Sealing.** The report carries its own `report_sha256`, the provenance override and the approval reference it was made under, and the
   CLI never overwrites a report.
-* **Approval.** A report on a HISTORICAL dataset needs an approval reference.
+* **Approval.** A report on a HISTORICAL dataset needs an approval reference; it is checked for its form only (section 1).
 
 ## 5. The evaluation manifest (R14, `swing_eval/manifest.py`)
 
 * **What it is.** One JSON document (`stage78b_eval_v1`) with its own `manifest_sha256`. It pins what the strategy's pre-registration hash
   does not cover.
 * **What it holds.**
-  * The V1 / C1 ids and versions, the pre-registration hash `6c20fdb4…3cfa61903`, the code commit and the harness version.
+  * The V1 / C1 ids and versions, the pre-registration hash `6c20fdb4…3cfa61903`, the code commit and its tree (`code_commit`, `code_tree`),
+    and the harness version.
+  * The CLEAN record of the operator-side clean-tree preflight (`code_preflight`).
   * The dataset: file sha256, dataset id, kind, `volume_feed`, builder, the provenance override, and the expected symbols / sessions / span.
   * The accepted pre-run report's sha256 and status, and the provenance it was made under (override, dataset id, volume feed, kind).
   * Split 0.70 and the boundary policy; arm RULES; the execution assumptions; the sizing.
   * The four runs with their full friction.
   * The R9–R11 thresholds and the R12 / R13 fee records.
   * The evidence location.
+* **Preparation: an enforced clean-tree preflight.**
+  * **The script.** `python -m swing_eval.manifest build` requires `--preflight FILE`, the record written by
+    `swing_eval/preflight.ps1 -Out FILE`. The script runs git (read-only commands, `--no-optional-locks`) and refuses, writing nothing, unless
+    all seven checks find nothing:
+    * staged changes (`git diff --cached HEAD`), unstaged changes (`git diff`), untracked files of any type, unmerged paths;
+    * index entries hidden from `git status` by a flag (assume-unchanged, skip-worktree);
+    * ignored `.py` files outside `.venv/` (ignored code can still be imported);
+    * a non-empty `git status --porcelain --untracked-files=all`.
+
+    The record holds the commit (`git rev-parse HEAD`), its tree (`git rev-parse HEAD:`) and every check as NONE. The record itself must be
+    written outside the repository.
+  * **Why PowerShell, and why here.** The Stage 3.9 rule forbids `subprocess` in any non-test Python module, so the git checks are PowerShell.
+    The script lives in the stage's own package because `scripts/` is pinned by the Stage 6.0–6.10A freeze tests.
+  * **The re-check without git.** The manifest CLI checks the record against this checkout through `swing_eval/codetree.py`:
+    * the record is CLEAN, every check NONE, and its repository is this one;
+    * its commit is the checked-out commit;
+    * its tree is the tree computed from the git index;
+    * the working tree equals the index.
+
+    A change made after the preflight is therefore refused too: a new commit, a staged change, an unstaged change, an untracked `.py` file.
+  * **What the manifest pins.** Only then is the manifest built. It pins `code_commit` and `code_tree` and carries the record, so the manifest
+    sha256 that the operator approves names the exact committed tree.
+  * **Limits (procedural).**
+    * The record is not signed.
+    * Product code cannot confirm by itself that the record's tree is its commit's tree: that needs git's object store, so the link is git's
+      answer in the preflight.
+    * A hand-written record, or a direct call to `manifest.build()`, skips the script. Even then, the record must match the checkout's
+      commit and index tree.
+
+    As an independent check before approving, `swing_eval/preflight.ps1 -Manifest FILE` repeats the git checks. It confirms that
+    `code_commit` is the checked-out commit and that `git rev-parse <code_commit>^{tree}` equals `code_tree`. It writes nothing.
 * **`verify()`.** Checks the manifest against the strategy code and the locked values. Recomputing the hash after a change does not help:
   every value is compared with the code's. It also requires:
   * a `sip_daily_v1` dataset with `volume_feed` SIP (R14: "feed SIP"); an IEX bundle is refused (allowing one would need a lock amendment);
   * a provenance override that sets none of `volume_feed`, `builder`, `source`, `window`, `plan_sha256`, `raw_manifest_sha256`;
-  * a pre-run report made under the same provenance as the one evaluated, so a report run under another override cannot clear a BLOCK.
-* **`pre_checks()`** (before any run): the checked-out commit, a clean working tree, the dataset file's sha256 and content, and the accepted
-  report file, made under the evaluated provenance. The report is **re-derived** from the dataset (with the recorded override and approval)
+  * a pre-run report made under the same provenance as the one evaluated, so a report run under another override cannot clear a BLOCK;
+  * a CLEAN preflight record (`code_preflight`) whose commit and tree are the manifest's `code_commit` and `code_tree`.
+* **`pre_checks()`** (before any run):
+  * the checked-out commit, and the index's computed tree against `code_tree`, so that nothing is staged;
+  * a clean working tree;
+  * the dataset file's sha256 and content;
+  * the accepted report file, made under the evaluated provenance.
+
+   The report is **re-derived** from the dataset (with the recorded override and approval)
   and must be equal to the file, apart from its file name: the report's own sha256 has no key, so an edited report (a BLOCK dropped, its
   hash recomputed) is caught here. A HISTORICAL report without a valid approval cannot be re-derived and is refused.
 * **`post_checks()`** (after each run; final-review M-2 / M-3): each record's
@@ -148,11 +200,18 @@ Each step is fail-closed:
    directly under `C:\Data Analyst Py\DA IDX\evidence\stage-78B\`, named by its UTC timestamp `YYYY-MM-DDTHHMMSSZ` (R17; the manifest
    CLI's default).
    SYNTHETIC datasets are for tests.
-4. The pre-checks pass. The checked-out commit and the clean working tree are read from the `.git` files, because product code never
-   starts a process (the Stage 3.9 rule). The tree check compares every tracked file with its git index blob (a line-end-only difference is
-   not a change), and finds deleted and unmerged files and untracked `.py` files beside tracked ones. A split index, a sparse index and an
-   index whose checksum does not match are refused. **Limit:** a change staged but not committed is not seen without git's object store, so the operator
-   builds the manifest on a checkout whose `git status` is empty; `environment.json` states this scope (`tree_check`).
+4. The pre-checks pass. The code is identified from the `.git` files (`swing_eval/codetree.py`), because product code never starts a process
+   (the Stage 3.9 rule):
+   * the checked-out commit equals the manifest's `code_commit`;
+   * the tree computed from the git index (the tree `git write-tree` would write; nothing is written) equals `code_tree`, so nothing is staged;
+   * the working tree equals the index:
+     * every tracked file matches its index blob (a line-end-only difference is not a change);
+     * no file is deleted or unmerged, and no untracked `.py` file sits beside tracked ones;
+     * no entry is hidden by an index flag (assume-unchanged, skip-worktree, intent-to-add);
+     * there is no symlink or submodule.
+
+   A split index, a sparse index and an index whose checksum does not match are refused. `environment.json` records the commit, the tree and
+   this scope (`tree_check`). The runbook also runs `preflight.ps1 -Manifest` just before the evaluation; product code cannot require it.
 5. The four pre-registered runs of `swing_pullback.plan.run()` execute, and the eight sensitivity neighbours are regenerated on the TRAIN
    view. Every socket and SQLite connection is refused meanwhile (`socket.socket`, `SocketType`, `create_connection`, `getaddrinfo`,
    `_socket.socket`, and `connect` / `Connection` of `sqlite3`, `sqlite3.dbapi2` and `_sqlite3`). Each attempt is recorded, so the evaluation is refused even if the run
@@ -178,7 +237,8 @@ Each step is fail-closed:
   `stability.json`, `comparison.json`, `eligibility.json`, `environment.json`, `summary.json`.
 * A plain-language `RESULTS_SUMMARY.md`.
 * `evidence.sha256`, which indexes every file.
-* The approval reference, the approved manifest sha256 and the evaluation time are recorded (`summary.json`, `environment.json`, the memo).
+* The approval reference with its `approval_check` statement, the approved manifest sha256 and the evaluation time are recorded
+  (`summary.json`, `environment.json`, the memo).
 
 ## 7. The analysis (`swing_eval/analysis.py`)
 
@@ -214,8 +274,9 @@ Each step is fail-closed:
   4. R10 BEATS_CONTROL;
   5. TRAIN-view sensitivity ROBUST;
   6. the pre-run report accepted and no blocking finding: CLEAN, or REVIEW_REQUIRED with a recorded acceptance. For a HISTORICAL
-     dataset the acceptance is the operator's approval of the manifest, which pins the report's sha256 and its findings; it is written into
-     the evidence. A SYNTHETIC dataset has no operator acceptance, so item 6 holds for it only on a CLEAN report.
+     dataset the acceptance is recorded as the approval reference supplied with the approved manifest's sha256, a procedural record
+     (section 1); the manifest pins the report's sha256 and its findings, and the record is written into the evidence. A SYNTHETIC dataset has
+     no operator acceptance, so item 6 holds for it only on a CLEAN report.
 
   The edge stays NOT_ESTABLISHED (survivorship).
 
@@ -249,12 +310,13 @@ shapes.
 
 | Group | Covers |
 |---|---|
-| A | the locked values; the strategy fingerprint |
+| A | the locked values; the strategy fingerprint; the approval reference checked for its form only, and `approval_check` in every output |
 | C | the calendar |
 | B | the builder: the plan, every fetch refusal before any request (scope, window, output place), pagination, the page guard, no retry, transport errors, no stored or printed credential, the real transport (no redirect, fake library), the build and its refusals, the IEX path untouched, the CLIs |
 | Q | the report: CLEAN, every BLOCK, every FINDING, the requested window, raw volume gaps, the approval gate and record, no strategy computation |
 | M | the manifest: verify (SIP builder only, protected overrides, the report's provenance), tamper detection even with a recomputed hash, pre-checks, post-checks per field, the CLI |
 | E | the evaluator: end to end with the evidence index verified, every refusal before a run, the offline guard (every entry point, a swallowed attempt), INVALID and BLOCKED marked NOT ACCEPTED, M-5 blocking from a base run and from a TRAIN-view neighbour alone, the real tree check |
+| T | the code identity: the index's tree computed as git writes it (name order, modes, a staged change), entries hidden from `git status`, the preflight record against the checkout, the operator preflight on temporary repositories (every unclean state refused, nothing written), the manifest built only from it, and `-Manifest` catching a manifest that names another tree |
 | N | the analysis on crafted records |
 | X | isolation |
 | G | this document |
@@ -276,6 +338,11 @@ For reference only. Each step needs its own operator approval.
 3. `fetch` with the approval reference.
 4. `build` (HISTORICAL).
 5. `python -m research_data.quality` with an approval reference; the operator accepts or rejects every FINDING.
-6. On a checkout whose `git status` is empty: `python -m swing_eval.manifest build`; the operator approves the manifest's sha256.
-7. On a clean checkout of the manifest's commit: `python -m swing_eval.evaluate` with the approval reference and the approved manifest
-   sha256, writing to the manifest's evidence folder.
+6. On the checkout to be evaluated, prepare and check the manifest:
+   * `swing_eval\preflight.ps1 -Out <file outside the repository>`;
+   * `python -m swing_eval.manifest build --preflight <that file> ...`;
+   * `swing_eval\preflight.ps1 -Manifest <the manifest>`.
+
+   The operator then approves the manifest's sha256 in writing.
+7. On that checkout, still clean: `swing_eval\preflight.ps1 -Manifest <the manifest>` again, then `python -m swing_eval.evaluate` with the
+   approval reference and the approved manifest sha256, writing to the manifest's evidence folder.

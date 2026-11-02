@@ -7,7 +7,9 @@ rules and its pre-registration hash live in swing_pullback/ and are referenced, 
 or with the strategy code, is refused. Changing a value is a new MANIFEST_VERSION, never a change after a real-data result.
 
 Offline by construction: no socket, no database (SQLite is refused while the runs execute), no broker, no harness store; JSON evidence only,
-outside the repository. A HISTORICAL dataset needs an operator approval reference AND the approved manifest's sha256.
+outside the repository. A HISTORICAL dataset needs an operator approval reference AND the approved manifest's sha256 (a procedural record:
+the reference's form is checked and the sha256 compared, research_data.APPROVAL_CHECK). A manifest is built only from a CLEAN operator-side
+git preflight (swing_eval/preflight.ps1) and pins the commit and its tree (swing_eval/codetree.py).
 """
 MANIFEST_VERSION = "stage78b_eval_v1"
 EVALUATOR_VERSION = "swing_eval_v1"

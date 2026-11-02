@@ -3,7 +3,7 @@ Stage 7.8B-1 - the isolated SIP research dataset builder, the NYSE calendar, the
 offline V1 / C1 evaluator (research_data/, swing_eval/; DESIGN_78B1_SIP_EVALUATION.md). SYNTHETIC data only: no network, no real file, no
 database; every output under tmp_path. Operator decision lock: STAGE_7_8B1_DECISION_LOCK.md (confirmed 2026-11-02).
 
-  A01-A02 the locked values; the strategy's fingerprint untouched
+  A01-A03 the locked values; the strategy's fingerprint untouched; an approval reference is checked for its form only, and every output says so
   C01-C04 the NYSE calendar 2016-2026: published session counts, the IEX-bundle closures, the comparison, autorun's 2026 table
   B01-B09 the SIP builder: the plan, the approval gate, the fetch (pagination, page guard, no retry, no credential stored), the build, its
           refusals, the IEX path untouched, the CLI, the real transport (no redirect), the credentials
@@ -12,6 +12,8 @@ database; every output under tmp_path. Operator decision lock: STAGE_7_8B1_DECIS
   M01-M05 the manifest: build / verify, tampering, pre-checks, post-checks (M-2 / M-3), the CLI
   E01-E10 the evaluator: end to end, refusals (R17, approval, pre-checks), the offline guard, an INVALID run, M-5 blocking (base and neighbour),
           SIP only under the report's provenance, the CLI, INVALID with a blocking finding, the real tree check
+  T01-T06 the code identity: the index's tree as git computes it (a staged change), entries hidden from git status, the preflight record, the
+          operator-side git preflight (swing_eval/preflight.ps1: every unclean state refused), the manifest built only from it and checked again
   N01-N06 the analysis: R9 stability, R10 comparison, the bootstrap, exposure, R11 eligibility, the stop and integrity findings
   X01-X02 isolation
   G01     the documents
@@ -36,6 +38,8 @@ import types
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import re
+
 import pytest
 
 import freeze_ledger as FL
@@ -48,7 +52,9 @@ from research_data import nyse_calendar as CAL
 from research_data import quality as Q
 from research_data import sip_bundle as SB
 from strategy_validation.dataset import Dataset, dump, load
+from strategy_validation.engine import git_commit_sha
 from swing_eval import analysis as AN
+from swing_eval import codetree as CT
 from swing_eval import evaluate as EV
 from swing_eval import manifest as MF
 from swing_pullback import plan as PL
@@ -56,6 +62,14 @@ from swing_pullback import plan as PL
 ROOT = Path(__file__).resolve().parents[1]
 AT = "2026-11-02T00:00:00+00:00"
 OK_REF = "OPERATOR-APPROVAL:test-only-reference"
+COMMIT, TREE = "c0ffee" * 6 + "c0ff", "be" * 20                                         # a synthetic checkout: its commit and the index's tree
+PRE = {"kind": CT.PREFLIGHT_KIND, "version": CT.PREFLIGHT_VERSION, "status": "CLEAN", "commit": COMMIT, "tree": TREE,
+       "checks": {c: "NONE" for c in CT.PREFLIGHT_CHECKS}}
+CODE = dict(code_commit=COMMIT, code_tree=TREE, preflight=PRE)
+OKF = dict(commit_fn=lambda: COMMIT, tree_fn=lambda: TREE, tree_clean_fn=lambda: True)
+GIT, PS = shutil.which("git"), shutil.which("powershell.exe")
+PREFLIGHT = ROOT / "swing_eval" / "preflight.ps1"
+needs_ps = pytest.mark.skipif(os.name != "nt" or not PS or not GIT, reason="Windows PowerShell and git")
 U = ["AAPL", "ABBV", "ABT", "GOOG", "GOOGL", "SPY"]
 
 
@@ -76,7 +90,7 @@ def package(tmp_path, ds, *, provenance=None, report_approval=None):
     """(dataset path, report, manifest path, report path) for a synthetic dataset."""
     dp = write(tmp_path, ds)
     rep = Q.report(str(dp), provenance=provenance, approval=report_approval)
-    m = MF.build(dataset_path=str(dp), report=rep, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "ev"), provenance=provenance)
+    m = MF.build(dataset_path=str(dp), report=rep, **CODE, created_at=AT, evidence_location=str(tmp_path / "ev"), provenance=provenance)
     mp, rp = tmp_path / "manifest.json", tmp_path / "report.json"
     mp.write_text(json.dumps(m), encoding="utf-8")
     rp.write_text(json.dumps(rep), encoding="utf-8")
@@ -86,7 +100,7 @@ def package(tmp_path, ds, *, provenance=None, report_approval=None):
 def run_eval(tmp_path, ds, **kw):
     dp, rep, mp, rp = package(tmp_path, ds)
     out = tmp_path / "ev"
-    s = EV.evaluate(str(mp), str(dp), str(rp), str(out), commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True, **kw)
+    s = EV.evaluate(str(mp), str(dp), str(rp), str(out), **OKF, **kw)
     return s, out
 
 
@@ -97,6 +111,39 @@ def e2e(tmp_root: str):
 
 def checks(rep, code=None, severity=None):
     return [c for c in rep["checks"] if (code is None or c["code"] == code) and (severity is None or c["severity"] == severity)]
+
+
+def git(repo, *a, check=True, input=None):
+    r = subprocess.run([GIT or "git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.autocrlf=false", *a],
+                       capture_output=True, input=input)
+    assert r.returncode == 0 or not check, (a, r.stderr[-400:])
+    return r.stdout.decode("utf-8").strip()
+
+
+def git_repo(path, files=None):
+    """A committed temporary repository, at its real path (git and the product then name it the same way)."""
+    path.mkdir(parents=True)
+    path = Path(os.path.realpath(path))
+    git(path, "init", "-q")
+    for rel, data in (files or {".gitattributes": b"* -text\n", ".gitignore": b".venv/\n*.gen.py\n", "pkg/a.py": b"x = 1\n", "pkg/b.py": b"y = 2\n",
+                                "notes.txt": b"n\n"}).items():
+        (path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (path / rel).write_bytes(data)
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", "c")
+    return path
+
+
+def git_record(repo):
+    """The record the operator preflight writes for a clean repository, made here from git's answers (the preflight itself: T04-T06)."""
+    return {**PRE, "repository": git(repo, "rev-parse", "--show-toplevel"), "commit": git(repo, "rev-parse", "HEAD"),
+            "tree": git(repo, "rev-parse", "HEAD^{tree}")}
+
+
+def preflight(*a):
+    r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PREFLIGHT), "-Git", GIT, *a], capture_output=True, text=True,
+                       timeout=180)
+    return r.returncode, r.stdout + r.stderr
 
 
 def fetched(tmp_path, *, universe=U, split=None, tickers=None, statuses=None, extra_symbol=None, monkeypatch=None, page_limit=None, end="2016-04-29"):
@@ -145,6 +192,35 @@ def test_A01_the_locked_values_are_the_confirmed_decision_lock():
 def test_A02_the_strategy_fingerprint_and_package_are_untouched():
     assert SP.preregistration_hash() == "6c20fdb4f9c093fed0a82c21c642dfceee2cc6d424104390c7c432e3cfa61903"
     assert PL.RUNS == (("V1", "BASE"), ("V1", "STRESS_2X"), ("C1", "BASE"), ("C1", "STRESS_2X"))
+
+
+def test_A03_an_approval_reference_is_checked_for_its_form_only_and_every_output_says_so(tmp_path, monkeypatch):
+    never = "OPERATOR-APPROVAL:never-issued-by-anyone"
+    assert RD.approved(OK_REF) and RD.approved(never) and RD.approved("OPERATOR-APPROVAL:abcd")   # nothing is looked up: any well-formed text
+    for bad in (None, "", "OPERATOR-APPROVAL:", "OPERATOR-APPROVAL:abc", "operator-approval:abcd", " OPERATOR-APPROVAL:abcd", b"OPERATOR-APPROVAL:abcd", 7):
+        assert not RD.approved(bad), bad
+    for words in ("form only", "not looked up, signed or verified", "procedural record", "not cryptographic authorization"):
+        assert words in RD.APPROVAL_CHECK, words
+    src = "".join(p.read_text(encoding="utf-8") for pkg in ("research_data", "swing_eval") for p in sorted((ROOT / pkg).glob("*.py")))
+    assert not re.search(r"\bimport (hmac|ssl)\b|\bcryptography\b|\bnacl\b|\bgnupg\b", src)    # no key and no signature exist to check one
+    _, out, *_ = fetched(tmp_path / "f")
+    assert json.loads((out / "manifest.json").read_text(encoding="utf-8"))["approval_check"] == RD.APPROVAL_CHECK
+    dp = write(tmp_path / "h", SF.sip_dataset(6, kind="HISTORICAL")[0])
+    rep = Q.report(str(dp), approval=never)
+    assert (rep["approval"], rep["approval_check"]) == (never, RD.APPROVAL_CHECK)
+    monkeypatch.setattr(EV, "EVIDENCE_ROOT", str(tmp_path / "evidence-root"))             # a HISTORICAL evaluation, its evidence in a test folder
+    loc = tmp_path / "evidence-root" / "2026-11-02T000000Z"
+    m = MF.build(dataset_path=str(dp), report=rep, **CODE, created_at=AT, evidence_location=str(loc))
+    (tmp_path / "h" / "m.json").write_text(json.dumps(m), encoding="utf-8")
+    (tmp_path / "h" / "r.json").write_text(json.dumps(rep), encoding="utf-8")
+    s = EV.evaluate(str(tmp_path / "h" / "m.json"), str(dp), str(tmp_path / "h" / "r.json"), str(loc), approval=never,
+                    approved_manifest_sha256=m["manifest_sha256"], **OKF)
+    assert (s["dataset_kind"], s["approval_reference"], s["approval_check"]) == ("HISTORICAL", never, RD.APPROVAL_CHECK)
+    assert json.loads((loc / "environment.json").read_text(encoding="utf-8"))["approval_check"] == RD.APPROVAL_CHECK
+    by = json.loads((loc / "eligibility.json").read_text(encoding="utf-8"))["items"][5]["evidence"]["findings_accepted_by"]
+    assert by == (f"approval reference {never} supplied with the approved manifest sha256 {m['manifest_sha256']} (a procedural record: the reference is "
+                  f"checked for its form only)")
+    assert f"The approval is a procedural record ({RD.APPROVAL_CHECK})" in (loc / "RESULTS_SUMMARY.md").read_text(encoding="utf-8")
 
 
 # ============================================================================================================ the calendar (C)
@@ -619,7 +695,9 @@ TAMPER = [(("experiment", "runs", 0, "friction", "commission_per_order"), 1.0), 
           (("strategy", "preregistration_hash"), "0" * 64), (("pre_run_report", "status"), "BLOCKED"), (("pre_run_report", "dataset_sha256"), "f" * 64),
           (("dataset", "volume_feed"), None), (("evidence", "location"), ""), (("dataset", "builder"), None), (("dataset", "volume_feed"), "IEX"),
           (("dataset", "provenance_override"), {"volume_feed": "SIP"}), (("pre_run_report", "provenance_override"), {"universe": "x"}),
-          (("pre_run_report", "volume_feed"), "IEX")]
+          (("pre_run_report", "volume_feed"), "IEX"), (("strategy", "code_tree"), "ab" * 20), (("strategy", "code_commit"), "ab" * 20),
+          (("code_preflight",), None), (("code_preflight", "status"), "DIRTY"), (("code_preflight", "checks", "staged"), "FOUND"),
+          (("code_preflight", "tree"), "ab" * 20), (("code_preflight", "kind"), "other")]
 
 
 @pytest.mark.parametrize("path,value", TAMPER)
@@ -639,13 +717,16 @@ def test_M03_pre_checks_refuse_a_wrong_commit_a_dirty_tree_another_dataset_or_re
     dp, rep, mp, rp = package(tmp_path, base()[0])
     m = json.loads(mp.read_text(encoding="utf-8"))
     ds = load(str(dp))
-    assert MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit="c0ffee", tree_clean=True) == []
-    assert any("commit" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit="beef", tree_clean=True))
-    assert any("not clean" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit="c0ffee", tree_clean=False))
+    assert MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit=COMMIT, code_tree=TREE, tree_clean=True) == []
+    assert any("commit" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit="beef", code_tree=TREE, tree_clean=True))
+    assert any("not clean" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit=COMMIT, code_tree=TREE, tree_clean=False))
+    for tree in ("ab" * 20, None):                                                       # a staged change; an index that cannot be read
+        assert MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, code_commit=COMMIT, code_tree=tree, tree_clean=True) == [
+            "the git index's tree differs from the manifest's code_tree (a staged change, or another commit)"]
     other = write(tmp_path, SF.sip_dataset(5)[0], "other.json")
-    assert any("sha256" in x for x in MF.pre_checks(m, dataset_path=str(other), dataset=load(str(other)), report=rep, code_commit="c0ffee", tree_clean=True))
+    assert any("sha256" in x for x in MF.pre_checks(m, dataset_path=str(other), dataset=load(str(other)), report=rep, code_commit=COMMIT, code_tree=TREE, tree_clean=True))
     bad = {**rep, "status": "CLEAN"}
-    assert any("accepted" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=bad, code_commit="c0ffee", tree_clean=True))
+    assert any("accepted" in x for x in MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=bad, code_commit=COMMIT, code_tree=TREE, tree_clean=True))
     for edits, word in (([(("dataset", "expected", "sessions"), 1)], "content"),
                         ([(("dataset", "kind"), "HISTORICAL"), (("pre_run_report", "kind"), "HISTORICAL")], "kind")):
         t = copy.deepcopy(m)
@@ -655,7 +736,7 @@ def test_M03_pre_checks_refuse_a_wrong_commit_a_dirty_tree_another_dataset_or_re
                 node = node[k]
             node[key[-1]] = value
         t["manifest_sha256"] = MF.manifest_sha256(t)
-        assert MF.verify(t) == [] and any(word in x for x in MF.pre_checks(t, dataset_path=str(dp), dataset=ds, report=rep, code_commit="c0ffee",
+        assert MF.verify(t) == [] and any(word in x for x in MF.pre_checks(t, dataset_path=str(dp), dataset=ds, report=rep, code_commit=COMMIT, code_tree=TREE,
                                                                            tree_clean=True)), key
 
 
@@ -685,17 +766,33 @@ def test_M04_post_checks_catch_every_mismatch_of_a_run_record(tmp_path):
         assert any(word in p for p in probs), (dotted, probs)
 
 
-def test_M05_the_cli_writes_a_manifest_once_at_the_r17_default_location_with_the_checked_out_commit(tmp_path, capsys):
-    from strategy_validation.engine import git_commit_sha
+def test_M05_the_cli_writes_a_manifest_once_at_the_r17_default_location_only_from_a_clean_preflight_of_this_checkout(tmp_path, capsys, monkeypatch):
+    repo = git_repo(tmp_path / "repo")
+    monkeypatch.setattr(CT, "ROOT", repo)                                                # this checkout: a temporary repository
     dp, rep, mp, rp = package(tmp_path, base()[0])
+    pf = tmp_path / "preflight.json"
+    pf.write_text(json.dumps(git_record(repo)), encoding="utf-8")
     out = tmp_path / "m_cli.json"
-    assert MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(out), "--created-at", AT]) == 0
+    args = ["build", "--dataset", str(dp), "--report", str(rp), "--preflight", str(pf), "--created-at", AT]
+    assert MF.main(args + ["--out", str(out)]) == 0
     m = json.loads(out.read_text(encoding="utf-8"))
-    assert MF.verify(m) == [] and m["manifest_sha256"] in capsys.readouterr().out
-    assert m["evidence"]["location"] == str(Path(SE.EVIDENCE_ROOT) / "2026-11-02T000000Z") and m["strategy"]["code_commit"] == git_commit_sha()
-    assert MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(out), "--created-at", AT]) == 2   # never overwritten
+    assert MF.verify(m) == [] and m["manifest_sha256"] in capsys.readouterr().out and m["code_preflight"] == git_record(repo)
+    assert m["evidence"]["location"] == str(Path(SE.EVIDENCE_ROOT) / "2026-11-02T000000Z")
+    assert (m["strategy"]["code_commit"], m["strategy"]["code_tree"]) == (git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD^{tree}"))
+    assert MF.main(args + ["--out", str(out)]) == 2                                      # never overwritten
     db = tmp_path / "manifest.db"
-    assert MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(db), "--created-at", AT]) == 2 and not db.exists()
+    assert MF.main(args + ["--out", str(db)]) == 2 and not db.exists()
+    with pytest.raises(SystemExit):                                                      # no preflight record: no manifest
+        MF.main(["build", "--dataset", str(dp), "--report", str(rp), "--out", str(tmp_path / "m2.json")])
+    for bad in ({**git_record(repo), "status": "DIRTY"}, {**git_record(repo), "checks": {**PRE["checks"], "untracked": "FOUND"}},
+                {**git_record(repo), "commit": COMMIT}, {**git_record(repo), "tree": TREE}, {**git_record(repo), "repository": str(tmp_path)}):
+        pf.write_text(json.dumps(bad), encoding="utf-8")
+        assert MF.main(args + ["--out", str(tmp_path / "m2.json")]) == 2 and "does not describe this checkout" in capsys.readouterr().out, bad
+    pf.write_text("{not json", encoding="utf-8")
+    assert MF.main(args + ["--out", str(tmp_path / "m2.json")]) == 2 and "cannot be read" in capsys.readouterr().out
+    assert not (tmp_path / "m2.json").exists()
+    pf.write_bytes(b"\xef\xbb\xbf" + json.dumps(git_record(repo)).encode("utf-8"))      # a byte-order mark (PowerShell's habit) is accepted
+    assert MF.main(args + ["--out", str(tmp_path / "m3.json")]) == 0
 
 
 # ============================================================================================================ the evaluator (E)
@@ -734,7 +831,9 @@ def test_E01_end_to_end_on_synthetic_sip_data_writes_sealed_evidence(tmp_path):
     assert "never a promotion" in el["note"] and "NOT_ESTABLISHED" in el["note"]
     assert el["items"][5]["ok"] is False and el["items"][5]["evidence"] == {"report": "REVIEW_REQUIRED", "findings_accepted_by": None, "blocking": 0,
                                                                            "invalid_runs": []}    # SYNTHETIC: no operator acceptance
-    assert "staged but not committed is NOT checked" in json.loads((out / "environment.json").read_text(encoding="utf-8"))["tree_check"]
+    env = json.loads((out / "environment.json").read_text(encoding="utf-8"))
+    assert env["tree_check"] == CT.TREE_CHECK and "a staged change" in env["tree_check"] and (env["code_commit"], env["code_tree"]) == (COMMIT, TREE)
+    assert s["approval_check"] == env["approval_check"] == RD.APPROVAL_CHECK
     memo = (out / "RESULTS_SUMMARY.md").read_text(encoding="utf-8")
     assert "not a significance test" in memo and "TRAIN observations" in memo and "NO_ADDED_VALUE" in memo and "NOT_ESTABLISHED" in memo
 
@@ -743,7 +842,7 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(EV.PL, "run", lambda *a, **k: calls.append(a))
     dp, rep, mp, rp = package(tmp_path, base()[0])
-    ok = dict(commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True)
+    ok = dict(OKF)
     with pytest.raises(EV.EvaluationRefused, match="inside the repository"):
         EV.evaluate(str(mp), str(dp), str(rp), str(ROOT / "evidence_test_78b1"), **ok)
     assert not (ROOT / "evidence_test_78b1").exists()
@@ -754,9 +853,12 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
     with pytest.raises(EV.EvaluationRefused, match="not the manifest's evidence location"):
         EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "elsewhere"), **ok)
     with pytest.raises(EV.EvaluationRefused, match="pre-checks"):
-        EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: "beef", tree_clean_fn=lambda: True)
+        EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: "beef", tree_fn=lambda: TREE, tree_clean_fn=lambda: True)
     with pytest.raises(EV.EvaluationRefused, match="pre-checks"):
-        EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: False)
+        EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: COMMIT, tree_fn=lambda: TREE, tree_clean_fn=lambda: False)
+    for tree in ("ab" * 20, None):                                                       # a staged change; an index that cannot be read
+        with pytest.raises(EV.EvaluationRefused, match="code_tree"):
+            EV.evaluate(str(mp), str(dp), str(rp), str(tmp_path / "ev"), commit_fn=lambda: COMMIT, tree_fn=lambda: tree, tree_clean_fn=lambda: True)
     m = json.loads(mp.read_text(encoding="utf-8"))
     m["experiment"]["sizing"]["risk_fraction"] = 0.01
     mp.write_text(json.dumps(m), encoding="utf-8")
@@ -767,7 +869,7 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
     hp.mkdir()
     dp2 = write(hp, hist)
     rep2 = Q.report(str(dp2), approval=OK_REF)
-    m2 = MF.build(dataset_path=str(dp2), report=rep2, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "o4"))
+    m2 = MF.build(dataset_path=str(dp2), report=rep2, **CODE, created_at=AT, evidence_location=str(tmp_path / "o4"))
     (hp / "m.json").write_text(json.dumps(m2), encoding="utf-8")
     (hp / "r.json").write_text(json.dumps(rep2), encoding="utf-8")
     for approval, sha in ((None, None), (OK_REF, None), (OK_REF, "0" * 64), ("approved", m2["manifest_sha256"])):
@@ -778,7 +880,7 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
                     approved_manifest_sha256=m2["manifest_sha256"], **ok)
     assert not issubclass(EV.EvaluationRefused, OSError)
     loc = Path(SE.EVIDENCE_ROOT) / "not-a-timestamp-78b1-test"
-    m5 = MF.build(dataset_path=str(dp2), report=rep2, code_commit="c0ffee", created_at=AT, evidence_location=str(loc))
+    m5 = MF.build(dataset_path=str(dp2), report=rep2, **CODE, created_at=AT, evidence_location=str(loc))
     (hp / "m5.json").write_text(json.dumps(m5), encoding="utf-8")
     with pytest.raises(EV.EvaluationRefused, match="UTC timestamp"):
         EV.evaluate(str(hp / "m5.json"), str(dp2), str(hp / "r.json"), str(loc), approval=OK_REF, approved_manifest_sha256=m5["manifest_sha256"], **ok)
@@ -873,41 +975,41 @@ def test_E10_the_tree_check_reads_the_git_index_without_a_subprocess(tmp_path):
     (tmp_path / "notes.txt").write_bytes(b"n\n")
     git("add", "-A")
     git("commit", "-q", "-m", "c")
-    assert EV.tree_problems(tmp_path) == [] and EV.tree_clean(tmp_path) is True
+    assert CT.tree_problems(tmp_path) == [] and CT.tree_clean(tmp_path) is True
     (tmp_path / "pkg" / "a.py").write_bytes(b"x = 1\r\n")                                # line ends only: the same code, not a change here
-    assert EV.tree_problems(tmp_path) == []
+    assert CT.tree_problems(tmp_path) == []
     (tmp_path / "pkg" / "a.py").write_bytes(b"x = 2\n")
     (tmp_path / "notes.txt").unlink()
     (tmp_path / "pkg" / "c.py").write_bytes(b"z = 3\n")
-    assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"] and EV.tree_clean(tmp_path) is False
+    assert CT.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"] and CT.tree_clean(tmp_path) is False
     idx = (tmp_path / ".git" / "index")
     good = idx.read_bytes()
     idx.write_bytes(good[:20] + bytes([good[20] ^ 1]) + good[21:])                       # one bit of an entry's timestamp
-    assert EV.tree_problems(tmp_path) == ["the git index cannot be read: the git index checksum does not match"]
+    assert CT.tree_problems(tmp_path) == ["the git index cannot be read: the git index checksum does not match"]
     idx.write_bytes(good)
     git("update-index", "--split-index")
-    assert EV.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a split index")
+    assert CT.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a split index")
     git("update-index", "--no-split-index")
     git("sparse-checkout", "set", "--cone", "--sparse-index", "pkg")                     # a sparse index: entries outside the cone collapse
-    assert EV.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a sparse index")
+    assert CT.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a sparse index")
     git("sparse-checkout", "disable")
     (tmp_path / "notes.txt").unlink(missing_ok=True)                                     # disable restores it: delete it again
-    assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"]
+    assert CT.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"]
     empty = tmp_path.parent / (tmp_path.name + "_empty")                                 # an index that holds no file is not "clean"
     subprocess.run(["git", "init", "-q", str(empty)], check=True)
     (empty / "x.py").write_bytes(b"x = 1\n")
     subprocess.run(["git", "-C", str(empty), "add", "x.py"], check=True)
     subprocess.run(["git", "-C", str(empty), "rm", "-q", "--cached", "x.py"], check=True)
-    assert EV.tree_problems(empty) == ["the git index cannot be read: the git index holds no file"]
+    assert CT.tree_problems(empty) == ["the git index cannot be read: the git index holds no file"]
     plain = tmp_path.parent / (tmp_path.name + "_plain")
     plain.mkdir()
-    assert EV.tree_problems(plain)[0].startswith("the git index cannot be read")          # not a repository: never clean
-    src = (ROOT / "swing_eval" / "evaluate.py").read_text(encoding="utf-8")
-    assert "subprocess" not in src.split('"""', 2)[2].split("def tree_problems")[0] and "import subprocess" not in src
+    assert CT.tree_problems(plain)[0].startswith("the git index cannot be read")          # not a repository: never clean
+    assert "subprocess" not in (ROOT / "swing_eval" / "codetree.py").read_text(encoding="utf-8")
+    assert "import subprocess" not in (ROOT / "swing_eval" / "evaluate.py").read_text(encoding="utf-8")
 
 
 def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenance(tmp_path):
-    ok = dict(commit_fn=lambda: "c0ffee", tree_clean_fn=lambda: True)
+    ok = dict(OKF)
     allowed = {"corporate_actions": "synthetic override: none"}                          # an override of an unprotected field is evaluated
     dp0, rep0, mp0, rp0 = package(tmp_path / "o", base()[0], provenance=allowed)
     assert MF.verify(json.loads(mp0.read_text(encoding="utf-8"))) == [] and rep0["provenance_override"] == allowed
@@ -928,20 +1030,20 @@ def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenan
     assert Q.report(str(dp3))["status"] == "BLOCKED"                                      # SIP without raw volume (Q06)
     rep3 = Q.report(str(dp3), provenance={"volume_feed": "IEX"})                         # the same file reported as IEX
     assert rep3["status"] != "BLOCKED"
-    m3 = MF.build(dataset_path=str(dp3), report=rep3, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "c" / "ev"))
+    m3 = MF.build(dataset_path=str(dp3), report=rep3, **CODE, created_at=AT, evidence_location=str(tmp_path / "c" / "ev"))
     assert any("another provenance" in x for x in MF.verify(m3))
     m3["pre_run_report"].update(provenance_override={}, volume_feed="SIP")                # the recorded fields forged, the hash recomputed
     m3["manifest_sha256"] = MF.manifest_sha256(m3)
     assert MF.verify(m3) == []
     assert any("report file was made under another provenance" in x for x in MF.pre_checks(m3, dataset_path=str(dp3), dataset=load(str(dp3)),
-                                                                                            report=rep3, code_commit="c0ffee", tree_clean=True))
+                                                                                            report=rep3, code_commit=COMMIT, code_tree=TREE, tree_clean=True))
     blocked = Q.report(str(dp3))
     forged = {**blocked, "status": "REVIEW_REQUIRED", "checks": [c for c in blocked["checks"] if c["severity"] != "BLOCK"],
               "counts": {**blocked["counts"], "BLOCK": 0}}
     forged["report_sha256"] = Q.report_sha256(forged)                                    # the report's own hash has no key
-    m4 = MF.build(dataset_path=str(dp3), report=forged, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "c" / "ev4"))
+    m4 = MF.build(dataset_path=str(dp3), report=forged, **CODE, created_at=AT, evidence_location=str(tmp_path / "c" / "ev4"))
     assert MF.verify(m4) == []
-    probs = MF.pre_checks(m4, dataset_path=str(dp3), dataset=load(str(dp3)), report=forged, code_commit="c0ffee", tree_clean=True)
+    probs = MF.pre_checks(m4, dataset_path=str(dp3), dataset=load(str(dp3)), report=forged, code_commit=COMMIT, code_tree=TREE, tree_clean=True)
     assert probs == ["the pre-run report differs from the one re-derived from the dataset"]
     (tmp_path / "c" / "m4.json").write_text(json.dumps(m4), encoding="utf-8")
     (tmp_path / "c" / "r4.json").write_text(json.dumps(forged), encoding="utf-8")
@@ -951,15 +1053,15 @@ def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenan
     dp5 = write(tmp_path / "d", hist)
     r5 = {**Q.report(str(dp5), approval=OK_REF), "approval": None}                        # a HISTORICAL report without its approval
     r5["report_sha256"] = Q.report_sha256(r5)
-    m5 = MF.build(dataset_path=str(dp5), report=r5, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "d" / "ev"))
-    assert any("cannot be re-derived" in x for x in MF.pre_checks(m5, dataset_path=str(dp5), dataset=load(str(dp5)), report=r5, code_commit="c0ffee",
+    m5 = MF.build(dataset_path=str(dp5), report=r5, **CODE, created_at=AT, evidence_location=str(tmp_path / "d" / "ev"))
+    assert any("cannot be re-derived" in x for x in MF.pre_checks(m5, dataset_path=str(dp5), dataset=load(str(dp5)), report=r5, code_commit=COMMIT, code_tree=TREE,
                                                                   tree_clean=True))
 
 
 def test_E08_the_cli_refuses_a_manifest_of_another_commit_before_any_run(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(EV.PL, "run", lambda *a, **k: calls.append(a))
-    dp, rep, mp, rp = package(tmp_path, base()[0])                                       # code_commit "c0ffee": not the checked-out commit
+    dp, rep, mp, rp = package(tmp_path, base()[0])                                       # code_commit COMMIT: not the checked-out commit
     assert EV.main(["--manifest", str(mp), "--dataset", str(dp), "--report", str(rp), "--out", str(tmp_path / "ev")]) == 2
     assert "REFUSED" in capsys.readouterr().out and calls == [] and not (tmp_path / "ev").exists()
 
@@ -975,6 +1077,177 @@ def test_E06_a_non_positive_stop_in_a_train_view_neighbour_alone_blocks_too(tmp_
     assert [c["signal_date"] for c in v1["candidates"] if c["signal_date"] > v1["train_end"]]           # though V1 has OOS candidates
     for name in ("V1_BASE", "C1_BASE"):
         assert all(c["invalidation_reference"] > 0 for c in json.loads((out / "runs" / f"{name}.json").read_text(encoding="utf-8"))["candidates"])
+
+
+# ============================================================================================================ the code identity (T)
+def test_T01_the_index_tree_is_computed_as_git_writes_it_and_reveals_a_staged_change(tmp_path):
+    repo = git_repo(tmp_path / "r", {".gitattributes": b"* -text\n", "a-b.py": b"1\n", "a/b.py": b"2\n", "a.b": b"3\n", "a0": b"4\n",
+                                     "a/c/d.txt": b"5\n", "tool.sh": b"6\n"})
+    git(repo, "update-index", "--chmod=+x", "tool.sh")
+    git(repo, "commit", "-q", "-m", "x")
+    head_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    assert CT.index_tree(repo) == head_tree and CT.tree_problems(repo) == []              # git's name order (a directory sorts as "a/"); mode 100755
+    (repo / "a" / "b.py").write_bytes(b"22\n")
+    git(repo, "add", "a/b.py")                                                           # staged, not committed: the working tree equals the index
+    assert CT.tree_problems(repo) == [] and CT.index_tree(repo) == git(repo, "write-tree") != head_tree
+    blob = git(repo, "hash-object", "-w", "--stdin", input=b"target")
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},link")             # a symlink and a submodule: in the tree, never checked
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{git(repo, 'rev-parse', 'HEAD')},sub")
+    assert CT.index_tree(repo) == git(repo, "write-tree")
+    assert CT.tree_problems(repo) == ["not a regular file (a symlink or a submodule): link", "not a regular file (a symlink or a submodule): sub"]
+    if git(ROOT, "diff", "--cached", "--name-only") == "":                               # this repository, when nothing is staged
+        assert CT.index_tree(ROOT) == git(ROOT, "rev-parse", "HEAD^{tree}")
+    assert CT.index_tree_or_none(tmp_path / "not-a-repository") is None
+
+
+def test_T02_an_index_entry_hidden_from_git_status_is_refused(tmp_path):
+    repo = git_repo(tmp_path / "r")
+    git(repo, "update-index", "--assume-unchanged", "pkg/a.py")
+    (repo / "pkg" / "a.py").write_bytes(b"x = 99\n")
+    assert git(repo, "status", "--porcelain") == ""                                       # git status no longer sees the change
+    assert CT.tree_problems(repo) == ["assume-unchanged: pkg/a.py"]
+    git(repo, "update-index", "--no-assume-unchanged", "pkg/a.py")
+    git(repo, "checkout", "--", "pkg/a.py")
+    git(repo, "update-index", "--skip-worktree", "notes.txt")
+    assert CT.tree_problems(repo) == ["skip-worktree: notes.txt"]
+    git(repo, "update-index", "--no-skip-worktree", "notes.txt")
+    assert CT.tree_problems(repo) == []
+    (repo / "pkg" / "new.py").write_bytes(b"z = 3\n")
+    git(repo, "add", "-N", "pkg/new.py")                                                 # intent to add: an index entry without content
+    assert CT.tree_problems(repo) == ["intent-to-add: pkg/new.py"] and CT.index_tree_or_none(repo) is None
+    with pytest.raises(ValueError, match="intent-to-add"):
+        CT.index_tree(repo)
+
+
+def test_T03_a_preflight_record_must_be_clean_and_describe_this_checkout(tmp_path):
+    repo = git_repo(tmp_path / "r")
+    rec = git_record(repo)
+    assert CT.record_problems(rec) == [] and CT.preflight_problems(rec, repo) == []
+    assert CT.record_problems(None) == ["no preflight record"] and CT.preflight_problems([], repo) == ["no preflight record"]
+    for edit, word in (({"status": "REFUSED"}, "CLEAN"), ({"kind": "other"}, "CLEAN"), ({"version": 2}, "CLEAN"),
+                       ({"checks": {**rec["checks"], "staged": "FOUND"}}, "every check NONE"),
+                       ({"checks": {c: "NONE" for c in CT.PREFLIGHT_CHECKS[:-1]}}, "every check NONE"),
+                       ({"commit": rec["commit"][:39]}, "sha1"), ({"tree": rec["tree"].upper()}, "sha1"), ({"commit": None}, "sha1")):
+        assert [x for x in CT.record_problems({**rec, **edit}) if word in x], edit
+    assert [x for x in CT.preflight_problems({**rec, "repository": str(tmp_path)}, repo) if "another repository" in x]
+    assert [x for x in CT.preflight_problems({**rec, "repository": None}, repo) if "another repository" in x]
+    (repo / "pkg" / "a.py").write_bytes(b"x = 2\n")                                       # changed after the preflight
+    assert CT.preflight_problems(rec, repo) == ["working tree: modified: pkg/a.py"]
+    git(repo, "add", "pkg/a.py")                                                         # ... and staged
+    assert CT.preflight_problems(rec, repo) == ["the git index's tree is not the preflight's tree (a change staged since the preflight, or another commit)"]
+    git(repo, "commit", "-q", "-m", "d")                                                 # ... and committed
+    probs = CT.preflight_problems(rec, repo)
+    assert len(probs) == 2 and probs[0].startswith("the checked-out commit ") and probs[1].startswith("the git index's tree")
+    fresh = git_record(repo)
+    git(repo, "commit", "-q", "--allow-empty", "-m", "e")                                # another commit with the same tree
+    probs = CT.preflight_problems(fresh, repo)
+    assert len(probs) == 1 and probs[0].startswith("the checked-out commit ")
+    (repo / "pkg" / "c.py").write_bytes(b"z = 3\n")
+    assert CT.preflight_problems(git_record(repo), repo) == ["working tree: untracked: pkg/c.py"]
+
+
+@needs_ps
+def test_T04_the_operator_preflight_writes_its_record_only_for_a_clean_checkout_outside_the_repository(tmp_path):
+    raw = PREFLIGHT.read_bytes()
+    assert all(b < 128 for b in raw)                                                     # Windows PowerShell 5.1 reads a BOM-less file as ANSI
+    listed = re.search(r'\$Checks = @\(([^)]*)\)', raw.decode("ascii")).group(1)
+    assert tuple(x.strip().strip('"') for x in listed.split(",")) == CT.PREFLIGHT_CHECKS
+    assert not re.search(r"(?i)\bgit\b[^\n]*\b(add|commit|reset|checkout|stash|push|update-index|config)\b", raw.decode("ascii").split("try {", 1)[1])
+    repo = git_repo(tmp_path / "r")
+    (repo / ".venv").mkdir()
+    (repo / ".venv" / "lib.py").write_bytes(b"v = 1\n")                                   # ignored code under .venv is allowed
+    out = tmp_path / "pf" / "preflight.json"
+    code, text = preflight("-Repo", str(repo), "-Out", str(out))
+    assert code == 0 and "PREFLIGHT CLEAN" in text, text
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert CT.record_problems(rec) == [] and CT.preflight_problems(rec, repo) == [] and "not signed" in rec["note"]
+    assert (rec["commit"], rec["tree"], rec["tool"]) == (git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD^{tree}"), CT.PREFLIGHT_TOOL)
+    assert git(repo, "status", "--porcelain", "--untracked-files=all") == ""              # the preflight changed nothing
+    code, text = preflight("-Repo", str(repo), "-Out", str(out))
+    assert code == 2 and "never overwritten" in text, text
+    for bad, word in (([], "exactly one"), (["-Out", str(repo / "p.json")], "inside the repository"), (["-Out", str(tmp_path / "p.db")], "database path"),
+                      (["-Out", str(tmp_path / "x.json"), "-Manifest", str(tmp_path / "m.json")], "exactly one")):
+        code, text = preflight("-Repo", str(repo), *bad)
+        assert code == 2 and "PREFLIGHT REFUSED" in text and word in text, (bad, text)
+    assert not (repo / "p.json").exists() and not (tmp_path / "p.db").exists() and not (tmp_path / "x.json").exists()
+    code, text = preflight("-Repo", str(tmp_path / "pf"), "-Out", str(tmp_path / "y.json"))   # not a repository
+    assert code == 2 and "PREFLIGHT REFUSED" in text and not (tmp_path / "y.json").exists(), text
+
+
+DIRTY = {"staged": "staged: pkg/a.py", "unstaged": "unstaged: pkg/a.py", "untracked": "untracked: data.csv", "unmerged": "unmerged: 100644 ",
+         "assume-unchanged": "hidden_by_index_flags: h pkg/a.py", "skip-worktree": "hidden_by_index_flags: S notes.txt",
+         "ignored .py": "ignored_python: pkg/made.gen.py"}
+
+
+@needs_ps
+@pytest.mark.parametrize("case", sorted(DIRTY))
+def test_T05_the_operator_preflight_refuses_every_unclean_state_and_writes_nothing(tmp_path, case):
+    repo = git_repo(tmp_path / "r")
+    a = repo / "pkg" / "a.py"
+    if case in ("staged", "unstaged"):
+        a.write_bytes(b"x = 2\n")
+        if case == "staged":
+            git(repo, "add", "pkg/a.py")
+    elif case == "untracked":
+        (repo / "data.csv").write_bytes(b"1\n")                                          # not code: the product check cannot see it, git does
+    elif case == "unmerged":
+        git(repo, "checkout", "-q", "-b", "other")
+        a.write_bytes(b"x = 3\n")
+        git(repo, "commit", "-q", "-am", "o")
+        git(repo, "checkout", "-q", "-")
+        a.write_bytes(b"x = 4\n")
+        git(repo, "commit", "-q", "-am", "m")
+        git(repo, "merge", "-q", "other", check=False)                                   # a conflict
+    elif case == "assume-unchanged":
+        git(repo, "update-index", "--assume-unchanged", "pkg/a.py")
+        a.write_bytes(b"x = 5\n")                                                        # hidden from git status and git diff
+    elif case == "skip-worktree":
+        git(repo, "update-index", "--skip-worktree", "notes.txt")
+    else:
+        (repo / "pkg" / "made.gen.py").write_bytes(b"g = 1\n")                            # ignored by .gitignore, still importable
+    out = tmp_path / "preflight.json"
+    code, text = preflight("-Repo", str(repo), "-Out", str(out))
+    assert code == 2 and "PREFLIGHT REFUSED" in text and DIRTY[case] in text and not out.exists(), text
+
+
+@needs_ps
+def test_T06_a_manifest_is_built_only_from_the_operator_preflight_and_names_the_exact_committed_tree(tmp_path, monkeypatch, capsys):
+    repo = git_repo(tmp_path / "r")
+    monkeypatch.setattr(CT, "ROOT", repo)                                                # this checkout: a temporary repository
+    dp, rep, _, rp = package(tmp_path / "d", base()[0])
+    pf, mp = tmp_path / "preflight.json", tmp_path / "manifest.json"
+    assert preflight("-Repo", str(repo), "-Out", str(pf))[0] == 0
+    args = ["build", "--dataset", str(dp), "--report", str(rp), "--preflight", str(pf), "--created-at", AT]
+    assert MF.main(args + ["--out", str(mp)]) == 0
+    m = json.loads(mp.read_text(encoding="utf-8"))
+    head, tree = git(repo, "rev-parse", "HEAD"), git(repo, "rev-parse", "HEAD^{tree}")
+    assert MF.verify(m) == [] and (m["strategy"]["code_commit"], m["strategy"]["code_tree"]) == (head, tree)
+    assert m["code_preflight"] == json.loads(pf.read_text(encoding="utf-8"))
+    ds = load(str(dp))
+    here = lambda: dict(code_commit=git_commit_sha(repo), code_tree=CT.index_tree_or_none(repo), tree_clean=CT.tree_clean(repo))  # noqa: E731
+    assert MF.pre_checks(m, dataset_path=str(dp), dataset=ds, report=rep, **here()) == []
+    code, text = preflight("-Repo", str(repo), "-Manifest", str(mp))
+    assert code == 0 and f"checked-out commit {head}" in text and m["manifest_sha256"] in text, text
+    forged = copy.deepcopy(m)                                                            # a consistent manifest naming another tree for the commit
+    forged["strategy"]["code_tree"] = forged["code_preflight"]["tree"] = "ab" * 20
+    forged["manifest_sha256"] = MF.manifest_sha256(forged)
+    (tmp_path / "forged.json").write_text(json.dumps(forged), encoding="utf-8")
+    assert MF.verify(forged) == []                                                       # its form is right; git and the index say otherwise
+    code, text = preflight("-Repo", str(repo), "-Manifest", str(tmp_path / "forged.json"))
+    assert code == 2 and "is not its commit's tree" in text, text
+    assert "the git index's tree differs from the manifest's code_tree (a staged change, or another commit)" in MF.pre_checks(
+        forged, dataset_path=str(dp), dataset=ds, report=rep, **here())
+    (repo / "pkg" / "a.py").write_bytes(b"x = 2\n")
+    git(repo, "add", "pkg/a.py")                                                         # staged after the preflight
+    assert MF.main(args + ["--out", str(tmp_path / "m2.json")]) == 2 and not (tmp_path / "m2.json").exists()
+    assert "does not describe this checkout" in capsys.readouterr().out
+    assert "the git index's tree differs from the manifest's code_tree (a staged change, or another commit)" in MF.pre_checks(
+        m, dataset_path=str(dp), dataset=ds, report=rep, **here())
+    code, text = preflight("-Repo", str(repo), "-Manifest", str(mp))
+    assert code == 2 and "staged: pkg/a.py" in text, text
+    git(repo, "commit", "-q", "-m", "d")
+    code, text = preflight("-Repo", str(repo), "-Manifest", str(mp))
+    assert code == 2 and "is not the checked-out commit" in text, text
 
 
 # ============================================================================================================ the analysis (N)
@@ -1160,7 +1433,8 @@ def test_G01_the_documents_state_the_lock_the_gates_and_the_limits():
     doc = (ROOT / "DESIGN_78B1_SIP_EVALUATION.md").read_text(encoding="utf-8")
     for s in ("STAGE_7_8B1_DECISION_LOCK.md", "OPERATOR-APPROVAL:", "volume_feed", "2016-01-04", "SIP", "IEX builder", "byte-identical", "manifest",
               "pre-run", "BLOCKED_VALIDATION_FINDING", "non-positive stop", "not a significance test", "TRAIN observations", "NO_ADDED_VALUE",
-              "$50", "not a verified bound", "REGULATORY_FEE_HISTORY_MISSING", "evidence", "outside the repository", "synthetic", "No SIP history was fetched"):
+              "$50", "not a verified bound", "REGULATORY_FEE_HISTORY_MISSING", "evidence", "outside the repository", "synthetic", "No SIP history was fetched",
+              "checked for its form only", "not cryptographic authorization", "swing_eval/preflight.ps1", "code_tree", "staged", "--preflight"):
         assert s in doc, s
     d78 = (ROOT / "DESIGN_78_SWING_PULLBACK.md").read_text(encoding="utf-8")
     assert "the close of the 10th bar of the symbol in the trade" in d78 and "its symbol's next `max_hold_bars` bars" in d78
@@ -1184,7 +1458,7 @@ def now_text(rel):
 
 NEW_FILES_78B1 = {"DESIGN_78B1_SIP_EVALUATION.md", "tests/test_sip_eval_78b1.py", "tests/sip_eval_fixtures.py"} | {
     f"research_data/{m}" for m in ("__init__.py", "nyse_calendar.py", "quality.py", "sip_bundle.py")} | {
-    f"swing_eval/{m}" for m in ("__init__.py", "analysis.py", "evaluate.py", "manifest.py")}
+    f"swing_eval/{m}" for m in ("__init__.py", "analysis.py", "codetree.py", "evaluate.py", "manifest.py", "preflight.ps1")}
 APP_EDITS_78B1 = {".github/ci/pytest_groups.json", "DESIGN_78_SWING_PULLBACK.md"}                 # the CI entry; the M-6 wording (pinned in REPLAY_78B1)
 FROZEN_DIRS_78B1 = ("setups", "ppe", "evidence", "evidence_refresh", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe",
                     "unified_portfolio", "trader_view", "scripts", "forward_validation", "account_refresh", "rh_gateway", "frontend", "browser_tests", "api",

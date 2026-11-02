@@ -9,8 +9,8 @@ Steps, each fail-closed:
   2. the output folder is the manifest's evidence location: outside the repository, not a database path, new (or empty); nothing is overwritten
   3. a HISTORICAL dataset needs an operator approval reference, the approved manifest's sha256, and a new folder directly under EVIDENCE_ROOT
      (R17); SYNTHETIC datasets are for tests
-  4. pre-checks: the checked-out commit and a clean working tree (both read from the .git files: no subprocess), the dataset file's sha256
-     and content, the accepted pre-run report
+  4. pre-checks: the checked-out commit, the index's computed tree against the manifest's code_tree (a staged change), a clean working tree
+     (all read from the .git files, no subprocess: swing_eval/codetree.py), the dataset file's sha256 and content, the accepted pre-run report
   5. the four pre-registered runs of swing_pullback.plan.run() and the eight TRAIN-view neighbours, with every socket and SQLite connection
      refused while they execute; an attempt refuses the evaluation even if the run path caught the error
   6. post-checks of every run record against the manifest: a mismatch makes that run INVALID (never repaired)
@@ -19,7 +19,10 @@ Steps, each fail-closed:
   8. R9 stability, R10 comparison, R11 eligibility. Accepted only when the status is COMPLETED; otherwise every outcome is written marked NOT
      ACCEPTED, for diagnosis only (R10.1: an INVALID or BLOCKED run is not compared)
   9. the evidence: JSON files + evidence.sha256 + a plain-language summary, with the approval reference, the approved manifest sha256 and the
-     evaluation time; never a database, never a run record changed"""
+     evaluation time; never a database, never a run record changed
+
+The approval reference is checked for its form only and the approved manifest sha256 for equality with the manifest's (research_data.
+APPROVAL_CHECK): a procedural record, not an authorization check."""
 from __future__ import annotations
 
 import _socket
@@ -32,16 +35,16 @@ import platform
 import re
 import socket
 import sqlite3
-import struct
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import swing_pullback as SP
-from research_data import approved, output_problem
+from research_data import APPROVAL_CHECK, approved, output_problem
 from swing_eval import EVALUATOR_VERSION, EVIDENCE_ROOT, FEE_FLAG_MISSING_HISTORY, R12
 from swing_eval import analysis as AN
+from swing_eval import codetree as CT
 from swing_eval import manifest as MF
 from swing_pullback import plan as PL
 from swing_pullback.adapter import SwingTrendPullbackAdapter
@@ -51,93 +54,11 @@ try:
 except ImportError:                                                              # pragma: no cover - CPython ships it
     _sqlite3 = None
 
-ROOT = Path(__file__).resolve().parents[1]
-TREE_CHECK = ("the git index against the working tree (modified, deleted, unmerged, untracked .py beside tracked ones); a change staged "
-              "but not committed is NOT checked")
 NOT_ACCEPTED = "NOT ACCEPTED: diagnostic only (R10.1: an INVALID or BLOCKED run is not compared; M-5.2: no outcome is accepted)"
 
 
 class EvaluationRefused(RuntimeError):                                          # not an OSError: an `except OSError` never swallows it
     pass
-
-
-def _gitdir(root: Path) -> Path:
-    g = root / ".git"
-    if g.is_file():                                                              # a worktree: ".git" names its git directory
-        d = Path(g.read_text(encoding="utf-8").split("gitdir:", 1)[1].strip())
-        return d if d.is_absolute() else (root / d).resolve()
-    return g
-
-
-def _index(root: Path) -> Dict[str, Tuple[bytes, int, int]]:
-    """{path: (blob sha1, stage, mode)} from the git index file (versions 2 and 3). A split or sparse index is refused: some of its entries
-    live elsewhere or are collapsed into directories."""
-    data = (_gitdir(root) / "index").read_bytes()
-    if data[:4] != b"DIRC":
-        raise ValueError("not a git index")
-    if data[-20:] not in (hashlib.sha1(data[:-20]).digest(), bytes(20)):          # bytes(20): index.skipHash
-        raise ValueError("the git index checksum does not match")
-    version, count = struct.unpack(">II", data[4:12])
-    if version not in (2, 3):
-        raise ValueError(f"git index version {version} is not read here")
-    out, pos = {}, 12
-    for _ in range(count):
-        mode = struct.unpack(">I", data[pos + 24:pos + 28])[0]
-        sha, flags = data[pos + 40:pos + 60], struct.unpack(">H", data[pos + 60:pos + 62])[0]
-        head = 64 if flags & 0x4000 else 62                                       # version 3: extended flags
-        end = data.index(b"\0", pos + head)
-        out[data[pos + head:end].decode("utf-8")] = (sha, (flags >> 12) & 3, mode)
-        pos += (end - pos) // 8 * 8 + 8                                           # 1 to 8 NUL bytes pad each entry to a multiple of 8
-    while pos < len(data) - 20:                                                   # the extensions
-        if data[pos:pos + 4] == b"link":
-            raise ValueError("a split index (link extension): its shared entries are not read here")
-        if data[pos:pos + 4] == b"sdir":
-            raise ValueError("a sparse index (sdir extension): directories outside the cone are not read here")
-        pos += 8 + struct.unpack(">I", data[pos + 4:pos + 8])[0]
-    if not any(stage == 0 for _, stage, _ in out.values()):
-        raise ValueError("the git index holds no file")
-    return out
-
-
-def _blob(content: bytes) -> bytes:
-    return hashlib.sha1(b"blob %d\0" % len(content) + content).digest()
-
-
-def tree_problems(root: Path = ROOT) -> List[str]:
-    """The working tree against the git index, read from the .git files: no subprocess (product code never starts a process, Stage 3.9).
-    A problem: an unreadable index, an unmerged entry, a tracked file deleted or changed (neither its content nor its content with CRLF line
-    ends read as LF matches the index blob: a line-end-only difference is not a change here), an untracked .py file beside tracked ones. Not
-    seen: a change staged in the index but not committed (that needs git's object store): the operator builds the manifest on a checkout
-    whose `git status` is empty."""
-    try:
-        idx = _index(root)
-    except (OSError, ValueError, IndexError, struct.error) as exc:
-        return [f"the git index cannot be read: {exc}"]
-    problems = []
-    for rel, (sha, stage, mode) in sorted(idx.items()):
-        if stage:
-            problems.append(f"unmerged: {rel}")
-            continue
-        if mode >> 12 != 0o10:                                                    # a regular file (not a symlink or a submodule)
-            continue
-        p = root / rel
-        if not p.is_file():
-            problems.append(f"deleted: {rel}")
-            continue
-        content = p.read_bytes()
-        if sha not in (_blob(content), _blob(content.replace(b"\r\n", b"\n"))):
-            problems.append(f"modified: {rel}")
-    code_dirs = {str(Path(rel).parent.as_posix()) for rel in idx if rel.endswith(".py")}
-    for d in sorted(code_dirs):
-        for p in sorted((root / d).glob("*.py")):
-            rel = p.relative_to(root).as_posix()
-            if rel not in idx:
-                problems.append(f"untracked: {rel}")
-    return problems
-
-
-def tree_clean(root: Path = ROOT) -> bool:
-    return not tree_problems(root)
 
 
 @contextlib.contextmanager
@@ -179,7 +100,7 @@ def _dump(path: Path, obj) -> None:
 
 def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, *, approval: Optional[str] = None,
              approved_manifest_sha256: Optional[str] = None, commit_fn: Optional[Callable[[], Optional[str]]] = None,
-             tree_clean_fn: Optional[Callable[[], bool]] = None) -> dict:
+             tree_clean_fn: Optional[Callable[[], bool]] = None, tree_fn: Optional[Callable[[], Optional[str]]] = None) -> dict:
     from strategy_validation.dataset import load
     from strategy_validation.engine import git_commit_sha
     m = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
@@ -198,9 +119,10 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
         raise EvaluationRefused(f"a HISTORICAL evidence folder is named by its UTC timestamp (YYYY-MM-DDTHHMMSSZ, R17), not {out_dir.name!r}")
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     commit = (commit_fn or git_commit_sha)()
-    tree_issues = tree_problems() if tree_clean_fn is None else ([] if tree_clean_fn() else ["the supplied tree check says not clean"])
+    tree = (tree_fn or CT.index_tree_or_none)()
+    tree_issues = CT.tree_problems() if tree_clean_fn is None else ([] if tree_clean_fn() else ["the supplied tree check says not clean"])
     clean = not tree_issues
-    problems = MF.pre_checks(m, dataset_path=dataset_path, dataset=ds, report=report, code_commit=commit, tree_clean=clean)
+    problems = MF.pre_checks(m, dataset_path=dataset_path, dataset=ds, report=report, code_commit=commit, code_tree=tree, tree_clean=clean)
     if problems:
         raise EvaluationRefused(f"pre-checks failed: {problems}" + (f"; working tree: {tree_issues[:20]}" if tree_issues else ""))
     evaluated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -223,13 +145,14 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
     stab = {"V1 BASE": AN.stability(recs[("V1", "BASE")], ds.sessions), "C1 BASE": AN.stability(recs[("C1", "BASE")], ds.sessions),
             "V1 STRESS_2X": AN.stability(recs[("V1", "STRESS_2X")], ds.sessions), "C1 STRESS_2X": AN.stability(recs[("C1", "STRESS_2X")], ds.sessions)}
     comp = AN.comparison(recs, ds.sessions)
-    accepted_by = f"the operator's approval {approval} of manifest {m['manifest_sha256']}" if ds.kind == "HISTORICAL" else None   # SYNTHETIC: none
+    accepted_by = (f"approval reference {approval} supplied with the approved manifest sha256 {m['manifest_sha256']} (a procedural record: the "
+                   f"reference is checked for its form only)") if ds.kind == "HISTORICAL" else None                              # SYNTHETIC: none
     elig = AN.eligibility(recs, stab["V1 BASE"], comp, report, blocking, sorted(invalid), findings_accepted_by=accepted_by)
     mark = {"accepted": accepted, "status": status, "note": None if accepted else NOT_ACCEPTED}
     shown = (lambda o: o) if accepted else (lambda o: f"NOT ACCEPTED (diagnostic: {o})")  # noqa: E731
     summary = {"status": status, "statuses": statuses, "outcomes_accepted": accepted, "dataset_kind": ds.kind, "manifest_sha256": m["manifest_sha256"],
-               "approval_reference": approval, "approved_manifest_sha256": approved_manifest_sha256, "evaluated_at": evaluated_at,
-               "stability_V1": shown(stab["V1 BASE"]["outcome"]), "comparison": shown(comp["outcome"]),
+               "approval_reference": approval, "approved_manifest_sha256": approved_manifest_sha256, "approval_check": APPROVAL_CHECK,
+               "evaluated_at": evaluated_at, "stability_V1": shown(stab["V1 BASE"]["outcome"]), "comparison": shown(comp["outcome"]),
                "eligible_for_review": elig["eligible_for_review"] if accepted else None, "invalid_runs": invalid, "blocking_findings": len(blocking),
                "flags": sorted({*recs[("V1", "BASE")].get("research_flags", []), R12["flag"], FEE_FLAG_MISSING_HISTORY}),
                "note": "hypothetical research results; never a promotion; the edge stays NOT_ESTABLISHED (survivorship)"}
@@ -244,8 +167,8 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
     _dump(out_dir / "comparison.json", {**comp, **mark})
     _dump(out_dir / "eligibility.json", {**elig, "accepted": accepted, "status": status, "acceptance_note": mark["note"]})
     _dump(out_dir / "environment.json", {"python": sys.version.split()[0], "platform": platform.platform(), "evaluator": EVALUATOR_VERSION,
-                                          "code_commit": commit, "tree_clean": clean, "tree_check": TREE_CHECK, "evaluated_at": evaluated_at,
-                                          "approval_reference": approval,
+                                          "code_commit": commit, "code_tree": tree, "tree_clean": clean, "tree_check": CT.TREE_CHECK,
+                                          "evaluated_at": evaluated_at, "approval_reference": approval, "approval_check": APPROVAL_CHECK,
                                           "approved_manifest_sha256": approved_manifest_sha256, "fees": R12})
     _dump(out_dir / "summary.json", summary)
     (out_dir / "RESULTS_SUMMARY.md").write_text(_memo(summary, stab, comp), encoding="utf-8")
@@ -264,7 +187,7 @@ def _memo(summary: dict, stab: dict, comp: dict) -> str:
         "# Swing trend pullback V1 / C1 - evaluation summary", "",
         f"Dataset kind: {summary['dataset_kind']}. Manifest: `{summary['manifest_sha256']}`. {head}", "",
         f"Approval: {summary['approval_reference'] or 'none (SYNTHETIC)'}; approved manifest: {summary['approved_manifest_sha256'] or 'none'}; "
-        f"evaluated at {summary['evaluated_at']}.", "",
+        f"evaluated at {summary['evaluated_at']}. The approval is a procedural record ({APPROVAL_CHECK})", "",
         f"* R9 fold stability (V1 BASE): {tag}{stab['V1 BASE']['outcome']}",
         f"* R10 V1 versus C1: {tag}{comp['outcome']} - {comp['why']}",
         f"* R11 eligible for review: {summary['eligible_for_review']}",

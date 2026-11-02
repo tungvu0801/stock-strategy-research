@@ -23,7 +23,7 @@ Data checks only: no strategy rule, indicator, price statistic or result is comp
   Q09 invalid bars   bars the builder removed (INFO); bars with zero volume (FINDING)
 
 The report carries its own sha256 (canonical JSON without that field) and the approval reference it was made under. A report on a HISTORICAL
-dataset needs an approval reference."""
+dataset needs an approval reference (its form is checked, nothing is looked up: research_data.APPROVAL_CHECK)."""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +33,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from research_data import BENCHMARK, RESEARCH_UNIVERSE, approved, output_problem
+from research_data import APPROVAL_CHECK, BENCHMARK, RESEARCH_UNIVERSE, approved, output_problem
 from research_data import nyse_calendar as CAL
 
 REPORT_VERSION = "pre_run_report_v1"
@@ -207,7 +207,7 @@ def report(path: str, *, provenance: Optional[dict] = None, approval: Optional[s
     rep = {"report_version": REPORT_VERSION, "dataset": {"path_name": Path(path).name, "sha256": hashlib.sha256(raw).hexdigest(), "kind": ds.kind,
                                                          "dataset_id": ds.dataset_id, "volume_feed": feed, "first": ds.start, "last": ds.end,
                                                          "sessions": len(ds.sessions), "symbols": len(ds.bars)},
-           "provenance_override": dict(provenance or {}), "approval": approval, "status": status, "checks": checks,
+           "provenance_override": dict(provenance or {}), "approval": approval, "approval_check": APPROVAL_CHECK, "status": status, "checks": checks,
            "counts": {k: sum(1 for c in checks if c["severity"] == k) for k in ("BLOCK", "FINDING", "INFO")}}
     rep["report_sha256"] = report_sha256(rep)
     return rep
