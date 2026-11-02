@@ -20,6 +20,8 @@ For every universe symbol (one listing per issuer) and every session t of that s
   CANDIDATE                every rule holds: stop = close - 2 x ATR14, target = close + 3 x ATR14, both fixed here
 
 Everything at t reads bars <= t (the indicators are causal; the windows end at t); the cooldown reads the signal dates of earlier candidates only.
+The three strict comparisons with a mean (close > SMA200, SPY close > SMA200, SMA50 > SMA50 20 sessions earlier) are decided EXACTLY: the sign
+of math.fsum (correctly rounded, so its sign is the exact sign) of the window sums' difference - a tie is never a pass.
 Pure and deterministic: no clock, no randomness, no network, no model."""
 from __future__ import annotations
 
@@ -40,6 +42,17 @@ def _positive(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x > 0
 
 
+TIE_BAND = 1e-9                                                                     # relative: far wider than the prefix sums' rounding error
+
+
+def _exceeds(approx: float, scale: float, xs, ys) -> bool:
+    """sum(xs) > sum(ys), exactly. `approx` (a prefix-sum estimate of the difference) decides when it is clearly away from 0; near a tie the
+    sign of math.fsum over both windows decides (correctly rounded, so its sign is the exact sign)."""
+    if abs(approx) > TIE_BAND * scale:
+        return approx > 0
+    return math.fsum([*xs, *(-y for y in ys)]) > 0
+
+
 def _volume(x) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x >= 0
 
@@ -51,10 +64,25 @@ class _Series:
         self.dates = [b.date for b in bars]
         self.index = {d: k for k, d in enumerate(self.dates)}
         self.close = [b.close for b in bars]
+        self.prefix = [0.0]
+        for c in self.close:
+            self.prefix.append(self.prefix[-1] + c)
         self.sma_slow = sma(self.close, SLOW_SMA)
         self.sma_fast = sma(self.close, FAST_SMA)
         self.rsi = wilder_rsi(self.close, RSI_PERIOD)
         self.atr = wilder_atr([b.high for b in bars], [b.low for b in bars], self.close, ATR_PERIOD)
+
+    def above_slow(self, k: int) -> bool:
+        """close[k] > SMA200 at k: 200 x close > the window sum."""
+        p, a, end = self.prefix, k - SLOW_SMA + 1, k + 1                                  # prefix[end] sums close[0 .. end - 1]
+        total = p[end] - p[a]
+        return _exceeds(SLOW_SMA * self.close[k] - total, total, [self.close[k]] * SLOW_SMA, self.close[a:end])
+
+    def fast_rising(self, k: int) -> bool:
+        """SMA50 at k > SMA50 SLOPE_LOOKBACK bars earlier: one window sum > the other."""
+        p, end, end_b = self.prefix, k + 1, k - SLOPE_LOOKBACK + 1                        # the windows end at k and at k - 20
+        now, prior = p[end] - p[end - FAST_SMA], p[end_b] - p[end_b - FAST_SMA]
+        return _exceeds(now - prior, now + prior, self.close[end - FAST_SMA:end], self.close[end_b - FAST_SMA:end_b])
 
     def complete(self, start: str, end: str) -> bool:
         """A bar on every one of the WARMUP_SESSIONS dataset sessions [start .. end] (the symbol's dates are a subset of the sessions)."""
@@ -147,11 +175,11 @@ class SwingPullbackCore:
             if statistics.median(c * v for c, v in pairs) < MIN_DOLLAR_VOLUME:
                 return "LIQUIDITY_BELOW_MIN", pull
         q = spy.index[d]
-        if not spy.close[q] > spy.sma_slow[q]:
+        if not spy.above_slow(q):
             return "REGIME_OFF", pull
-        if not s.close[k] > s.sma_slow[k]:
+        if not s.above_slow(k):
             return "BELOW_SLOW_SMA", pull
-        if not s.sma_fast[k] > s.sma_fast[k - SLOPE_LOOKBACK]:
+        if not s.fast_rising(k):
             return "FAST_SMA_NOT_RISING", pull
         if self.use_pullback_rule:                                                          # V1 only: C1 omits trigger AND guard
             if not self.trigger(s, k):

@@ -8,7 +8,8 @@
   volume_feed                  the dataset's DECLARED volume feed (provenance "volume_feed"): SIP or IEX
 
 A dataset that does not declare its volume feed as SIP or IEX, or whose issuer map does not cover every universe symbol it holds, is refused
-(SwingDataError): the liquidity rule and the one-listing-per-issuer rule are never decided by a default."""
+(SwingDataError), and so is one listing a symbol under two issuers: the liquidity rule and the one-listing-per-issuer rule are never decided
+by a default. The listing kept for an issuer is the alphabetically first one the dataset holds (the Stage 6.6 / 6.7 rule)."""
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -33,7 +34,12 @@ class SwingData:
             raise SwingDataError(f"the dataset must declare its volume feed (provenance volume_feed: {' or '.join(VOLUME_FEEDS)}); got {feed!r}")
         self.volume_feed: str = feed
         issuers = (((dataset.aux or {}).get("static") or {}).get("issuers")) or {}
-        self._issuer = {sym: str(iid) for iid, info in issuers.items() for sym in (info or {}).get("symbols") or []}
+        self._issuer: Dict[str, str] = {}
+        for iid, info in issuers.items():
+            for sym in (info or {}).get("symbols") or []:
+                if sym in self._issuer and self._issuer[sym] != str(iid):
+                    raise SwingDataError(f"the issuer map lists {sym} under two issuers ({self._issuer[sym]}, {iid})")
+                self._issuer[sym] = str(iid)
         missing = sorted(s for s in RESEARCH_UNIVERSE if s in self._bars and s not in self._issuer)
         if missing:
             raise SwingDataError(f"the issuer map (aux static issuers) does not cover {', '.join(missing)}: one listing per issuer cannot be applied")

@@ -9,7 +9,8 @@ verdict is computed before them and they cannot change it. Every definition was 
                    rotation_walkforward 'return > 0' convention); positive folds over folds with a trade. The SAME boundaries for V1 and C1. Descriptive:
                    the stability bar and the per-fold minimum are decided before real data
   sensitivity      V1 only: the base and the 8 pre-registered neighbours on the TRAIN VIEW (dataset.until(train_end): no later bar exists), at the
-                   run's friction and sizing; a TRAIN candidate whose holding window would reach past the TRAIN end is purged by its dates; labelled by
+                   run's friction and sizing; a candidate is purged by the harness's own boundary rule (engine.outcome: its symbol's next
+                   max_hold_bars bars reach past the TRAIN end - dates only, never a price) and the rest is simulated on the TRAIN view; labelled by
                    the harness's own rule (strategy_validation/diagnostics.py sensitivity) - never used to choose
   costs            the run's friction, which of the two pre-registered cost runs it is, and the regulatory-fee disclosure"""
 from __future__ import annotations
@@ -17,10 +18,11 @@ from __future__ import annotations
 from typing import List, Optional
 
 from swing_pullback import (COSTS, DEFERRED, FOLD_START_INDEX, FOLDS, SENSITIVITY, STRATEGY_ID, preregistration_hash)
+from strategy_validation import PURGE_REASON
 from strategy_validation import candidates as CD
 from strategy_validation import diagnostics as DG
+from strategy_validation import engine as E
 from strategy_validation import metrics as MX
-from strategy_validation import simulator as SIM
 
 
 def _r(x, n=6):
@@ -65,8 +67,7 @@ def folds(record: dict, dataset) -> dict:
 def sensitivity(record: dict, dataset, adapter) -> dict:
     train_end = record["train_end"]
     tv = dataset.until(train_end)
-    last = len(tv.sessions) - 1
-    pos = {d: i for i, d in enumerate(tv.sessions)}
+    split_info = dict((record.get("config_snapshot") or {}).get("split") or {})
     friction = dict(record["friction_model"])
     sizing = dict((record.get("config_snapshot") or {}).get("sizing") or {})
     rows = []
@@ -74,13 +75,11 @@ def sensitivity(record: dict, dataset, adapter) -> dict:
         a = adapter.with_params(params)
         cands, _ = CD.normalize(a, a.candidates(tv), tv, None)
         trades, purged = [], 0
-        for c in cands:
-            if pos[c.signal_date] + c.max_hold_bars > last:                           # the holding window reaches past the TRAIN end: dates only
+        for c in cands:                                                              # every candidate is a TRAIN candidate (signalled <= train_end)
+            t, skip = E.outcome(c, dataset, tv, split_info, a.entry_policy, friction, sizing, a.time_exit_fill)
+            if skip is not None and skip.reason == PURGE_REASON:
                 purged += 1
-                continue
-            t, _skip = SIM.simulate(c, tv, arm="_", segment="TRAIN", entry_policy=a.entry_policy, friction=friction, sizing=sizing,
-                                    time_exit_fill=a.time_exit_fill)
-            if t is not None:
+            elif t is not None:
                 trades.append(t)
         m = MX.compute(trades, candidate_count=len(cands), accepted_count=len(cands), stand_aside_count=0, equity=float(sizing["equity"]),
                        boundary_purged_count=purged)

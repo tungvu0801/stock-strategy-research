@@ -1,7 +1,8 @@
 """swing_pullback/indicators.py — the point-in-time indicators of the swing baseline, in plain Python (no pandas). Every function maps a series to a
 series of the same length whose value at k reads inputs[0 .. k] only (causal by construction); None = not enough history.
 
-  sma(values, n)               the simple mean of the n values ending at k (a prefix-sum difference)
+  sma(values, n)               the mean of the n values ending at k: math.fsum (the correctly rounded sum) / n, window by window, so two
+                               windows holding the same values always give the same mean (no accumulated rounding)
   wilder_rsi(closes, n)        the analysis/indicators.py formula: deltas, gains / losses smoothed by the pandas ewm(alpha = 1 / n, adjust = False,
                                min_periods = n) recursion seeded with the first delta; 100 where the average loss is 0
   wilder_atr(h, l, c, n)       the analysis/indicators.py formula: true range (high - low on the first bar), the same recursion
@@ -10,16 +11,15 @@ They equal analysis/indicators.py wherever that module defines a value on a seri
 value at all for a series shorter than n + 1, so its ATR at index n - 1 depends on whether a later bar exists; here it never does."""
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Sequence
 
 
 def sma(values: Sequence[float], n: int) -> List[Optional[float]]:
     out: List[Optional[float]] = [None] * len(values)
-    prefix = [0.0]
-    for v in values:
-        prefix.append(prefix[-1] + float(v))
-    for end in range(n, len(values) + 1):                                         # prefix[end] sums values[0 .. end - 1]
-        out[end - 1] = (prefix[end] - prefix[end - n]) / n
+    xs = [float(v) for v in values]
+    for end in range(n, len(xs) + 1):                                             # the window values[end - n .. end - 1]
+        out[end - 1] = math.fsum(xs[end - n:end]) / n
     return out
 
 

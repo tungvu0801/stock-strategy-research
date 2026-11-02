@@ -116,6 +116,12 @@ def uni():
 
 
 @functools.lru_cache(maxsize=None)
+def uni_regime():
+    """The same stocks under an SPY that crosses its SMA200 again and again: the regime decides candidates."""
+    return F.dataset(F.universe(6), spy=F.wave(N, price=300.0, drift=0.0002, amp=0.06, period=90.0))
+
+
+@functools.lru_cache(maxsize=None)
 def runs():
     ds = uni()
     return ds, {(v, c): PL.run(v, c, ds, created_at=AT) for v, c in PL.RUNS}
@@ -226,6 +232,25 @@ def test_A04_v1_says_it_is_a_modified_d3_baseline_and_declares_every_deviation()
     assert "not modelled" in a.exit_condition and "deviation D1" in a.exit_condition
 
 
+def test_A05_every_neighbour_applies_its_own_value_and_only_it():
+    ds = uni()
+    base = {(x["symbol"], x["signal_date"]): x for x in SwingPullbackCore().evaluate(ds)["signals"]}
+    for p in SP.SENSITIVITY:
+        a = SwingTrendPullbackAdapter().with_params(p)
+        (k, v), = p.items()
+        assert (a.core.rsi_max, a.core.stop_atr, a.core.target_atr, a.max_hold_bars) == (
+            p.get("rsi_max", 10.0), p.get("stop_atr", 2.0), p.get("target_atr", 3.0), p.get("max_hold_bars", 10))
+        sigs = a.core.evaluate(ds)["signals"]
+        assert sigs
+        for x in sigs:
+            assert x["stop"] == pytest.approx(x["close"] - a.core.stop_atr * x["atr"], rel=1e-12)
+            assert x["target"] == pytest.approx(x["close"] + a.core.target_atr * x["atr"], rel=1e-12)
+            assert x["rsi"] <= a.core.rsi_max or x["lower_closes"]
+        if k in ("stop_atr", "target_atr"):                                                   # same candidates, other levels
+            assert {(x["symbol"], x["signal_date"]) for x in sigs} == set(base)
+            assert all(x[k[:-4]] != base[(x["symbol"], x["signal_date"])][k[:-4]] for x in sigs)
+
+
 # ============================================================================================================ indicators (I)
 def test_I01_known_answers():
     assert IND.sma([1, 2, 3, 4, 5], 3) == [None, None, 2.0, 3.0, 4.0]
@@ -322,6 +347,8 @@ def test_R06_the_liquidity_rule_is_the_20_session_median_of_raw_dollar_volume_in
     c = dip(400, "rsi")
     assert reason_at(ds_of(one(c, volume=100_000.0)), 400) == "LIQUIDITY_BELOW_MIN"
     assert reason_at(ds_of(one(c, raw_gaps=[390])), 400) == "LIQUIDITY_HISTORY"
+    assert reason_at(ds_of(one(c, raw_gaps=[381])), 400) == "LIQUIDITY_HISTORY"                  # the 20th session back is in the window
+    assert reason_at(ds_of(one(c, raw_gaps=[380])), 400) == "CANDIDATE"                          # the 21st is not
     exact = {i: 50.0 for i in range(381, 401)}
     assert reason_at(ds_of(one(c, volume=400_000.0, raw_override=exact)), 400) == "CANDIDATE"     # 50 x 400 000 = 20 M exactly
     assert reason_at(ds_of(one(c, volume=399_999.0, raw_override=exact)), 400) == "LIQUIDITY_BELOW_MIN"
@@ -329,6 +356,8 @@ def test_R06_the_liquidity_rule_is_the_20_session_median_of_raw_dollar_volume_in
     assert reason_at(ds_of(one(c, volume=1_000_000.0, raw_override={**exact, **low11})), 400) == "LIQUIDITY_BELOW_MIN"
     low9 = {i: 1.0 for i in range(381, 390)}                                                       # 9 of 20: median 50 M
     assert reason_at(ds_of(one(c, volume=1_000_000.0, raw_override={**exact, **low9})), 400) == "CANDIDATE"
+    lows = {i: 1.0 for i in range(380, 391)}                                                       # 380-390 tiny: [381, 400] holds 10 of them, [380, 399] 11
+    assert reason_at(ds_of(one(c, volume=1_000_000.0, raw_override={**exact, **lows})), 400) == "CANDIDATE"   # median (1 M + 50 M) / 2
 
 
 def test_R07_on_iex_volume_the_liquidity_rule_is_not_applied_and_said_so():
@@ -346,6 +375,9 @@ def test_R08_an_undeclared_or_unknown_volume_feed_or_an_incomplete_issuer_map_re
             SwingPullbackCore().evaluate(ds_of(one(dip(400, "rsi")), feed=feed))
     with pytest.raises(SwingDataError):
         SwingPullbackCore().evaluate(ds_of([one(dip(400, "rsi")), one(dip(400, "rsi"), sym="ABBV")], issuers={"X": {"symbols": ["AAPL"]}}))
+    with pytest.raises(SwingDataError, match="two issuers"):
+        SwingPullbackCore().evaluate(ds_of([one(dip(400, "rsi"), sym="GOOG"), one(dip(400, "rsi"), sym="GOOGL")],
+                                           issuers={"A": {"symbols": ["GOOG", "GOOGL"]}, "B": {"symbols": ["GOOGL"]}}))
 
 
 def test_R09_one_listing_per_issuer_goog_is_kept_googl_is_not():
@@ -356,6 +388,17 @@ def test_R09_one_listing_per_issuer_goog_is_kept_googl_is_not():
     ev, _ = trace(ds_of([one(c, sym="GOOG"), one(c, sym="GOOGL")]))                     # two issuers: both
     assert {s["symbol"] for s in ev["signals"]} == {"GOOG", "GOOGL"}
     assert "SPY" not in {s["symbol"] for s in trace(uni())[0]["signals"]}
+
+
+def test_R10_a_tie_is_never_a_pass_flat_windows_give_no_trend():
+    for flat in (37.13, 50.07, 99.99):
+        r = [0.001] * 400
+        c = closes_from(r, price=flat / 1.001 ** 399)[:400] + [flat] * (N - 400)              # a rise, then exactly flat closes
+        ev, tr = trace(ds_of(one(c)), control=True)
+        late = [i for i in signal_days(ev) if i >= 470]                                       # from 470 both SMA50 windows are flat: equal sums
+        assert not late, (flat, late[:5])
+        assert tr[("AAPL", F.SESSIONS[600])]["reason"] in ("BELOW_SLOW_SMA", "FAST_SMA_NOT_RISING"), flat   # 600: the 200-session window is flat too
+        assert {r["reason"] for (s, d), r in tr.items() if d >= F.SESSIONS[599]} == {"BELOW_SLOW_SMA"}, flat
 
 
 # ============================================================================================================ warm-up (W)
@@ -417,8 +460,9 @@ def divergences(cls, ds, cuts):
 
 
 def test_L01_every_point_in_time_cut_reproduces_every_earlier_candidate_and_rule_outcome_exactly():
-    ds = uni()
-    for cls in (SwingTrendPullbackAdapter, SwingTrendPullbackControlAdapter):
+    ev = SwingPullbackCore().evaluate(uni_regime())
+    assert ev["funnel"]["REGIME_OFF"] > 500 and ev["signals"]                                     # the regime fixture really switches
+    for ds, cls in [(d, c) for d in (uni(), uni_regime()) for c in (SwingTrendPullbackAdapter, SwingTrendPullbackControlAdapter)]:
         full = dump(cls().candidates(ds))
         _, ftr = trace(ds, control=cls is SwingTrendPullbackControlAdapter)
         cuts = sorted(set(ds.sessions[199::9]) | {c["signal_date"] for c in full[::7]})
@@ -495,7 +539,7 @@ def test_L05_the_static_causality_scan_finds_nothing_in_any_package_file():
 
 
 def test_L06_an_independent_re_derivation_gives_every_candidate_and_level():
-    sets = [uni(), F.dataset(F.universe(4), feed="IEX"), ds_of(one(closes_from([0.002 if i < 300 or i >= 340 else -0.0001 for i in range(N)]))),
+    sets = [uni(), uni_regime(), F.dataset(F.universe(4), feed="IEX"), F.dataset([dict(x, raw_mult=0.5, volume=2_000_000.0) for x in F.universe(4)]), ds_of(one(closes_from([0.002 if i < 300 or i >= 340 else -0.0001 for i in range(N)]))),
             ds_of([one(dip(400, "rsi"), sym="GOOG", cik="A"), one(dip(410, "rsi"), sym="GOOGL", cik="A"), one(dip(420, "guard"), sym="ABBV", gaps=[300])])]
     for ds in sets:
         for control in (False, True):
@@ -643,6 +687,50 @@ def test_D04_the_diagnostics_never_change_the_verdict_or_any_metric(monkeypatch)
     for k in ("verdict", "performance_verdict", "candidate_set_hash"):
         assert with_d[k] == without[k], k
     assert with_d["arms"]["RULES"]["metrics"] == without["arms"]["RULES"]["metrics"] and "strategy" not in without["diagnostics"]
+
+
+def test_D05_the_sensitivity_purges_exactly_the_windows_past_the_train_end_and_runs_at_the_runs_own_friction():
+    ds, rr = runs()
+    base, stress = (rec(rr[("V1", c)]) for c in ("BASE", "STRESS_2X"))
+    T = base["train_end"]
+    tv = ds.until(T)
+    for row in base["diagnostics"]["strategy"]["sensitivity"]["rows"]:
+        a = SwingTrendPullbackAdapter().with_params({} if row["params"] == "base" else row["params"])
+        cands, _ = CD.normalize(a, a.candidates(tv), tv, None)
+        past = [c for c in cands if any(b.date > T for b in ds.bars_after(c.symbol, c.signal_date)[:a.max_hold_bars])]   # the symbol's own bars, dates only
+        assert row["candidates"] == len(cands) and row["boundary_purged"] == len(past) > 0, row["params"]
+        assert row["trades"] <= len(cands) - len(past)
+    m = base["arms"]["RULES"]["metrics"]["TRAIN"]                                                   # the base row IS the main run's TRAIN result
+    b0 = base["diagnostics"]["strategy"]["sensitivity"]["rows"][0]
+    assert (b0["trades"], b0["boundary_purged"], b0["expectancy_R"], b0["net_pnl"]) == (m["trade_count"], m["boundary_purged_count"], m["expectancy_R"], m["net_pnl"])
+    pairs = zip(base["diagnostics"]["strategy"]["sensitivity"]["rows"], stress["diagnostics"]["strategy"]["sensitivity"]["rows"])
+    for b, s in pairs:                                                                              # the 2x run's sensitivity pays 2x friction
+        assert b["params"] == s["params"] and b["trades"] == s["trades"] and s["net_pnl"] < b["net_pnl"], b["params"]
+
+
+def test_D06_a_fold_is_positive_by_its_net_pnl_not_by_its_mean_r():
+    ds = F.dataset([one(closes_from(rets()))])
+    d = ds.sessions[199]
+    record = {"arms": {"RULES": {"trades": [{"signal_date": d, "r_net": 1.0, "net_pnl": 10.0}, {"signal_date": d, "r_net": -0.5, "net_pnl": -100.0}]}},
+              "candidates": []}
+    f = SPD.folds(record, ds)
+    assert f["folds"][0]["trades"] == 2 and f["folds"][0]["mean_R"] == 0.25 and f["folds"][0]["positive"] is False
+    assert f["folds_with_trades"] == 1 and f["positive_folds"] == 0 and f["positive_fold_pct"] == 0.0
+    assert all(x["positive"] is None and x["trades"] == 0 for x in f["folds"][1:])
+
+
+def test_D07_a_gap_after_a_train_signal_is_purged_exactly_as_the_harness_purges_it():
+    ds = ds_of(one(dip(530, "rsi"), gaps=range(531, 541)))                                       # the next 10 bars of 530 end after the TRAIN end (547)
+    r = rec(PL.run("V1", "BASE", ds, created_at=AT))
+    T = r["train_end"]
+    assert 530 + 10 < F.SESSIONS.index(T)                                                      # a session count would have kept it
+    assert any(b.date > T for b in ds.bars_after("AAPL", F.SESSIONS[530])[:10])                # its own next 10 bars pass the TRAIN end
+    m = r["arms"]["RULES"]["metrics"]["TRAIN"]
+    b0 = r["diagnostics"]["strategy"]["sensitivity"]["rows"][0]
+    assert (b0["trades"], b0["boundary_purged"], b0["expectancy_R"]) == (m["trade_count"], m["boundary_purged_count"], m["expectancy_R"])
+    sig = next(c for c in r["candidates"] if c["signal_date"] == F.SESSIONS[530])
+    assert sig["candidate_id"] in r["boundary"]["purged"]["RULES"]                               # the harness purged it ...
+    assert b0["boundary_purged"] >= 1                                                           # ... and so did the sensitivity
 
 
 # ============================================================================================================ the experiments (P)

@@ -21,7 +21,7 @@ the price and liquidity rules read the raw series in `aux`.
 
 | # | Rule | Value |
 |---|---|---|
-| 1 | Universe | the 81-stock research universe of Stages 6.4–6.7 (`value_quality.RESEARCH_UNIVERSE`), today's large caps (FIXED_CURRENT_UNIVERSE, `SURVIVORSHIP_BIAS_PRESENT`); one listing per issuer (aux static issuer map; GOOG is kept, GOOGL is not); SPY for the regime only, never a candidate |
+| 1 | Universe | the 81-stock research universe of Stages 6.4–6.7 (`value_quality.RESEARCH_UNIVERSE`), today's large caps (FIXED_CURRENT_UNIVERSE, `SURVIVORSHIP_BIAS_PRESENT`); one listing per issuer (aux static issuer map: the alphabetically first listing the dataset holds is kept, so GOOG and not GOOGL; a symbol mapped to two issuers refuses the run); SPY for the regime only, never a candidate |
 | 2 | Warm-up | no candidate until all of the 200 dataset sessions ending at t carry a bar of the symbol and of SPY; a missing bar is never filled |
 | 3 | Price | raw close ≥ $5 |
 | 4 | Liquidity | median of raw close × raw volume over the 20 dataset sessions ending at t ≥ $20 M; a missing raw value in the window: no candidate. On IEX volume the rule is NOT_APPLIED (D4). The dataset must declare `volume_feed` SIP or IEX, else the run is refused |
@@ -38,7 +38,9 @@ the price and liquidity rules read the raw series in `aux`.
 
 The indicators are written in plain Python (`swing_pullback/indicators.py`). They reproduce the `analysis/indicators.py` formulas: the RSI
 and ATR use the pandas `ewm(alpha = 1/n, adjust = False, min_periods = n)` recursion seeded with the first value, and RSI is 100 when the
-average loss is 0. They are causal by construction: a prefix gives the same values. `analysis/` itself is not imported.
+average loss is 0. They are causal by construction: a prefix gives the same values. `analysis/` itself is not imported. The SMA is the correctly rounded mean
+of each window (`math.fsum` / n). The three strict comparisons with a mean are decided exactly, so a tie never passes: close > SMA200,
+SPY close > SMA200, and SMA50 rising.
 
 ## 2. C1 — `SWING_TREND_PULLBACK_CONTROL` 1.0
 
@@ -66,8 +68,9 @@ The EMA / support design is deferred as a separate future strategy.
 
 There are exactly **two cost runs** per version: BASE at 5 bps per side and STRESS_2X at 10 bps per side, with commission 0 per order
 (modelled explicitly) and no fee per share. Both are configurations of the same version. The store's version identity excludes friction
-(tested: it accepts both runs and refuses a changed rule). `plan.run()` accepts no other cost and no parameters. It returns the run and never
-stores it.
+(tested: it accepts both runs, and refuses a run whose parameters or holding limit differ under the same version). The store cannot see a
+changed code constant: the pre-registration hash below guards those. It is recorded in every run's diagnostics and pinned by the tests.
+`plan.run()` accepts no other cost and no parameters. It returns the run and never stores it.
 
 The verdict is the harness's: the chronological 70 / 30 split with its boundary purge, ≥ 30 trades, ≥ 20 OOS trades, ≥ 60 OOS sessions,
 |t| ≥ 2, and FRICTION_HEAVY 0.50. A PASS also needs positive OOS expectancy in the STRESS_2X run; that comparison happens at review, outside the
@@ -86,9 +89,9 @@ code.
   * target 2.25 / 3.75 ATR;
   * time exit 8 / 12, with the cooldown still 9.
 
-  They are computed on the **TRAIN view** only (`dataset.until(train_end)`: no later bar exists), at the run's friction and sizing. A TRAIN
-  candidate whose holding window would reach past the TRAIN end is purged by its dates. The neighbourhood is labelled by the harness's own
-  rule. A SENSITIVE or UNSTABLE label makes the result not promotable. The harness's own neighbour hook is not used, because it would evaluate
+  They are computed on the **TRAIN view** only (`dataset.until(train_end)`: no later bar exists), at the run's friction and sizing. A
+  candidate is purged by the harness's own boundary rule (its symbol's next 10 bars reach past the TRAIN end: dates only, never a price), so
+  the base row equals the run's own TRAIN result. The neighbourhood is labelled by the harness's own rule. A SENSITIVE or UNSTABLE label makes the result not promotable. The harness's own neighbour hook is not used, because it would evaluate
   the neighbours on every session, OOS included.
 * **Funnel.** The first failing rule per symbol-session.
 
@@ -113,5 +116,7 @@ code.
 * **Registration.** How a real run is invoked and persisted, and whether the registry gets an entry.
 * **V2.** V2's rules, if wanted, fixed before any real data is seen.
 * **Data integrity.** A corporate-action consistency check of the real bundle (the Stage 6.6 / 6.7 window checks are not part of V1).
+* **Calendar.** The real calendar must be checked: one stray date on any symbol blocks 200 sessions of candidates for every other symbol
+  (rule 2).
 
 Pre-registration hash (`swing_pullback.preregistration_hash()`): `6c20fdb4f9c093fed0a82c21c642dfceee2cc6d424104390c7c432e3cfa61903`.
