@@ -4,14 +4,18 @@ baseline, and its control C1, on SYNTHETIC fixtures only (tests/swing_pullback_f
 
   A01-A04 the pre-registration: every value, its hash, the universe, the experiments, the declared deviations
   I01-I03 the indicators: known answers, the analysis/indicators.py formulas, causality
-  R01-R09 the rules, one at a time: regime, trend, pullback trigger (RSI / lower closes), depth guard, price, liquidity, the volume feed, one listing
+  R01-R10 the rules, one at a time: regime, trend, pullback trigger (RSI / lower closes), depth guard, price, liquidity, the volume feed, one
+          listing, ties
+  R11-R17 the trend windows against exact rational sums; every symbol-session against an independent exact reference (random walks, a flat
+          SPY, IEX); strict lower closes; the $5 rule on IEX; a regime tie; IEX ignores raw volume; a one-ulp slope
   W01-W03 the warm-up: 200 complete dataset sessions for the symbol and SPY, never filled
   K01-K03 the 9-session cooldown: signal dates only, suppressed sessions never restart it, 9 in every neighbour
   L01-L06 look-ahead and leakage: truncation at every cut, rewritten futures, a fixed holding limit, a leaking variant is caught, the static
           scan, an independent re-derivation of every candidate
   C01-C04 the control: C1 is V1 without the pullback rule (trigger and guard) and nothing else
   H01-H04 the harness: exits, the time exit, the store accepts the 2x-cost run as the same version and refuses a changed rule, no network
-  D01-D04 the diagnostics: fold boundaries, folds by signal date for both versions, the TRAIN-only sensitivity, nothing changes the verdict
+  D01-D08 the diagnostics: fold boundaries, folds by signal date for both versions, the TRAIN-only sensitivity, nothing changes the verdict,
+          the purge, fold positivity, every sensitivity row equal to a full harness run of its configuration at the run's cost
   P01     the two pre-registered cost runs per version
   X01-X02 isolation: imports, nothing imports the package, no registry entry, no database, no socket
   G01     the design document
@@ -29,6 +33,8 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+from collections import Counter
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -46,6 +52,7 @@ from strategy_validation import candidates as CD
 from strategy_validation import causality as CA
 from strategy_validation import engine as E
 from strategy_validation.dataset import Dataset
+from strategy_validation.models import Bar
 
 ROOT = Path(__file__).resolve().parents[1]
 AT = "2026-11-01T00:00:00+00:00"
@@ -122,6 +129,40 @@ def uni_regime():
 
 
 @functools.lru_cache(maxsize=None)
+def walks_sip():
+    """Cent-rounded random walks: the trend, slope, regime, liquidity and pullback rules bind both ways; a second listing; a bar gap; raw
+    gaps (no raw price, then no liquidity history)."""
+    specs = [F.stock(sym, F.walk(seed=11 + i, price=14.0 + 6 * i, sigma=0.011 + 0.002 * (i % 3))) for i, sym in enumerate(F.SYMBOLS[:5])]
+    specs += [F.stock("GOOG", F.walk(seed=21, price=40.0), cik="ALPHABET"), F.stock("GOOGL", F.walk(seed=22, price=41.0), cik="ALPHABET"),
+              F.stock("AMGN", F.walk(seed=23, price=30.0), gaps=[300], raw_gaps=range(600, 630)),
+              F.stock("AMZN", F.walk(seed=24, price=35.0), raw_gaps=[700])]
+    return F.dataset(specs, spy=F.walk(seed=99, price=300.0, sigma=0.008, drift=0.0004))
+
+
+@functools.lru_cache(maxsize=None)
+def walks_iex():
+    """IEX volume: raw closes crossing $5, a stock without raw volume, raw gaps, an SPY that turns exactly flat (regime ties) from session 400
+    and misses session 700."""
+    spy = F.walk(seed=98, price=300.0, sigma=0.008, drift=0.0006)
+    spy = spy[:400] + [spy[399]] * (N - 400)
+    specs = [F.stock(sym, F.walk(seed=31 + i, price=20.0 + 5 * i)) for i, sym in enumerate(F.SYMBOLS[:3])]
+    specs += [F.stock("ADBE", F.walk(seed=41, price=30.0), raw_mult=0.125), F.stock("ADI", F.walk(seed=42, price=30.0), volume=None),
+              F.stock("AMD", F.walk(seed=43, price=25.0), raw_gaps=range(500, 530))]
+    return F.dataset(specs, spy=spy, spy_gaps=[700], feed="IEX")
+
+
+@functools.lru_cache(maxsize=None)
+def sizing_mix():
+    """V1 trades of every sizing branch and both kinds of exit: a calm riser (CAPPED, time exits), a fast wave (RISK_SIZED, time exits),
+    a $30,000 share (MIN_ONE_UNIT, stops)."""
+    calm = [0.0004] * N
+    for T in range(230, N, 31):
+        calm[T - 2] = calm[T - 1] = calm[T] = -0.00005
+    return F.dataset([F.stock("AAPL", closes_from(calm, 40.0)), F.stock("ABBV", F.wave(N, price=40.0, drift=0.002, amp=0.06, period=5.0)),
+                      F.stock("ABT", F.wave(N, price=30000.0, drift=0.001, amp=0.10, period=13.0))])
+
+
+@functools.lru_cache(maxsize=None)
 def runs():
     ds = uni()
     return ds, {(v, c): PL.run(v, c, ds, created_at=AT) for v, c in PL.RUNS}
@@ -131,9 +172,18 @@ def rec(run):
     return json.loads(run.model_dump_json())
 
 
+def _cum(xs):
+    """Exact prefix sums (rational arithmetic) of a series of doubles: the window [a, b] sums to cum[b + 1] - cum[a] with no rounding."""
+    out, t = [Fraction(0)], Fraction(0)
+    for x in xs:
+        t += Fraction(x)
+        out.append(t)
+    return out
+
+
 def reference(ds, control=False, rsi_max=10.0, stop_atr=2.0, target_atr=3.0):
-    """An independent re-derivation: pandas rolling means, the analysis/indicators.py RSI / ATR, plain loops. Returns
-    [(symbol, signal_date, stop, target)]."""
+    """An independent re-derivation: exact rational window sums for the strict comparisons, the analysis/indicators.py RSI / ATR, plain loops.
+    Returns [(symbol, signal_date, stop, target)]."""
     import pandas as pd
     from analysis import indicators as AI
     sessions = ds.sessions
@@ -146,7 +196,7 @@ def reference(ds, control=False, rsi_max=10.0, stop_atr=2.0, target_atr=3.0):
         seen.add(issuers[s])
     spy = {b.date: b.close for b in ds.bars["SPY"]}
     spy_dates = [b.date for b in ds.bars["SPY"]]
-    spy_sma = dict(zip(spy_dates, pd.Series([spy[d] for d in spy_dates]).rolling(200).mean()))
+    spy_k, spy_cum = {d: q for q, d in enumerate(spy_dates)}, _cum([spy[d] for d in spy_dates])
     raw_c, raw_v = ds.aux["series"]["raw_close"], ds.aux["series"]["raw_volume"]
     feed = ds.declared["volume_feed"]
     out = []
@@ -155,6 +205,7 @@ def reference(ds, control=False, rsi_max=10.0, stop_atr=2.0, target_atr=3.0):
         df = pd.DataFrame({"high": [b.high for b in bars], "low": [b.low for b in bars], "close": [b.close for b in bars]})
         rsi, atr = list(AI.rsi(df["close"], 2)), list(AI.atr(df, 14))
         c = [b.close for b in bars]
+        cum = _cum(c)
         own = {b.date: k for k, b in enumerate(bars)}
         last = None
         for k, b in enumerate(bars):
@@ -172,11 +223,11 @@ def reference(ds, control=False, rsi_max=10.0, stop_atr=2.0, target_atr=3.0):
                 vals = [(raw_c.get(s, {}).get(d), raw_v.get(s, {}).get(d)) for d in w]
                 if any(x is None or y is None for x, y in vals) or statistics.median(x * y for x, y in vals) < 20_000_000:
                     continue
-            if not spy[b.date] > spy_sma[b.date]:
+            q = spy_k[b.date]
+            if not 200 * Fraction(spy[b.date]) > spy_cum[q + 1] - spy_cum[q - 199]:          # the strict comparisons, exactly
                 continue
-            sma200 = statistics.fmean(c[k - 199:k + 1])
-            sma50, sma50p = statistics.fmean(c[k - 49:k + 1]), statistics.fmean(c[k - 69:k - 19])
-            if not (c[k] > sma200 and sma50 > sma50p):
+            sma50 = statistics.fmean(c[k - 49:k + 1])
+            if not (200 * Fraction(c[k]) > cum[k + 1] - cum[k - 199] and cum[k + 1] - cum[k - 49] > cum[k - 19] - cum[k - 69]):
                 continue
             if not control:
                 trig = rsi[k] <= rsi_max or (c[k] < c[k - 1] < c[k - 2] < c[k - 3])
@@ -186,6 +237,70 @@ def reference(ds, control=False, rsi_max=10.0, stop_atr=2.0, target_atr=3.0):
                 continue
             last = i
             out.append((s, b.date, c[k] - stop_atr * atr[k], c[k] + target_atr * atr[k]))
+    return out
+
+
+def ref_reasons(ds, control=False):
+    """An independent re-derivation of the FIRST failing rule at every symbol-session (the documented order): pandas RSI, exact rational
+    window sums, plain loops. Returns {(symbol, date): reason}."""
+    import pandas as pd
+    from analysis import indicators as AI
+    sessions = ds.sessions
+    pos = {d: i for i, d in enumerate(sessions)}
+    issuers = {s: iid for iid, info in ds.aux["static"]["issuers"].items() for s in info["symbols"]}
+    present = sorted(x for x in SP.RESEARCH_UNIVERSE if x in ds.bars)
+    kept = {}
+    for s in present:
+        kept.setdefault(issuers[s], s)
+    spy = {b.date: b.close for b in ds.bars.get("SPY", [])}
+    spy_dates = [b.date for b in ds.bars.get("SPY", [])]
+    spy_k, spy_cum = {d: q for q, d in enumerate(spy_dates)}, _cum([spy[d] for d in spy_dates])
+    raw_c, raw_v = ds.aux["series"].get("raw_close", {}), ds.aux["series"].get("raw_volume", {})
+    sip = ds.declared["volume_feed"] == "SIP"
+    out = {}
+    for s in present:
+        bars = ds.bars[s]
+        if kept[issuers[s]] != s:
+            out.update({(s, b.date): "SECOND_LISTING" for b in bars})
+            continue
+        c = [b.close for b in bars]
+        cum, own = _cum(c), {b.date: k for k, b in enumerate(bars)}
+        rsi = list(AI.rsi(pd.Series(c), 2))
+        rc_s, rv_s = raw_c.get(s, {}), raw_v.get(s, {})
+        last = None
+        for k, b in enumerate(bars):
+            d, i = b.date, pos[b.date]
+            rc = rc_s.get(d)
+            w20 = sessions[i - 19:i + 1]
+            if i < 199:
+                why = "WARMUP"
+            elif any(x not in own for x in sessions[i - 199:i + 1]):
+                why = "MISSING_WINDOW_BAR"
+            elif any(x not in spy for x in sessions[i - 199:i + 1]):
+                why = "REGIME_WINDOW_INCOMPLETE"
+            elif rc is None or not rc > 0:
+                why = "NO_RAW_PRICE"
+            elif rc < 5.0:
+                why = "PRICE_BELOW_MIN"
+            elif sip and any(rc_s.get(x) is None or rv_s.get(x) is None for x in w20):
+                why = "LIQUIDITY_HISTORY"
+            elif sip and statistics.median(rc_s[x] * rv_s[x] for x in w20) < 20_000_000:
+                why = "LIQUIDITY_BELOW_MIN"
+            elif not 200 * Fraction(spy[d]) > spy_cum[spy_k[d] + 1] - spy_cum[spy_k[d] - 199]:
+                why = "REGIME_OFF"
+            elif not 200 * Fraction(c[k]) > cum[k + 1] - cum[k - 199]:
+                why = "BELOW_SLOW_SMA"
+            elif not cum[k + 1] - cum[k - 49] > cum[k - 19] - cum[k - 69]:
+                why = "FAST_SMA_NOT_RISING"
+            elif not control and not (rsi[k] <= 10.0 or c[k] < c[k - 1] < c[k - 2] < c[k - 3]):
+                why = "NO_PULLBACK_TRIGGER"
+            elif not control and not c[k] >= 0.97 * statistics.fmean(c[k - 49:k + 1]):
+                why = "BELOW_DEPTH_GUARD"
+            elif last is not None and i - last <= 9:
+                why = "COOLDOWN"
+            else:
+                why, last = "CANDIDATE", i
+            out[(s, d)] = why
     return out
 
 
@@ -401,6 +516,85 @@ def test_R10_a_tie_is_never_a_pass_flat_windows_give_no_trend():
         assert {r["reason"] for (s, d), r in tr.items() if d >= F.SESSIONS[599]} == {"BELOW_SLOW_SMA"}, flat
 
 
+def test_R11_the_trend_windows_are_exactly_200_50_and_20_bars_in_exact_arithmetic():
+    from swing_pullback.core import _Series
+    outcomes = Counter()
+    for seed in (1, 2, 3, 4):
+        c = F.walk(seed=seed, sigma=0.012)
+        s = _Series([Bar(**b) for b in F.bars_of(c, F.SESSIONS)])
+        cum = _cum(s.close)
+        for k in range(199, len(c)):
+            slow = 200 * Fraction(s.close[k]) > cum[k + 1] - cum[k - 199]
+            fast = cum[k + 1] - cum[k - 49] > cum[k - 19] - cum[k - 69]
+            assert (s.above_slow(k), s.fast_rising(k)) == (slow, fast), (seed, k)
+            outcomes[("slow", slow)] += 1
+            outcomes[("fast", fast)] += 1
+    assert min(outcomes.values()) > 100 and len(outcomes) == 4                              # both outcomes of both rules, often
+
+
+def test_R12_every_symbol_session_has_the_independent_references_first_failing_rule():
+    seen = Counter()
+    for ds in (uni(), uni_regime(), walks_sip(), walks_iex()):
+        for control in (False, True):
+            _, tr = trace(ds, control=control)
+            ref = ref_reasons(ds, control=control)
+            got = {k: v["reason"] for k, v in tr.items()}
+            assert got.keys() == ref.keys()
+            bad = sorted((k, got[k], ref[k]) for k in got if got[k] != ref[k])
+            assert not bad, (len(bad), bad[:5])
+            seen.update(ref.values())
+    assert set(seen) == set(REASONS), set(REASONS) - set(seen)                                # every rule is exercised, both ways
+    assert min(seen.values()) >= 20, seen
+
+
+def test_R13_three_lower_closes_are_strictly_lower_an_equal_close_is_no_trigger():
+    T = 400
+    for zero in (T - 1, T):                                                                  # an unchanged close at T - 1 or at T
+        r = [0.001] * N
+        r[T - 2] = r[T - 1] = r[T] = -0.0001
+        r[zero] = 0.0
+        c = closes_from(r)
+        assert c[zero] == c[zero - 1] and IND.wilder_rsi(c, 2)[T] > 10
+        assert reason_at(ds_of(one(c)), T) == "NO_PULLBACK_TRIGGER", zero
+
+
+def test_R14_the_5_dollar_raw_price_rule_applies_on_iex_volume_too():
+    c = dip(400, "rsi")
+    assert reason_at(ds_of(one(c, raw_mult=0.05), feed="IEX"), 400) == "PRICE_BELOW_MIN"
+    assert reason_at(ds_of(one(c, raw_override={400: math.nextafter(5.0, 0.0)}), feed="IEX"), 400) == "PRICE_BELOW_MIN"
+    assert reason_at(ds_of(one(c, raw_override={400: 5.0}), feed="IEX"), 400) == "CANDIDATE"
+    assert reason_at(ds_of(one(c, raw_gaps=[400]), feed="IEX"), 400) == "NO_RAW_PRICE"
+
+
+def test_R15_an_spy_close_equal_to_its_sma200_is_regime_off():
+    ds = ds_of(one(closes_from(rets())), spy=[300.0] * N)                                     # a flat SPY: close == SMA200 exactly
+    for control in (False, True):
+        _, tr = trace(ds, control=control)
+        assert {r["reason"] for (s, d), r in tr.items() if d >= F.SESSIONS[199]} == {"REGIME_OFF"}, control
+    assert reason_at(ds_of(one(dip(400, "rsi")), spy=[300.0] * N), 400) == "REGIME_OFF"
+
+
+def test_R16_on_iex_volume_the_raw_volume_is_never_read():
+    c = dip(400, "rsi")
+    assert reason_at(ds_of(one(c, volume=None), feed="IEX"), 400) == "CANDIDATE"
+    assert reason_at(ds_of(one(c, raw_gaps=range(381, 400)), feed="IEX"), 400) == "CANDIDATE"   # no raw history before t either
+    assert reason_at(ds_of(one(c, volume=None)), 400) == "LIQUIDITY_HISTORY"                   # on SIP the same stock has no liquidity history
+
+
+def test_R17_a_sma50_rise_of_one_ulp_is_a_rise_although_the_float_means_are_equal():
+    base = [50.0 + (j % 50) * 0.1 for j in range(N)]                                         # period 50: every SMA50 window sums to the same value
+    k = 449                                                                                  # the period's top (k % 50 == 49): close far above SMA200
+    c = list(base)
+    c[k] = math.nextafter(base[k], math.inf)
+    a, b = c[k - 49:k + 1], c[k - 69:k - 19]
+    assert math.fsum(a) == math.fsum(b) and sum(map(Fraction, a)) > sum(map(Fraction, b))     # equal in floats, larger by one ulp exactly
+    ev, tr = trace(ds_of(one(c, exact=True)), control=True)
+    assert tr[("AAPL", F.SESSIONS[k])]["reason"] == "CANDIDATE" and signal_days(ev)[0] == k
+    before = {r["reason"] for (s, d), r in tr.items() if F.SESSIONS[199] <= d < F.SESSIONS[k]}
+    assert before == {"BELOW_SLOW_SMA", "FAST_SMA_NOT_RISING"}                                 # no candidate before the bump: low phases fail
+    assert tr[("AAPL", F.SESSIONS[k - 50])]["reason"] == "FAST_SMA_NOT_RISING"                 # SMA200, the top phases fail the exact tie
+
+
 # ============================================================================================================ warm-up (W)
 def test_W01_no_candidate_before_the_200th_dataset_session():
     assert reason_at(ds_of(one(dip(198, "rsi"))), 198) == "WARMUP"
@@ -539,7 +733,7 @@ def test_L05_the_static_causality_scan_finds_nothing_in_any_package_file():
 
 
 def test_L06_an_independent_re_derivation_gives_every_candidate_and_level():
-    sets = [uni(), uni_regime(), F.dataset(F.universe(4), feed="IEX"), F.dataset([dict(x, raw_mult=0.5, volume=2_000_000.0) for x in F.universe(4)]), ds_of(one(closes_from([0.002 if i < 300 or i >= 340 else -0.0001 for i in range(N)]))),
+    sets = [uni(), uni_regime(), walks_sip(), walks_iex(), F.dataset(F.universe(4), feed="IEX"), F.dataset([dict(x, raw_mult=0.5, volume=2_000_000.0) for x in F.universe(4)]), ds_of(one(closes_from([0.002 if i < 300 or i >= 340 else -0.0001 for i in range(N)]))),
             ds_of([one(dip(400, "rsi"), sym="GOOG", cik="A"), one(dip(410, "rsi"), sym="GOOGL", cik="A"), one(dip(420, "guard"), sym="ABBV", gaps=[300])])]
     for ds in sets:
         for control in (False, True):
@@ -731,6 +925,26 @@ def test_D07_a_gap_after_a_train_signal_is_purged_exactly_as_the_harness_purges_
     sig = next(c for c in r["candidates"] if c["signal_date"] == F.SESSIONS[530])
     assert sig["candidate_id"] in r["boundary"]["purged"]["RULES"]                               # the harness purged it ...
     assert b0["boundary_purged"] >= 1                                                           # ... and so did the sensitivity
+
+
+def test_D08_every_sensitivity_row_equals_a_full_harness_run_of_its_configuration_at_the_runs_cost(monkeypatch):
+    ds = sizing_mix()
+    runs_ = {c: rec(PL.run("V1", c, ds, created_at=AT)) for c in SP.COSTS}
+    monkeypatch.setattr(SwingTrendPullbackAdapter, "strategy_diagnostics", None)            # the comparison runs need no diagnostics of their own
+    for cost, r in runs_.items():
+        rows = r["diagnostics"]["strategy"]["sensitivity"]["rows"]
+        assert [x["params"] for x in rows] == ["base"] + [dict(p) for p in SP.SENSITIVITY]
+        for row in rows:
+            params = {} if row["params"] == "base" else row["params"]
+            full = rec(E.run_validation(SwingTrendPullbackAdapter(params), ds, arms=("RULES",), friction=PL.friction(cost), created_at=AT))
+            m = full["arms"]["RULES"]["metrics"]["TRAIN"]
+            got = (row["candidates"], row["trades"], row["boundary_purged"], row["expectancy_R"], row["net_pnl"], row["mean_R_t_stat"])
+            want = (m["candidate_count"], m["trade_count"], m["boundary_purged_count"], m["expectancy_R"], m["net_pnl"], m["mean_R_t_stat"])
+            assert got == want, (cost, row["params"], got, want)
+            assert full["friction_model"] == PL.friction(cost) and full["config_snapshot"]["sizing"] == r["config_snapshot"]["sizing"]
+            tr = [t for t in full["arms"]["RULES"]["trades"] if t["signal_date"] <= full["train_end"]]
+            assert {t["size_status"] for t in tr} == {"CAPPED", "RISK_SIZED", "MIN_ONE_UNIT"}, (cost, row["params"])   # every sizing branch counts
+            assert {"TIME_EXIT", "STOP"} <= {t["exit_reason"] for t in tr}, (cost, row["params"])                        # the time-exit fill counts
 
 
 # ============================================================================================================ the experiments (P)

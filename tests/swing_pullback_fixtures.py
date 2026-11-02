@@ -4,10 +4,13 @@ Test-only: invented price paths under real universe tickers (the core reads swin
 (the store refuses SYNTHETIC runs outside a test process) and never fetched from anywhere. A stock is a list of adjusted closes on the session
 calendar; a bar's open is the previous close (the first bar opens at its close), its high / low 0.2 % beyond max / min(open, close). The raw
 series equals the adjusted one times `raw_mult` (an all-adjusted bundle restates older prices; the raw close is what the $5 rule reads); raw
-volume is `volume` shares a session. The dataset declares its volume feed (provenance volume_feed) and carries an issuer map."""
+volume is `volume` shares a session (None: no raw volume at all). The dataset declares its volume feed (provenance volume_feed) and carries an
+issuer map. Closes are rounded to 6 decimals unless the stock is `exact` (then every bar keeps its closes bit for bit). `walk` is a
+cent-rounded random walk (deterministic by seed): the trend, slope and regime rules bind both ways and equal consecutive closes occur."""
 from __future__ import annotations
 
 import math
+import random
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -42,19 +45,31 @@ def wave(n: int, *, price: float = 50.0, drift: float = 0.001, amp: float = 0.04
     return [price * (1.0 + drift) ** i * (1.0 + amp * math.sin(2.0 * math.pi * i / period + phase)) for i in range(n)]
 
 
-def stock(symbol: str, closes: Sequence[float], *, volume: float = 1_000_000.0, raw_mult: float = 1.0, cik: Optional[str] = None,
-          gaps: Sequence[int] = (), start: int = 0, raw_gaps: Sequence[int] = (), raw_override: Optional[Dict[int, float]] = None) -> dict:
+def walk(n: Optional[int] = None, *, seed: int, price: float = 30.0, sigma: float = 0.012, drift: float = 0.0005) -> List[float]:
+    """A cent-rounded random walk: price x prod(1 + drift + N(0, sigma)), rounded to cents (as floats)."""
+    rng, out, c = random.Random(seed), [], price
+    for i in range(n or len(SESSIONS)):
+        if i:
+            c *= 1.0 + drift + rng.gauss(0.0, sigma)
+        out.append(round(c, 2))
+    return out
+
+
+def stock(symbol: str, closes: Sequence[float], *, volume: Optional[float] = 1_000_000.0, raw_mult: float = 1.0, cik: Optional[str] = None,
+          gaps: Sequence[int] = (), start: int = 0, raw_gaps: Sequence[int] = (), raw_override: Optional[Dict[int, float]] = None,
+          exact: bool = False) -> dict:
     return {"symbol": symbol, "closes": list(closes), "volume": volume, "raw_mult": raw_mult, "cik": cik or f"CIK-{symbol}", "gaps": set(gaps),
-            "start": start, "raw_gaps": set(raw_gaps), "raw_override": dict(raw_override or {})}
+            "start": start, "raw_gaps": set(raw_gaps), "raw_override": dict(raw_override or {}), "exact": bool(exact)}
 
 
-def bars_of(closes: Sequence[float], dates: Sequence[str], skip=()) -> List[dict]:
+def bars_of(closes: Sequence[float], dates: Sequence[str], skip=(), digits: Optional[int] = 6) -> List[dict]:
+    rnd = (lambda x: x) if digits is None else (lambda x: round(x, digits))  # noqa: E731
     out, prev = [], None
     for i, (d, c) in enumerate(zip(dates, closes)):
         if i in skip:
             continue
         o = prev if prev is not None else c
-        out.append({"date": d, "open": round(o, 6), "high": round(max(o, c) * 1.002, 6), "low": round(min(o, c) * 0.998, 6), "close": round(c, 6),
+        out.append({"date": d, "open": rnd(o), "high": rnd(max(o, c) * 1.002), "low": rnd(min(o, c) * 0.998), "close": rnd(c),
                     "volume": 1000.0})
         prev = c
     return out
@@ -68,13 +83,14 @@ def dataset(specs: List[dict], *, sessions: Sequence[str] = SESSIONS, spy: Optio
     raw_c, raw_v, iss = {}, {}, {}
     for sp in specs:
         skip = set(range(sp["start"])) | sp["gaps"]
-        bars[sp["symbol"]] = bars_of(sp["closes"], sessions, skip=skip)
+        bars[sp["symbol"]] = bars_of(sp["closes"], sessions, skip=skip, digits=None if sp.get("exact") else 6)
         rc, rv = {}, {}
         for i, (d, c) in enumerate(zip(sessions, sp["closes"])):
             if i in skip or i in sp["raw_gaps"]:
                 continue
             rc[d] = sp["raw_override"][i] if i in sp["raw_override"] else round(c * sp["raw_mult"], 6)   # an override is exact
-            rv[d] = float(sp["volume"])
+            if sp["volume"] is not None:
+                rv[d] = float(sp["volume"])
         raw_c[sp["symbol"]], raw_v[sp["symbol"]] = rc, rv
         info = iss.setdefault(sp["cik"], {"name": f"{sp['symbol']} Synthetic", "symbols": []})
         info["symbols"] = sorted(set(info["symbols"]) | {sp["symbol"]})
