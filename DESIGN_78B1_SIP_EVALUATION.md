@@ -27,8 +27,8 @@ and synthetic-only tests. It is not approval of a SIP backfill or a real-data ev
 * **Isolation.** Neither package imports `config`, the IEX builder, an execution, broker, Robinhood, store, service or market-intelligence
   module, or the harness CLI / store / service. Nothing outside the two packages and the tests imports them. The network library is imported
   only inside `sip_bundle.http_transport`, which allows GET requests to the two allowed URLs only.
-* **No persistence, nothing in the repository (R16, R17).** JSON files only. No SQLite, no harness store. Every writer (plan, fetch, report,
-  manifest, evaluator) refuses a database file name and any place inside the repository; the repository test compares files
+* **No persistence, nothing in the repository (R16, R17).** JSON files only. No SQLite, no harness store. Every writer (plan, fetch, build,
+  report, manifest, evaluator) refuses a database file name and any place inside the repository; the repository test compares files
   (`os.path.samefile` on every existing ancestor), so a `\\?\` or `\\localhost\C$` spelling of a repository path is refused too. The
   evaluator refuses every socket and SQLite connection while the runs execute.
 
@@ -123,8 +123,10 @@ Read-only. It computes no strategy rule, indicator or result. Its only analytica
   * a `sip_daily_v1` dataset with `volume_feed` SIP (R14: "feed SIP"); an IEX bundle is refused (allowing one would need a lock amendment);
   * a provenance override that sets none of `volume_feed`, `builder`, `source`, `window`, `plan_sha256`, `raw_manifest_sha256`;
   * a pre-run report made under the same provenance as the one evaluated, so a report run under another override cannot clear a BLOCK.
-* **`pre_checks()`** (before any run): the checked-out commit, a clean working tree, the dataset file's sha256 and content, and the accepted,
-  unaltered report file, made under the evaluated provenance.
+* **`pre_checks()`** (before any run): the checked-out commit, a clean working tree, the dataset file's sha256 and content, and the accepted
+  report file, made under the evaluated provenance. The report is **re-derived** from the dataset (with the recorded override and approval)
+  and must be equal to the file, apart from its file name: the report's own sha256 has no key, so an edited report (a BLOCK dropped, its
+  hash recomputed) is caught here. A HISTORICAL report without a valid approval cannot be re-derived and is refused.
 * **`post_checks()`** (after each run; final-review M-2 / M-3): each record's
   * friction (slippage, commission, fee),
   * split, sizing and arms,
@@ -143,15 +145,17 @@ Each step is fail-closed:
 1. The manifest verifies.
 2. The output folder is the manifest's evidence location. It must be **outside the repository**, not a database path, and new or empty.
 3. A HISTORICAL dataset needs an approval reference **and** the sha256 of the approved manifest, and its evidence goes to a new folder
-   directly under `C:\Data Analyst Py\DA IDX\evidence\stage-78B\` (R17; the manifest CLI's default is `<that folder>\<UTC timestamp>`).
+   directly under `C:\Data Analyst Py\DA IDX\evidence\stage-78B\`, named by its UTC timestamp `YYYY-MM-DDTHHMMSSZ` (R17; the manifest
+   CLI's default).
    SYNTHETIC datasets are for tests.
 4. The pre-checks pass. The checked-out commit and the clean working tree are read from the `.git` files, because product code never
    starts a process (the Stage 3.9 rule). The tree check compares every tracked file with its git index blob (a line-end-only difference is
-   not a change), and finds deleted and unmerged files and untracked `.py` files beside tracked ones. **Limit:** a change staged but not
-   committed is not seen without git's object store, so the operator builds the manifest on a checkout whose `git status` is empty.
+   not a change), and finds deleted and unmerged files and untracked `.py` files beside tracked ones. A split index and an index whose
+   checksum does not match are refused. **Limit:** a change staged but not committed is not seen without git's object store, so the operator
+   builds the manifest on a checkout whose `git status` is empty; `environment.json` states this scope (`tree_check`).
 5. The four pre-registered runs of `swing_pullback.plan.run()` execute, and the eight sensitivity neighbours are regenerated on the TRAIN
-   view. Every socket and SQLite connection is refused meanwhile (`socket.socket`, `create_connection`, `getaddrinfo`, `_socket.socket`,
-   `sqlite3.connect`, `sqlite3.dbapi2.connect`, `_sqlite3.connect`). Each attempt is recorded, so the evaluation is refused even if the run
+   view. Every socket and SQLite connection is refused meanwhile (`socket.socket`, `SocketType`, `create_connection`, `getaddrinfo`,
+   `_socket.socket`, and `connect` / `Connection` of `sqlite3`, `sqlite3.dbapi2` and `_sqlite3`). Each attempt is recorded, so the evaluation is refused even if the run
    path caught the error; the refusal is not an `OSError`.
 6. The post-checks pass.
 7. The blocking validation findings are collected. **M-5:** a non-positive stop (`invalidation_reference` ≤ 0) in any candidate of the
@@ -211,7 +215,7 @@ Each step is fail-closed:
   5. TRAIN-view sensitivity ROBUST;
   6. the pre-run report accepted and no blocking finding: CLEAN, or REVIEW_REQUIRED with a recorded acceptance. For a HISTORICAL
      dataset the acceptance is the operator's approval of the manifest, which pins the report's sha256 and its findings; it is written into
-     the evidence.
+     the evidence. A SYNTHETIC dataset has no operator acceptance, so item 6 holds for it only on a CLEAN report.
 
   The edge stays NOT_ESTABLISHED (survivorship).
 

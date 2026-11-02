@@ -126,7 +126,7 @@ def fetch(plan: dict, *, out: Path, approval: str, plan_sha256: str, transport: 
         if req["kind"] == "SEC" and p:
             raise FetchRefused(f"{req.get('name')}: the SEC request takes no parameter")
         if req["kind"] == "BARS" and (set(p) != BARS_PARAMS or p.get("feed") != API_FEED or p.get("timeframe") != "1Day" or p.get("sort") != "asc"
-                                      or not isinstance(p.get("limit"), int) or p["limit"] > PAGE_LIMIT
+                                      or type(p.get("limit")) is not int or p["limit"] > PAGE_LIMIT
                                       or (p.get("start"), p.get("end")) != (win["start"], win["end"])
                                       or p.get("adjustment") not in ADJUSTMENTS or p.get("adjustment") != req.get("adjustment")
                                       or not req.get("symbols") or p.get("symbols") != ",".join(req["symbols"]) or not set(req["symbols"]) <= allowed_syms):
@@ -244,6 +244,9 @@ def build(out: Path, kind: str = "HISTORICAL") -> Path:
     if kind == "SYNTHETIC" and man.get("network"):
         raise BuildError("an archive fetched over the network is HISTORICAL, never SYNTHETIC")
     path = out / BUNDLE_NAME
+    problem = output_problem(path)
+    if problem:
+        raise BuildError(problem)
     if path.exists():
         raise BuildError(f"{path} exists: a dataset is never overwritten")
     tickers = _pages(out, man, "sec_company_tickers")[0]

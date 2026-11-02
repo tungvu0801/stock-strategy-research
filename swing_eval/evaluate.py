@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import socket
 import sqlite3
 import struct
@@ -51,6 +52,8 @@ except ImportError:                                                             
     _sqlite3 = None
 
 ROOT = Path(__file__).resolve().parents[1]
+TREE_CHECK = ("the git index against the working tree (modified, deleted, unmerged, untracked .py beside tracked ones); a change staged "
+              "but not committed is NOT checked")
 NOT_ACCEPTED = "NOT ACCEPTED: diagnostic only (R10.1: an INVALID or BLOCKED run is not compared; M-5.2: no outcome is accepted)"
 
 
@@ -67,10 +70,12 @@ def _gitdir(root: Path) -> Path:
 
 
 def _index(root: Path) -> Dict[str, Tuple[bytes, int, int]]:
-    """{path: (blob sha1, stage, mode)} from the git index file (versions 2 and 3)."""
+    """{path: (blob sha1, stage, mode)} from the git index file (versions 2 and 3; a split index is refused: its entries live elsewhere)."""
     data = (_gitdir(root) / "index").read_bytes()
     if data[:4] != b"DIRC":
         raise ValueError("not a git index")
+    if data[-20:] not in (hashlib.sha1(data[:-20]).digest(), bytes(20)):          # bytes(20): index.skipHash
+        raise ValueError("the git index checksum does not match")
     version, count = struct.unpack(">II", data[4:12])
     if version not in (2, 3):
         raise ValueError(f"git index version {version} is not read here")
@@ -82,6 +87,12 @@ def _index(root: Path) -> Dict[str, Tuple[bytes, int, int]]:
         end = data.index(b"\0", pos + head)
         out[data[pos + head:end].decode("utf-8")] = (sha, (flags >> 12) & 3, mode)
         pos += (end - pos) // 8 * 8 + 8                                           # 1 to 8 NUL bytes pad each entry to a multiple of 8
+    while pos < len(data) - 20:                                                   # the extensions
+        if data[pos:pos + 4] == b"link":
+            raise ValueError("a split index (link extension): its shared entries are not read here")
+        pos += 8 + struct.unpack(">I", data[pos + 4:pos + 8])[0]
+    if not any(stage == 0 for _, stage, _ in out.values()):
+        raise ValueError("the git index holds no file")
     return out
 
 
@@ -135,8 +146,9 @@ def offline():
     def refuse(*a, **k):
         attempts.append("network or database access")
         raise EvaluationRefused("network or database access during an offline evaluation")
-    targets = [(socket, "socket"), (socket, "create_connection"), (socket, "getaddrinfo"), (_socket, "socket"), (sqlite3, "connect"),
-               (sqlite3.dbapi2, "connect")] + ([(_sqlite3, "connect")] if _sqlite3 is not None else [])
+    targets = [(socket, "socket"), (socket, "SocketType"), (socket, "create_connection"), (socket, "getaddrinfo"), (_socket, "socket"),
+               (sqlite3, "connect"), (sqlite3, "Connection"), (sqlite3.dbapi2, "connect"), (sqlite3.dbapi2, "Connection")] + \
+        ([(_sqlite3, "connect"), (_sqlite3, "Connection")] if _sqlite3 is not None else [])
     saved = [(mod, name, getattr(mod, name)) for mod, name in targets]
     for mod, name, _ in saved:
         setattr(mod, name, refuse)
@@ -179,6 +191,8 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
         raise EvaluationRefused("a HISTORICAL dataset needs an operator approval reference and the approved manifest's sha256")
     if ds.kind == "HISTORICAL" and os.path.normcase(str(out_dir.parent)) != os.path.normcase(str(Path(EVIDENCE_ROOT).resolve())):
         raise EvaluationRefused(f"a HISTORICAL evaluation writes its evidence in a new folder directly under {EVIDENCE_ROOT} (R17)")
+    if ds.kind == "HISTORICAL" and not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{6}Z", out_dir.name):
+        raise EvaluationRefused(f"a HISTORICAL evidence folder is named by its UTC timestamp (YYYY-MM-DDTHHMMSSZ, R17), not {out_dir.name!r}")
     report = json.loads(Path(report_path).read_text(encoding="utf-8"))
     commit = (commit_fn or git_commit_sha)()
     tree_issues = tree_problems() if tree_clean_fn is None else ([] if tree_clean_fn() else ["the supplied tree check says not clean"])
@@ -206,8 +220,7 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
     stab = {"V1 BASE": AN.stability(recs[("V1", "BASE")], ds.sessions), "C1 BASE": AN.stability(recs[("C1", "BASE")], ds.sessions),
             "V1 STRESS_2X": AN.stability(recs[("V1", "STRESS_2X")], ds.sessions), "C1 STRESS_2X": AN.stability(recs[("C1", "STRESS_2X")], ds.sessions)}
     comp = AN.comparison(recs, ds.sessions)
-    accepted_by = (f"the operator's approval {approval} of manifest {m['manifest_sha256']}" if ds.kind == "HISTORICAL"
-                   else "SYNTHETIC dataset (tests): no operator acceptance")
+    accepted_by = f"the operator's approval {approval} of manifest {m['manifest_sha256']}" if ds.kind == "HISTORICAL" else None   # SYNTHETIC: none
     elig = AN.eligibility(recs, stab["V1 BASE"], comp, report, blocking, sorted(invalid), findings_accepted_by=accepted_by)
     mark = {"accepted": accepted, "status": status, "note": None if accepted else NOT_ACCEPTED}
     shown = (lambda o: o) if accepted else (lambda o: f"NOT ACCEPTED (diagnostic: {o})")  # noqa: E731
@@ -226,9 +239,10 @@ def evaluate(manifest_path: str, dataset_path: str, report_path: str, out: str, 
                                         "rule": "M-5: a stop <= 0 blocks acceptance; the stop calculation and the rules are never modified"})
     _dump(out_dir / "stability.json", {**mark, "runs": stab})
     _dump(out_dir / "comparison.json", {**comp, **mark})
-    _dump(out_dir / "eligibility.json", {**elig, **mark})
+    _dump(out_dir / "eligibility.json", {**elig, "accepted": accepted, "status": status, "acceptance_note": mark["note"]})
     _dump(out_dir / "environment.json", {"python": sys.version.split()[0], "platform": platform.platform(), "evaluator": EVALUATOR_VERSION,
-                                          "code_commit": commit, "tree_clean": clean, "evaluated_at": evaluated_at, "approval_reference": approval,
+                                          "code_commit": commit, "tree_clean": clean, "tree_check": TREE_CHECK, "evaluated_at": evaluated_at,
+                                          "approval_reference": approval,
                                           "approved_manifest_sha256": approved_manifest_sha256, "fees": R12})
     _dump(out_dir / "summary.json", summary)
     (out_dir / "RESULTS_SUMMARY.md").write_text(_memo(summary, stab, comp), encoding="utf-8")

@@ -233,6 +233,11 @@ def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_sc
     swapped = copy.deepcopy(plan)
     swapped["requests"][1]["symbols"] = ["AAPL"]                                         # the archived symbol list no longer matches the request
     windowless = {k: v for k, v in plan.items() if k != "window"}
+    outside = copy.deepcopy(plan)
+    outside["requests"][1]["symbols"] = outside["requests"][1]["symbols"] + ["XYZ"]       # consistent, but outside the universe
+    outside["requests"][1]["params"]["symbols"] = ",".join(outside["requests"][1]["symbols"])
+    boolean = copy.deepcopy(plan)
+    boolean["requests"][1]["params"]["limit"] = True
     cases = [(plan, dict(approval=None)), (plan, dict(approval="approved")), (plan, dict(approval="OPERATOR-APPROVAL:")), (plan, dict(plan_sha256="0" * 64)),
              (plan, dict(approval="APPROVED-BY-THE-OPERATOR-REFERENCE-123")),
              (dict(plan, builder="other"), dict(plan_sha256=SB.sha256_of(dict(plan, builder="other")))), (plan, dict(alpaca_key="")),
@@ -241,6 +246,7 @@ def test_B02_a_fetch_is_refused_before_any_request_without_approval_plan_hash_sc
              (current, dict(plan_sha256=SB.sha256_of(current), now=lambda: "2026-11-02T20:59:00+00:00")),
              (sec_params, dict(plan_sha256=SB.sha256_of(sec_params))), (extra, dict(plan_sha256=SB.sha256_of(extra))),
              (swapped, dict(plan_sha256=SB.sha256_of(swapped))), (windowless, dict(plan_sha256=SB.sha256_of(windowless))),
+             (outside, dict(plan_sha256=SB.sha256_of(outside))), (boolean, dict(plan_sha256=SB.sha256_of(boolean))),
              (plan, dict(out=ROOT / "sip_fetch_test_78b1")), (plan, dict(out=tmp_path / "raw.db"))]
     for p, over in cases:
         with pytest.raises(SB.FetchRefused):
@@ -339,7 +345,7 @@ def test_B04_the_build_declares_sip_keeps_raw_series_and_issuers_and_never_repai
         SwingData(ds)
 
 
-def test_B05_the_build_refuses_tampered_or_malformed_responses(tmp_path):
+def test_B05_the_build_refuses_tampered_or_malformed_responses(tmp_path, monkeypatch):
     plan, out, *_ = fetched(tmp_path)
     page = out / "raw" / "bars_raw_00_p000.json.gz"
     good = page.read_bytes()
@@ -386,6 +392,11 @@ def test_B05_the_build_refuses_tampered_or_malformed_responses(tmp_path):
     with pytest.raises(SB.BuildError, match="never SYNTHETIC"):
         SB.build(ok_out, kind="SYNTHETIC")
     assert json.loads(SB.build(ok_out).read_text(encoding="utf-8"))["kind"] == "HISTORICAL"
+    (ok_out / "sip_bundle.json").unlink()
+    monkeypatch.setattr(SB, "output_problem", lambda p: f"{p}: refused by the output guard")
+    with pytest.raises(SB.BuildError, match="output guard"):
+        SB.build(ok_out)
+    assert not (ok_out / "sip_bundle.json").exists()
 
 
 def test_B07_the_cli_plans_once_and_builds_a_historical_dataset_that_then_needs_approval(tmp_path, capsys):
@@ -519,7 +530,7 @@ def test_Q03_every_finding_is_listed_for_the_operator(tmp_path):
     rep = Q.report(str(write(tmp_path, SPF.dataset([st("AAPL", gaps=[300, 301]), st("ABBV", raw_gaps=[50])], sessions=sess))))
     hole = checks(rep, "Q05", "FINDING")[0]
     assert hole["by_symbol"] == {"AAPL": [sess[300], sess[301]]} and hole["holes"] == 2 and rep["status"] == "REVIEW_REQUIRED"
-    assert checks(rep, "Q06", "FINDING")[0]["by_symbol"] == {"ABBV": [sess[50]]}
+    assert [c["by_symbol"] for c in checks(rep, "Q06", "FINDING") if c["title"] == "bar dates without a raw close"] == [{"ABBV": [sess[50]]}]
     d = SPF.dataset([st("AAPL")], sessions=sess)
     bars = {s: [b.model_dump() for b in rows] for s, rows in d.bars.items()}
     bars["AAPL"][7]["volume"] = 0.0
@@ -703,7 +714,11 @@ def test_E01_end_to_end_on_synthetic_sip_data_writes_sealed_evidence(tmp_path):
     assert comp["reported"]["V1 BASE"]["train_vs_oos"] == fresh["arms"]["RULES"]["diagnostics"]["train_vs_oos"]
     assert oos["friction_share_of_gross"] == ((rm["friction_total"] / rm["gross_pnl"]) if rm["gross_pnl"] > 0 else None)
     el = json.loads((out / "eligibility.json").read_text(encoding="utf-8"))
-    assert [i["item"] for i in el["items"]] == SE.R11 and el["accepted"] is True
+    assert [i["item"] for i in el["items"]] == SE.R11 and el["accepted"] is True and el["acceptance_note"] is None
+    assert "never a promotion" in el["note"] and "NOT_ESTABLISHED" in el["note"]
+    assert el["items"][5]["ok"] is False and el["items"][5]["evidence"] == {"report": "REVIEW_REQUIRED", "findings_accepted_by": None, "blocking": 0,
+                                                                           "invalid_runs": []}    # SYNTHETIC: no operator acceptance
+    assert "staged but not committed is NOT checked" in json.loads((out / "environment.json").read_text(encoding="utf-8"))["tree_check"]
     memo = (out / "RESULTS_SUMMARY.md").read_text(encoding="utf-8")
     assert "not a significance test" in memo and "TRAIN observations" in memo and "NO_ADDED_VALUE" in memo and "NOT_ESTABLISHED" in memo
 
@@ -746,6 +761,12 @@ def test_E02_the_evaluator_refuses_before_running(tmp_path, monkeypatch):
         EV.evaluate(str(hp / "m.json"), str(dp2), str(hp / "r.json"), str(tmp_path / "o4"), approval=OK_REF,
                     approved_manifest_sha256=m2["manifest_sha256"], **ok)
     assert not issubclass(EV.EvaluationRefused, OSError)
+    loc = Path(SE.EVIDENCE_ROOT) / "not-a-timestamp-78b1-test"
+    m5 = MF.build(dataset_path=str(dp2), report=rep2, code_commit="c0ffee", created_at=AT, evidence_location=str(loc))
+    (hp / "m5.json").write_text(json.dumps(m5), encoding="utf-8")
+    with pytest.raises(EV.EvaluationRefused, match="UTC timestamp"):
+        EV.evaluate(str(hp / "m5.json"), str(dp2), str(hp / "r.json"), str(loc), approval=OK_REF, approved_manifest_sha256=m5["manifest_sha256"], **ok)
+    assert not loc.exists()
     assert calls == []                                                                   # nothing ran
 
 
@@ -753,12 +774,12 @@ def test_E03_no_socket_and_no_database_while_the_runs_execute(tmp_path, monkeypa
     import _socket
     import _sqlite3
     real = PL.run
-    entry = lambda: (socket.socket, socket.create_connection, socket.getaddrinfo, _socket.socket, sqlite3.connect, sqlite3.dbapi2.connect,  # noqa: E731
-                     _sqlite3.connect)
+    entry = lambda: (socket.socket, socket.SocketType, socket.create_connection, socket.getaddrinfo, _socket.socket, sqlite3.connect,  # noqa: E731
+                     sqlite3.Connection, sqlite3.dbapi2.connect, sqlite3.dbapi2.Connection, _sqlite3.connect, _sqlite3.Connection)
     orig = entry()
     attempts = (lambda: socket.create_connection(("example.invalid", 80)), lambda: socket.socket(), lambda: socket.getaddrinfo("x", 80),
                 lambda: _socket.socket(), lambda: sqlite3.connect(":memory:"), lambda: sqlite3.dbapi2.connect(":memory:"),
-                lambda: _sqlite3.connect(":memory:"))
+                lambda: _sqlite3.connect(":memory:"), lambda: sqlite3.Connection(":memory:"), lambda: socket.SocketType())
     for attempt in attempts:
         monkeypatch.setattr(EV.PL, "run", lambda *a, _f=attempt, **k: _f())
         with pytest.raises(EV.EvaluationRefused, match="offline"):
@@ -843,6 +864,21 @@ def test_E10_the_tree_check_reads_the_git_index_without_a_subprocess(tmp_path):
     (tmp_path / "notes.txt").unlink()
     (tmp_path / "pkg" / "c.py").write_bytes(b"z = 3\n")
     assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"] and EV.tree_clean(tmp_path) is False
+    idx = (tmp_path / ".git" / "index")
+    good = idx.read_bytes()
+    idx.write_bytes(good[:20] + bytes([good[20] ^ 1]) + good[21:])                       # one bit of an entry's timestamp
+    assert EV.tree_problems(tmp_path) == ["the git index cannot be read: the git index checksum does not match"]
+    idx.write_bytes(good)
+    git("update-index", "--split-index")
+    assert EV.tree_problems(tmp_path)[0].startswith("the git index cannot be read: a split index")
+    git("update-index", "--no-split-index")
+    assert EV.tree_problems(tmp_path) == ["deleted: notes.txt", "modified: pkg/a.py", "untracked: pkg/c.py"]
+    empty = tmp_path.parent / (tmp_path.name + "_empty")                                 # an index that holds no file is not "clean"
+    subprocess.run(["git", "init", "-q", str(empty)], check=True)
+    (empty / "x.py").write_bytes(b"x = 1\n")
+    subprocess.run(["git", "-C", str(empty), "add", "x.py"], check=True)
+    subprocess.run(["git", "-C", str(empty), "rm", "-q", "--cached", "x.py"], check=True)
+    assert EV.tree_problems(empty) == ["the git index cannot be read: the git index holds no file"]
     plain = tmp_path.parent / (tmp_path.name + "_plain")
     plain.mkdir()
     assert EV.tree_problems(plain)[0].startswith("the git index cannot be read")          # not a repository: never clean
@@ -873,6 +909,25 @@ def test_E07_only_a_sip_daily_v1_dataset_is_evaluated_under_its_reports_provenan
     assert MF.verify(m3) == []
     assert any("report file was made under another provenance" in x for x in MF.pre_checks(m3, dataset_path=str(dp3), dataset=load(str(dp3)),
                                                                                             report=rep3, code_commit="c0ffee", tree_clean=True))
+    blocked = Q.report(str(dp3))
+    forged = {**blocked, "status": "REVIEW_REQUIRED", "checks": [c for c in blocked["checks"] if c["severity"] != "BLOCK"],
+              "counts": {**blocked["counts"], "BLOCK": 0}}
+    forged["report_sha256"] = Q.report_sha256(forged)                                    # the report's own hash has no key
+    m4 = MF.build(dataset_path=str(dp3), report=forged, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "c" / "ev4"))
+    assert MF.verify(m4) == []
+    probs = MF.pre_checks(m4, dataset_path=str(dp3), dataset=load(str(dp3)), report=forged, code_commit="c0ffee", tree_clean=True)
+    assert probs == ["the pre-run report differs from the one re-derived from the dataset"]
+    (tmp_path / "c" / "m4.json").write_text(json.dumps(m4), encoding="utf-8")
+    (tmp_path / "c" / "r4.json").write_text(json.dumps(forged), encoding="utf-8")
+    with pytest.raises(EV.EvaluationRefused, match="re-derived"):
+        EV.evaluate(str(tmp_path / "c" / "m4.json"), str(dp3), str(tmp_path / "c" / "r4.json"), str(tmp_path / "c" / "ev4"), **ok)
+    hist = SF.sip_dataset(4, kind="HISTORICAL")[0]
+    dp5 = write(tmp_path / "d", hist)
+    r5 = {**Q.report(str(dp5), approval=OK_REF), "approval": None}                        # a HISTORICAL report without its approval
+    r5["report_sha256"] = Q.report_sha256(r5)
+    m5 = MF.build(dataset_path=str(dp5), report=r5, code_commit="c0ffee", created_at=AT, evidence_location=str(tmp_path / "d" / "ev"))
+    assert any("cannot be re-derived" in x for x in MF.pre_checks(m5, dataset_path=str(dp5), dataset=load(str(dp5)), report=r5, code_commit="c0ffee",
+                                                                  tree_clean=True))
 
 
 def test_E08_the_cli_refuses_a_manifest_of_another_commit_before_any_run(tmp_path, monkeypatch, capsys):

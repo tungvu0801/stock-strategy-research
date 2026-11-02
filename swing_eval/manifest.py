@@ -7,7 +7,8 @@ everything the strategy's pre-registration hash does not cover. The strategy has
 verify()      the manifest agrees with the strategy code (pre-registration hash, the four runs and their friction) and with the locked values;
               the dataset is a sip_daily_v1 SIP dataset (R14) whose override sets no protected field, and the pre-run report was made under
               the same provenance (override, dataset id, volume feed, kind) as the one evaluated
-pre_checks()  before any run: the code's hash and commit, a clean tree, the dataset file's sha256 and content, the accepted report
+pre_checks()  before any run: the code's hash and commit, a clean tree, the dataset file's sha256 and content, the accepted report, which
+              must equal the report re-derived from the dataset (its own sha256 has no key: an edited report is caught here)
 post_checks() after each run: the run record's friction, commission, fee, split, sizing, arms, adapter, execution assumptions, cost label,
               pre-registration hash, dataset and harness version equal the manifest's (final-review M-2 / M-3). Any mismatch: the run is INVALID."""
 from __future__ import annotations
@@ -53,6 +54,14 @@ def _report_provenance(report: dict) -> dict:
 def _evaluated_provenance(d: dict) -> dict:
     return {"provenance_override": dict(d.get("provenance_override") or {}), "dataset_id": d.get("dataset_id"), "volume_feed": d.get("volume_feed"),
             "kind": d.get("kind")}
+
+
+def _content(report: dict) -> dict:
+    """A report without its file name and its own hash, JSON-normalised."""
+    r = json.loads(json.dumps(report, sort_keys=True))
+    r.pop("report_sha256", None)
+    (r.get("dataset") or {}).pop("path_name", None)
+    return r
 
 
 def build(*, dataset_path: str, report: dict, code_commit: str, created_at: str, evidence_location: str, provenance: Optional[dict] = None) -> dict:
@@ -140,6 +149,14 @@ def pre_checks(m: dict, *, dataset_path: str, dataset, report: dict, code_commit
         p.append("the pre-run report is BLOCKED")
     if _report_provenance(report) != _evaluated_provenance(d):
         p.append("the report file was made under another provenance than the one evaluated")
+    from research_data import quality as Q
+    try:                                                                          # the report is re-derived from the dataset, never trusted
+        again = Q.report(str(dataset_path), provenance=d.get("provenance_override") or None, approval=report.get("approval"))
+    except Q.ReportRefused as exc:
+        p.append(f"the pre-run report cannot be re-derived: {exc}")
+    else:
+        if _content(again) != _content(report):
+            p.append("the pre-run report differs from the one re-derived from the dataset")
     return p
 
 
