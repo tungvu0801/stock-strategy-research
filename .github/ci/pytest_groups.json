@@ -120,7 +120,8 @@
         "test_market_intel_collector_73.py",
         "test_market_intel_schema_v2_731.py",
         "test_market_intel_quality_74.py",
-        "test_market_scan_75.py"
+        "test_market_scan_75.py",
+        "test_swing_pullback_78.py"
       ]
     },
     "campaign": {
