@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from requests.adapters import BaseAdapter
 
 ROOT = Path(__file__).resolve().parents[1]
-from freeze_ledger import view as ledger_view, view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import undo_w1, view as ledger_view, view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -618,7 +618,7 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
     # >>> Stage 6.0.2: the safety files and the Stage 6.0 pin test carry marked, additive Stage 6.0.2 blocks (DESIGN_602 section 6); everything outside them stays byte-identical
     import re as _re602
     for rel in [p for p in pinned if p.startswith("safety/") or p == "tests/test_execution_60.py"]:
-        now602 = _re602.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.2.*?^[ \t]*# <<< Stage 6\.0\.2[^\n]*\n", "", (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n"))
+        now602 = _re602.sub(r"(?ms)^[ \t]*# >>> Stage 6\.0\.2.*?^[ \t]*# <<< Stage 6\.0\.2[^\n]*\n", "", ledger_view(rel, (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")))   # Wave 1: the safety files are ledger entries
         assert now602.encode("utf-8") == blob(rel), f"{rel} differs from {BASE} outside the Stage 6.0.2 blocks"
     pinned = [p for p in pinned if not (p.startswith("safety/") or p == "tests/test_execution_60.py")]
     # <<< Stage 6.0.2
@@ -632,7 +632,7 @@ def test_Z01_strategy_execution_and_prior_stage_files_identical_to_base():
     reverted = reverted.replace(",\n                         account_data=acct)", ")")
     assert reverted == svc_base                                                         # the executor changed only by a display field
     base_cfg = blob("config.py").decode("utf-8")
-    assert (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n").startswith(base_cfg.rstrip("\n")) and config.EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL is False
+    assert undo_w1("config.py", (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")).startswith(base_cfg.rstrip("\n")) and config.EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL is False   # Wave 1's config.py edit undone first
     import sqlite3 as _s
     conn = _s.connect(":memory:")
     run_account_refresh_migrations(conn)

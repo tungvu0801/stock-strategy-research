@@ -501,7 +501,10 @@ def test_api_settings_status_and_check_now(api):
     assert not any("automation" in p for p in fw)                                             # Stage 3.3 set unchanged
 
 
-def test_logs_are_concise_and_carry_no_secrets(caplog):
+def test_logs_are_concise_and_carry_no_secrets(caplog, monkeypatch):
+    fakes = {name: f"FAKE-{name}-SENTINEL-W1" for name in ("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ANTHROPIC_API_KEY")}   # Wave 1: fake values only
+    for name, value in fakes.items():
+        monkeypatch.setattr(config, name, value, raising=False)
     lab, jid, store, kw = env()
     with caplog.at_level(logging.INFO, logger="forward.automation"):
         A.run_check(now=et("2026-09-29"), store=store, **kw)
@@ -509,8 +512,8 @@ def test_logs_are_concise_and_carry_no_secrets(caplog):
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "AUTO_CAPTURE check started" in text and "AUTO_CAPTURE captured 1 journal(s)" in text
     assert f"AUTO_CAPTURE journal {jid[:8]} already recorded" in text and jid not in text
-    for secret in (config.ALPACA_API_KEY, config.ALPACA_SECRET_KEY, getattr(config, "ANTHROPIC_API_KEY", "")):
-        assert not secret or secret not in text
+    leaked = sorted(name for name, value in fakes.items() if value in text)
+    assert not leaked, f"credential settings found in the logs: {leaked}"                    # names only: a failure never prints a value
 
 
 NEW_FILES = ["forward/automation.py", "api/routes/forward_automation.py", "database/automation_migrations.py",

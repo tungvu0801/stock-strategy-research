@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -115,6 +115,15 @@ evaluator, synthetic data only; DESIGN_78B1_SIP_EVALUATION.md) adds two new pack
 fixtures, and corrects the wording of DESIGN_78_SWING_PULLBACK.md (final-review M-6). No existing module changes: the IEX builder, the harness,
 swing_pullback/, config, routes and every live path are byte-identical. No fetch, no database, no registration. tests/test_sip_eval_78b1.py
 pins it (BASE_78B1 / NEW_78B1 / EDITED_78B1).
+
+Wave 1 safety remediation (the independent validation audit of main 4c01519; DESIGN_W1_SAFETY_REMEDIATION.md) changes EXECUTION SAFETY
+SEMANTICS on purpose, in three places, and nothing else: the safety state can no longer lose an Emergency Stop, a Pause or the day's loss halt
+to a concurrent evaluation or action, and an unreadable state row is UNKNOWN (safety/service.py, safety/store.py); the stop-loss check fails
+closed on a missing, invalid or stale price - never "no exit condition" - and new entries stop while a held position's stop cannot be checked
+(execution/service.py, ADDITIVE lines only); and config.py loads only its own checkout's .env while test processes load none and hold no
+credential (config.py, tests/conftest.py). SEMANTIC_W1 names those files; REMOVED_W1 lists the only lines of main it removes from a file whose
+earlier freeze tests keep every line. No threshold, frozen control (b5d4a56e...), strategy rule, market-data reader or broker call changes.
+tests/test_wave1_safety_remediation.py pins it (BASE_W1 / NEW_W1 / EDITED_W1).
 """
 import hashlib
 import subprocess
@@ -255,8 +264,27 @@ NEW_78B1 = {"DESIGN_78B1_SIP_EVALUATION.md", "research_data/__init__.py", "resea
 EDITED_78B1 = {".github/ci/pytest_groups.json", "DESIGN_78_SWING_PULLBACK.md", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py", "tests/test_decision_flow_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py", "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py", "tests/test_market_intel_quality_74.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py", "tests/test_market_scan_75.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_strategy_validation_62.py", "tests/test_swing_pullback_78.py", "tests/test_unified_exposure_gate_691.py"}   # the CI entry, the M-6 wording, the earlier F01 unions, the 7.8 F tests and X02, bookkeeping
 SEMANTIC_78B1: dict = {}                                                                  # Stage 7.8B-1: no behaviour change of an existing file
 INSTRUMENTATION_78B1: dict = {}                                                           # Stage 7.8B-1: no executor instrumentation
+BASE_W1 = "4c01519566a0bb66ebcff9cc51f5aa822194850b"                                    # main: Stage 7.8B-1 merged (PR #49); the audited baseline
+NEW_W1 = {"DESIGN_W1_SAFETY_REMEDIATION.md", "tests/test_wave1_safety_remediation.py"}     # Wave 1 safety remediation: its new files
+EDITED_W1 = {'.github/ci/pytest_groups.json', 'config.py', 'execution/service.py', 'safety/service.py', 'safety/store.py', 'tests/conftest.py', 'tests/freeze_ledger.py', 'tests/test_account_refresh_601.py', 'tests/test_automation_37.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_demand_57.py', 'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_execution_60.py', 'tests/test_execution_safety_591.py', 'tests/test_forward_paper_610a.py', 'tests/test_history_budget_39.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_proposals_59.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_setups_58.py', 'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_trader_view_55.py', 'tests/test_unified_exposure_gate_691.py'}   # the files of main Wave 1 edits: the fix, the CI entry, the earlier freeze tests' unions / raw reads, bookkeeping
+SEMANTIC_W1 = {                                                                            # Wave 1: the INTENTIONAL behaviour change, file by file
+    "safety/service.py": "evaluations decide on a freshly read state and commit with expect= (re-decide on a conflict, at most 3 times, then UNKNOWN); actions apply to the state as read; a stop or pause whose evaluation fails is still saved alone",
+    "safety/store.py": "state() reads strictly (unreadable = SafetyStoreError, never the default); commit(expect=) refuses a changed row or baseline inside BEGIN IMMEDIATE; latch() sets a stop or pause alone",
+    "execution/service.py": "the stop check fails closed on a missing / invalid / undated / stale price (UNKNOWN + attention + new entries blocked; WARN while the market is closed)",
+    "config.py": "load_dotenv(PROJECT_ROOT / '.env'): this checkout's own .env only, never a parent folder's; skipped when STOCK_AGENT_SKIP_DOTENV=1 (test processes)",
+    "tests/conftest.py": "test processes and their children skip config.py's .env (STOCK_AGENT_SKIP_DOTENV) and hold no credential variable",
+}
+INSTRUMENTATION_W1: dict = {}                                                              # Wave 1: no executor instrumentation
+REMOVED_W1 = {"config.py": ("# Load variables from a local .env file (if present) into the environment.", "load_dotenv()")}   # main's lines Wave 1 removes
+UNDO_W1 = {                                                                                  # Wave 1's in-place edits of a file an older freeze test reads raw: (main, Wave 1)
+    "config.py": [('# Load variables from a local .env file (if present) into the environment.\nload_dotenv()\n\nPROJECT_ROOT: Path = Path(__file__).resolve().parent\n\n',
+                   'PROJECT_ROOT: Path = Path(__file__).resolve().parent\n\n# Load variables from THIS checkout\'s own .env file (if present) into the environment. The path is explicit (Wave 1, audit EP-13): with no\n# path, python-dotenv also searches every parent folder, so a checkout nested inside another one silently loaded the outer checkout\'s .env,\n# credentials included. Test processes set STOCK_AGENT_SKIP_DOTENV=1 (tests/conftest.py): neither they nor any process that inherits their\n# environment load a .env here (a process started through WMI inherits nothing), while a script\'s own explicit env file\n# (scripts/run_stock_agent.py -EnvFile, a synthetic one in tests) still loads.\nif os.environ.get("STOCK_AGENT_SKIP_DOTENV") != "1":\n    load_dotenv(PROJECT_ROOT / ".env")\n\n')],
+    "tests/conftest.py": [('"""Test setup: isolated DB copy, no network. Must run before the app is imported."""\n',
+                           '"""Test setup: isolated DB copy, no network, no .env and no credential. Must run before the app is imported."""\nimport os\nimport re\n'),
+                          ('', '# Wave 1 (audit EP-13): no test process, and no process that inherits its environment, loads this checkout\'s .env (config.py skips it), and no\n# credential reaches a test from the environment, whichever folder the tests run from. A process started through WMI (the Stage 6.0 runner rig\'s\n# background start) inherits neither, so run tests outside the production checkout. A test that needs a credential-shaped value sets a fake\n# one itself; a script given an explicit synthetic env file still loads that file (python-dotenv itself is not switched off).\nos.environ["STOCK_AGENT_SKIP_DOTENV"] = "1"\nCREDENTIAL_ENV = re.compile(r"(?i)^(ALPACA|APCA|ANTHROPIC|ROBINHOOD|FRED_API_KEY|SEC_USER_AGENT|OPENAI|POLYGON|FINNHUB|ALPHA_?VANTAGE)")\nfor _name in [n for n in os.environ if CREDENTIAL_ENV.match(n)]:\n    del os.environ[_name]\n\n')],
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "1e1e5d4567a7402571ed1963b877dd6133f412c3b131b60b758bfab6b8cd355e",
+    ".github/ci/pytest_groups.json": "6d251465098ab296e911246d02111a5a5629d5c573c129a5fc604874d51600ac",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
@@ -264,38 +292,43 @@ LEDGER = {
     "api/routes/ops_status.py": "5f80dc548368809b88e47a329f51dbadbb81e9dede47ff073e681924ae0b5ec2",
     "api/server.py": "8af3d1f26026023dc3bd704eaafb22533d191a49b1f233ab8edf395e71bc1ea8",
     "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
-    "config.py": "6195f294cb940db0490d68c0099e97e476035ebc03482f32074be8a142b4038b",
+    "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "4a21f8a69bc1e086fb89f0a225d0f47bb8ce15ebf7246b62d2079a9b0b900d01",
+    "execution/service.py": "2f37e73129bdbdf3c45ce47056001cb221d8e489642591c10c10736a4fb1309e",
     "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
     "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
     "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
+    "safety/service.py": "e4403dd18459322a7fa26db7f360f0910eaf3a50f5ff40c661303a2cb9488213",
+    "safety/store.py": "7e7635aae90686fd1c15ea6185fcf6fcc7903966cd16c8af9b741bea84a9d0c6",
     "scripts/check_stock_agent.ps1": "f4dab15027feb15457f2107e04702de4e5bd595b45d570eb74f8de5768c4a677",
     "scripts/install_stock_agent_task.ps1": "fef37c2a6da6fb90539ee32c577036a701eb04ad7ac5e16baa5454eb3d98718e",
     "scripts/run_stock_agent.py": "1090690982d115e1f268738ebdb2b797e4f79b88be2c5d58e5f042010ff710c3",
+    "tests/conftest.py": "8d37bedc3b2b8085836424f35b352a7c839b2378e7c718ca9a823e47079a140d",
     "tests/frontend/product_flow.test.cjs": "5c4afa63a3510be05030dfce4b72d29f0eab2757a2be1f6ee8ccc593ad58229e",
     "tests/frontend/product_ui.test.cjs": "6d33db33f0cad805ff76ae8557c134ca1ed1bf98b20eeb826f111cd2e34159d7",
     "tests/frontend/strategy_validation.test.cjs": "fce1fdf90474dbeeb8881a6469d9d8bb0a0b6ad612455eea099cc5611e92a1e4",
-    "tests/test_account_refresh_601.py": "42aeb7db6c614d1c0cf41cc7d9c8bf8bbcabebd5301d7dea1fafba4e0eab2587",
+    "tests/test_account_refresh_601.py": "ff47d14b3679e2e215db67968232414eab621cb97d7e5f17d9653772df318367",
+    "tests/test_automation_37.py": "fd6421efebe4c6ea60920b8efeab64e5fb25a06991d22db6cf51a9a0510cf3db",
     "tests/test_cash_flow_602.py": "15581c69f6fe12e475f7311a03652bb0e128e06eaaa7bc227eab6281eae141ec",
     "tests/test_ci_groups_603.py": "8b1b0a4659424e7fc733a275dae76e3b72ac3f7df156234a8bf8c72f3e57c477",
     "tests/test_db_bootstrap_busy.py": "0253939a872b26f83dd479c31432adc75c5ba7000d3842a84dcc8d3717b38d86",
-    "tests/test_demand_57.py": "2b76510307e4973f2c932ca64fb6759990d2e9ebd6328e1a3a6b8f4cb2a16ba0",
-    "tests/test_execution_60.py": "578562ba9f96c1fa337669c91269abe011783ff54b9c08f84b20d99688bd24cf",
-    "tests/test_execution_safety_591.py": "e5d2a1faefc7be7f04077f744155c2e9dbe82b2b0b35ebe2cff27f26b39f0c89",
+    "tests/test_demand_57.py": "fa6319bbc49a5770c52b6647973a3376df40d08df26e4ee9a21356b17eb981c9",
+    "tests/test_execution_60.py": "ebc8b8aef3e07dc0b5db390bfc805476619577e8271ef609160a15dc7c9e7387",
+    "tests/test_execution_safety_591.py": "7b8eb537ecf3cf3b554e4e983e3e4d8c5d3c318d38c5c0d74db14d1fb77beef2",
     "tests/test_forward_validation_61.py": "d7b5260e7b70bdae9344f5d26212ac0dcf3200651b374ab72e668166a4363fe7",
+    "tests/test_history_budget_39.py": "97fb1fc1432b815a1a8b1c73ceff00d8728d5acde4aff9a16c75a6cd55babdd9",
     "tests/test_product_flow_612.py": "28f95d614292bc8f8f98aaf2e0b40da0427fd8aefc45a9b45a0a91e0c486f4f7",
     "tests/test_product_ui_611.py": "ef14b5b485ea69eeb18954e638ff4514abb5248ffcbafda8f09c0514023390ac",
-    "tests/test_proposals_59.py": "9ac55e1325936c2d084474f6207a4efb0cbc618e98edc9dcbdec626965a081bd",
+    "tests/test_proposals_59.py": "8ee1f4e30ae1e7044865b75ad0a8f53548f8941e5bed2777aa98e08b1e502883",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
-    "tests/test_setups_58.py": "e4d4bbaff2c9c380d117345767119c05197ed93dd8cd647e8003aaae9f3ce307",
-    "tests/test_strategy_validation_62.py": "abb640f2d8b66a65a03b071be75de098db9af9539ca148e915e34b493cd4885e",
-    "tests/test_trader_view_55.py": "998366a1d1cf3bc939f9ca00bcdaa8f60824be2b3712619b10947578433047e3",
+    "tests/test_setups_58.py": "3d89c910788e9ebf64c6ff97fb02d1932e77d24c0b7867ffa69b8b59f73684ea",
+    "tests/test_strategy_validation_62.py": "f5399f8a2909550c06c6f26bf9983798fe91d625bfaaa0be6a0cd08af95435a2",
+    "tests/test_trader_view_55.py": "b90299119e4f2ab2790fb514149900ad841e662057027ee4c010b3b551504846",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
     "trader_view/positions.py": "3765462dea8fcbb52b6c1880338a8e0e1c5151a60091ef0d11c3489a55267558",
@@ -335,6 +368,16 @@ def view(rel: str, text: str) -> str:
 
 def view_bytes(rel: str, data: bytes) -> bytes:
     return data if rel not in LEDGER else view(rel, data.decode("utf-8")).encode("utf-8")
+
+
+def undo_w1(rel: str, text: str) -> str:
+    """`text` (a current file) with Wave 1's exact in-place edits undone (last first): config.py / tests/conftest.py as on main BASE_W1, for an older
+    freeze test that reads them raw. Any other file passes through. tests/test_wave1_safety_remediation.py (F02) proves the result is main, byte for byte."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_W1.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
 
 
 def unchanged(paths, blob_fn) -> set:

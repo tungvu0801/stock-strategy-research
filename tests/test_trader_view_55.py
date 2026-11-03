@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
-from freeze_ledger import view as ledger_view  # noqa: E402 - Stage 6.8 / 6.9: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import undo_w1, view as ledger_view  # noqa: E402 - Stage 6.8 / 6.9: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -796,7 +796,7 @@ def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
         assert out, rel
         return out.replace(b"\r\n", b"\n")
     for rel in PINNED:
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob(rel), f"{rel} differs from {BASE}"
+        assert undo_w1(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").decode("utf-8")).encode("utf-8") == blob(rel), f"{rel} differs from {BASE}"   # Wave 1: its tests/conftest.py edit undone first
     base = blob("api/server.py").decode("utf-8").splitlines()
     now = ledger_view("api/server.py", (ROOT / "api" / "server.py").read_text(encoding="utf-8").replace("\r\n", "\n")).splitlines()   # Stage 6.9: its two lines are pinned by test_robinhood_portfolio_69
     assert [l for l in base if l not in now] == []
@@ -804,7 +804,7 @@ def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
     assert added[0] == "from api.routes import trader_view" and any(l.startswith("app.include_router(trader_view.router)  # Stage 5.5") for l in added)
     for l in added[1:]:                                                                               # Stage 5.8 added its router and the evaluator start / stop hooks; Stage 5.9 its router
         assert l.startswith("app.include_router(trader_view.router)  # Stage 5.5") or "setups" in l or "Setup evaluator" in l or "Stage 5.8" in l or "evaluator must never stop" in l             or "proposals" in l or "Stage 5.9" in l, l
-    base_cfg, now_cfg = blob("config.py").decode("utf-8"), (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")
+    base_cfg, now_cfg = blob("config.py").decode("utf-8"), undo_w1("config.py", (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Wave 1: its config.py edit undone first
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "TRADER_DATA_MODE" in now_cfg                   # config is append-only
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
     now_html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8").splitlines()

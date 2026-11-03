@@ -1,4 +1,6 @@
-"""Test setup: isolated DB copy, no network. Must run before the app is imported."""
+"""Test setup: isolated DB copy, no network, no .env and no credential. Must run before the app is imported."""
+import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -6,6 +8,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+# Wave 1 (audit EP-13): no test process, and no process that inherits its environment, loads this checkout's .env (config.py skips it), and no
+# credential reaches a test from the environment, whichever folder the tests run from. A process started through WMI (the Stage 6.0 runner rig's
+# background start) inherits neither, so run tests outside the production checkout. A test that needs a credential-shaped value sets a fake
+# one itself; a script given an explicit synthetic env file still loads that file (python-dotenv itself is not switched off).
+os.environ["STOCK_AGENT_SKIP_DOTENV"] = "1"
+CREDENTIAL_ENV = re.compile(r"(?i)^(ALPACA|APCA|ANTHROPIC|ROBINHOOD|FRED_API_KEY|SEC_USER_AGENT|OPENAI|POLYGON|FINNHUB|ALPHA_?VANTAGE)")
+for _name in [n for n in os.environ if CREDENTIAL_ENV.match(n)]:
+    del os.environ[_name]
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))

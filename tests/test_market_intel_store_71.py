@@ -1912,7 +1912,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_71, FL.BASE_72).split())                # Stage 7.1 itself, between two fixed commits
     assert stage == FL.NEW_71 | FL.EDITED_71, {"unexpected": sorted(stage - FL.NEW_71 - FL.EDITED_71), "missing": sorted((FL.NEW_71 | FL.EDITED_71) - stage)}
-    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1                             # Stages 7.2, 7.3: pinned by their own F tests
+    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1                             # Stages 7.2, 7.3: pinned by their own F tests
     assert changed == FL.NEW_71 | FL.EDITED_71 | later, {"unexpected": sorted(changed - FL.NEW_71 - FL.EDITED_71 - later),
                                                          "missing": sorted((FL.NEW_71 | FL.EDITED_71 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_71).split())
@@ -1925,9 +1925,9 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_ch
         for p in sorted((ROOT / d).rglob("*")):
             rel = p.relative_to(ROOT).as_posix()
             if p.is_file() and rel in in_base and "__pycache__" not in rel:
-                assert now_text(rel) == at_base(rel), rel                               # no trading, safety, startup, API, DB, UI or harness file changed
+                assert post(rel) == at_base(rel), rel                                   # no trading, safety, startup, API, DB, UI or harness file changed
     for rel in ("config.py", "api/server.py", "autorun/calendar.py", "autorun/session.py"):
-        assert now_text(rel) == at_base(rel), rel
+        assert post(rel) == at_base(rel), rel
     for rel in sorted(FL.NEW_71 | FL.EDITED_71):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
