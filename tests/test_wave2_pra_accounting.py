@@ -9,6 +9,7 @@ ForwardValidationService and API routes on the same file. No network, no credent
 import ast
 import json
 import random
+import re
 import sqlite3
 import subprocess
 import threading
@@ -680,6 +681,84 @@ def test_TA29_every_get_route_and_export_is_read_only(tmp_path, monkeypatch):
     for fn in (n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in ("fresh_daily", "fresh_dailies", "bracketed_summary", "pnl_watermark", "_pnl_status", "_null_pnl")):
         called = {getattr(c.func, "attr", getattr(c.func, "id", None)) for c in ast.walk(fn) if isinstance(c, ast.Call)}
         assert not called & writers, (fn.name, called & writers)
+
+
+def _db_rows(db):
+    """The database CONTENT a read must leave unchanged: sqlite_master and every table's rows (all columns), each read on its own mode=ro
+    connection. Content, not file bytes: a WAL checkpoint may rewrite the file without changing a row."""
+    conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    try:
+        out = {"sqlite_master": sorted(map(repr, conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master")))}
+        for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").fetchall():
+            out[name] = sorted(map(repr, conn.execute(f'SELECT * FROM "{name}"')))
+        return out
+    finally:
+        conn.close()
+
+
+def test_TA29b_every_read_and_export_path_running_pr_a_code_leaves_the_database_contents_unchanged(tmp_path, monkeypatch):
+    """Final PR review Q-02: T-A29 extended to every user-facing path that runs a function PR A changed, with unverified trades present -
+    every GET route of the forward-validation router (asserted against the router itself; /closed/{id} for each position), every export kind
+    (the 6.10A capture kinds too: export_rows is a PR A function) as CSV and JSON, and the two strategy-registry routes (runtime_facts reads
+    overview(): cumulative, closed_trades, verification). Each request is bracketed by every table's rows plus sqlite_master and by PRAGMA
+    data_version on one connection held open across it. The fail-closed presentation is never written back: the unverified trades' stored raw
+    values stay as they are while every read serves them null."""
+    d = Direct(tmp_path)
+    ok, amb, zero = _three_trades(d)                                                         # verified; INTENT_AMBIGUOUS with a raw 20.00; ENTRY_PRICE_INVALID
+    ent, heal = healed_trade(d)
+    _five_days_current(d)
+    heal()                                                                                    # verified at 4.80; DAY's stored summary is stale
+    legacy = {k: v for k, v in d.fv.daily_summary("2026-10-19").items() if k not in ("pnl_status", "unverified")}
+    d.fvs.put_daily("2026-10-19", d.t, FV_VERSION, legacy)                                   # a legacy row
+    nop = d.entry(xid="f" * 32)
+    d.observe(nop, "filled", 10, "10.00")
+    d.observe(d.exit(d.pos(nop), "9" * 32, 10), "filled", 10, None)                          # EXIT_PRICE_MISSING: stored NULL, after the summaries
+    opn = d.entry(xid="e" * 32)
+    d.observe(opn, "filled", 10, "10.00")                                                    # an open position
+    pids = {"ok": ok.position_id, "healed": d.pos(ent).position_id, "amb": amb.position_id, "zero": zero.position_id, "nop": d.pos(nop).position_id,
+            "open": d.pos(opn).position_id}
+    raw = {k: d.xs.position(p).realized_pnl for k, p in pids.items()}
+    assert (raw["amb"], raw["nop"], raw["ok"], raw["healed"]) == ("20.00", None, "10.00", "4.80")
+    stored_day, rebuilt = d.fvs.daily(DAY), len(d.fvs.events(kind="SUMMARY_REBUILT"))
+    c = api(monkeypatch, d)
+    from api.routes import forward_validation as FVR
+    from forward_capture import EXPORT_KINDS as CAPTURE_EXPORTS
+    from forward_validation import EXPORTS
+    fv = "/api/forward-validation"
+    paths = ([fv, f"{fv}/sessions", f"{fv}/closed", f"{fv}/closed?date={DAY}", f"{fv}/daily", f"{fv}/report/daily", f"{fv}/report/weekly", f"{fv}/restarts",
+              f"{fv}/events", f"{fv}/samples", f"{fv}/funnel", f"{fv}/funnel/{DAY}", f"{fv}/frozen-controls", "/api/strategy-registry",
+              "/api/strategy-registry/DOWNSIDE_DISLOCATION_RECOVERY"]
+             + [f"{fv}/closed/{p}" for p in pids.values()] + [f"{fv}/sessions/{t}" for t in DATES]
+             + [f"{fv}/{r}/{t}" for r in ("daily", "report/daily") for t in DATES + ["2026-10-22"]]           # 2026-10-22: no stored row
+             + [f"{fv}/export/{k}?format={f}" for k in EXPORTS + CAPTURE_EXPORTS for f in ("csv", "json")])
+    templates = {r.path for r in FVR.router.routes if "GET" in r.methods}
+    covered = {t for t in templates if any(re.fullmatch(re.sub(r"\{[^}]+\}", "[^/?]+", t) + r"(\?.*)?", p) for p in paths)}
+    assert covered == templates, templates - covered                                         # every GET route of the router, none left out
+    got = {}
+    held = sqlite3.connect(f"file:{d.db.as_posix()}?mode=ro", uri=True)
+    try:
+        for path in paths:
+            rows0, v0 = _db_rows(d.db), held.execute("PRAGMA data_version").fetchone()[0]
+            r = c.get(path)
+            assert r.status_code == 200, (path, r.status_code, r.text[:200])
+            rows1 = _db_rows(d.db)
+            assert rows1 == rows0, (path, sorted(t for t in rows0.keys() | rows1.keys() if rows0.get(t) != rows1.get(t)))
+            assert held.execute("PRAGMA data_version").fetchone()[0] == v0, path               # no other connection committed anything
+            got[path] = r
+    finally:
+        held.close()
+    assert {k: d.xs.position(p).realized_pnl for k, p in pids.items()} == raw                  # the raw values kept ...
+    assert d.fvs.daily(DAY) == stored_day and len(d.fvs.events(kind="SUMMARY_REBUILT")) == rebuilt
+    for k in ("amb", "zero", "nop"):                                                           # ... while every read serves the unverified trades null
+        tr = got[f"{fv}/closed/{pids[k]}"].json()
+        assert tr["verified"] is False and all(tr["final_pnl"][f] is None for f in ("realized_pnl", "gross_pnl", "net_pnl", "return_pct")), k
+    closed = {t["position_id"]: t for t in got[f"{fv}/closed"].json()["closed"]}
+    assert {k: closed[p]["realized_pnl"] for k, p in pids.items() if k != "open"} == {"ok": "10.00", "healed": "4.80", "amb": None, "zero": None, "nop": None}
+    day = got[f"{fv}/daily/{DAY}"].json()
+    assert (day["pnl_status"], day["unverified"], day["realized_pnl"]) == ("UNVERIFIED_PRESENT", 3, "14.80")
+    assert day["pnl_watermark"] != stored_day["pnl_watermark"]                                 # the stored row was stale: a read had something to write
+    facts = got["/api/strategy-registry"].json()["facts"]
+    assert facts["validation"] is not None and not [e for e in facts["errors"] if e.startswith("forward_validation")]   # overview() ran
 
 
 def _w_heal(d, ex, prices):
