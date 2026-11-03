@@ -3,6 +3,13 @@ safety/service.py — the execution safety gate (DESIGN_591 §3–§10). `Execut
 execution layer calls before any new entry; `evaluate_execution_safety(...)` is its module-level entry. Account equity comes from the
 Stage 5.9 read-only account snapshot (never invented); the store is the state; a failure never reports TRADING_ALLOWED.
 Nothing here submits, previews, liquidates or calls a broker.
+
+Wave 1 (audit EX-08 / EX-07 / EX-08b): an evaluation reads the account once, then reads the state, decides and commits with
+`expect=` the state it read; if any other writer (a user action, a background evaluation, another process) changed the row meanwhile, the
+commit is refused and the evaluation decides again on the new state, at most MAX_STATE_ATTEMPTS times (then UNKNOWN). A user action is
+applied to the state as read inside that loop, never to an older copy, so a Resume cannot clear an Emergency Stop and a Clear cannot drop a
+Pause. An unreadable state row is UNKNOWN. `current()` serves its cached view only while the persisted latches still match it. If the
+evaluation of an Emergency Stop or a Pause fails, that latch is still saved on its own (SafetyStore.latch); a Resume or a Clear never is.
 """
 from __future__ import annotations
 
@@ -17,10 +24,11 @@ import config
 from safety import (CONTROLS, R_DAILY, R_EVALUATOR, R_NEW_DAY, R_PERSISTENCE, R_STARTUP_POLICY, REASON_TEXT, STARTUP_POLICIES, VERSION)
 from safety.engine import D, daily_loss, decide, controls as control_rows, icon_label, money, s, trading_date
 from safety.models import AccountEquity, Baseline, ControlEvaluation, DailyLoss, Freshness, KillSwitch, Pause, SafetyStateRecord, SafetyView
-from safety.store import SafetyStore
+from safety.store import SafetyStateChanged, SafetyStore
 
 log = logging.getLogger(__name__)
 NO_CASH_FLOW_SOURCES = ("LOCAL_PAPER", "HYPOTHETICAL_REVIEW")      # these account models have no deposits / withdrawals at all
+MAX_STATE_ATTEMPTS = 3                                              # Wave 1: a state that keeps changing under one evaluation is UNKNOWN, never a guess
 
 
 def _iso(dt: datetime) -> str:
@@ -82,11 +90,11 @@ class ExecutionSafetyService:
 
     # ---------------------------------------------------------------- the gate -------------------------------------------------
     def evaluate(self, trigger: str = "API", now: Optional[datetime] = None, *, persist: bool = True, overrides: Optional[Dict[str, Any]] = None, actor: str = "system",
-                 state: Optional[SafetyStateRecord] = None, action_event: Optional[Dict[str, Any]] = None) -> SafetyView:
+                 action: Optional[Dict[str, Any]] = None) -> SafetyView:
         now = now or self.clock()
         today = trading_date(now).isoformat()
         try:
-            view = self._evaluate(trigger, now, today, persist, overrides, actor, state, action_event)
+            view = self._evaluate(trigger, now, today, persist, overrides, actor, action)
         except Exception as exc:  # noqa: BLE001 - a failing evaluator never reports TRADING_ALLOWED
             log.error("execution safety evaluation failed (%s: %s)", type(exc).__name__, exc)
             code = R_PERSISTENCE if isinstance(exc, _PersistError) else R_EVALUATOR
@@ -105,16 +113,45 @@ class ExecutionSafetyService:
         return view
 
     def _evaluate(self, trigger: str, now: datetime, today: str, persist: bool, overrides: Optional[Dict[str, Any]], actor: str,
-                  state: Optional[SafetyStateRecord] = None, action_event: Optional[Dict[str, Any]] = None) -> SafetyView:
-        st = state if state is not None else self.store.state()
+                  action: Optional[Dict[str, Any]] = None) -> SafetyView:
+        try:
+            acct = self.account(now.timestamp(), overrides)                                        # once, before the state is read: it may be slow
+            for _ in range(MAX_STATE_ATTEMPTS):
+                try:
+                    return self._decide(trigger, now, today, persist, actor, action, acct)
+                except SafetyStateChanged:                                                         # another writer won: decide again on the new state
+                    log.info("execution safety state changed during an evaluation (%s); deciding again", trigger)
+            raise _PersistError(f"the safety state kept changing during {MAX_STATE_ATTEMPTS} attempts of one evaluation")
+        except Exception:
+            if persist and action is not None and action["update"][action["flag"]] is True:        # a stop or a pause is saved even so (review M1)
+                self._latch_fallback(now, today, actor, action)
+            raise
+
+    def _latch_fallback(self, now: datetime, today: str, actor: str, action: Dict[str, Any]) -> None:
+        """The evaluation that should have applied an Emergency Stop or a Pause failed (an unreadable state row, a state that kept changing, a
+        failed commit). The latch is still saved, alone: SafetyStore.latch changes only its own columns and only while it is off, so it can never
+        clear another latch. The evaluation itself still reports UNKNOWN (entries blocked); a Resume or a Clear is never applied this way."""
+        try:
+            done = self.store.latch(now, action["update"], {"kind": action["kind"], "actor": actor, "reason": action["reason"], "trading_date": today, "from_state": None,
+                                                            "input": {**action["update"], "saved_without_evaluation": True}})
+            if done:
+                log.warning("execution safety: %s saved without an evaluation (the evaluation failed)", action["kind"])
+        except Exception as exc:  # noqa: BLE001 - the evaluation already reports UNKNOWN; this is the last attempt to keep the latch
+            log.error("execution safety: %s could not be saved (%s: %s)", action["kind"], type(exc).__name__, exc)
+
+    def _decide(self, trigger: str, now: datetime, today: str, persist: bool, actor: str, action: Optional[Dict[str, Any]], acct: AccountEquity) -> SafetyView:
+        st = read = self.store.state()                                                             # raises when unreadable: UNKNOWN, never "no kill switch"
         prev = self.store.last_evaluation()
         prev_state = _state_of(prev)
-        events: List[Dict[str, Any]] = [dict(action_event)] if action_event else []
+        events: List[Dict[str, Any]] = []
+        if action is not None and bool(getattr(st, action["flag"])) != bool(action["update"][action["flag"]]):   # already in that state: no event
+            st = st.model_copy(update=action["update"])                                            # applied to the state as read now, never to an older copy
+            events.append({"kind": action["kind"], "actor": actor, "reason": action["reason"], "trading_date": today, "from_state": prev_state,
+                           "input": dict(action["update"])})
         if st.daily_halt_active and st.daily_halt_trading_date != today:                           # day rollover: only the daily latch resets
             events.append({"kind": "DAILY_RESET", "actor": "system", "reason": R_NEW_DAY, "trading_date": today, "from_state": prev_state,
                            "input": {"previous_trading_date": st.daily_halt_trading_date, "previous_loss_pct": st.daily_halt_loss_pct}})
             st = st.model_copy(update={"daily_halt_active": False, "daily_halt_trading_date": None, "daily_halt_triggered_at": None, "daily_halt_loss_pct": None, "daily_halt_reason": None})
-        acct = self.account(now.timestamp(), overrides)
         baseline = self.store.baseline(today)
         new_baseline: Optional[Baseline] = None
         if baseline is None and persist:                                                                   # only a persisted evaluation may create the day's baseline
@@ -147,7 +184,7 @@ class ExecutionSafetyService:
                           daily_loss=daily, kill_switch=kill, no_new_entries=pause, freshness=Freshness(account_fresh=fresh_acct, account_age_s=acct.age_s, max_age_s=self.max_age_s,
                           evaluated_within_s=within), controls=ctl, evaluated_at=_iso(now), trigger=trigger, persisted=False)
         if persist:
-            changed = bool(events) or prev is None or action_event is not None or prev.get("state") != state or prev.get("allowed_new_entry") != allowed or list(prev.get("reason_codes") or []) != codes
+            changed = bool(events) or prev is None or prev.get("state") != state or prev.get("allowed_new_entry") != allowed or list(prev.get("reason_codes") or []) != codes
             heartbeat_due = trigger != "API" and (within is None or within >= self.heartbeat_s)       # a plain read never writes a heartbeat row or touches liveness
             if trigger == "API" and not changed:
                 return view                                                                           # nothing to persist: reads leave the database alone
@@ -158,32 +195,38 @@ class ExecutionSafetyService:
                               "input": {"account": acct.model_dump(), "threshold_pct": s(D(self.threshold_pct)), "accept_unadjusted": self.accept_unadjusted, "trading_date": today,
                                         "owner": self.owner, "actor": actor, "baseline": baseline.model_dump() if baseline else None}}
             try:
-                self.store.commit(now, state=st, events=events, evaluation=evaluation, controls=ctl, new_baseline=new_baseline)
+                self.store.commit(now, state=st, events=events, evaluation=evaluation, controls=ctl, new_baseline=new_baseline, expect=read)
+            except SafetyStateChanged:
+                raise                                                                              # not a failure: _evaluate decides again
             except Exception as exc:  # noqa: BLE001
                 raise _PersistError(f"{type(exc).__name__}: {exc}") from exc
             view = view.model_copy(update={"persisted": True})
         return view
 
     def current(self, max_age_s: float = 5.0, now: Optional[datetime] = None) -> SafetyView:
-        """The latest evaluation when it is a few seconds old, else a fresh one (reads that must not re-evaluate every call)."""
+        """The latest evaluation when it is a few seconds old and the persisted latches still match it, else a fresh one (reads that must not
+        re-evaluate every call). Wave 1: a stop, pause or halt written by another thread or process is never hidden by the cached view."""
         now = now or self.clock()
         last = self._last
         if last is not None and last.error is None:
             at = _parse(last.evaluated_at)
-            if at is not None and 0 <= (now - at).total_seconds() <= max_age_s:
+            if at is not None and 0 <= (now - at).total_seconds() <= max_age_s and self._latches_match(last):
                 return last
         return self.evaluate("API", now)
 
+    def _latches_match(self, view: SafetyView) -> bool:
+        try:
+            st = self.store.state()
+        except Exception:  # noqa: BLE001 - unreadable: evaluate again, which fails closed
+            return False
+        return (st.kill_active, st.pause_active, st.daily_halt_active) == (bool(view.kill_switch.active), bool(view.no_new_entries.active), bool(view.daily_loss.latched))
+
     # ---------------------------------------------------------------- user actions (safety state only) -----------------------
     def _action(self, kind: str, actor: str, reason: Optional[str], now: datetime, update: Dict[str, Any]) -> SafetyView:
-        st = self.store.state()
+        """The update is applied inside the evaluation, to the state as read there (Wave 1): already in that state = no event, just a fresh
+        evaluation; a concurrent change of the row makes the evaluation read and apply it again."""
         flag = "kill_active" if kind.startswith("KILL") else "pause_active"
-        if bool(getattr(st, flag)) == bool(update[flag]):                                                 # already in that state: no event, just a fresh evaluation
-            return self.evaluate("ACTION", now, actor=actor)
-        new = st.model_copy(update=update)
-        event = {"kind": kind, "actor": actor, "reason": reason, "trading_date": trading_date(now).isoformat(), "from_state": _state_of(self.store.last_evaluation()),
-                 "input": {k: update[k] for k in update}}
-        return self.evaluate("ACTION", now, actor=actor, state=new, action_event=event)
+        return self.evaluate("ACTION", now, actor=actor, action={"kind": kind, "flag": flag, "update": dict(update), "reason": reason})
 
     def pause(self, reason: Optional[str] = None, actor: str = "user", now: Optional[datetime] = None) -> SafetyView:
         now = now or self.clock()
@@ -208,7 +251,11 @@ class ExecutionSafetyService:
         """Applies the startup policy (KEEP leaves the persisted state alone; HALT_ON_START activates the kill switch once) and evaluates."""
         now = now or self.clock()
         policy = self.startup_policy if self.startup_policy in STARTUP_POLICIES else "KEEP"
-        if policy == "HALT_ON_START" and not self.store.state().kill_active:
+        try:
+            active = self.store.state().kill_active
+        except Exception:  # noqa: BLE001 - unreadable (Wave 1): HALT_ON_START still tries to halt; either way the evaluation fails closed
+            active = None
+        if policy == "HALT_ON_START" and active is not True:
             return self.emergency_stop(R_STARTUP_POLICY, actor="system", now=now)
         return self.evaluate("STARTUP", now)
 

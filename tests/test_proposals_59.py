@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
-from freeze_ledger import view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import undo_w1, view_bytes as ledger_bytes  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -786,6 +786,6 @@ def test_B01_setups_ppe_demand_evidence_and_execution_files_identical_to_base():
     for rel in pinned:
         assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE}"
     base_cfg = blob("config.py").decode("utf-8")
-    now_cfg = (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n")
+    now_cfg = undo_w1("config.py", (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Wave 1: its declared config.py edit undone first
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "TRADE_PROPOSAL_RISK_FRACTION" in now_cfg and config.TRADE_PROPOSAL_RISK_FRACTION == 0.005
     assert config.TRADE_PROPOSAL_TTL_SECONDS == 300 and config.MAX_POSITION_PERCENT == 10.0 and PR.ATR_PERIOD == config.ATR_PERIOD == 14

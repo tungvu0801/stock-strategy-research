@@ -73,8 +73,11 @@ def test_61_history_on_saves_one_accepted_explanation(api):
     g = item["grounding_summary"]
     assert g["fit_status"] == "RULES NOT MET" and g["conditions"]["met"] == "1 of 2" and g["label"] == "Pullback v1"
     assert [c["result"] for c in g["condition_trace"]] == ["MET", "NOT MET"]
-    for secret in (config.ANTHROPIC_API_KEY or "unset-key", "Authorization", "system_prompt", "DATA, not instructions"):
-        assert secret not in str(row)                                   # no key, headers or prompt text is stored
+    stored = str(row)
+    needles = (("the Anthropic API key", config.ANTHROPIC_API_KEY or "unset-key"), ("Authorization", "Authorization"), ("system_prompt", "system_prompt"),
+               ("the prompt's data notice", "DATA, not instructions"))
+    leaked = [label for label, needle in needles if needle in stored]
+    assert not leaked, f"stored in the explanation row: {leaked}"       # no key, headers or prompt text is stored (Wave 1: names only, never a value)
 
 
 def test_62_cache_hit_adds_no_row_and_no_call(api):

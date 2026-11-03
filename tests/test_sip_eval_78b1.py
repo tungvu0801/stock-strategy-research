@@ -1562,6 +1562,13 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def post(rel):
+    """main after PR #49 (Stage 7.8B-1 merged; the Wave 1 base): what Stage 7.8B-1 left, whatever a later change made since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_W1}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_W1} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
 NEW_FILES_78B1 = {"DESIGN_78B1_SIP_EVALUATION.md", "tests/test_sip_eval_78b1.py", "tests/sip_eval_fixtures.py"} | {
     f"research_data/{m}" for m in ("__init__.py", "nyse_calendar.py", "quality.py", "sip_bundle.py")} | {
     f"swing_eval/{m}" for m in ("__init__.py", "analysis.py", "codetree.py", "evaluate.py", "manifest.py", "preflight.ps1")}
@@ -1577,10 +1584,14 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
                                                                                           cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_78B1).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_78B1 | FL.EDITED_78B1, {"unexpected": sorted(changed - FL.NEW_78B1 - FL.EDITED_78B1),
-                                                     "missing": sorted((FL.NEW_78B1 | FL.EDITED_78B1) - changed)}
+    stage = set(_git("diff", "--name-only", FL.BASE_78B1, FL.BASE_W1).split())               # Stage 7.8B-1 itself, between two fixed commits
+    assert stage == FL.NEW_78B1 | FL.EDITED_78B1, {"unexpected": sorted(stage - FL.NEW_78B1 - FL.EDITED_78B1),
+                                                   "missing": sorted((FL.NEW_78B1 | FL.EDITED_78B1) - stage)}
+    later = FL.NEW_W1 | FL.EDITED_W1                                                           # Wave 1, pinned by its own F tests
+    assert changed == FL.NEW_78B1 | FL.EDITED_78B1 | later, {"unexpected": sorted(changed - FL.NEW_78B1 - FL.EDITED_78B1 - later),
+                                                             "missing": sorted((FL.NEW_78B1 | FL.EDITED_78B1 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_78B1).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_78B1 and {p for p in changed if p in in_base} == FL.EDITED_78B1
+    assert {p for p in stage if p not in in_base} == FL.NEW_78B1 and {p for p in stage if p in in_base} == FL.EDITED_78B1
     assert FL.NEW_78B1 == NEW_FILES_78B1
     assert {p for p in FL.EDITED_78B1 if not p.startswith("tests/")} == APP_EDITS_78B1
     assert FL.SEMANTIC_78B1 == {} and FL.INSTRUMENTATION_78B1 == {}
@@ -1588,14 +1599,14 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
         for p in sorted((ROOT / d).rglob("*")):
             rel = p.relative_to(ROOT).as_posix()
             if p.is_file() and rel in in_base and "__pycache__" not in rel:
-                assert now_text(rel) == at_base(rel), rel
+                assert post(rel) == at_base(rel), rel
     for rel in ("config.py", "api/server.py", "autorun/calendar.py", "autorun/session.py", ".gitignore", "requirements.txt", "requirements-dev.txt",
                 "watchlist.txt", "STRATEGY_STANDARD_V1.md", "STRATEGY_VALIDATION_HARNESS.md", "main.py", ".github/workflows/tests.yml"):
-        assert now_text(rel) == at_base(rel), rel                                          # no config key, route, lifespan hook, dependency or workflow edit
+        assert post(rel) == at_base(rel), rel                                              # no config key, route, lifespan hook, dependency or workflow edit
     for rel in sorted(FL.NEW_78B1 | FL.EDITED_78B1):
         if rel.endswith((".py", ".js", ".html", ".md")):
             m61, m54 = "# >>> " + "Stage 6.1", "# >>> " + "Stage 5.4"                    # built, so this file never carries the markers itself
-            assert m61 not in now_text(rel) and m54 not in now_text(rel), rel
+            assert m61 not in post(rel) and m54 not in post(rel), rel
 
 
 def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_a_strategy():
@@ -1620,13 +1631,13 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_nothing_enables_a_
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_78B1.items():
-        text = now_text(rel)
+        text = post(rel)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
     assert set(REPLAY_78B1) == FL.EDITED_78B1 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}   # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
     start = fl.index("\nStage 7.8B-1 (the isolated SIP")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_75 + NEW_78 + NEW_78B1 plus this ledger.", " + NEW_75 + NEW_78 plus this ledger.", 1)
@@ -1636,8 +1647,9 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                  # the declarations, the paragraph, one line and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) == set(old)                                                       # no new ledger key
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_78B1 & set(old)
+    new_led = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # the ledger Stage 7.8B-1 left
+    assert set(new_led) == set(old)                                                         # no new ledger key
+    assert {k for k in old if old[k] != new_led[k]} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"} == FL.EDITED_78B1 & set(old)
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
 

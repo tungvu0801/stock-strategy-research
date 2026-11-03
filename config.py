@@ -12,10 +12,15 @@ from dotenv import load_dotenv
 import json
 import os
 
-# Load variables from a local .env file (if present) into the environment.
-load_dotenv()
-
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
+
+# Load variables from THIS checkout's own .env file (if present) into the environment. The path is explicit (Wave 1, audit EP-13): with no
+# path, python-dotenv also searches every parent folder, so a checkout nested inside another one silently loaded the outer checkout's .env,
+# credentials included. Test processes set STOCK_AGENT_SKIP_DOTENV=1 (tests/conftest.py): neither they nor any process that inherits their
+# environment load a .env here (a process started through WMI inherits nothing), while a script's own explicit env file
+# (scripts/run_stock_agent.py -EnvFile, a synthetic one in tests) still loads.
+if os.environ.get("STOCK_AGENT_SKIP_DOTENV") != "1":
+    load_dotenv(PROJECT_ROOT / ".env")
 
 # --------------------------------------------------------------------------
 # Alpaca API credentials — set these in a .env file next to this project

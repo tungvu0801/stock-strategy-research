@@ -10,11 +10,13 @@ No model call, no Robinhood, no Stage 4.6B writer, no live endpoint.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
 import uuid
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -28,6 +30,8 @@ from execution.engine import (D, EntryContext, ExitContext, beginner, blocking, 
 from execution.models import BotStatus, ControlEvaluation, Finding, Intent, Position, SymbolCard
 from execution.store import ExecutionStore, ExecutionStoreError
 from paper import alpaca_order_rules as RU
+from proposals import MINUTE_BAR_MAX_AGE_SECONDS, PRICE_MAX_AGE_SECONDS   # Wave 1: the stop check uses the entry side's own price freshness limits
+from proposals.engine import SIMULATED_MODES
 from setups.market_hours import session_date
 
 log = logging.getLogger(__name__)
@@ -52,6 +56,35 @@ class SimulatedCrash(RuntimeError):
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+STOP_PRICE_FUTURE_TOLERANCE_S = 60.0                        # Wave 1: a price stamped further than this after the cycle's clock is not trusted
+STOP_PRICE_TEXT = {"PRICE_MISSING": "no price", "PRICE_INVALID": "the price is not a positive finite number", "PRICE_UNDATED": "the price has no time",
+                   "PRICE_STALE": "the price is too old", "PRICE_FROM_FUTURE": "the price is stamped in the future"}
+
+
+def stop_price_problem(price, source: str, price_at: Optional[str], now: datetime, simulated: bool) -> Optional[str]:
+    """Wave 1 (audit EX-14): why this price cannot show that a position's stop was NOT hit; None when it can. PRICE_MISSING / PRICE_INVALID:
+    no usable value (never a breach either). PRICE_UNDATED / PRICE_STALE / PRICE_FROM_FUTURE: a real value whose time is unknown, older than the
+    entry side's freshness limit (proposals.PRICE_MAX_AGE_SECONDS; MINUTE_BAR_MAX_AGE_SECONDS for a minute close) or in the future; it may still
+    show a breach. A simulated feed is not aged, as on the entry side (proposals/engine.py)."""
+    if price is None:
+        return "PRICE_MISSING"
+    try:
+        value = float(price)
+    except (TypeError, ValueError, ArithmeticError):
+        return "PRICE_INVALID"
+    if not math.isfinite(value) or value <= 0:
+        return "PRICE_INVALID"
+    if simulated:
+        return None
+    at = _parse(price_at)
+    if at is None:
+        return "PRICE_UNDATED"
+    age = (now - at).total_seconds()
+    if age < -STOP_PRICE_FUTURE_TOLERANCE_S:
+        return "PRICE_FROM_FUTURE"
+    return "PRICE_STALE" if age > (MINUTE_BAR_MAX_AGE_SECONDS if source == "MINUTE_CLOSE" else PRICE_MAX_AGE_SECONDS) else None
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:
@@ -103,6 +136,7 @@ class ExecutionService:
         self.progress: Optional[Dict[str, Any]] = None                       # the cycle in progress: step and ticker (display only; never persisted)
         self._last_touch: Dict[str, str] = {}                                 # the last reason written per control (display only)
         self._open_orders: List[dict] = []
+        self.stop_check_problems: Dict[str, str] = {}                         # Wave 1: symbol -> why its stop check could not run in this cycle
         self._clock_cache: Optional[dict] = None
         self._finding_sigs: set = set()
         self.last_cycle: Optional[dict] = None
@@ -546,8 +580,25 @@ class ExecutionService:
         return ExitContext(now=now, price=price, price_source=src, price_at=at, setup=setup, episode=ep_row, episode_record=ep_rec, inputs=setup.inputs,
                            max_hold_sessions=self.max_hold_sessions, demand_exit=self.demand_exit, demand_exit_evals=self.demand_exit_evals, stretch_exit=self.stretch_exit)
 
+    def _feed_simulated(self) -> bool:
+        try:
+            return str(getattr(getattr(self.stream_fn(), "market", None), "mode", "") or "") in SIMULATED_MODES
+        except Exception:  # noqa: BLE001 - unknown is not simulated: the age rule applies
+            return False
+
+    def _market_open_for_stop_check(self) -> bool:
+        """Wave 1: only a readable broker clock that says CLOSED stands the stop-check escalation down; an unreadable clock counts as open."""
+        try:
+            self._clock_cache = self.broker.clock()
+        except Exception:  # noqa: BLE001 - BrokerError, BrokerRefused (the read budget) or anything else: unknown is treated as open
+            self._clock_cache = None
+            return True
+        return bool(self._clock_cache.get("is_open"))
+
     def _evaluate_positions(self, now: datetime, trigger: str) -> dict:
         out = {"positions": 0, "exits_decided": 0, "exits_submitted": 0, "exits_deferred": 0, "decisions": []}
+        self.stop_check_problems = {}
+        stop_market_open: Optional[bool] = None                                             # Wave 1: the broker clock, read at most once per cycle
         open_intents = self.store.open_intents()
         decide = lambda pos, decision, text: self._record(lambda: out["decisions"].append({"symbol": pos.symbol, "position_id": pos.position_id, "decision": decision,  # noqa: E731
                                                                                          "text": text() if callable(text) else text}))
@@ -561,9 +612,14 @@ class ExecutionService:
                 decide(pos, "ATTENTION", lambda: f"Needs attention ({(pos.attention_reason or 'manual review').replace('_', ' ').lower()}); no automatic action.")
                 continue
             ctx = self._exit_context(pos, now)
+            problem = stop_price_problem(ctx.price, ctx.price_source, ctx.price_at, now, self._feed_simulated())   # Wave 1 (audit EX-14)
+            if problem in ("PRICE_MISSING", "PRICE_INVALID"):
+                ctx = replace(ctx, price=None)                                               # Wave 1: no usable value is never a breach (a stale one may be)
             dec = exit_decision(pos, ctx)
             fields: Dict[str, Any] = {"last_price": money(ctx.price), "last_price_at": ctx.price_at, "demand_low_streak": dec.demand_low_streak,
                                       "last_demand_eval_at": dec.last_demand_eval_at, "sessions_held": dec.sessions_held}
+            if ctx.price is None:                                                            # Wave 1: the last known price stays
+                del fields["last_price"], fields["last_price_at"]
             if dec.reason:
                 out["exits_decided"] += 1
                 if pos.state != "EXIT_REQUIRED":
@@ -579,6 +635,20 @@ class ExecutionService:
                 else:
                     out["exits_deferred"] += 1
                     decide(pos, "EXIT_DEFERRED", lambda: f"Exit required: {EXIT_TEXT.get(dec.reason, dec.reason)}. Not sent this cycle: {self._last_touch.get('EXIT_SUBMISSION') or 'deferred'}.")
+            elif problem is not None:                                                        # Wave 1: the stop could not be confirmed as NOT hit
+                what = f"{STOP_PRICE_TEXT[problem]} ({ctx.price_source or 'no source'}{', ' + ctx.price_at if ctx.price_at else ''})"
+                detail = {**dec.detail, "problem": problem, "price_at": ctx.price_at}
+                self.store.update_position(pos.position_id, now, None, **fields)            # no state change: neither HEALTHY nor an exit
+                if stop_market_open is None:
+                    stop_market_open = self._market_open_for_stop_check()
+                if stop_market_open:
+                    reason = f"{pos.symbol}: stop check could not run - {what}; new entries are blocked until a fresh, valid price arrives"
+                    self.stop_check_problems[pos.symbol] = reason
+                    self._touch(now, "EXIT_TRIGGER", "UNKNOWN", reason, detail)
+                    decide(pos, "ATTENTION", f"The stop check could not run: {what}. Holding; no new entry until a fresh, valid price arrives.")
+                else:
+                    self._touch(now, "EXIT_TRIGGER", "WARN", f"{pos.symbol}: stop check waits for a fresh price - {what}; market closed", detail)
+                    decide(pos, "HOLD", f"Market closed: the stop check waits for a fresh price ({what}).")
             else:
                 new_state = "WEAKENING" if dec.weakening else "HEALTHY"
                 ev = None
@@ -588,6 +658,9 @@ class ExecutionService:
                 self.store.update_position(pos.position_id, now, ev, **fields)
                 self._touch(now, "EXIT_TRIGGER", "PASS", f"{pos.symbol}: no exit condition", dec.detail)
                 decide(pos, "HOLD", lambda: "No exit condition is met; holding." + (f" Weakening: {dec.weakening}." if dec.weakening else ""))
+        if self.stop_check_problems:                                                         # Wave 1: a later PASS never hides a blind stop check
+            self._touch(now, "EXIT_TRIGGER", "UNKNOWN", "; ".join(self.stop_check_problems[s] for s in sorted(self.stop_check_problems)),
+                        {"symbols": sorted(self.stop_check_problems)})
         return out
 
     def _maybe_submit_exit(self, pos: Position, now: datetime, trigger: str) -> bool:
@@ -682,6 +755,10 @@ class ExecutionService:
             return out
         self._record(lambda: self._mark("SCAN", now=now, items=[(e.setup_id, e.symbol) for e in episodes]))   # Stage 6.10A: forward evidence (instrumentation only)
         evaluated = lambda sym, result, reasons, **kw: self._record(lambda: out["evaluations"].append({"symbol": sym, "result": result, "reasons": reasons, **kw}))  # noqa: E731
+        stop_blind = None                                                                    # Wave 1 (audit EX-14): no new risk while a held stop is unchecked
+        if self.stop_check_problems:
+            stop_blind = ControlEvaluation(control_id="EXIT_TRIGGER", result="BLOCK", input={"symbols": sorted(self.stop_check_problems)},
+                                           reason="new entries blocked: the stop check could not run for " + ", ".join(sorted(self.stop_check_problems)) + " (no fresh, valid price)")
         env = self._environment(now)
         try:
             self._clock_cache = self.broker.clock()
@@ -724,6 +801,8 @@ class ExecutionService:
             ctx.exposure_gate, ctx.unified_portfolio = gate, unified                    # Stage 6.9.1: the UNIFIED_EXTERNAL_EXPOSURE inputs (off = the v1 controls)
             controls = entry_controls(ctx)
             self.store.touch_controls(controls, now)
+            if stop_blind is not None:                                                       # Wave 1: one more blocking reason; every other control still reports
+                controls = controls + [stop_blind]
             blocked = blocking(controls)
             self._record(lambda: self._mark("EVALUATED", now=now, setup_id=ep.setup_id, symbol=sym, ctx=ctx, controls=controls))   # Stage 6.10A
             if blocked:
@@ -770,6 +849,8 @@ class ExecutionService:
         sv = self._safety_view(now)
         if sv is None or not (sv.allowed_new_entry and sv.state == "TRADING_ALLOWED"):
             problems.append(f"safety gate {getattr(sv, 'state', 'UNKNOWN')}")
+        if self.stop_check_problems:                                                         # Wave 1: a held position's stop could not be checked
+            problems.append("the stop check of " + ", ".join(sorted(self.stop_check_problems)) + " could not run")
         pv = self.proposals.current(it.symbol, now)
         if pv.proposal_id != it.proposal_id or pv.effective_status != "REVIEWABLE" or not (pv.execution_eligibility or {}).get("allowed"):
             problems.append(f"proposal changed ({pv.effective_status})")
@@ -835,9 +916,14 @@ class ExecutionService:
         for i in self.store.open_intents():
             if i.state == "RECONCILIATION_REQUIRED":
                 reasons.append(f"{i.symbol}: order needs reconciliation")
+        held = set()
         for p in self.store.positions(open_only=True):
+            held.add(p.symbol)
             if p.state == "ATTENTION":
                 reasons.append(f"{p.symbol}: {(p.attention_reason or 'position needs attention').lower().replace('_', ' ')}")
+        for sym, r in sorted(self.stop_check_problems.items()):                                # Wave 1: a held position whose stop could not be checked
+            if sym in held and r not in reasons:
+                reasons.append(r)
         for r in self.recon_reasons:
             if r not in reasons:
                 reasons.append(r)

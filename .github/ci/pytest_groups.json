@@ -65,7 +65,8 @@
         "test_forward_paper_610a.py",
         "test_proposals_59.py",
         "test_setups_58.py",
-        "test_unified_exposure_gate_691.py"
+        "test_unified_exposure_gate_691.py",
+        "test_wave1_safety_remediation.py"
       ]
     },
     "account": {

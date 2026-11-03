@@ -2,6 +2,15 @@
 safety/store.py — SQLite persistence for the execution safety gate (DESIGN_591 §9). The state upsert, the events, the evaluation row,
 the new baseline and the control liveness rows of one evaluation are written in ONE transaction; nothing is reported as persisted
 unless the commit succeeded. Reads open their own read-only connection and tolerate a database without the tables.
+
+Wave 1 (audit EX-08 / EX-08b): the state row is the latch of the Emergency Stop, the Pause and the day's loss halt, so
+  * `state()` reads it strictly: no database file or no table yet is the default state (a first run); any other read failure raises
+    SafetyStoreError - an unreadable row is never "no kill switch";
+  * `commit(..., expect=...)` checks INSIDE its BEGIN IMMEDIATE transaction that the row (and today's baseline) is still what the caller read;
+    if another writer changed it meanwhile it rolls back and raises SafetyStateChanged, so the caller decides again on the new state and a
+    concurrent stop, pause or halt is never overwritten by an evaluation that read the state before it;
+  * `latch(...)` sets an Emergency Stop or a Pause alone (only its own columns, only while it is off) when the evaluation that should have
+    applied it failed, so a stop clicked while the row cannot be read is still saved.
 """
 from __future__ import annotations
 
@@ -19,6 +28,10 @@ from safety.models import Baseline, ControlEvaluation, SafetyStateRecord
 
 class SafetyStoreError(RuntimeError):
     pass
+
+
+class SafetyStateChanged(SafetyStoreError):
+    """Wave 1: the state row or today's baseline changed between the caller's read and its commit; nothing was written."""
 
 
 def _iso(dt: datetime) -> str:
@@ -55,15 +68,17 @@ class SafetyStore:
         run_execution_safety_migrations(conn)
         return conn
 
-    def _ro(self) -> Optional[sqlite3.Connection]:
+    def _ro(self, strict: bool = False) -> Optional[sqlite3.Connection]:
         if not self.path.exists():
             return None
         conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
             names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'execution_safety_%' OR name = 'daily_risk_baselines'")}
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
             conn.close()
+            if strict:                                                                         # Wave 1: unreadable is not "no table yet"
+                raise SafetyStoreError(f"the safety state cannot be read ({type(exc).__name__}: {exc})") from exc
             return None
         if "execution_safety_state" not in names:
             conn.close()
@@ -80,12 +95,24 @@ class SafetyStore:
             conn.close()
 
     # ---------------------------------------------------------------- reads ----------------------------------------------------
-    def state(self) -> SafetyStateRecord:
-        rows = self._read("SELECT * FROM execution_safety_state WHERE id = 1")
-        if not rows:
+    @staticmethod
+    def _state_of(r: Optional[dict]) -> SafetyStateRecord:
+        if not r:
             return SafetyStateRecord()
-        r = rows[0]
         return SafetyStateRecord(**{k: (bool(r[k]) if k.endswith("_active") else r[k]) for k in STATE_COLS})
+
+    def state(self) -> SafetyStateRecord:
+        """The latch row, read strictly (Wave 1): no database or no table yet is the default state; an unreadable row raises SafetyStoreError."""
+        conn = self._ro(strict=True)
+        if conn is None:
+            return SafetyStateRecord()
+        try:
+            rows = [dict(r) for r in conn.execute("SELECT * FROM execution_safety_state WHERE id = 1").fetchall()]
+        except sqlite3.Error as exc:
+            raise SafetyStoreError(f"the safety state cannot be read ({type(exc).__name__}: {exc})") from exc
+        finally:
+            conn.close()
+        return self._state_of(rows[0] if rows else None)
 
     def has_state_row(self) -> bool:
         return bool(self._read("SELECT 1 FROM execution_safety_state WHERE id = 1"))
@@ -139,11 +166,18 @@ class SafetyStore:
 
     # ---------------------------------------------------------------- the one write --------------------------------------------
     def commit(self, now: datetime, *, state: SafetyStateRecord, events: List[Dict[str, Any]], evaluation: Optional[Dict[str, Any]], controls: List[ControlEvaluation],
-               new_baseline: Optional[Baseline] = None, control_error: Optional[str] = None) -> None:
+               new_baseline: Optional[Baseline] = None, control_error: Optional[str] = None, expect: Optional[SafetyStateRecord] = None) -> None:
         stamp = _iso(now)
         conn = self._rw()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            if expect is not None:                                                             # Wave 1: inside the write lock, the row must be what the caller read
+                row = conn.execute("SELECT * FROM execution_safety_state WHERE id = 1").fetchone()
+                now_state = self._state_of(dict(row) if row else None)
+                if any(getattr(now_state, k) != getattr(expect, k) for k in STATE_COLS if k != "updated_at"):
+                    raise SafetyStateChanged("the safety state changed since it was read")
+                if new_baseline is not None and conn.execute("SELECT 1 FROM daily_risk_baselines WHERE trading_date = ?", (new_baseline.trading_date,)).fetchone():
+                    raise SafetyStateChanged(f"the {new_baseline.trading_date} baseline was created since it was read")
             vals = {k: getattr(state, k) for k in STATE_COLS}
             vals["updated_at"] = stamp
             for k in ("kill_active", "pause_active", "daily_halt_active"):
@@ -173,6 +207,37 @@ class SafetyStore:
                              "updated_at = excluded.updated_at",
                              (c.control_id, stamp, stamp if fired else None, 1 if fired else 0, c.result, c.reason, _json(c.input), control_error, stamp))
             conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def latch(self, now: datetime, update: Dict[str, Any], event: Dict[str, Any]) -> bool:
+        """Wave 1 (independent review M1): sets ONE latch - the Emergency Stop or the Pause - without the strict read, for the case where the
+        evaluation that should have applied it failed. Only that latch's own columns change, and only while it is off, so this can never clear
+        or overwrite any other state. True when it was set now (with its event), False when it was already on."""
+        flag = next(k for k in update if k.endswith("_active"))
+        prefix = flag[:-len("active")]
+        if flag not in ("kill_active", "pause_active") or update[flag] is not True or not all(k.startswith(prefix) and k in STATE_COLS for k in update):
+            raise ValueError(f"not a stop or pause latch: {sorted(update)}")
+        stamp = _iso(now)
+        default = SafetyStateRecord()
+        conn = self._rw()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT OR IGNORE INTO execution_safety_state (id, " + ", ".join(STATE_COLS) + ") VALUES (1, " + ", ".join("?" * len(STATE_COLS)) + ")",
+                         tuple(stamp if c == "updated_at" else (1 if getattr(default, c) else 0) if c.endswith("_active") else getattr(default, c) for c in STATE_COLS))
+            cols = sorted(update)
+            cur = conn.execute("UPDATE execution_safety_state SET " + ", ".join(f"{c} = ?" for c in cols) + f", updated_at = ? WHERE id = 1 AND {flag} = 0",
+                               tuple(1 if c == flag else update[c] for c in cols) + (stamp,))
+            done = cur.rowcount == 1
+            if done:
+                conn.execute("INSERT INTO execution_safety_events (event_id, at, kind, actor, reason, trading_date, from_state, to_state, input_json) VALUES (?,?,?,?,?,?,?,?,?)",
+                             (new_id(), stamp, event["kind"], event.get("actor") or "system", event.get("reason"), event.get("trading_date"), event.get("from_state"),
+                              event.get("to_state"), _json(event.get("input") or {})))
+            conn.execute("COMMIT")
+            return done
         except Exception:
             conn.execute("ROLLBACK")
             raise

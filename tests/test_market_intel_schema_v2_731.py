@@ -1131,7 +1131,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_731, FL.BASE_74).split())               # Stage 7.3.1 itself, between two fixed commits
     assert stage == FL.NEW_731 | FL.EDITED_731, {"unexpected": sorted(stage - FL.NEW_731 - FL.EDITED_731), "missing": sorted((FL.NEW_731 | FL.EDITED_731) - stage)}
-    later = FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1                                                         # Stage 7.4, pinned by its own F tests
+    later = FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1                                                         # Stage 7.4, pinned by its own F tests
     assert changed == FL.NEW_731 | FL.EDITED_731 | later, {"unexpected": sorted(changed - FL.NEW_731 - FL.EDITED_731 - later),
                                                            "missing": sorted((FL.NEW_731 | FL.EDITED_731 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_731).split())

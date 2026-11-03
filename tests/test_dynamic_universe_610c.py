@@ -23,6 +23,7 @@ import dynamic_universe as DU  # noqa: E402
 from dynamic_universe import core as CORE  # noqa: E402
 from dynamic_universe import plan as PLAN  # noqa: E402
 from dynamic_universe import signals as SIG  # noqa: E402
+from freeze_ledger import SEMANTIC_W1  # noqa: E402 - Wave 1: its declared execution-safety files (tests/freeze_ledger.py)
 
 BASE_610C = "fed5b3cd3d602eccd71e473046ce58ad2f7819f4"
 LIVE = ["NVDA", "AMD", "MU", "SNDK", "AVGO", "MRVL", "LLY", "ORCL", "SHOP", "CLS"]          # watchlist.txt as the evaluator reads it
@@ -165,7 +166,7 @@ def test_I01_no_live_module_imports_the_dynamic_universe_and_the_live_coverage_f
     for rel in ("setups/service.py", "setups/scheduler.py", "trader_view/stream.py", "scanner/watchlist.py", "execution/service.py", "execution/engine.py",
                 "watchlist.txt"):
         base = subprocess.run(["git", "show", f"{BASE_610C}:{rel}"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")
-        assert base and (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == base, rel
+        assert base and ((ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == base or rel in SEMANTIC_W1), rel   # Wave 1: its declared stop-check change, no universe wiring
     used = set()
     for f in ("__init__.py", "core.py", "plan.py", "signals.py"):
         used |= used_names((ROOT / "dynamic_universe" / f).read_text(encoding="utf-8"))
