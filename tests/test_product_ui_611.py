@@ -224,7 +224,7 @@ def test_F02_strategy_execution_risk_and_broker_constants_and_the_validation_cal
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO") and X.SIDE == "LONG" and X.ORDER_TYPE == "market"
     assert now_text("forward_validation/metrics.py") == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")
-    assert now_text("execution/__init__.py") == blob("execution/__init__.py") and now_text("safety/__init__.py") == blob("safety/__init__.py") and now_text("setups/__init__.py") == blob("setups/__init__.py")
+    assert ledger_view("execution/__init__.py", now_text("execution/__init__.py")) == blob("execution/__init__.py") and now_text("safety/__init__.py") == blob("safety/__init__.py") and now_text("setups/__init__.py") == blob("setups/__init__.py")
 
 
 def test_F03_reconciled_prior_stage_tests_differ_from_the_base_only_by_one_marked_block_or_the_listed_exact_edits_and_nothing_else_carries_the_markers():

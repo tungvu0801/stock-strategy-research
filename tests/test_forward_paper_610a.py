@@ -1373,7 +1373,7 @@ def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_
     assert {p for p in stage610a if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
     changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
+    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610A | FL.EDITED_610A | later, {"unexpected": sorted(changed - FL.NEW_610A - FL.EDITED_610A - later),
                                                               "missing": sorted((FL.NEW_610A | FL.EDITED_610A | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
@@ -1424,7 +1424,7 @@ def test_F02_the_order_decision_logic_is_unchanged_and_the_executor_only_gained_
     assert life.index("_autorun_startup()") < life.index("_exec_start()") < life.index("_fv_start()") < life.index("_autorun_start()") < life.index("yield")
     assert life.index("yield") < life.index("_autorun_shutdown()") < life.index("_fv_shutdown()")   # the supervisor stops first
     for rel in ("execution/engine.py", "execution/service.py", "config.py", "api/server.py"):
-        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, now_text(rel)).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)
+        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, now_text(rel))).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)
 
 
 def test_F03_the_frozen_and_entry_contract_hashes_and_the_default_policy_hold_in_a_clean_process():

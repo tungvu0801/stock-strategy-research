@@ -66,7 +66,9 @@
         "test_proposals_59.py",
         "test_setups_58.py",
         "test_unified_exposure_gate_691.py",
-        "test_wave1_safety_remediation.py"
+        "test_wave1_safety_remediation.py",
+        "test_wave2_pra.py",
+        "test_wave2_pra_early_stop.py"
       ]
     },
     "account": {
@@ -74,7 +76,8 @@
       "about": "continuous account refresh and the cash-flow ledger (Stages 6.0.1, 6.0.2): two long simulated-session tests",
       "files": [
         "test_account_refresh_601.py",
-        "test_cash_flow_602.py"
+        "test_cash_flow_602.py",
+        "test_wave2_pra_accounting.py"
       ]
     },
     "paper": {
