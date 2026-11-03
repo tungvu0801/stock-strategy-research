@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -124,6 +124,17 @@ closed on a missing, invalid or stale price - never "no exit condition" - and ne
 credential (config.py, tests/conftest.py). SEMANTIC_W1 names those files; REMOVED_W1 lists the only lines of main it removes from a file whose
 earlier freeze tests keep every line. No threshold, frozen control (b5d4a56e...), strategy rule, market-data reader or broker call changes.
 tests/test_wave1_safety_remediation.py pins it (BASE_W1 / NEW_W1 / EDITED_W1).
+
+Wave 2 PR A (forward-validation accounting and the early stop; the reviewed Wave 2 planning package, design Revision 3.2) changes EXECUTION
+ACCOUNTING and the EARLY STOP on purpose, and no decision: the exit P/L of a paper position is recomputed from every exit order's cumulative
+broker fill, a price-only observation re-runs it and every fill event carries the P/L snapshot (execution/service.py, execution/store.py; the
+quantity, state, hand-back and every order decision are pinned unchanged by a golden taken on main); execution.VERSION moves to execution_v2;
+the Stage 6.1 observer reports P/L from VERIFIED trades only, serves fresh read-only daily summaries, persists them after the early stop and
+consumes the early stop per incident element, so a stop is retried until the persisted mode confirms it and only a person's later arm
+acknowledges it (forward_validation/*, api/routes/forward_validation.py). SEMANTIC_W2A names those files; pre_w2a() gives an older freeze
+test main's text of them (BASE_W2A, where every earlier freeze test passed); VERSION_PINS_W2A pins each decision / accounting block to the
+execution.VERSION it belongs to. No threshold, frozen control (b5d4a56e...), strategy, sizing, risk, broker or market-data rule changes.
+tests/test_wave2_pra.py pins it (BASE_W2A / NEW_W2A / EDITED_W2A, the closed function list, the version pins).
 """
 import hashlib
 import subprocess
@@ -283,23 +294,146 @@ UNDO_W1 = {                                                                     
                            '"""Test setup: isolated DB copy, no network, no .env and no credential. Must run before the app is imported."""\nimport os\nimport re\n'),
                           ('', '# Wave 1 (audit EP-13): no test process, and no process that inherits its environment, loads this checkout\'s .env (config.py skips it), and no\n# credential reaches a test from the environment, whichever folder the tests run from. A process started through WMI (the Stage 6.0 runner rig\'s\n# background start) inherits neither, so run tests outside the production checkout. A test that needs a credential-shaped value sets a fake\n# one itself; a script given an explicit synthetic env file still loads that file (python-dotenv itself is not switched off).\nos.environ["STOCK_AGENT_SKIP_DOTENV"] = "1"\nCREDENTIAL_ENV = re.compile(r"(?i)^(ALPACA|APCA|ANTHROPIC|ROBINHOOD|FRED_API_KEY|SEC_USER_AGENT|OPENAI|POLYGON|FINNHUB|ALPHA_?VANTAGE)")\nfor _name in [n for n in os.environ if CREDENTIAL_ENV.match(n)]:\n    del os.environ[_name]\n\n')],
 }
+BASE_W2A = "5d6f7dd1e1beb90fc5b2909a7dafabfd8e932a6a"                                   # main: Wave 1 merged (PR #50); the Wave 2 base
+NEW_W2A = {"forward_validation/attention_signature.py", "tools/verify_exit_fills.py", "tests/test_wave2_pra.py", "tests/test_wave2_pra_accounting.py",
+           "tests/test_wave2_pra_early_stop.py", "tests/wave2_pra_support.py", "tests/wave2_pra_golden.json"}   # Wave 2 PR A: its new files
+EDITED_W2A = {".github/ci/pytest_groups.json", "api/routes/forward_validation.py", "execution/__init__.py", "execution/service.py", "execution/store.py",
+              "forward_validation/reports.py", "forward_validation/service.py", "tests/freeze_ledger.py", "tests/test_bot_activity_68.py", "tests/test_chart_empty_state_611fix.py",
+              "tests/test_decision_flow_610c.py", "tests/test_dynamic_universe_610c.py", "tests/test_engine_health_610d.py", "tests/test_evidence_gate_541.py",
+              "tests/test_evidence_refresh_542.py", "tests/test_forward_paper_610a.py", "tests/test_market_intel_70.py", "tests/test_market_intel_collector_73.py",
+              "tests/test_market_intel_quality_74.py", "tests/test_market_intel_schema_v2_731.py", "tests/test_market_intel_sources_72.py", "tests/test_market_intel_store_71.py",
+              "tests/test_market_scan_75.py", "tests/test_robinhood_portfolio_69.py", "tests/test_runtime_reliability_ops.py", "tests/test_sip_eval_78b1.py",
+              "tests/test_product_ui_611.py", "tests/test_strategy_validation_62.py", "tests/test_swing_pullback_78.py", "tests/test_unified_exposure_gate_691.py", "tests/test_wave1_safety_remediation.py"}   # the fix, the CI entry, the earlier freeze tests' unions / views, bookkeeping
+SEMANTIC_W2A = {                                                                            # Wave 2 PR A: the INTENTIONAL behaviour change, file by file
+    "execution/service.py": "the exit P/L is recomputed from every exit order's cumulative fill (N = sum(A_o * Q_o)); a price-only observation re-runs it; a price-less repeat keeps the stored price; every fill event carries the P/L snapshot. Quantities, states, hand-backs and every decision: unchanged (golden)",
+    "execution/store.py": "three read-only accounting reads: exit_intents_for_position, accounting_view (one read transaction) and pnl_watermark_rows (raises on any read error)",
+    "execution/__init__.py": "execution.VERSION execution_v1 -> execution_v2 (the accounting change; a new 6.10A cohort)",
+    "forward_validation/service.py": "P/L from VERIFIED trades only and null - never 0 - for an unverified one (Rule F); fresh read-only daily summaries in a watermark bracket, persisted after the early stop; the early stop consumed per incident element and confirmed by the persisted mode",
+    "forward_validation/reports.py": "the realized P/L of the text reports labelled partial / unstable / unknown; verified, pnl_status and unverified appended to the exports",
+    "api/routes/forward_validation.py": "the six stored-summary read sites serve the fresh summary (read only)",
+}
+INSTRUMENTATION_W2A: dict = {}                                                             # Wave 2 PR A: no executor instrumentation
+VERSION_BLOCKS_W2A = ('execution/service.py::ExecutionService._apply_order',
+                     'execution/service.py::ExecutionService._apply_fill',
+                     'execution/service.py::recompute_pnl',
+                     'execution/service.py::ExecutionService._after_terminal',
+                     'execution/service.py::ExecutionService._monitor_intent',
+                     'execution/service.py::ExecutionService._monitor_intents',
+                     'execution/service.py::ExecutionService._reconcile',
+                     'execution/service.py::ExecutionService._set_recon',
+                     'execution/service.py::ExecutionService._exit_context',
+                     'execution/service.py::ExecutionService._evaluate_positions',
+                     'execution/service.py::ExecutionService._maybe_submit_exit',
+                     'execution/service.py::ExecutionService._scan_entries',
+                     'execution/service.py::ExecutionService._recheck_entry',
+                     'execution/service.py::ExecutionService._submit',
+                     'execution/service.py::ExecutionService.enable_auto',
+                     'execution/service.py::ExecutionService.disable_auto',
+                     'execution/service.py::stop_price_problem',
+                     'execution/engine.py::exit_decision',
+                     'execution/engine.py::entry_controls',
+                     'execution/engine.py::blocking',
+                     'execution/engine.py::session_policy',
+                     'execution/engine.py::entry_quantity',
+                     'execution/engine.py::sessions_held',
+                     'forward_validation/service.py::ForwardValidationService._early_stop',
+                     'forward_validation/attention_signature.py::signature',
+                     'forward_validation/attention_signature.py::_duplicates',
+                     'forward_validation/attention_signature.py::_live_host',
+                     'forward_validation/attention_signature.py::_gate',
+                     'forward_validation/attention_signature.py::_persistent_mismatch',
+                     'forward_validation/attention_signature.py::=HUMAN_ACTORS',
+                     'forward_validation/attention_signature.py::=LIVE_HOST_TABLES',
+                     'forward_validation/attention_signature.py::=READERS')
+VERSION_PINS_W2A = {
+    "execution_v1": {
+        "execution/service.py::ExecutionService._apply_order": "0f759a824f1f9d0486e33f8e656f5e93fdb17a58bec6066e0ea34f545ab0fdd5",
+        "execution/service.py::ExecutionService._apply_fill": "e06a9bef049691783318cc984138104258e59a027a403fa935a165bff9cf1e38",
+        "execution/service.py::recompute_pnl": "ABSENT",
+        "execution/service.py::ExecutionService._after_terminal": "ae38d36dcb3fda94898b0390b9ace836d5b2a28e6b9555a97b5f40accc153fe9",
+        "execution/service.py::ExecutionService._monitor_intent": "3bfbe67b488b2f8b62b6d6690e05152d61957a7477b3a5dac0c1706e5bd86c85",
+        "execution/service.py::ExecutionService._monitor_intents": "1a7d5d91c873d764a896476da1b7287a3a8843e198133aea004377d0dbb7d935",
+        "execution/service.py::ExecutionService._reconcile": "f3bb9cccf13c9358b214b8da9bcab6639af25f11984627ea234ef55076b2ed07",
+        "execution/service.py::ExecutionService._set_recon": "83af97fc5c3d3120568b562ebd1fc4247302acc099955e7f87dd301eb5c42923",
+        "execution/service.py::ExecutionService._exit_context": "27d26403bf1541bbd1f04f14f5d32df3bfd3d0b1428149af4fd640bc5f30bd3a",
+        "execution/service.py::ExecutionService._evaluate_positions": "7fdaca073f8f29f372bd0476d1b41a2afffa1feb9423b9407f14e6292901c72d",
+        "execution/service.py::ExecutionService._maybe_submit_exit": "9517b81c8a9e64eb87e5f9e1d84cbb6799965e87e2e33f24b10df34b81356e42",
+        "execution/service.py::ExecutionService._scan_entries": "60ac458bd0e6506fb70f1ff4c2f1fe20df87fb41fd3f7e4cffe5de9b7b347ae5",
+        "execution/service.py::ExecutionService._recheck_entry": "e99a0b396778d5b0f43af7739f0bea85335ccd609507105866b487a88a2f3764",
+        "execution/service.py::ExecutionService._submit": "76989ac3c65da51189aecbc1c344117573a7b229ec64606901327ecc0a35df06",
+        "execution/service.py::ExecutionService.enable_auto": "3b0ea9c71fe041c7d870b07ecc72493f0112e65563e3e79d359996cff4532f07",
+        "execution/service.py::ExecutionService.disable_auto": "50c1df4eaa55b2557290818ba1e12b2f2cc3c2f9dca7f6bcb80122a76b6205fe",
+        "execution/service.py::stop_price_problem": "6ed950816c7bd4d6c6592c9331bb71542c181a362a8f40ea9bacedd02494f646",
+        "execution/engine.py::exit_decision": "61a27b7aa0a57809fefe1ed183387384b5b7c05a6b212bb7679b77d302201a8f",
+        "execution/engine.py::entry_controls": "daea54f6a9f86189834993eabfcac58ebe96edbf865ffd8ba88eee2f0929e7ce",
+        "execution/engine.py::blocking": "7fae3bd49b0ec2bca4d62ac164b9279ab05ec05729ce0a6fd8c4f69fb828e415",
+        "execution/engine.py::session_policy": "1092f637ad4a883196701ce094357653353acc5070ea009e3def5a8c964fd2db",
+        "execution/engine.py::entry_quantity": "f0e2a0f4e8d2b98fcd6371e30aff71143ece2b15e3671070eaa77a3a11fab103",
+        "execution/engine.py::sessions_held": "19941530e1d9d804fb14ea9040dd24621613810af18a4c296ba4e9c3dcaecfe1",
+        "forward_validation/service.py::ForwardValidationService._early_stop": "89d27653504ebd498ce52eb70cae8d7694db2332e5ae7cb6be6840232b163fdd",
+        "forward_validation/attention_signature.py::signature": "ABSENT",
+        "forward_validation/attention_signature.py::_duplicates": "ABSENT",
+        "forward_validation/attention_signature.py::_live_host": "ABSENT",
+        "forward_validation/attention_signature.py::_gate": "ABSENT",
+        "forward_validation/attention_signature.py::_persistent_mismatch": "ABSENT",
+        "forward_validation/attention_signature.py::=HUMAN_ACTORS": "ABSENT",
+        "forward_validation/attention_signature.py::=LIVE_HOST_TABLES": "ABSENT",
+        "forward_validation/attention_signature.py::=READERS": "ABSENT",
+    },
+    "execution_v2": {
+        "execution/service.py::ExecutionService._apply_order": "9b2760f71dd2bccf46e0d2c46b59ab512ae54111bc5f62a79bf60cabd9ebb884",
+        "execution/service.py::ExecutionService._apply_fill": "6fb9726d464aa34bdb52c6147b681977dabe2053b54afd05b4b3beae04041c7d",
+        "execution/service.py::recompute_pnl": "544ec665f8dfcf1138482409b842dc8421833c48163cde6db719aac11ac56dd2",
+        "execution/service.py::ExecutionService._after_terminal": "ae38d36dcb3fda94898b0390b9ace836d5b2a28e6b9555a97b5f40accc153fe9",
+        "execution/service.py::ExecutionService._monitor_intent": "3bfbe67b488b2f8b62b6d6690e05152d61957a7477b3a5dac0c1706e5bd86c85",
+        "execution/service.py::ExecutionService._monitor_intents": "1a7d5d91c873d764a896476da1b7287a3a8843e198133aea004377d0dbb7d935",
+        "execution/service.py::ExecutionService._reconcile": "f3bb9cccf13c9358b214b8da9bcab6639af25f11984627ea234ef55076b2ed07",
+        "execution/service.py::ExecutionService._set_recon": "83af97fc5c3d3120568b562ebd1fc4247302acc099955e7f87dd301eb5c42923",
+        "execution/service.py::ExecutionService._exit_context": "27d26403bf1541bbd1f04f14f5d32df3bfd3d0b1428149af4fd640bc5f30bd3a",
+        "execution/service.py::ExecutionService._evaluate_positions": "7fdaca073f8f29f372bd0476d1b41a2afffa1feb9423b9407f14e6292901c72d",
+        "execution/service.py::ExecutionService._maybe_submit_exit": "9517b81c8a9e64eb87e5f9e1d84cbb6799965e87e2e33f24b10df34b81356e42",
+        "execution/service.py::ExecutionService._scan_entries": "60ac458bd0e6506fb70f1ff4c2f1fe20df87fb41fd3f7e4cffe5de9b7b347ae5",
+        "execution/service.py::ExecutionService._recheck_entry": "e99a0b396778d5b0f43af7739f0bea85335ccd609507105866b487a88a2f3764",
+        "execution/service.py::ExecutionService._submit": "76989ac3c65da51189aecbc1c344117573a7b229ec64606901327ecc0a35df06",
+        "execution/service.py::ExecutionService.enable_auto": "3b0ea9c71fe041c7d870b07ecc72493f0112e65563e3e79d359996cff4532f07",
+        "execution/service.py::ExecutionService.disable_auto": "50c1df4eaa55b2557290818ba1e12b2f2cc3c2f9dca7f6bcb80122a76b6205fe",
+        "execution/service.py::stop_price_problem": "6ed950816c7bd4d6c6592c9331bb71542c181a362a8f40ea9bacedd02494f646",
+        "execution/engine.py::exit_decision": "61a27b7aa0a57809fefe1ed183387384b5b7c05a6b212bb7679b77d302201a8f",
+        "execution/engine.py::entry_controls": "daea54f6a9f86189834993eabfcac58ebe96edbf865ffd8ba88eee2f0929e7ce",
+        "execution/engine.py::blocking": "7fae3bd49b0ec2bca4d62ac164b9279ab05ec05729ce0a6fd8c4f69fb828e415",
+        "execution/engine.py::session_policy": "1092f637ad4a883196701ce094357653353acc5070ea009e3def5a8c964fd2db",
+        "execution/engine.py::entry_quantity": "f0e2a0f4e8d2b98fcd6371e30aff71143ece2b15e3671070eaa77a3a11fab103",
+        "execution/engine.py::sessions_held": "19941530e1d9d804fb14ea9040dd24621613810af18a4c296ba4e9c3dcaecfe1",
+        "forward_validation/service.py::ForwardValidationService._early_stop": "c965276f153c0a68ba389203da6cc8c13bdb43b6fb16875b01342e6a6e390ca2",
+        "forward_validation/attention_signature.py::signature": "ef5c28f1c9f626928e64024a7f797179ccf12967c911f4a4e581e06ad6e09ffd",
+        "forward_validation/attention_signature.py::_duplicates": "3a4c822584ae000900fb3d51227488223485fc4d5b5f167e76581f063f3e6414",
+        "forward_validation/attention_signature.py::_live_host": "1bfb59ae254faeff7b55ea60a17cdb0d918df9d2f708386a764b38e775d90a36",
+        "forward_validation/attention_signature.py::_gate": "c1093f95e7bba8997a76a0cd21756f4388da742d1f10bdbaa211b21e63f6e2d8",
+        "forward_validation/attention_signature.py::_persistent_mismatch": "f61ec3c94c5eb94fb5782e1767cdee064d74fac2e79bceb0816065f536efa6ab",
+        "forward_validation/attention_signature.py::=HUMAN_ACTORS": "9017f60d64731465a2a894360ad90d61f642b89f31390272980ec1dd9e17e763",
+        "forward_validation/attention_signature.py::=LIVE_HOST_TABLES": "77cbccb6e35b39e9adec3823e3ce7a378e192b9ac12952bebfc6bf8249cf86af",
+        "forward_validation/attention_signature.py::=READERS": "d913c004b042826f9c6cc20b79ba45756d878cfa8d6ad306c3b5c39a92099ee4",
+    },
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "6d251465098ab296e911246d02111a5a5629d5c573c129a5fc604874d51600ac",
+    ".github/ci/pytest_groups.json": "4c2da29d99a35a8401b7f276bcd1350e2ec05d427bac7fe6c95d2ae6072e13e2",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
-    "api/routes/forward_validation.py": "33593a7a4215d5bef1cb2b15609152775d0887cda8f27bad235bc33f4699f17b",
+    "api/routes/forward_validation.py": "3d6bb8824338b53c72af3ae03ac911cef1958771500b07d1ad108ad8b7d39afd",
     "api/routes/ops_status.py": "5f80dc548368809b88e47a329f51dbadbb81e9dede47ff073e681924ae0b5ec2",
     "api/server.py": "8af3d1f26026023dc3bd704eaafb22533d191a49b1f233ab8edf395e71bc1ea8",
     "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
     "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
+    "execution/__init__.py": "59d68cae075c2b843083a7dd9400b86b01d3ce73b33247aaaa228de54237f296",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "2f37e73129bdbdf3c45ce47056001cb221d8e489642591c10c10736a4fb1309e",
-    "forward_validation/reports.py": "c4f24a09cd46180e60584d0315fe3b1b00db220615817fd915d87e4cdf8ee473",
-    "forward_validation/service.py": "c204e7b589912169159302c493d0cfcd6bd42d3af8340a0764c805c8af04bc33",
+    "execution/service.py": "0a9fceea9e5b26cdb62aeb3d0af3a91837062eb34720fc6f50a17ce4c846d9ca",
+    "execution/store.py": "e2bc106565703da3a9af938556fa841daa777f0beab97a215f6f858f24ec50c4",
+    "forward_validation/reports.py": "140b04b1fe7693092b31177c2210e9390f8293c087138a052a93ed9e47bfe655",
+    "forward_validation/service.py": "d1af1242e04e642d96ad0cd3edc9a9d03590439e3af9f4b098bc57e5e7c47d2b",
     "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
@@ -323,11 +457,11 @@ LEDGER = {
     "tests/test_forward_validation_61.py": "d7b5260e7b70bdae9344f5d26212ac0dcf3200651b374ab72e668166a4363fe7",
     "tests/test_history_budget_39.py": "97fb1fc1432b815a1a8b1c73ceff00d8728d5acde4aff9a16c75a6cd55babdd9",
     "tests/test_product_flow_612.py": "28f95d614292bc8f8f98aaf2e0b40da0427fd8aefc45a9b45a0a91e0c486f4f7",
-    "tests/test_product_ui_611.py": "ef14b5b485ea69eeb18954e638ff4514abb5248ffcbafda8f09c0514023390ac",
+    "tests/test_product_ui_611.py": "f509da178c165ab302115600de476e0914ea27dfe98d2e11174d9a5f335415f8",
     "tests/test_proposals_59.py": "8ee1f4e30ae1e7044865b75ad0a8f53548f8941e5bed2777aa98e08b1e502883",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "3d89c910788e9ebf64c6ff97fb02d1932e77d24c0b7867ffa69b8b59f73684ea",
-    "tests/test_strategy_validation_62.py": "f5399f8a2909550c06c6f26bf9983798fe91d625bfaaa0be6a0cd08af95435a2",
+    "tests/test_strategy_validation_62.py": "ecb38d760432d199c2f121be15def84d8fe2bc1bc16b723cb6d7e176bc007a86",
     "tests/test_trader_view_55.py": "b90299119e4f2ab2790fb514149900ad841e662057027ee4c010b3b551504846",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
@@ -378,6 +512,17 @@ def undo_w1(rel: str, text: str) -> str:
         assert text.count(new) == 1, (rel, new[:80])
         text = text.replace(new, old)
     return text
+
+
+def pre_w2a(rel: str, text: str) -> str:
+    """`text` (a current file) as main left it at BASE_W2A when Wave 2 PR A changed it on purpose (SEMANTIC_W2A): an older freeze test that
+    checks "every line kept" / "byte-identical" reads main's text, where it passed. tests/test_wave2_pra.py pins the delta from that text exactly
+    (the closed function list, the version pins, the decision golden). Any other file passes through."""
+    if rel not in SEMANTIC_W2A:
+        return text
+    out = subprocess.run(["git", "show", f"{BASE_W2A}:{rel}"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"{rel} is not in {BASE_W2A} (fetch-depth 0 is required)"
+    return _norm(out.stdout.decode("utf-8"))
 
 
 def unchanged(paths, blob_fn) -> set:

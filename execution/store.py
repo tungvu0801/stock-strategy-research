@@ -357,6 +357,54 @@ class ExecutionStore:
             r["detail"] = _loads(r.pop("detail_json"), {})
         return rows
 
+    # ---------------------------------------------------------------- Wave 2 PR A: accounting reads (read only) -------------------
+    def exit_intents_for_position(self, position_id: str) -> List[Intent]:
+        """Every EXIT intent of one position (no LIMIT), in exit-cycle order: the per-order cumulative (Q, A) the exit P/L is recomputed from."""
+        return [self._intent(r) for r in self._read("SELECT * FROM execution_intents WHERE position_id = ? AND intent_type = 'EXIT' ORDER BY exit_cycle, rowid",
+                                                    (position_id,))]
+
+    def accounting_view(self, position_id: str) -> Optional[dict]:
+        """One read transaction: the position, its entry intent, all its exit intents and its latest P/L-snapshot event (None: no such position).
+        Raises on an unreadable database or a missing table - never an empty view (Wave 2 design 3.1.4, J-08)."""
+        conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)   # a missing file is an error here, never an empty result
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN")
+            p = conn.execute("SELECT * FROM paper_positions WHERE position_id = ?", (position_id,)).fetchone()
+            if p is None:
+                return None
+            pos = self._position(dict(p))
+            ent = conn.execute("SELECT * FROM execution_intents WHERE execution_id = ?", (pos.execution_id,)).fetchone()
+            exits = conn.execute("SELECT * FROM execution_intents WHERE position_id = ? AND intent_type = 'EXIT' ORDER BY exit_cycle, rowid", (position_id,)).fetchall()
+            ev = conn.execute("SELECT rowid AS event_rowid, kind, detail_json FROM position_events WHERE position_id = ? AND instr(detail_json, '\"pnl_snapshot\"') > 0 "
+                              "ORDER BY rowid DESC LIMIT 1", (position_id,)).fetchone()
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        snap = None
+        if ev is not None:
+            snap = {"event_rowid": ev["event_rowid"], "kind": ev["kind"], "pnl_snapshot": (_loads(ev["detail_json"], {}) or {}).get("pnl_snapshot")}
+        return {"position": pos, "entry": self._intent(dict(ent)) if ent is not None else None, "exits": [self._intent(dict(r)) for r in exits], "snapshot": snap}
+
+    def pnl_watermark_rows(self, start: str, end: str) -> List[list]:
+        """W(d) inputs (Wave 2 design 3.1.7): per CLOSED position with closed_at in [start, end), the latest position-event rowid, the latest order-event
+        rowid of its entry and exit intents and their latest updated_at - one statement, one read transaction. Raises on any read error (H-04)."""
+        conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)   # a missing file is an error here, never an empty result
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("BEGIN")
+            rows = conn.execute(
+                "SELECT p.position_id, p.closed_at, "
+                "(SELECT MAX(e.rowid) FROM position_events e WHERE e.position_id = p.position_id) AS pe, "
+                "(SELECT MAX(o.rowid) FROM execution_order_events o JOIN execution_intents i ON i.execution_id = o.execution_id "
+                " WHERE i.execution_id = p.execution_id OR i.position_id = p.position_id) AS oe, "
+                "(SELECT MAX(i.updated_at) FROM execution_intents i WHERE i.execution_id = p.execution_id OR i.position_id = p.position_id) AS iu "
+                "FROM paper_positions p WHERE p.state = 'CLOSED' AND p.closed_at >= ? AND p.closed_at < ? ORDER BY p.position_id", (start, end)).fetchall()
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+        return [[r["position_id"], r["closed_at"], r["pe"], r["oe"], r["iu"]] for r in rows]
+
     # ---------------------------------------------------------------- reconciliation findings / runs / controls ---------------
     def add_findings(self, findings: List[Finding], now: datetime, trigger: str, run_id: Optional[str]) -> None:
         if not findings:

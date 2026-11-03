@@ -939,7 +939,14 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
-APP_EDITS_W1 = {".github/ci/pytest_groups.json", "config.py", "execution/service.py", "safety/service.py", "safety/store.py"}   # the CI entry and the four fixed files
+def post(rel):
+    """main after PR #50 (Wave 1 merged; the Wave 2 base): what Wave 1 left, whatever a later change made since."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_W2A}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_W2A} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
+APP_EDITS_W1 ={".github/ci/pytest_groups.json", "config.py", "execution/service.py", "safety/service.py", "safety/store.py"}   # the CI entry and the four fixed files
 NEW_LEDGER_W1 = {"safety/service.py", "safety/store.py", "tests/conftest.py", "tests/test_automation_37.py", "tests/test_history_budget_39.py"}   # main's files Wave 1 registers
 CHANGED_METHODS_W1 = {"__init__", "_evaluate_positions", "_scan_entries", "_recheck_entry", "_attention"}   # the ExecutionService methods Wave 1 extends
 NEW_METHODS_W1 = {"_feed_simulated", "_market_open_for_stop_check"}
@@ -947,18 +954,21 @@ NEW_METHODS_W1 = {"_feed_simulated", "_market_open_for_stop_check"}
 
 def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed():
     assert FL.BASE_W1 == "4c01519566a0bb66ebcff9cc51f5aa822194850b" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W1}^{{commit}}"], cwd=ROOT).returncode == 0
+    stage = set(_git("diff", "--name-only", FL.BASE_W1, FL.BASE_W2A).split())                # Wave 1 itself, between two fixed commits (main before / after PR #50)
     changed = set(_git("diff", "--name-only", FL.BASE_W1).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_W1 | FL.EDITED_W1, {"unexpected": sorted(changed - FL.NEW_W1 - FL.EDITED_W1), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1) - changed)}
+    later = FL.NEW_W2A | FL.EDITED_W2A                                                         # Wave 2 PR A, pinned by its own F tests
+    assert stage == FL.NEW_W1 | FL.EDITED_W1, {"unexpected": sorted(stage - FL.NEW_W1 - FL.EDITED_W1), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1) - stage)}
+    assert changed == FL.NEW_W1 | FL.EDITED_W1 | later, {"unexpected": sorted(changed - FL.NEW_W1 - FL.EDITED_W1 - later), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W1).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_W1 and {p for p in changed if p in in_base} == FL.EDITED_W1   # so every other file of main is untouched
+    assert {p for p in stage if p not in in_base} == FL.NEW_W1 and {p for p in stage if p in in_base} == FL.EDITED_W1   # so every other file of main is untouched
     assert {p for p in FL.EDITED_W1 if not p.startswith("tests/")} == APP_EDITS_W1             # no strategy, setup, proposal, market-data, broker, SIP or UI file
     assert set(FL.SEMANTIC_W1) == APP_EDITS_W1 - {".github/ci/pytest_groups.json"} | {"tests/conftest.py"} and FL.INSTRUMENTATION_W1 == {}
     assert {"execution/engine.py", "execution/broker.py", "safety/engine.py", "proposals/engine.py", "proposals/__init__.py"}.isdisjoint(changed)   # the rules and limits
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")                                       # a marked block an older freeze test would strip unseen
     for rel in sorted(FL.NEW_W1 | APP_EDITS_W1 | {"tests/conftest.py"}):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
+        assert not [l for l in post(rel).splitlines() if l not in base and marker.match(l)], rel
 
 
 def test_F02_the_safety_semantics_changed_exactly_as_declared_and_no_threshold_or_frozen_control_moved():
@@ -968,7 +978,7 @@ def test_F02_the_safety_semantics_changed_exactly_as_declared_and_no_threshold_o
     assert out.stdout.split() == ["b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530",
                                   "2552bd6639f691b828624250665519cc90c4a00da7f70893dbb635f7551006fa",
                                   "d2819342f6c8ccb1cd4a0ce2bfb5d1b0664f2453770c3e6736f7be420a17aed4"], out.stderr[-600:]
-    svc, svc_base = now_text("execution/service.py"), at_base("execution/service.py")
+    svc, svc_base = FL.pre_w2a("execution/service.py", now_text("execution/service.py")), at_base("execution/service.py")   # Wave 2 PR A's accounting change: its own tests
     assert [l for l in svc_base.splitlines() if l not in set(svc.splitlines())] == []         # additive: every line of main's executor is kept
     added = "\n".join(l for l in svc.splitlines() if l not in set(svc_base.splitlines()))
     assert not re.search(r"post_order|insert_intent|update_intent|enable_auto|disable_auto|set_mode|submit|cancel|liquidat|flatten", added)   # never an order or a mode change
@@ -1002,13 +1012,14 @@ def test_F02_the_safety_semantics_changed_exactly_as_declared_and_no_threshold_o
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_W1.items():
-        text = now_text(rel)
+        text = post(rel)                                                                       # Wave 1's edits as main left them (Wave 2 PR A extends some lines: its own F03)
         for old, new in edits:
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
         assert text == at_base(rel), rel
-    assert set(REPLAY_W1) == FL.EDITED_W1 - set(FL.LEDGER) - {"tests/freeze_ledger.py"}       # every other edited file carries a ledger entry
-    fl, base = now_text("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")
+    fl, base = post("tests/freeze_ledger.py"), at_base("tests/freeze_ledger.py")             # the ledger as Wave 1 left it (Wave 2 PR A's additions: its own F03)
+    main_ledger = ast.literal_eval(fl[fl.index("LEDGER = {"):fl.index("}\n", fl.index("LEDGER = {")) + 2][len("LEDGER = "):])
+    assert set(REPLAY_W1) == FL.EDITED_W1 - set(main_ledger) - {"tests/freeze_ledger.py"}      # every other edited file carries a ledger entry
     start = fl.index("\nWave 1 safety remediation (the independent")
     para = fl[start:fl.index('"""', start)]
     rebuilt = fl.replace(para, "", 1).replace(" + NEW_78B1 + NEW_W1 plus this ledger.", " + NEW_78B1 plus this ledger.", 1)
@@ -1020,8 +1031,8 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     rebuilt = rebuilt.replace(led(rebuilt), led(base), 1)
     assert rebuilt == base                                                                    # the declarations, the paragraph, one line, the helper and the ledger
     old = ast.literal_eval(led(base)[len("LEDGER = "):])
-    assert set(FL.LEDGER) - set(old) == NEW_LEDGER_W1 and set(old) <= set(FL.LEDGER)
-    assert {k for k in old if old[k] != FL.LEDGER[k]} == FL.EDITED_W1 & set(old)              # every re-hash is a declared Wave 1 edit
+    assert set(main_ledger) - set(old) == NEW_LEDGER_W1 and set(old) <= set(main_ledger)
+    assert {k for k in old if old[k] != main_ledger[k]} == FL.EDITED_W1 & set(old)            # every re-hash is a declared Wave 1 edit
     for rel in sorted(NEW_LEDGER_W1):
         assert FL.base_text(rel) == at_base(rel), rel                                        # unchanged from BASE_68 to main: the ledger view IS main's text
     for rel in FL.LEDGER:

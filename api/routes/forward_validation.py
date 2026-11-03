@@ -4,11 +4,11 @@ anything - it reports the observer's records and the descriptive statistics of t
 
 GET /api/forward-validation                         cumulative operational + strategy summary, attention, targets, today's session, loop state
 GET /api/forward-validation/sessions                the session records (newest first)
-GET /api/forward-validation/sessions/{date}         one session + its daily summary (persisted, else computed live)
+GET /api/forward-validation/sessions/{date}         one session + its daily summary (the stored one when current, else computed fresh)
 GET /api/forward-validation/closed                  closed paper trades with slippage, P/L, sampled MFE / MAE, exit reason, attribution
 GET /api/forward-validation/closed/{position_id}    the end-to-end audit trail of one trade
-GET /api/forward-validation/daily                   the persisted daily summaries (newest first)
-GET /api/forward-validation/daily/{date}            one daily summary (persisted, else computed live)
+GET /api/forward-validation/daily                   the stored daily summaries, each current (else computed fresh; newest first)
+GET /api/forward-validation/daily/{date}            one daily summary (the stored one when current, else computed fresh)
 GET /api/forward-validation/report/daily[/{date}]   the deterministic daily report (text/plain)
 GET /api/forward-validation/report/weekly           the deterministic weekly aggregate (text/plain)
 GET /api/forward-validation/export/{kind}           sessions | trades | daily | control_events | samples | restarts as CSV (default) or JSON, and the Stage 6.10A
@@ -60,7 +60,7 @@ def get_session(trading_date: str) -> JSONResponse:
     row = svc.store.session(trading_date)
     if row is None:
         return _bad("no session record for that trading date", 404)
-    return JSONResponse({"version": VERSION, "session": row, "daily": svc.store.daily(trading_date) or svc.daily_summary(trading_date), "restarts": svc.restarts_view(trading_date),
+    return JSONResponse({"version": VERSION, "session": row, "daily": svc.fresh_daily(trading_date), "restarts": svc.restarts_view(trading_date),
                          "samples": len(svc.store.samples(trading_date))})
 
 
@@ -86,7 +86,7 @@ def get_trace(position_id: str) -> JSONResponse:
 @router.get("/daily")
 def get_dailies(limit: int = Query(default=60, ge=1, le=1000)) -> JSONResponse:
     svc = _service()
-    return JSONResponse({"version": VERSION, "daily": svc.store.dailies(limit)})
+    return JSONResponse({"version": VERSION, "daily": svc.fresh_dailies(limit)})
 
 
 @router.get("/daily/{trading_date}")
@@ -94,7 +94,7 @@ def get_daily(trading_date: str) -> JSONResponse:
     if not _DATE.match(trading_date):
         return _bad("trading_date must be YYYY-MM-DD")
     svc = _service()
-    return JSONResponse(svc.store.daily(trading_date) or svc.daily_summary(trading_date))
+    return JSONResponse(svc.fresh_daily(trading_date))
 
 
 @router.get("/report/daily", response_class=PlainTextResponse)
@@ -104,7 +104,7 @@ def get_daily_report_latest() -> PlainTextResponse:
     if not rows:
         return PlainTextResponse("FORWARD PAPER VALIDATION - DAILY REPORT\nNo session has been recorded yet.\n")
     d = rows[0]["trading_date"]
-    return PlainTextResponse(REP.daily_report(svc.store.daily(d) or svc.daily_summary(d)))
+    return PlainTextResponse(REP.daily_report(svc.fresh_daily(d)))
 
 
 @router.get("/report/daily/{trading_date}", response_class=PlainTextResponse)
@@ -112,13 +112,13 @@ def get_daily_report(trading_date: str) -> PlainTextResponse:
     if not _DATE.match(trading_date):
         return PlainTextResponse("trading_date must be YYYY-MM-DD\n", status_code=400)
     svc = _service()
-    return PlainTextResponse(REP.daily_report(svc.store.daily(trading_date) or svc.daily_summary(trading_date)))
+    return PlainTextResponse(REP.daily_report(svc.fresh_daily(trading_date)))
 
 
 @router.get("/report/weekly", response_class=PlainTextResponse)
 def get_weekly_report() -> PlainTextResponse:
     svc = _service()
-    return PlainTextResponse(REP.weekly_report(svc.cumulative(), svc.store.dailies(limit=100000, newest_first=False)))
+    return PlainTextResponse(REP.weekly_report(svc.cumulative(), svc.fresh_dailies(limit=100000, newest_first=False)))
 
 
 @router.get("/export/{kind}")

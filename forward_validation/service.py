@@ -13,6 +13,7 @@ Everything is read from persisted rows; the only write outside the Stage 6.1 tab
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -23,9 +24,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import config
 from execution import EXIT_REASONS, EXIT_TEXT, INTENT_OPEN, POSITION_OPEN
 from execution import exposure_gate                           # Stage 6.9.1: the versioned entry-controls record of each paper entry
+from execution.engine import D as XD, money as xmoney         # Wave 2 PR A: the executor's own money arithmetic, for the P/L re-derivation (pure functions)
 from forward_validation import (ATTENTION_CODES, ATTENTION_TEXT, CONTROLS, CRITICAL_CODES, DISCLAIMER, EDGE_LABELS, FUNNEL, INSUFFICIENT_TEXT, MIN_TRADES_FOR_EDGE,
                                 PERSISTENT_MISMATCH_SESSIONS, SESSION_LABELS, STAGE, TARGET_EVENTS, TARGET_SESSIONS, VERSION, frozen_hash)
 from forward_validation import metrics as M
+from forward_validation.attention_signature import HUMAN_ACTORS, signature   # Wave 2 PR A (X2): the incident elements a stop is consumed per
 from forward_validation.store import ForwardValidationStore
 from forward_capture.capture import ForwardCapture            # Stage 6.10A: the point-in-time forward dataset this observer records (instrumentation only)
 from setups.market_hours import CLOSE_MINUTE, is_regular_session, session_date, to_et
@@ -37,6 +40,8 @@ AMBIGUOUS_CLASSES = ("O2", "O7", "O8")
 BLOCKING_FINDINGS = ("ORDER_MISSING_AT_BROKER", "UNKNOWN_INTERNAL_ORDER", "QTY_MISMATCH", "BROKER_FLAT_INTERNAL_OPEN", "INTERNAL_FLAT_BROKER_POSITION", "MULTIPLE_ORDERS",
                      "UNKNOWN_STATUS", "BROKER_UNAVAILABLE")
 RESTART_GRACE_TICKS = 3
+BRACKET_ATTEMPTS = 3                                          # Wave 2 PR A: a summary whose P/L inputs moved on every attempt is UNSTABLE (null P/L), never a mixed number
+SUMMARY_REBUILDS_PER_TICK = 3                                 # Wave 2 PR A: stored summaries made current per observer tick (bounds work only; reads stay fresh)
 
 
 def _iso(dt: datetime) -> str:
@@ -126,7 +131,11 @@ class ForwardValidationService:
         self.last_observation: Optional[dict] = None
         self._restart_pending: Optional[dict] = None
         self._restart_checked = False
-        self._stopped_for: set = set()
+        self._stopped_for: set = set()                                           # critical codes announced (ATTENTION_RAISED) by this process
+        self._stopped: Dict[str, Tuple[frozenset, int]] = {}                      # Wave 2 PR A (X2): code -> (elements at the CONFIRMED stop, mode-event rowid then)
+        self._acked: Dict[str, frozenset] = {}                                    # Wave 2 PR A (X2): elements a person's later PAPER_AUTO arm acknowledged (this process)
+        self._summary_token: Optional[tuple] = None                               # Wave 2 PR A: the accounting rows' state at the last summary scan (None: scan once)
+        self._summary_backlog = False
         self.capture = ForwardCapture(self)                                       # Stage 6.10A: no I/O here; the executor hands it markers, observe() records them
 
     # ---------------------------------------------------------------- collaborators (through the Trader View stream) ------------------
@@ -177,6 +186,12 @@ class ForwardValidationService:
             out["capture"] = self.capture.tick(now, trigger)
         except Exception as exc:  # noqa: BLE001 - never into the observer loop; the day's evidence health records the gap
             out["capture"] = {"result": "ERROR", "error": type(exc).__name__}
+        try:                                                                      # Wave 2 PR A (design 3.12.1): stored summaries made current - after the early stop and capture, under their own guard
+            out["summaries"] = self._persist_stale_summaries(now)
+        except Exception as exc:  # noqa: BLE001 - never into the observer loop: every read stays fresh, so only persistence is deferred
+            out["summaries"] = {"result": "ERROR", "error": type(exc).__name__}
+            log.warning("forward validation: summary persistence failed (%s)", type(exc).__name__)
+            self._touch(now, "summary_builder", "UNKNOWN", "summary persistence failed", type(exc).__name__)
         self.last_observation = out
         return out
 
@@ -466,25 +481,67 @@ class ForwardValidationService:
         return out
 
     def _early_stop(self, now: datetime, att: List[dict], sample: dict) -> Optional[dict]:
+        """The Stage 6.1 early stop, consumed per incident (Wave 2 PR A, X2; design 3.7.2): a critical code is announced once per process, but a
+        stop is recorded only when the PERSISTED mode confirms it, and only a person's later PAPER_AUTO arm acknowledges the elements stopped. An
+        element not yet acknowledged always stops; an unconfirmed stop is retried on the next tick. Its one action: Paper Auto -> Monitor only."""
         critical = sorted({a["code"] for a in att if a["critical"]})
         if not critical:
             self._touch(now, "attention_monitor", "PASS" if not att else "WARN", f"{len(att)} condition(s)")
             return None
         self._touch(now, "attention_monitor", "BLOCK", "critical: " + ", ".join(critical))
-        new = [c for c in critical if c not in self._stopped_for]
-        for c in new:
-            self.store.add_event(now, "ATTENTION_RAISED", c, {"detail": next((a["detail"] for a in att if a["code"] == c), None)}, trading_date=sample["trading_date"], owner=self.owner)
-        self._stopped_for.update(critical)
-        if not self.early_stop_enabled or sample["mode"] != "PAPER_AUTO" or not new:
+        for c in [c for c in critical if c not in self._stopped_for]:                # announced once per process per code (as before)
+            try:
+                self.store.add_event(now, "ATTENTION_RAISED", c, {"detail": next((a["detail"] for a in att if a["code"] == c), None)}, trading_date=sample["trading_date"], owner=self.owner)
+                self._stopped_for.add(c)                                              # announcement only: nothing is consumed here (PF-12)
+            except Exception as exc:  # noqa: BLE001 - L-04: a failed announcement never skips the stop; it is retried on the next tick
+                log.warning("forward validation: attention %s not recorded (%s)", c, type(exc).__name__)
+        if not self.early_stop_enabled:
+            return {"critical": critical, "stopped": False}
+        humans = sorted(HUMAN_ACTORS)
+        for c, (elements, r_stop) in list(self._stopped.items()):                     # a person's PAPER_AUTO arm after a confirmed stop acknowledges it (any mode)
+            try:
+                arms = self.store.query(f"SELECT 1 AS n FROM execution_mode_events WHERE rowid > ? AND to_mode = 'PAPER_AUTO' AND actor IN ({', '.join('?' * len(humans))}) LIMIT 1",
+                                        (r_stop, *humans))
+            except Exception:  # noqa: BLE001 - G-05: an unreadable acknowledgement acknowledges nothing
+                arms = []
+            if arms:
+                self._acked[c] = self._acked.get(c, frozenset()) | elements
+        try:
+            row = self.store.query("SELECT mode FROM execution_mode WHERE id = 1")
+            armed = known = (row[0]["mode"] if row else "MONITOR_ONLY") == "PAPER_AUTO"
+        except Exception:  # noqa: BLE001 - an unreadable mode is treated as armed: the stop is attempted, never skipped
+            armed, known = True, False                                                # L-03: but never RECORDED - it may have been Monitor only already
+        if not armed:
+            return {"critical": critical, "stopped": False}
+        elements: Dict[str, frozenset] = {}
+        for c in critical:
+            try:
+                el = signature(self.store, c)
+            except Exception:  # noqa: BLE001 - G-05: an unreadable signature stops (UNSIGNED), never skips
+                el = frozenset()
+            elements[c] = el or frozenset({("UNSIGNED", c)})
+        new = [c for c in critical if not elements[c] <= self._acked.get(c, frozenset())]
+        if not new:
             return {"critical": critical, "stopped": False}
         reason = "Stage 6.1 early stop: " + ", ".join(ATTENTION_TEXT.get(c, c) for c in new)
         try:
             self.execution.disable_auto(actor="forward_validation", reason=reason, now=now)
-            stopped = True
-        except Exception as exc:  # noqa: BLE001 - recorded; the next tick tries again
-            stopped = False
+        except Exception as exc:  # noqa: BLE001 - judged by the persisted mode below; an unconfirmed stop is retried on the next tick
             log.error("forward validation early stop failed (%s)", type(exc).__name__)
-        self.store.add_event(now, "EARLY_STOP", ",".join(new), {"reason": reason, "stopped": stopped}, trading_date=sample["trading_date"], owner=self.owner)
+        try:
+            row = self.store.query("SELECT (SELECT mode FROM execution_mode WHERE id = 1) AS mode, (SELECT MAX(rowid) FROM execution_mode_events) AS r")
+            stopped = known and bool(row) and row[0]["mode"] == "MONITOR_ONLY"
+            r_stop = int(row[0]["r"] or 0) if stopped else 0
+        except Exception:  # noqa: BLE001 - G-05: an unreadable mode is an unconfirmed stop (retried)
+            stopped, r_stop = False, 0
+        if stopped:
+            for c in new:
+                self._stopped[c] = (elements[c], r_stop)
+        try:
+            self.store.add_event(now, "EARLY_STOP", ",".join(new), {"reason": reason, "stopped": stopped, "elements": {c: len(elements[c]) for c in new}},
+                                 trading_date=sample["trading_date"], owner=self.owner)
+        except Exception as exc:  # noqa: BLE001 - L-04: the stop itself is already done and recorded in memory
+            log.warning("forward validation: early stop event not recorded (%s)", type(exc).__name__)
         self._touch(now, "early_stop", "RUN" if stopped else "UNKNOWN", reason)
         return {"critical": critical, "stopped": stopped}
 
@@ -698,7 +755,70 @@ class ForwardValidationService:
         if trading_date:
             start, end = ny_window(trading_date)
             rows = [p for p in rows if p.closed_at and start <= p.closed_at < end]
-        return [self._trade(p) for p in rows[:limit]]
+        return [self._fail_closed_trade(self._trade(p)) for p in rows[:limit]]       # Wave 2 PR A: Rule F on every forward-validation surface
+
+    def verification(self, p) -> Dict[str, Any]:
+        """Wave 2 PR A (design 3.1.4, G-09): whether a closed paper trade's P/L is VERIFIED evidence, from ONE read transaction of the executor's
+        rows (ExecutionStore.accounting_view). Every failed clause is named in unverified_reasons. Never raises (6.10A capture calls _trade): a
+        read failure is VERIFY_ERROR - unverified, and a summary that sees it is UNSTABLE, never persisted."""
+        try:
+            v = self.execution.store.accounting_view(p.position_id)
+            if v is None:
+                return {"verified": False, "unverified_reasons": ["NOT_CLOSED"]}
+            pos, ent, exits, snap = v["position"], v["entry"], v["exits"], (v["snapshot"] or {}).get("pnl_snapshot")
+            if any(getattr(p, k) != getattr(pos, k) for k in ("state", "quantity", "entry_qty", "exit_qty", "average_entry_price", "average_exit_price", "realized_pnl", "closed_at")):
+                return {"verified": False, "unverified_reasons": ["VERIFY_ERROR"]}            # checkpoint 1 K-01: the caller's values were read before a later write - never vouch for them
+            intents = ([ent] if ent is not None else []) + list(exits)
+            e = XD(pos.average_entry_price)
+            filled = [x for x in exits if x.filled_qty > 0]
+            r = set()
+            if pos.state != "CLOSED" or pos.quantity != 0:
+                r.add("NOT_CLOSED")
+            if pos.exit_qty != pos.entry_qty:
+                r.add("QTY_MISMATCH")
+            if pos.realized_pnl is None:
+                r.add("PNL_NULL")
+            if e is None or e <= 0:
+                r.add("ENTRY_PRICE_INVALID")
+            if any(i.state in INTENT_OPEN for i in intents):                         # F-03: a working entry or exit can still change the P/L
+                r.add("INTENT_OPEN")
+            if ent is None or ent.filled_qty != pos.entry_qty or XD(ent.filled_avg_price) != e:
+                r.add("ENTRY_MISMATCH")
+            if any(XD(x.filled_avg_price) is None or XD(x.filled_avg_price) <= 0 for x in filled):
+                r.add("EXIT_PRICE_MISSING")
+            if sum(x.filled_qty for x in filled) != pos.exit_qty:                     # G-09
+                r.add("EXIT_QTY_SUM_MISMATCH")
+            if not r & {"PNL_NULL", "ENTRY_PRICE_INVALID", "EXIT_PRICE_MISSING"}:     # F-06: the row's P/L re-derived from its intents, as the executor computes it
+                n = sum((XD(x.filled_avg_price) * x.filled_qty for x in filled), Decimal(0))
+                if XD(xmoney(n - e * pos.exit_qty)) != XD(pos.realized_pnl):
+                    r.add("REDERIVATION_MISMATCH")
+            if not isinstance(snap, dict):                                            # F-04 / E3: the latest snapshot-bearing event must equal the row
+                r.add("SNAPSHOT_MISSING")
+            elif (snap.get("entry_qty"), snap.get("exit_qty")) != (pos.entry_qty, pos.exit_qty) or any(
+                    XD(snap.get(k)) != XD(getattr(pos, k)) for k in ("average_entry_price", "average_exit_price", "realized_pnl")):
+                r.add("SNAPSHOT_MISMATCH")
+            if any(i.failure_code == "NOT_FOUND_AFTER_LOOKUPS" for i in intents):     # G-09: the broker never confirmed it
+                r.add("INTENT_NOT_FOUND_AT_BROKER")
+            if any(i.outcome_class in AMBIGUOUS_CLASSES for i in intents):
+                r.add("INTENT_AMBIGUOUS")
+            return {"verified": not r, "unverified_reasons": sorted(r)}
+        except Exception as exc:  # noqa: BLE001 - never into capture or a report; unverified, and the summary that sees it is UNSTABLE
+            log.warning("forward validation: verification of %s failed (%s)", getattr(p, "position_id", "?"), type(exc).__name__)
+            return {"verified": False, "unverified_reasons": ["VERIFY_ERROR"]}
+
+    @staticmethod
+    def _fail_closed_trade(t: dict) -> dict:
+        """Wave 2 PR A Rule F (design 3.12.3): an unverified trade's P/L is null - never 0 - on every forward-validation surface; the values as
+        recorded stay beside it as labelled audit evidence. Applied by closed_trades() and trace() only: 6.10A capture reads _trade() unchanged."""
+        keys = ("realized_pnl", "gross_pnl", "net_pnl", "return_pct")
+        out = {**t, "recorded_pnl": {**{k: t.get(k) for k in keys}, "excursions": t.get("excursions"), "entry_slippage": t.get("entry_slippage"),
+                                     "basis": "as recorded by the executor; audit evidence, not a verified result"}}
+        if not t.get("verified"):
+            out.update({k: None for k in keys})
+            if not (XD(t.get("entry_price")) or 0) > 0:                                # J-02 / K-07: derived from the "0.00" placeholder, not from a price
+                out["excursions"] = {**(t.get("excursions") or {}), **{k: None for k in ("mfe_pnl", "mae_pnl", "mfe_pct", "mae_pct")}}
+                out["entry_slippage"] = {**(t.get("entry_slippage") or {}), "slippage_absolute": None, "slippage_bps": None}
+        return out
 
     def _trade(self, p) -> dict:
         x = self.execution
@@ -745,7 +865,8 @@ class ForwardValidationService:
                                 "price_mode": (prop or {}).get("price_mode"), "mode": (prop or {}).get("mode") or inputs.get("mode"), "market_data_source": inputs.get("market_data_source")},
                 "market_context": {"session_date": (session_date(_parse(p.opened_at)) or _parse(p.opened_at).date()).isoformat() if _parse(p.opened_at) else None,
                                    "market_trend_proxy": None, "volatility_proxy": None, "market_event_flags": [],
-                                   "note": "no in-process market trend / volatility source exists; the setup inputs (stretch, confidence, demand, evidence) are the recorded context"}}
+                                   "note": "no in-process market trend / volatility source exists; the setup inputs (stretch, confidence, demand, evidence) are the recorded context"},
+                **self.verification(p)}                                                      # Wave 2 PR A: verified + unverified_reasons (every other key unchanged)
 
     def trace(self, position_id: str) -> Optional[dict]:
         """The end-to-end audit trail of one closed (or open) paper trade from persisted rows only; no model, no inference."""
@@ -753,7 +874,7 @@ class ForwardValidationService:
         p = self._safe(lambda: x.store.position(position_id))
         if p is None:
             return None
-        t = self._trade(p)
+        t = self._fail_closed_trade(self._trade(p))                                      # Wave 2 PR A: Rule F (the raw values in recorded_pnl)
         transitions = self.store.query("SELECT evaluated_at, from_state, to_state, reason_code, reason_text, inputs_json, trigger FROM setup_transitions WHERE setup_id = ? ORDER BY evaluated_at", (p.setup_id,)) if p.setup_id else []
         for tr in transitions:
             try:
@@ -790,7 +911,8 @@ class ForwardValidationService:
                 "why_exit_required": exit_req, "exit_orders": [{k: getattr(i, k) for k in ("execution_id", "exit_cycle", "client_order_id", "broker_order_id", "state", "filled_qty", "filled_avg_price",
                                                                                        "reference_price", "submitted_at", "resolved_at", "failure_code")} for i in exits],
                 "exit_order_events": {k: v for k, v in orders.items() if entry is None or k != entry.execution_id}, "position_events": events,
-                "final_pnl": {"realized_pnl": p.realized_pnl, **M.trade_pnl(p.average_entry_price, p.average_exit_price, p.exit_qty or p.entry_qty)}}
+                "final_pnl": {"realized_pnl": p.realized_pnl, **M.trade_pnl(p.average_entry_price, p.average_exit_price, p.exit_qty or p.entry_qty),
+                              **({} if t["verified"] else {k: None for k in ("realized_pnl", "gross_pnl", "net_pnl", "return_pct")}), "verified": t["verified"]}}
 
     # ---------------------------------------------------------------- equity, drawdown, open P/L -------------------------------------
     def equity_series(self, trading_date: Optional[str] = None) -> List[Tuple[str, Optional[str]]]:
@@ -826,7 +948,7 @@ class ForwardValidationService:
         now = _utc(now or self.clock())
         row = self.store.session(trading_date)
         trades = self.closed_trades(trading_date=trading_date)
-        wl = M.win_loss([t["realized_pnl"] or t["gross_pnl"] for t in trades])
+        wl = M.win_loss([t["realized_pnl"] for t in trades])                         # Wave 2 PR A: verified trades only (Rule F nulls the others; no gross fallback, W2-N05)
         funnel = self.funnel(trading_date)
         rel = self.order_reliability(trading_date)
         rec = self.reconciliation(trading_date)
@@ -835,16 +957,137 @@ class ForwardValidationService:
         bh = self.broker_health(trading_date)
         dd = M.drawdown(self.equity_series(trading_date))
         att_events = self.store.events(kind="ATTENTION_RAISED", trading_date=trading_date, limit=100)
-        return {"trading_date": trading_date, "computed_at": _iso(now), "version": VERSION, "session": row, "session_status": row["session_status"] if row else "NOT_RUN",
+        out = {"trading_date": trading_date, "computed_at": _iso(now), "version": VERSION, "session": row, "session_status": row["session_status"] if row else "NOT_RUN",
                 "session_label": SESSION_LABELS.get(row["session_status"] if row else "NOT_RUN"), "funnel": funnel["counts"], "rates": funnel["rates"], "setups_ready": funnel["counts"]["READY"],
                 "proposals": funnel["counts"]["REVIEWABLE"] + funnel["counts"]["BLOCKED"], "entries": funnel["counts"]["ENTRY_SUBMITTED"], "exits": funnel["counts"]["EXIT_SUBMITTED"], "open_positions_at_end": (self.store.samples(trading_date)[-1]["open_positions"] if self.store.samples(trading_date) else None),
                 "rejections": rel["rejects"], "partials": rel["partial_fills"], "duplicates": rel["duplicate_broker_orders"], "reconciliation_issues": rec["needs_attention_cases"],
                 "safety_fires": fires["fire_count"], "safety": {k: fires[k] for k in ("fire_count", "recovered", "persistent", "by_reason_code", "daily_loss_halts", "emergency_stops", "pauses", "evaluator_errors", "entry_control_blocks")},
                 "order_reliability": rel, "reconciliation": {k: rec[k] for k in rec if k != "detail"}, "freshness": fr, "broker_health": {k: bh[k] for k in bh if k != "not_separately_persisted"},
-                "restarts": self.restarts_view(trading_date)["count"], "closed_trades": [{k: t[k] for k in ("position_id", "symbol", "qty", "entry_price", "exit_price", "realized_pnl", "return_pct", "exit_reason", "holding_sessions")} for t in trades],
+                "restarts": self.restarts_view(trading_date)["count"], "closed_trades": [{k: t[k] for k in ("position_id", "symbol", "qty", "entry_price", "exit_price", "realized_pnl", "return_pct", "exit_reason", "holding_sessions", "verified")} for t in trades],
                 "realized_pnl": wl["gross_pnl"], "win_loss": wl, "unrealized_pnl": self.unrealized_pnl()["unrealized_pnl"] if row and row["session_status"] == "OPEN" else None,
                 "drawdown": dd, "attention": [{"code": e["code"], "at": e["at"]} for e in att_events], "exit_reasons": self.exit_reason_distribution(trades), "disclaimer": DISCLAIMER,
-                "forward_capture": self._forward_day(trading_date)}                # Stage 6.10A: the day's operational evidence health (read only)
+                "forward_capture": self._forward_day(trading_date),                # Stage 6.10A: the day's operational evidence health (read only)
+                "pnl_status": self._pnl_status(trades), "unverified": sum(1 for t in trades if not t["verified"])}   # Wave 2 PR A (design 3.1.7); never a pnl_watermark here (H-05)
+        return self._null_pnl(out) if out["pnl_status"] == "UNSTABLE" else out
+
+    # ---------------------------------------------------------------- Wave 2 PR A: fresh, read-only summaries (design 3.1.7, 3.12) --------
+    @staticmethod
+    def _pnl_status(trades: List[dict]) -> str:
+        """NO_TRADES | OK (every trade verified) | UNVERIFIED_PRESENT (totals over verified trades only, labelled partial) | UNSTABLE (a
+        verification read failed: never persisted, every P/L value null)."""
+        if not trades:
+            return "NO_TRADES"
+        if any("VERIFY_ERROR" in (t.get("unverified_reasons") or []) for t in trades):
+            return "UNSTABLE"
+        return "OK" if all(t.get("verified") for t in trades) else "UNVERIFIED_PRESENT"
+
+    @staticmethod
+    def _null_pnl(s: dict) -> dict:
+        """An UNSTABLE summary: every P/L total and per-trade value null - never a stale or mixed number - and no watermark (never current)."""
+        out = {k: v for k, v in s.items() if k != "pnl_watermark"}
+        out.update(pnl_status="UNSTABLE", realized_pnl=None, win_loss=None,
+                   closed_trades=[{**t, "realized_pnl": None, "return_pct": None} for t in (s.get("closed_trades") or [])])
+        return out
+
+    def pnl_watermark(self, trading_date: str, rows: Optional[List[list]] = None) -> str:
+        """W(d): the canonical JSON of the P/L-input watermark rows of the CLOSED positions of one New York date (one read; or `rows` from a wider
+        read, filtered to the date). Every write that can change a day's P/L inputs moves it. Raises on a read error (H-04)."""
+        start, end = ny_window(trading_date)
+        if rows is None:
+            rows = self.execution.store.pnl_watermark_rows(start, end)
+        return json.dumps([r for r in rows if start <= (r[1] or "") < end], separators=(",", ":"))
+
+    def bracketed_summary(self, trading_date: str, now: Optional[datetime] = None) -> dict:
+        """daily_summary() between two equal watermark reads and complete against them (the same CLOSED positions): one consistent P/L snapshot.
+        After BRACKET_ATTEMPTS failed attempts it is UNSTABLE with null P/L. Never writes."""
+        now = _utc(now or self.clock())
+        s = None
+        for _ in range(BRACKET_ATTEMPTS):
+            try:
+                w1 = self.pnl_watermark(trading_date)
+            except Exception:  # noqa: BLE001 - an unreadable watermark is a failed attempt, never an empty one
+                continue
+            s = self.daily_summary(trading_date, now)
+            try:
+                w2 = self.pnl_watermark(trading_date)
+            except Exception:  # noqa: BLE001
+                continue
+            complete = {r[0] for r in json.loads(w1)} == {t["position_id"] for t in s["closed_trades"]}   # H-04: every input read, not just unchanged
+            if w1 == w2 and complete and s["pnl_status"] != "UNSTABLE":
+                return {**s, "pnl_watermark": w1}
+        return self._null_pnl(s if s is not None else self.daily_summary(trading_date, now))
+
+    def fresh_daily(self, trading_date: str) -> dict:
+        """The read sites' daily summary: the stored one when its watermark is current, otherwise a fresh bracketed one (not persisted). Never writes."""
+        stored = self.store.daily(trading_date)
+        if stored is not None and stored.get("pnl_watermark") is not None:
+            try:
+                if stored["pnl_watermark"] == self.pnl_watermark(trading_date):
+                    return stored
+            except Exception:  # noqa: BLE001 - currency unknown: served fresh, never the stored row
+                pass
+        return self.bracketed_summary(trading_date)
+
+    def fresh_dailies(self, limit: int = 400, newest_first: bool = True) -> List[dict]:
+        """fresh_daily() over the stored dates (the stored set and order, as store.dailies()); one watermark read for the currency check."""
+        rows = self.store.dailies(limit, newest_first)
+        wrows = None
+        if rows:
+            dates = sorted(r["trading_date"] for r in rows)
+            try:
+                wrows = self.execution.store.pnl_watermark_rows(ny_window(dates[0])[0], ny_window(dates[-1])[1])
+            except Exception:  # noqa: BLE001 - currency unknown: every row served fresh
+                wrows = None
+        return [r if wrows is not None and r.get("pnl_watermark") is not None and r["pnl_watermark"] == self.pnl_watermark(r["trading_date"], wrows)
+                else self.bracketed_summary(r["trading_date"]) for r in rows]
+
+    @staticmethod
+    def _pnl_content(s: Optional[dict]) -> str:
+        """The P/L content of a summary (H-08): a rebuild writes SUMMARY_REBUILT only when this differs. A legacy row with no status and no
+        trades equals NO_TRADES / 0 (J-09)."""
+        s = s or {}
+        trades = s.get("closed_trades") or []
+        status = s.get("pnl_status") if s.get("pnl_status") is not None or trades else "NO_TRADES"
+        unverified = s.get("unverified") if s.get("unverified") is not None or trades else 0
+        rows = sorted(([str(t.get("position_id")), t.get("verified"), t.get("realized_pnl"), t.get("return_pct")] for t in trades), key=lambda x: x[0])
+        return json.dumps([status, unverified, s.get("realized_pnl"), s.get("win_loss"), rows], sort_keys=True, default=str)
+
+    def _persist_stale_summaries(self, now: datetime) -> dict:
+        """Design 3.12.1: make the stored daily summaries current, after the early stop and capture (observe()), at most SUMMARY_REBUILDS_PER_TICK
+        dates per tick, each date under its own guard. Persists only consistent, complete results; SUMMARY_REBUILT only when the P/L changed.
+        Writes only forward_validation_daily_summary, forward_validation_events and the summary_builder control."""
+        tok = self.store.query("SELECT (SELECT MAX(rowid) FROM position_events) AS pe, (SELECT MAX(rowid) FROM execution_order_events) AS oe, "
+                               "(SELECT MAX(updated_at) FROM execution_intents) AS iu")
+        token = (tok[0]["pe"], tok[0]["oe"], tok[0]["iu"]) if tok else ("NO_ROWS",)
+        unmarked = self.store.query("SELECT trading_date FROM forward_validation_daily_summary WHERE instr(summary_json, '\"pnl_watermark\"') = 0")
+        if token == self._summary_token and not unmarked and not self._summary_backlog:
+            return {"result": "OK", "checked": 0, "rebuilt": 0, "refreshed": 0, "failed": 0, "pending": False}
+        stored = {d["trading_date"]: d for d in self.store.dailies(limit=100000)}
+        dates = sorted(stored)
+        wrows = self.execution.store.pnl_watermark_rows(ny_window(dates[0])[0], ny_window(dates[-1])[1]) if dates else []
+        stale = [d for d in reversed(dates) if stored[d].get("pnl_watermark") is None or stored[d]["pnl_watermark"] != self.pnl_watermark(d, wrows)]
+        backlog, rebuilt, refreshed, failed = len(stale) > SUMMARY_REBUILDS_PER_TICK, 0, 0, 0
+        for d in stale[:SUMMARY_REBUILDS_PER_TICK]:
+            try:
+                s = self.bracketed_summary(d, now)
+                if s["pnl_status"] == "UNSTABLE":
+                    backlog = True                                                     # never persisted; a later tick retries
+                    continue
+                before, after = self._pnl_content(stored[d]), self._pnl_content(s)
+                self.store.put_daily(d, now, VERSION, s)
+                if before != after:
+                    self.store.add_event(now, "SUMMARY_REBUILT", None, {"previous": json.loads(before), "current": json.loads(after)}, trading_date=d, owner=self.owner)
+                    self._touch(now, "summary_builder", "RUN", f"daily summary {d} rebuilt: its P/L changed")
+                    rebuilt += 1
+                else:
+                    self._touch(now, "summary_builder", "PASS", f"daily summary {d} made current")
+                    refreshed += 1
+            except Exception as exc:  # noqa: BLE001 - one date never stops the others; every read stays fresh meanwhile
+                backlog, failed = True, failed + 1
+                log.warning("forward validation: daily summary %s not persisted (%s)", d, type(exc).__name__)
+                self._touch(now, "summary_builder", "UNKNOWN", f"daily summary {d} not persisted", type(exc).__name__)
+        self._summary_token, self._summary_backlog = token, backlog                  # the token read BEFORE the scan: a write during it re-scans
+        return {"result": "OK" if not failed else "PARTIAL", "checked": len(stale), "rebuilt": rebuilt, "refreshed": refreshed, "failed": failed, "pending": backlog}
 
     def _forward_day(self, trading_date: str) -> Optional[dict]:
         try:
@@ -867,7 +1110,8 @@ class ForwardValidationService:
         by = {k: sum(1 for s in sessions if s["session_status"] == k) for k in ("HEALTHY", "DEGRADED", "FAILED", "NOT_RUN", "OPEN")}
         completed = by["HEALTHY"] + by["DEGRADED"] + by["FAILED"]
         trades = self.closed_trades(limit=5000)
-        wl = M.win_loss([t["realized_pnl"] or t["gross_pnl"] for t in trades])
+        wl = M.win_loss([t["realized_pnl"] for t in trades])                         # Wave 2 PR A: verified trades only; no gross fallback (W2-N05)
+        unverified = sum(1 for t in trades if not t["verified"])
         dd = M.drawdown(self.equity_series())
         funnel = self.funnel(None)
         rel = self.order_reliability(None)
@@ -876,6 +1120,8 @@ class ForwardValidationService:
         bh = self.broker_health(None)
         events = funnel["counts"]["READY"] + funnel["counts"]["REVIEWABLE"]
         edge = M.edge_status(wl["closed_trades"], by["HEALTHY"], wl["expectancy"], wl["win_rate"], dd["max_drawdown_pct"], min_trades=self.min_trades, min_sessions=self.target_sessions)
+        if unverified and edge["status"] == "EARLY_POSITIVE":                          # Wave 2 PR A (G-12d): never a positive label while a trade's P/L is unverified
+            edge = {**edge, "status": "INSUFFICIENT_DATA", "reasons": [f"{unverified} unverified trade(s): no positive label while any closed trade's P/L is unverified"] + edge["reasons"]}
         att = self.attention(now)
         refresh_fail = self._count("SELECT count(*) AS n FROM account_refresh_attempts WHERE result != 'SUCCESS'") + self._count("SELECT count(*) AS n FROM cash_flow_refresh_attempts WHERE result NOT IN ('SUCCESS', 'INCOMPLETE')")
         operational_ok = rel["duplicate_broker_orders"] == 0 and self._live_host_attempts() == 0 and rec["open"] == 0 and not any(a["critical"] for a in att) and by["FAILED"] == 0
@@ -888,7 +1134,7 @@ class ForwardValidationService:
                                 "failed_intents": rel["failed"], "broker_errors": bh["total_errors"], "refresh_failures": refresh_fail, "safety_fires": fires["fire_count"],
                                 "daily_loss_halts": fires["daily_loss_halts"], "emergency_stops": fires["emergency_stops"], "restarts": self.restarts_view()["count"],
                                 "live_host_attempts": self._live_host_attempts(), "early_stops": len(self.store.events(kind="EARLY_STOP", limit=1000)), "status": "READY" if operational_ok else "NOT READY"},
-                "strategy": {**wl, "expectancy_status": edge, "edge_status": edge["status"], "edge_label": EDGE_LABELS[edge["status"]], "insufficient": edge["status"] == "INSUFFICIENT_DATA",
+                "strategy": {**wl, "unverified": unverified, "expectancy_status": edge, "edge_status": edge["status"], "edge_label": EDGE_LABELS[edge["status"]], "insufficient": edge["status"] == "INSUFFICIENT_DATA",
                              "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None, "drawdown": dd, "exit_reasons": self.exit_reason_distribution(trades),
                              "funnel": funnel["counts"], "conversion": funnel["rates"], "unrealized": self.unrealized_pnl(), "note": "descriptive only; nothing is tuned from these numbers"},
                 "attention": att, "needs_attention": bool(att), "frozen_controls_hash": frozen_hash(), "disclaimer": DISCLAIMER,

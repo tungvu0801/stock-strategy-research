@@ -87,6 +87,22 @@ def stop_price_problem(price, source: str, price_at: Optional[str], now: datetim
     return "PRICE_STALE" if age > (MINUTE_BAR_MAX_AGE_SECONDS if source == "MINUTE_CLOSE" else PRICE_MAX_AGE_SECONDS) else None
 
 
+def recompute_pnl(entry_qty: int, entry_avg, exit_qty: int, exits: List[Tuple[int, Any]]) -> Dict[str, Any]:
+    """Wave 2 PR A (audit PF-09; design 3.1.2 / 3.1.3): the exit P/L of one position from the broker's CUMULATIVE view (Q_o, A_o) of every exit
+    order, N = sum(A_o * Q_o) - never an increment priced at a cumulative average. Pure and idempotent: the same views give the same row whatever
+    the observation sequence, so a price-only observation heals it. Valid only with a positive entry price, a price on every filled order and
+    sum(Q_o) = exit_qty; otherwise the P/L is NULL (never a guess). Returns the P/L columns and the complete post-write snapshot (Rule E1)."""
+    e = D(entry_avg)
+    filled = [(int(q), D(a)) for q, a in exits if int(q or 0) > 0]
+    valid = e is not None and e > 0 and all(a is not None and a > 0 for _, a in filled) and sum(q for q, _ in filled) == exit_qty
+    n = sum((a * q for q, a in filled), Decimal(0)) if valid else None
+    avg = money(n / exit_qty) if valid and exit_qty > 0 else None
+    realized = money(n - e * exit_qty) if valid and exit_qty > 0 else None
+    return {"average_exit_price": avg, "realized_pnl": realized,
+            "pnl_snapshot": {"entry_qty": entry_qty, "average_entry_price": entry_avg, "exit_qty": exit_qty, "average_exit_price": avg, "realized_pnl": realized,
+                             "valid": valid, "basis": "W2.recompute.v1"}}
+
+
 def _parse(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
         return None
@@ -401,6 +417,8 @@ class ExecutionService:
         if state == "FILLED" and int(order.get("filled_qty") or 0) < it.qty:
             state, code = "RECONCILIATION_REQUIRED", "FILLED_WITHOUT_QUANTITY"             # a filled status without the fill is inconsistent: never a silent loss
         fields: Dict[str, Any] = {"broker_status": order.get("status"), "state": state, "filled_qty": int(order.get("filled_qty") or 0), "filled_avg_price": order.get("filled_avg_price")}
+        if order.get("filled_avg_price") is None and fields["filled_qty"] == it.filled_qty:
+            fields["filled_avg_price"] = it.filled_avg_price                                # Wave 2 PR A (F-12): a price-less repeat keeps the stored price (accounting / display only)
         if not it.broker_order_id:
             fields["broker_order_id"] = order["id"]
         if state == "RECONCILIATION_REQUIRED":
@@ -414,7 +432,8 @@ class ExecutionService:
             fields["resolved_at"] = _iso(now)
         new_fill = int(order.get("filled_qty") or 0) > it.filled_qty
         pos_missing = it.intent_type == "ENTRY" and int(order.get("filled_qty") or 0) > 0 and self.store.position_for_execution(it.execution_id) is None
-        if new_fill or pos_missing:
+        price_changed = fields["filled_qty"] > 0 and D(order.get("filled_avg_price")) is not None and D(order.get("filled_avg_price")) != D(it.filled_avg_price)   # Wave 2 PR A (R-01): a price-only observation re-runs the accounting
+        if new_fill or pos_missing or price_changed:
             self._hook("before_fill_persisted", intent=it, order=order)
             self._apply_fill(it, order, fields, now)
         else:
@@ -430,13 +449,27 @@ class ExecutionService:
                 new = Position(position_id=position_id_for(it.execution_id), execution_id=it.execution_id, proposal_id=it.proposal_id, setup_id=it.setup_id, symbol=it.symbol, side="LONG",
                                quantity=filled, entry_qty=filled, average_entry_price=avg or "0.00", opened_at=_iso(now), invalidation_price=it.invalidation_price, risk_budget=it.risk_budget,
                                source="BROKER_FILLS", broker=self.broker.label, state="OPEN", updated_at=_iso(now))
-                ev = {"kind": "OPENED", "from_state": None, "to_state": "OPEN", "reason": f"{filled} of {it.qty} filled at {avg}", "detail": {"broker_order_id": order["id"], "status": order.get("status")}}
+                ev = {"kind": "OPENED", "from_state": None, "to_state": "OPEN", "reason": f"{filled} of {it.qty} filled at {avg}",
+                      "detail": {"broker_order_id": order["id"], "status": order.get("status"),
+                                 "pnl_snapshot": recompute_pnl(filled, new.average_entry_price, 0, [])["pnl_snapshot"]}}   # Wave 2 PR A (G-03): every fill event carries the snapshot
                 self.store.apply_fill(order, fields, it.execution_id, now, new_position=new, position_event=ev)
             else:
                 delta = filled - it.filled_qty
                 upd = {"position_id": pos.position_id, "quantity": pos.quantity + max(0, delta), "entry_qty": max(pos.entry_qty, filled), "average_entry_price": avg or pos.average_entry_price}
+                try:                                                                       # Wave 2 PR A (N-1): a changed entry price also re-prices the exits already filled
+                    views = [(x.filled_qty, x.filled_avg_price) for x in self.store.exit_intents_for_position(pos.position_id)] if pos.exit_qty > 0 else []
+                    r = recompute_pnl(upd["entry_qty"], upd["average_entry_price"], pos.exit_qty, views)
+                except Exception as exc:  # noqa: BLE001 - accounting never blocks the quantity: P/L NULL, the entry price keeps its prior value (G-12c; NOT NULL)
+                    log.error("execution: entry accounting of %s failed (%s)", pos.position_id, type(exc).__name__)
+                    upd["average_entry_price"] = pos.average_entry_price
+                    r = {"average_exit_price": None, "realized_pnl": None, "pnl_snapshot": {"entry_qty": upd["entry_qty"], "average_entry_price": pos.average_entry_price,
+                         "exit_qty": pos.exit_qty, "average_exit_price": None, "realized_pnl": None, "valid": False, "basis": "W2.recompute.v1", "error": type(exc).__name__}}
+                if pos.exit_qty > 0:
+                    upd.update(average_exit_price=r["average_exit_price"], realized_pnl=r["realized_pnl"])
+                else:
+                    r["pnl_snapshot"].update(average_exit_price=pos.average_exit_price, realized_pnl=pos.realized_pnl)
                 ev = {"position_id": pos.position_id, "kind": "FILL_UPDATED", "from_state": pos.state, "to_state": pos.state, "reason": f"{filled} of {it.qty} filled at {avg}",
-                      "detail": {"broker_order_id": order["id"], "status": order.get("status")}}
+                      "detail": {"broker_order_id": order["id"], "status": order.get("status"), "pnl_snapshot": r["pnl_snapshot"]}}
                 self.store.apply_fill(order, fields, it.execution_id, now, position_update=upd, position_event=ev)
             return
         pos = self.store.position(it.position_id) if it.position_id else None
@@ -445,15 +478,24 @@ class ExecutionService:
             return
         delta = max(0, filled - it.filled_qty)
         exit_qty = pos.exit_qty + delta
-        prev_avg, fill_px, entry_avg = D(pos.average_exit_price) or Decimal("0"), D(avg) or Decimal("0"), D(pos.average_entry_price) or Decimal("0")
-        new_avg = ((prev_avg * pos.exit_qty) + fill_px * delta) / exit_qty if exit_qty > 0 else None
         remaining = max(0, pos.quantity - delta)
         closed = remaining <= 0
         state = "CLOSED" if closed else pos.state
-        upd = {"position_id": pos.position_id, "quantity": remaining, "exit_qty": exit_qty, "average_exit_price": money(new_avg), "state": state,
-               "realized_pnl": money((new_avg - entry_avg) * exit_qty) if new_avg is not None else None, "closed_at": _iso(now) if closed else None}
-        ev = {"position_id": pos.position_id, "kind": "CLOSED" if closed else "EXIT_FILL", "from_state": pos.state, "to_state": state, "reason": pos.exit_reason,
-              "detail": {"broker_order_id": order["id"], "status": order.get("status"), "exit_qty": exit_qty, "average_exit_price": money(new_avg), "realized_pnl": upd["realized_pnl"]}}
+        try:                                                                               # Wave 2 PR A (PF-09): N = sum(A_o * Q_o) over every exit order of the position
+            xs = self.store.exit_intents_for_position(pos.position_id)
+            views = [(filled, fields.get("filled_avg_price")) if x.execution_id == it.execution_id else (x.filled_qty, x.filled_avg_price) for x in xs]
+            if not any(x.execution_id == it.execution_id for x in xs):
+                views.append((filled, fields.get("filled_avg_price")))                   # the order being applied is always one of the views
+            r = recompute_pnl(pos.entry_qty, pos.average_entry_price, exit_qty, views)
+        except Exception as exc:  # noqa: BLE001 - accounting never blocks the quantity: it is written with NULL P/L and an invalid snapshot
+            log.error("execution: exit accounting of %s failed (%s)", pos.position_id, type(exc).__name__)
+            r = {"average_exit_price": None, "realized_pnl": None, "pnl_snapshot": {"entry_qty": pos.entry_qty, "average_entry_price": pos.average_entry_price, "exit_qty": exit_qty,
+                 "average_exit_price": None, "realized_pnl": None, "valid": False, "basis": "W2.recompute.v1", "error": type(exc).__name__}}
+        upd = {"position_id": pos.position_id, "quantity": remaining, "exit_qty": exit_qty, "average_exit_price": r["average_exit_price"], "state": state,
+               "realized_pnl": r["realized_pnl"], "closed_at": pos.closed_at if pos.state == "CLOSED" else (_iso(now) if closed else None)}
+        ev = {"position_id": pos.position_id, "kind": "CLOSED" if closed and pos.state != "CLOSED" else "EXIT_FILL", "from_state": pos.state, "to_state": state, "reason": pos.exit_reason,
+              "detail": {"broker_order_id": order["id"], "status": order.get("status"), "exit_qty": exit_qty, "average_exit_price": r["average_exit_price"],
+                         "realized_pnl": r["realized_pnl"], "pnl_snapshot": r["pnl_snapshot"]}}
         self.store.apply_fill(order, fields, it.execution_id, now, position_update=upd, position_event=ev)
 
     def _after_terminal(self, it: Intent, state: str, now: datetime) -> None:
