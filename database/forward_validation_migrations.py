@@ -159,7 +159,30 @@ _STATEMENTS = [
     """,
     "CREATE TRIGGER IF NOT EXISTS forward_validation_controls_no_delete BEFORE DELETE ON forward_validation_controls "
     "BEGIN SELECT RAISE(ABORT, 'forward validation control rows are kept'); END;",
+    # Wave 2 PR B (session classifier v2, design 3b / B-29 / B-34): an index for the at-range reads and three additive integrity triggers
+    "CREATE INDEX IF NOT EXISTS idx_forward_validation_samples_at ON forward_validation_samples (at);",
+    "CREATE TRIGGER IF NOT EXISTS forward_validation_sessions_v2_not_run_final BEFORE UPDATE ON forward_validation_sessions "
+    "WHEN OLD.session_status = 'NOT_RUN' BEGIN SELECT RAISE(ABORT, 'a NOT_RUN forward validation session is final'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_validation_sessions_v2_closed_frozen BEFORE UPDATE ON forward_validation_sessions "
+    "WHEN OLD.session_status != 'OPEN' BEGIN SELECT RAISE(ABORT, 'a closed forward validation session is frozen'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_validation_sessions_v2_insert_status BEFORE INSERT ON forward_validation_sessions "
+    "WHEN NEW.session_status NOT IN ('OPEN', 'NOT_RUN') BEGIN SELECT RAISE(ABORT, 'a forward validation session is inserted OPEN or NOT_RUN only'); END;",
 ]
+V2_SAMPLE_COLUMNS = (("rr_intents", "INTEGER"), ("attention_positions", "INTEGER"), ("failed_intents", "INTEGER"), ("worker_stale_after_s", "REAL"))   # Wave 2 PR B
+V2_SESSION_COLUMNS = (("classifier_version", "TEXT"), ("assessment_json", "TEXT"))                                                        # nullable, no default
+
+
+def _add_columns(conn: sqlite3.Connection, table: str, columns) -> None:
+    """Wave 2 PR B: add the nullable columns a table lacks (idempotent; a concurrent ADD COLUMN by another process is treated as done)."""
+    have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, ddl in columns:
+        if name in have:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
 
 # append-only raw evidence: no UPDATE, no DELETE, no INSERT OR REPLACE of an existing key
 for _t, _key in (("forward_validation_samples", "sample_id"), ("forward_validation_marks", "mark_id"), ("forward_validation_restarts", "restart_id"),
@@ -176,4 +199,6 @@ _STATEMENTS.append("CREATE TRIGGER IF NOT EXISTS forward_validation_sessions_no_
 def run_forward_validation_migrations(conn: sqlite3.Connection) -> None:
     for stmt in _STATEMENTS:
         conn.execute(stmt)
+    _add_columns(conn, "forward_validation_samples", V2_SAMPLE_COLUMNS)
+    _add_columns(conn, "forward_validation_sessions", V2_SESSION_COLUMNS)
     conn.commit()

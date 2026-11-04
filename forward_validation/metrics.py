@@ -215,3 +215,136 @@ def classify_safety_fires(evaluations: List[Dict[str, Any]]) -> List[Dict[str, A
                           "outcome": "RECOVERED" if "TRADING_ALLOWED" in later else "PERSISTENT"})
         prev = st
     return fires
+
+
+# ---------------------------------------------------------------- Wave 2 PR B: the session classifier v2 (design WAVE2_PRB_DESIGN_REV3_4 section 5) ----------
+# classify_session() above is v1 and stays byte-identical; v2 is a separate pure function. G, H and K are literals (design section 2): never
+# read from the environment or the configuration.
+G = 360                                   # seconds: the maximum gap, the plausible step and the post-close evidence grace (D-W2-b)
+H = 60                                    # seconds: the sample-and-hold cap, the suspect tolerance and the settle margin
+K = 3                                     # samples (= 2 plausible steps) confirming a date transition (D-W2-j)
+CLASSIFIER_VERSION = "session_classifier_v2"
+EVIDENCE_READ_ATTEMPTS = 3                # failed evidence reads of one date before escalation (B-44): bounds work only
+
+
+def hold_coverage(samples: Sequence[Dict[str, Any]], w_open, w_close, cond=None, h: int = H) -> float:
+    """Sample-and-hold coverage (B-33): each sample (ordered (at, rowid); `at` a datetime) covers [at, min(next.at, at + h)) within the window;
+    the share of the window covered by samples that satisfy `cond` (every sample when None), rounded to 4 decimals."""
+    total = (w_close - w_open).total_seconds()
+    if total <= 0:
+        return 0.0
+    covered = 0.0
+    for i, s in enumerate(samples):
+        if cond is not None and not cond(s):
+            continue
+        start = max(s["at"], w_open).timestamp()
+        end = s["at"].timestamp() + h
+        if i + 1 < len(samples):
+            end = min(end, samples[i + 1]["at"].timestamp())
+        end = min(end, w_close.timestamp())
+        covered += max(0.0, end - start)
+    return round(min(1.0, covered / total), 4)
+
+
+def session_gaps(samples: Sequence[Dict[str, Any]], w_open, w_close) -> List[float]:
+    """[first - open] + interior gaps + [close - last], in seconds; an empty S is one gap of the whole window (B-33)."""
+    if not samples:
+        return [(w_close - w_open).total_seconds()]
+    ats = [s["at"] for s in samples]
+    return [(ats[0] - w_open).total_seconds()] + [(b - a).total_seconds() for a, b in zip(ats, ats[1:])] + [(w_close - ats[-1]).total_seconds()]
+
+
+def classify_session_v2(ev: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """The classifier v2 (design section 5), a pure function of the assembled evidence:
+      ev = {"market_day", "window": (open, close) | None, "covered", "S": [samples], "end_state": [samples], "suspect_affects": bool,
+            "clock_inconsistent": bool, "restarts": [restart times in (open, close]], "failed_rows": {code: count},
+            "row_degraded": {code: count}, "unavailable": {source: reason}, "not_settled": bool, "min_coverage": 0.75}
+    Samples carry `at` (datetime), `last_cycle_at_dt` (datetime or None) and the persisted fields. Returns (status, result), result =
+    {"notes", "failed_codes", "degraded_codes", "measures", "gaps"}; the notes are exactly the code set of the status (B-31)."""
+    failed_order = ("DUPLICATE_BROKER_ORDER", "LIVE_HOST_ATTEMPT", "SAFETY_GATE_ALLOWED_UNDER_BAD_STATE", "EARLY_STOP", "UNRESOLVED_RECONCILIATION",
+                    "UNRESOLVED_EXECUTION_STATE", "SAFETY_UNKNOWN_AT_END", "BROKER_UNAVAILABLE_PERSISTENT")
+    degraded_order = ("COVERAGE_LOW", "ACCOUNT_DATA_COVERAGE_LOW", "CASH_FLOW_DATA_COVERAGE_LOW", "WORKER_COVERAGE_LOW", "OPEN_NOT_OBSERVED", "CLOSE_NOT_OBSERVED",
+                      "LONG_GAP", "RESTART_DURING_SESSION", "CALENDAR_NOT_COVERED", "CLOCK_INCONSISTENT", "END_STATE_UNKNOWN", "EVIDENCE_NOT_SETTLED",
+                      "EVIDENCE_UNREADABLE", "CALENDAR_CONFLICT", "ACCOUNT_DATA_STALE_RECOVERED", "CASH_FLOW_STALE_RECOVERED", "RECONCILIATION_BLOCK_RECOVERED",
+                      "SAFETY_UNKNOWN_RECOVERED", "ACCOUNT_DATA_NEVER_FRESH", "CASH_FLOW_DATA_NEVER_FRESH", "EXECUTOR_CYCLE_ERRORS", "REFRESH_FAILURES", "BROKER_ERRORS")
+    min_cov = float(ev.get("min_coverage", 0.75))
+
+    def worker_fresh(s):                                                           # loop running, a recent completed cycle, the persisted threshold (N-3)
+        lc, st = s.get("last_cycle_at_dt"), s.get("worker_stale_after_s")
+        if s.get("loop_running") is not True or lc is None or st is None:
+            return False
+        return 0 <= (s["at"] - lc).total_seconds() <= float(st)
+
+    failed: List[str] = [c for c in ("DUPLICATE_BROKER_ORDER", "LIVE_HOST_ATTEMPT", "SAFETY_GATE_ALLOWED_UNDER_BAD_STATE", "EARLY_STOP")
+                         if int((ev.get("failed_rows") or {}).get(c) or 0) > 0]
+    end = list(ev.get("end_state") or [])
+    if any(int(s.get("rr_intents") or 0) > 0 or int(s.get("attention_positions") or 0) > 0 for s in end):
+        failed.append("UNRESOLVED_RECONCILIATION")                                 # positive evidence counts even when the other count is NULL
+    if any(int(s.get("failed_intents") or 0) > 0 for s in end):
+        failed.append("UNRESOLVED_EXECUTION_STATE")
+    if any(s.get("safety_state") == "UNKNOWN" for s in end):
+        failed.append("SAFETY_UNKNOWN_AT_END")
+    S = list(ev.get("S") or [])
+    if S and 2 * sum(1 for s in S if any("broker unavailable" in str(a) for a in (s.get("attention") or []))) > len(S):
+        failed.append("BROKER_UNAVAILABLE_PERSISTENT")                             # by sample count (U-23)
+    deg: List[str] = []
+    measures: Dict[str, Any] = {}
+    gaps: List[float] = []
+    w = ev.get("window") if ev.get("market_day") else None
+    if ev.get("unavailable"):
+        deg.append("EVIDENCE_UNREADABLE")
+    end_unknown = any(any(s.get(k) is None for k in ("rr_intents", "attention_positions", "failed_intents", "safety_state")) for s in end)
+    if end_unknown:
+        deg.append("END_STATE_UNKNOWN")
+    if ev.get("not_settled"):
+        deg.append("EVIDENCE_NOT_SETTLED")
+    if w is None:
+        deg.append("CALENDAR_CONFLICT")
+    else:
+        o, c = w
+        measures = {"obs_cov": hold_coverage(S, o, c), "fresh_cov": hold_coverage(S, o, c, lambda s: s.get("account_status") == "FRESH"),
+                    "cf_cov": hold_coverage(S, o, c, lambda s: s.get("cash_flow_status") == "FRESH"), "worker_cov": hold_coverage(S, o, c, worker_fresh)}
+        gaps = session_gaps(S, o, c)
+        for code, key in (("COVERAGE_LOW", "obs_cov"), ("ACCOUNT_DATA_COVERAGE_LOW", "fresh_cov"), ("CASH_FLOW_DATA_COVERAGE_LOW", "cf_cov"), ("WORKER_COVERAGE_LOW", "worker_cov")):
+            if measures[key] < min_cov:
+                deg.append(code)
+        if gaps[0] > G:
+            deg.append("OPEN_NOT_OBSERVED")
+        if gaps[-1] > G:
+            deg.append("CLOSE_NOT_OBSERVED")
+        if any(g > G for g in gaps[1:-1]):
+            deg.append("LONG_GAP")
+        if ev.get("restarts"):
+            deg.append("RESTART_DURING_SESSION")
+        if not ev.get("covered", True):
+            deg.append("CALENDAR_NOT_COVERED")
+        if ev.get("clock_inconsistent"):
+            deg.append("CLOCK_INCONSISTENT")
+        for code, pred in (("ACCOUNT_DATA_STALE_RECOVERED", lambda s: s.get("account_status") in ("STALE", "UNAVAILABLE", "DISABLED")),
+                           ("CASH_FLOW_STALE_RECOVERED", lambda s: s.get("cash_flow_status") in ("STALE", "UNAVAILABLE", "AMBIGUOUS")),
+                           ("RECONCILIATION_BLOCK_RECOVERED", lambda s: s.get("reconciliation_healthy") is False),
+                           ("SAFETY_UNKNOWN_RECOVERED", lambda s: s.get("safety_state") == "UNKNOWN")):
+            if any(pred(s) for s in S):
+                deg.append(code)
+        if S and not any(s.get("account_status") == "FRESH" for s in S):
+            deg.append("ACCOUNT_DATA_NEVER_FRESH")
+        if S and not any(s.get("cash_flow_status") == "FRESH" for s in S):
+            deg.append("CASH_FLOW_DATA_NEVER_FRESH")
+        for code in ("EXECUTOR_CYCLE_ERRORS", "REFRESH_FAILURES", "BROKER_ERRORS"):
+            if int((ev.get("row_degraded") or {}).get(code) or 0) > 0:
+                deg.append(code)
+    failed_codes = [c for c in failed_order if c in failed]
+    degraded_codes = [c for c in degraded_order if c in deg]
+    if failed_codes:
+        status, notes = "FAILED", list(failed_codes)
+    elif w is None:
+        status, notes = "DEGRADED", list(degraded_codes)                           # an OPEN row for a non-market day (5.1 item 2)
+    elif not S and not ev.get("suspect_affects") and not ev.get("unavailable") and not end_unknown:
+        status = "NOT_RUN"                                                         # B-20: an unsettled late path keeps NOT_RUN; the code stays in the record
+        degraded_codes = [c for c in degraded_codes if c in ("EVIDENCE_NOT_SETTLED", "CALENDAR_NOT_COVERED")]
+        notes = ["NO_OBSERVATION"] + (["CALENDAR_NOT_COVERED"] if not ev.get("covered", True) else [])
+    elif degraded_codes:
+        status, notes = "DEGRADED", list(degraded_codes)
+    else:
+        status, notes = "HEALTHY", []
+    return status, {"notes": notes, "failed_codes": failed_codes, "degraded_codes": degraded_codes, "measures": measures, "gaps": gaps}

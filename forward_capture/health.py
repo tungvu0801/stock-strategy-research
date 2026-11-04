@@ -122,6 +122,19 @@ def paper_auto_spans(q, start: datetime, end: datetime) -> List[Tuple[datetime, 
     return [(s, e) for s, e in spans if e > s]
 
 
+def _auto_disarm_exempt(event: Dict[str, Any], close: datetime) -> bool:
+    """Wave 2 PR B (design 3d / B-43): an AUTO_DISARM whose own code set is exactly {SESSION_ENDED}, recorded under the day (the caller's query)
+    and stamped within [close - h, close + G] (h = 60 s, G = 360 s) is the autorun policy's normal end of the day, not a degradation."""
+    from forward_validation.metrics import G, H
+    try:
+        detail = json.loads(event.get("detail_json") or "{}") or {}
+    except ValueError:
+        return False
+    codes = {event.get("code")} | (set(detail.get("codes") or []) if isinstance(detail, dict) else set())
+    at = _parse(event.get("at"))
+    return codes == {"SESSION_ENDED"} and at is not None and close - timedelta(seconds=H) <= at <= close + timedelta(seconds=G)
+
+
 def compute(cap, td: str, now: datetime) -> Optional[Dict[str, Any]]:
     """The health record of trading date `td` (None for a weekend). Read only."""
     from autorun import calendar as CAL
@@ -235,7 +248,8 @@ def compute(cap, td: str, now: datetime) -> Optional[Dict[str, Any]]:
         deg.append("MIXED_COHORTS")
     if partial_gate_on:
         deg.append("PARTIAL_EXTERNAL_CONTEXT")
-    if disarms:
+    exempt = [e for e in disarms if _auto_disarm_exempt(e, c)]                  # Wave 2 PR B (3d): SESSION_ENDED at the close is not a degradation
+    if len(disarms) > len(exempt):
         deg.append("AUTO_DISARM")
     if setup_cov is not None and (end - o).total_seconds() >= 1800 and setup_cov < SETUP_COVERAGE:
         deg.append("SETUP_EVALUATION_GAPS")
@@ -257,6 +271,7 @@ def compute(cap, td: str, now: datetime) -> Optional[Dict[str, Any]]:
             ready_set.add(d.get("candidate_id"))
     intents = q("SELECT intent_type, state, attempt_count FROM execution_intents WHERE created_at >= ? AND created_at < ?", (day_lo, day_hi))
     metrics = {"window": {"open": start_s, "close": end_s, "expected_minutes": minutes, "measured_until": _iso(end)}, "fv_session_status": fv_status,
+               "auto_disarm": {"events": len(disarms), "exempt_session_ended": len(exempt)},
                "startup_at": (cap.store.query("SELECT MIN(at) AS a FROM forward_capture_config_snapshots WHERE trading_date = ? AND trigger IN ('STARTUP', 'DAY')", (td,)) or [{}])[0].get("a"),
                "worker_coverage": worker_cov, "account_fresh_coverage": fresh_cov, "setup_evaluation_coverage": setup_cov, "observer_samples": len(samples),
                "cycles_expected": int(minutes * 60 / cyc), "cycle_runs_recorded": len(runs), "cycle_errors": cycle_errors, "broker_read_failures": broker_fail,

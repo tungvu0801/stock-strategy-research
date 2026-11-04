@@ -17,17 +17,22 @@ from database.forward_validation_migrations import run_forward_validation_migrat
 from fit import readonly as RO
 
 SESSION_MUTABLE = ("started_at", "ended_at", "bot_start_time", "bot_stop_time", "market_open_seen", "market_close_seen", "paper_auto_enabled", "account_refresh_healthy",
-                   "cash_flow_healthy", "reconciliation_healthy", "session_status", "notes_code", "in_session_samples", "owners_json")
+                   "cash_flow_healthy", "reconciliation_healthy", "session_status", "notes_code", "in_session_samples", "owners_json",
+                   "classifier_version", "assessment_json")                                    # Wave 2 PR B: written while OPEN (the 3b triggers freeze a closed row)
 SESSION_BOOLS = ("market_open_seen", "market_close_seen", "paper_auto_enabled", "account_refresh_healthy", "cash_flow_healthy", "reconciliation_healthy")
 SAMPLE_COLS = ("sample_id", "at", "trading_date", "in_session", "owner", "mode", "executor_ready", "safety_state", "allowed_new_entry", "safety_codes_json", "reconciliation_healthy",
                "attention_count", "attention_json", "account_status", "account_age_s", "account_failures", "equity", "cash", "buying_power", "net_external_cum", "cash_flow_status",
                "cash_flow_age_s", "cash_flow_failures", "open_positions", "pending_entries", "pending_exits", "positions_json", "controls_json", "last_cycle_at", "last_cycle_result",
-               "loop_running")
+               "loop_running", "rr_intents", "attention_positions", "failed_intents", "worker_stale_after_s")   # Wave 2 PR B: NULL = unknown, written as is (never 0)
 SAMPLE_JSON = {"safety_codes_json": "safety_codes", "attention_json": "attention", "positions_json": "positions", "controls_json": "controls"}
 
 
 class ForwardValidationStoreError(RuntimeError):
     pass
+
+
+class EvidenceSourceAbsent(ForwardValidationStoreError):
+    """Wave 2 PR B: a strict read found no such table or column - the evidence source is unavailable, never 'no rows'."""
 
 
 def _iso(dt: datetime) -> str:
@@ -113,6 +118,9 @@ class ForwardValidationStore:
             out[k] = None if out.get(k) is None else bool(out[k])
         out["owners"] = _loads(out.pop("owners_json"), [])
         out["notes"] = [c for c in (out.get("notes_code") or "").split("|") if c]
+        if "assessment_json" in out:                                                            # Wave 2 PR B: the classifier v2 record (None for v1 rows)
+            a = _loads(out.pop("assessment_json"), None)
+            out["assessment"] = a if isinstance(a, dict) else None
         return out
 
     def session(self, trading_date: str) -> Optional[dict]:
@@ -134,24 +142,27 @@ class ForwardValidationStore:
         rows = self._read("SELECT MIN(created_at) AS c FROM forward_validation_sessions")
         return rows[0]["c"] if rows and rows[0]["c"] else None
 
-    def open_session(self, trading_date: str, now: datetime, owner: str, *, in_session: bool) -> dict:
+    def open_session(self, trading_date: str, now: datetime, owner: str, *, in_session: bool, started_at: Optional[str] = None) -> dict:
         stamp = _iso(now)
+        start = started_at or stamp                                                             # Wave 2 PR B: a day opened late keeps its real start
 
         def fn(conn):
             conn.execute("INSERT INTO forward_validation_sessions (trading_date, started_at, ended_at, bot_start_time, bot_stop_time, market_open_seen, market_close_seen, paper_auto_enabled, "
                          "account_refresh_healthy, cash_flow_healthy, reconciliation_healthy, session_status, notes_code, in_session_samples, owners_json, created_at, updated_at) "
                          "VALUES (?,?,NULL,?,?,?,0,0,NULL,NULL,NULL,'OPEN','',0,?,?,?)",
-                         (trading_date, stamp, stamp, stamp, 1 if in_session else 0, _json([owner]), stamp, stamp))         # the opening tick is counted by the same tick's update
+                         (trading_date, start, start, stamp, 1 if in_session else 0, _json([owner]), stamp, stamp))         # the opening tick is counted by the same tick's update
         self._write(fn)
         return self.session(trading_date)
 
-    def insert_not_run(self, trading_date: str, now: datetime, notes_code: str) -> dict:
+    def insert_not_run(self, trading_date: str, now: datetime, notes_code: str, *, assessment: Optional[dict] = None, classifier_version: Optional[str] = None) -> dict:
         stamp = _iso(now)
+        a = _json(assessment) if assessment is not None else None                              # Wave 2 PR B: written at INSERT (a NOT_RUN row is final)
 
         def fn(conn):
             conn.execute("INSERT INTO forward_validation_sessions (trading_date, started_at, ended_at, bot_start_time, bot_stop_time, market_open_seen, market_close_seen, paper_auto_enabled, "
-                         "account_refresh_healthy, cash_flow_healthy, reconciliation_healthy, session_status, notes_code, in_session_samples, owners_json, created_at, updated_at) "
-                         "VALUES (?,NULL,NULL,NULL,NULL,0,0,0,NULL,NULL,NULL,'NOT_RUN',?,0,'[]',?,?)", (trading_date, notes_code, stamp, stamp))
+                         "account_refresh_healthy, cash_flow_healthy, reconciliation_healthy, session_status, notes_code, in_session_samples, owners_json, created_at, updated_at, "
+                         "classifier_version, assessment_json) VALUES (?,NULL,NULL,NULL,NULL,0,0,0,NULL,NULL,NULL,'NOT_RUN',?,0,'[]',?,?,?,?)",
+                         (trading_date, notes_code, stamp, stamp, classifier_version, a))
         self._write(fn)
         return self.session(trading_date)
 
@@ -210,6 +221,45 @@ class ForwardValidationStore:
         sql += " ORDER BY at, rowid LIMIT ?"
         args.append(limit)
         return [self._sample(r) for r in self._read(sql, tuple(args))]
+
+    # ---------------------------------------------------------------- Wave 2 PR B: strict reads for the classifier v2 -------------
+    def query_strict(self, sql: str, args=()) -> List[dict]:
+        """Read-only SQL that never turns an error into 'no rows' (design B-36): a missing database file or any SQLite error raises
+        ForwardValidationStoreError; a missing table or column raises EvidenceSourceAbsent."""
+        if not self.path.exists():
+            raise ForwardValidationStoreError(f"database file missing: {self.path.name}")
+        try:
+            conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)
+        except sqlite3.Error as exc:
+            raise ForwardValidationStoreError(f"{type(exc).__name__}: {exc}") from None
+        conn.row_factory = sqlite3.Row
+        try:
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc) or "no such column" in str(exc):
+                raise EvidenceSourceAbsent(str(exc)) from None
+            raise ForwardValidationStoreError(f"{type(exc).__name__}: {exc}") from None
+        except sqlite3.Error as exc:
+            raise ForwardValidationStoreError(f"{type(exc).__name__}: {exc}") from None
+        finally:
+            conn.close()
+
+    def samples_between(self, lo: str, hi: str) -> List[dict]:
+        """Every sample with lo <= at <= hi, ordered (at, rowid), strict, no LIMIT (the window bounds it); each carries its `_rowid`."""
+        return [self._sample(r) for r in self.query_strict("SELECT rowid AS _rowid, * FROM forward_validation_samples WHERE at >= ? AND at <= ? ORDER BY at, rowid", (lo, hi))]
+
+    def own_tail(self, owner: str, n: int) -> List[dict]:
+        """The last n samples of one owner by rowid, oldest first (strict)."""
+        rows = self.query_strict("SELECT rowid AS _rowid, sample_id, at, owner FROM forward_validation_samples WHERE owner = ? ORDER BY rowid DESC LIMIT ?", (owner, n))
+        return list(reversed(rows))
+
+    def samples_from_rowid(self, rowid: int) -> List[dict]:
+        """(rowid, sample_id, at, owner) of every sample with rowid >= `rowid`, by rowid (strict): the clock-suspect and anchor computations."""
+        return self.query_strict("SELECT rowid AS _rowid, sample_id, at, owner FROM forward_validation_samples WHERE rowid >= ? ORDER BY rowid", (rowid,))
+
+    def max_at_before(self, rowid: int) -> Optional[str]:
+        rows = self.query_strict("SELECT MAX(at) AS m FROM forward_validation_samples WHERE rowid < ?", (rowid,))
+        return rows[0]["m"] if rows and rows[0]["m"] else None
 
     def last_sample(self) -> Optional[dict]:
         rows = self._read("SELECT * FROM forward_validation_samples ORDER BY at DESC, rowid DESC LIMIT 1")

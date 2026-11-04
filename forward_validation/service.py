@@ -217,7 +217,23 @@ class ForwardValidationService:
         except Exception:  # noqa: BLE001
             loop_running = None
         last = x.last_cycle or {}
-        return {"at": _iso(now), "trading_date": (session_date(now) or now.date()).isoformat(), "in_session": is_regular_session(now), "owner": self.owner, "mode": mode,
+        td = (session_date(now) or now.date()).isoformat()
+        try:                                                                  # Wave 2 PR B (B-35): one strict read; any failure is NULL, never 0
+            c = self.store.query_strict("SELECT (SELECT count(*) FROM execution_intents WHERE state = 'RECONCILIATION_REQUIRED') AS rr, "
+                                        "(SELECT count(*) FROM paper_positions WHERE state = 'ATTENTION') AS att, "
+                                        "(SELECT count(*) FROM execution_intents WHERE state = 'FAILED' AND updated_at >= ? AND updated_at <= ?) AS failed",
+                                        (ny_window(td)[0], _iso(now)))[0]
+            counts = {"rr_intents": int(c["rr"]), "attention_positions": int(c["att"]), "failed_intents": int(c["failed"])}
+        except Exception:  # noqa: BLE001
+            counts = {"rr_intents": None, "attention_positions": None, "failed_intents": None}
+        try:
+            from execution import activity as XA
+            from execution.scheduler import status as sched_status
+            stale = XA.worker(sched_status(), True, now).get("stale_after_s")
+            counts["worker_stale_after_s"] = float(stale) if stale is not None else None
+        except Exception:  # noqa: BLE001
+            counts["worker_stale_after_s"] = None
+        return {**counts, "at": _iso(now), "trading_date": td, "in_session": is_regular_session(now), "owner": self.owner, "mode": mode,
                 "executor_ready": bool(getattr(x, "ready", False)), "safety_state": getattr(sv, "state", None), "allowed_new_entry": getattr(sv, "allowed_new_entry", None),
                 "safety_codes": list(getattr(sv, "reason_codes", []) or []), "reconciliation_healthy": bool(getattr(x, "recon_healthy", True)), "attention_count": len(attention),
                 "attention": attention, "account_status": fr.get("status"), "account_age_s": fr.get("age_seconds"), "account_failures": fr.get("consecutive_failures"),
@@ -264,46 +280,113 @@ class ForwardValidationService:
         return [{"at": sample["at"], "position_id": p["position_id"], "symbol": p["symbol"], "state": p["state"], "quantity": p["quantity"], "last_price": p.get("last_price"),
                  "last_price_at": p.get("last_price_at")} for p in sample["positions"] if p.get("last_price")]
 
-    # ---------------------------------------------------------------- the session record ---------------------------------------
+    # ---------------------------------------------------------------- the session record (Wave 2 PR B: classifier v2, design Rev 3.4.1 sections 4-6) --
     def _record_session(self, now: datetime, sample: dict) -> Optional[str]:
+        """B-19 steps 3-5 at a confirmed own sample (the confirmation is computed by _backfill_not_run earlier in the same tick): finalize earlier
+        OPEN dates, open today (B-22), finalize today on time (B-20); then v1's display counters of today's OPEN row (B-23). Every date is
+        contained on its own (B-44): nothing raises into observe(), so the same tick's early stop always runs."""
+        from forward_capture import health as FH
         today = sample["trading_date"]
-        et = to_et(now)
-        for row in self.store.open_sessions():                                            # an earlier date still OPEN: the process was not there to close it
-            if row["trading_date"] < today:
-                self._finalize(row["trading_date"], now, close_seen=False, reason="CLOSE_NOT_OBSERVED")
-        if et is None or et.weekday() >= 5:
-            return None
-        after_close = (et.hour * 60 + et.minute) >= CLOSE_MINUTE
-        row = self.store.session(today)
-        if row is None:
-            if after_close and not sample["in_session"]:
-                return None                                                              # first seen after the close: nothing of the session was observed
-            row = self.store.open_session(today, now, self.owner, in_session=sample["in_session"])
-            self.store.add_event(now, "SESSION_OPENED", None, {"in_session": sample["in_session"], "mode": sample["mode"]}, trading_date=today, owner=self.owner)
-            self._touch(now, "session_recorder", "RUN", f"session {today} opened")
-        if row["session_status"] != "OPEN":
-            return row["session_status"]
-        owners = list(row["owners"]) + ([self.owner] if self.owner not in row["owners"] else [])
-        fields: Dict[str, Any] = {"bot_stop_time": sample["at"], "owners_json": __import__("json").dumps(owners),
-                                  "in_session_samples": _n(row["in_session_samples"]) + (1 if sample["in_session"] else 0),
-                                  "market_open_seen": bool(row["market_open_seen"]) or sample["in_session"],
-                                  "paper_auto_enabled": bool(row["paper_auto_enabled"]) or (sample["in_session"] and sample["mode"] == "PAPER_AUTO")}
-        self.store.update_session(today, now, **fields)
-        if after_close:
-            return self._finalize(today, now, close_seen=True, reason="")
-        return "OPEN"
+        conf, self._conf = getattr(self, "_conf", None), None
 
-    def _finalize(self, trading_date: str, now: datetime, *, close_seen: bool, reason: str) -> str:
+        def finalize_late(d):                                                          # B-44 rows 3-5: contained; escalated after the bounded retry
+            try:
+                self._finalize(d, now, trigger=conf, late=True)
+            except Exception as exc:  # noqa: BLE001
+                if self._evidence_read_failed(now, d, "finalize", exc) >= M.EVIDENCE_READ_ATTEMPTS and today > d:
+                    try:
+                        self._finalize(d, now, trigger=conf, late=True, escalate=True)
+                    except Exception as exc2:  # noqa: BLE001
+                        self._evidence_read_failed(now, d, "finalize_escalated", exc2)
+
+        def open_today():                                                              # B-22
+            if self.store.session(today) is not None:
+                return
+            w = FH.window(today)
+            if w is None:                                                              # a holiday market_hours reads as a session: one event, no row
+                if sample.get("in_session") and not self.store.query_strict("SELECT 1 AS n FROM forward_validation_events WHERE kind = 'CALENDAR_CONFLICT' "
+                                                                            "AND trading_date = ? LIMIT 1", (today,)):
+                    self.store.add_event(now, "CALENDAR_CONFLICT", "MARKET_HOURS_IN_SESSION", {"note": "market_hours reads an exchange holiday as a session; no row"},
+                                         trading_date=today, owner=self.owner)
+                return
+            in_w = self.store.query_strict("SELECT at FROM forward_validation_samples WHERE at >= ? AND at <= ? ORDER BY at, rowid LIMIT 1", (_iso(w[0]), _iso(w[1])))
+            first = in_w[0]["at"] if in_w else None
+            if conf["at_dt"] >= w[1] and first is None:                                # after the close: open only an observed day or one with FAILED evidence
+                ev, _ = self._session_observations(today, conf, False, False)
+                if not ev["S"] and M.classify_session_v2(ev)[0] != "FAILED":           # B-24 (D-2): row-based FAILED evidence, or a FAILED end state in G(d)
+                    return                                                             # neither observed nor FAILED: nothing to open (v1's S03 r2)
+            self.store.open_session(today, now, self.owner, in_session=bool(sample.get("in_session")), started_at=first or conf["at"])
+            self.store.update_session(today, now, assessment_json=json.dumps({"opened_by": {"sample_id": conf["sample_id"], "at": conf["at"], "owner": conf["owner"]}},
+                                                                             sort_keys=True, separators=(",", ":")))
+            self.store.add_event(now, "SESSION_OPENED", None, {"in_session": sample.get("in_session"), "mode": sample.get("mode")}, trading_date=today, owner=self.owner)
+            self._touch(now, "session_recorder", "RUN", f"session {today} opened")
+        if conf is not None:
+            try:
+                open_rows = [r["trading_date"] for r in self.store.open_sessions() if r["trading_date"] < today]
+            except Exception as exc:  # noqa: BLE001 - B-44: contained, retried at the next confirmed sample
+                self._evidence_read_failed(now, today, "open_sessions", exc)
+                open_rows = []
+            for d in open_rows:
+                finalize_late(d)
+            try:
+                open_today()
+            except Exception as exc:  # noqa: BLE001
+                self._evidence_read_failed(now, today, "open", exc)
+        try:
+            row = self.store.session(today)
+            if row is not None and row["session_status"] == "OPEN":                      # B-23: display counters only (never classifier inputs), as v1 before its finalize
+                owners = list(row["owners"]) + ([self.owner] if self.owner not in row["owners"] else [])
+                self.store.update_session(today, now, bot_stop_time=sample["at"], owners_json=json.dumps(owners),
+                                          in_session_samples=_n(row["in_session_samples"]) + (1 if sample["in_session"] else 0),
+                                          market_open_seen=bool(row["market_open_seen"]) or sample["in_session"],
+                                          paper_auto_enabled=bool(row["paper_auto_enabled"]) or (sample["in_session"] and sample["mode"] == "PAPER_AUTO"))
+        except Exception as exc:  # noqa: BLE001
+            self._evidence_read_failed(now, today, "counters", exc)
+        if conf is not None:
+            try:
+                row = self.store.session(today)
+                w = FH.window(today)
+                if row is not None and row["session_status"] == "OPEN" and w is not None:
+                    cut = w[1] + timedelta(seconds=M.G)
+                    if conf["at_dt"] > cut + timedelta(seconds=M.H) and all(self._settled(cut, conf)):
+                        self._finalize(today, now, trigger=conf, late=False)          # B-20 on time
+            except Exception as exc:  # noqa: BLE001
+                self._evidence_read_failed(now, today, "finalize", exc)
+        try:
+            row = self.store.session(today)
+            return row["session_status"] if row else None
+        except Exception as exc:  # noqa: BLE001
+            self._evidence_read_failed(now, today, "status", exc)
+            return None
+
+    def _finalize(self, trading_date: str, now: datetime, *, trigger: dict, late: bool, escalate: bool = False) -> str:
+        """B-20 / B-21: classify the OPEN row of `trading_date` from persisted evidence only and write it in ONE update (a closed row is frozen)."""
         row = self.store.session(trading_date)
         if row is None or row["session_status"] != "OPEN":
             return row["session_status"] if row else "NOT_RUN"
-        obs = self._session_observations(trading_date, row, close_seen)
-        status, notes = M.classify_session(obs)
-        if reason and reason not in notes:
-            notes = "|".join([c for c in notes.split("|") if c] + [reason])
-        self.store.update_session(trading_date, now, ended_at=_iso(now), market_close_seen=close_seen, session_status=status, notes_code=notes,
-                                  account_refresh_healthy=obs["account_healthy"], cash_flow_healthy=obs["cash_flow_healthy"], reconciliation_healthy=obs["reconciliation_healthy"])
-        self.store.add_event(now, "SESSION_CLOSED", status, {"notes": notes, "in_session_samples": obs["in_session_samples"]}, trading_date=trading_date, owner=self.owner)
+        try:
+            status, res, assessment, disp = self._assess(trading_date, row, trigger, late, escalate)
+        except Exception as exc:  # noqa: BLE001
+            if not escalate:
+                raise
+            err = f"{type(exc).__name__}: {exc}"[:200]                                # B-44 row 5: even the escalated assessment failed - fail-closed, never OPEN forever
+            try:
+                n = _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
+                                               "AND trading_date = ?", (trading_date,))[0]["n"])
+            except Exception:  # noqa: BLE001
+                n = None
+            prior = row.get("assessment") or {}
+            status, res = "DEGRADED", {"notes": ["EVIDENCE_UNREADABLE"]}
+            assessment = {**({"opened_by": prior["opened_by"]} if prior.get("opened_by") else {}), "classifier_version": M.CLASSIFIER_VERSION, "codes": ["EVIDENCE_UNREADABLE"],
+                          "failed_codes": [], "degraded_codes": ["EVIDENCE_UNREADABLE"], "unavailable_sources": {"assessment": {"error": err, "attempts": n}},
+                          "finalized_by": {"sample_id": trigger.get("sample_id"), "at": trigger.get("at"), "owner": trigger.get("owner")}, "finalized_late": bool(late)}
+            disp = {"market_close_seen": False, "account_refresh_healthy": False, "cash_flow_healthy": False, "reconciliation_healthy": False, "in_window_samples": None}
+        self.store.update_session(trading_date, now, ended_at=_iso(now), market_close_seen=disp["market_close_seen"], session_status=status, notes_code="|".join(res["notes"]),
+                                  account_refresh_healthy=disp["account_refresh_healthy"], cash_flow_healthy=disp["cash_flow_healthy"],
+                                  reconciliation_healthy=disp["reconciliation_healthy"], classifier_version=M.CLASSIFIER_VERSION,
+                                  assessment_json=json.dumps(assessment, sort_keys=True, separators=(",", ":"), default=str))
+        self.store.add_event(now, "SESSION_CLOSED", status, {"notes": "|".join(res["notes"]), "in_session_samples": disp["in_window_samples"],
+                                                              "classifier_version": M.CLASSIFIER_VERSION, "finalized_late": bool(late)}, trading_date=trading_date, owner=self.owner)
         self._touch(now, "session_recorder", "RUN", f"session {trading_date} closed as {status}")
         try:
             self.store.put_daily(trading_date, now, VERSION, self.daily_summary(trading_date, now))
@@ -313,52 +396,423 @@ class ForwardValidationService:
             self._touch(now, "summary_builder", "UNKNOWN", f"daily summary {trading_date} failed", type(exc).__name__)
         return status
 
-    def _session_observations(self, trading_date: str, row: dict, close_seen: bool) -> dict:
-        samples = self.store.samples(trading_date, in_session_only=True)
-        start, end = ny_window(trading_date)
-        x = self.execution
-        fresh_seen = any(s.get("account_status") == "FRESH" for s in samples)
-        cf_fresh_seen = any(s.get("cash_flow_status") == "FRESH" for s in samples)
-        acct_stale = sum(1 for s in samples if s.get("account_status") in ("STALE", "UNAVAILABLE", "DISABLED"))
-        cf_stale = sum(1 for s in samples if s.get("cash_flow_status") in ("STALE", "UNAVAILABLE", "AMBIGUOUS"))
-        recon_bad = sum(1 for s in samples if s.get("reconciliation_healthy") is False)
-        unknown = sum(1 for s in samples if s.get("safety_state") == "UNKNOWN")
-        broker_unavail = sum(1 for s in samples if any("broker unavailable" in a for a in (s.get("attention") or [])))
-        rel = self.order_reliability(trading_date)
-        gate = self._gate_violations(start, end)
-        live = self._live_host_attempts(start, end)
-        runs = self.store.query("SELECT result FROM execution_runs WHERE started_at >= ? AND started_at < ?", (start, end))
-        refresh_fail = _n(self.freshness(trading_date)["account"]["refresh_failures"]) + _n(self.freshness(trading_date)["cash_flow"]["refresh_failures"])
-        broker_errors = _n(self.broker_health(trading_date)["total_errors"])
-        early = bool(self.store.events(kind="EARLY_STOP", trading_date=trading_date))
-        open_now = self._safe(lambda: x.store.open_intents(), []) or []
-        pos_now = self._safe(lambda: x.store.positions(open_only=True), []) or []
-        unresolved_recon = any(i.state == "RECONCILIATION_REQUIRED" for i in open_now) or any(p.state == "ATTENTION" for p in pos_now)
-        failed_intents = self.store.query("SELECT count(*) AS n FROM execution_intents WHERE state = 'FAILED' AND updated_at >= ? AND updated_at < ?", (start, end))
-        last = samples[-1] if samples else None
-        n_in = len(samples)
-        return {"in_session_samples": n_in, "market_open_seen": bool(row["market_open_seen"]) or n_in > 0, "market_close_seen": close_seen,
-                "duplicate_orders": _n(rel["duplicate_broker_orders"]), "live_host_attempts": live, "gate_violations": len(gate), "early_stop": early,
-                "unresolved_reconciliation_at_end": unresolved_recon, "unresolved_execution_at_end": _n(failed_intents[0]["n"]) if failed_intents else 0,
-                "safety_unknown_at_end": bool(last and last.get("safety_state") == "UNKNOWN"), "broker_unavailable_persistent": n_in > 0 and broker_unavail * 2 > n_in,
-                "account_stale_samples": acct_stale, "cash_flow_stale_samples": cf_stale, "reconciliation_unhealthy_samples": recon_bad, "safety_unknown_samples": unknown,
-                "cycle_errors": sum(1 for r in runs if r.get("result") == "ERROR"), "refresh_failures": refresh_fail, "broker_errors": broker_errors,
-                "restarts": len(self.store.restarts(trading_date=trading_date)), "account_fresh_seen": fresh_seen, "cash_flow_fresh_seen": cf_fresh_seen,
-                "account_healthy": n_in > 0 and fresh_seen and acct_stale == 0, "cash_flow_healthy": n_in > 0 and cf_fresh_seen and cf_stale == 0,
-                "reconciliation_healthy": n_in > 0 and recon_bad == 0 and not unresolved_recon}
+    def _session_observations(self, trading_date: str, trigger: dict, late: bool, escalate: bool) -> Tuple[dict, dict]:
+        """The v2 evidence of one date (design 3, 5.2, 5.3, B-25, B-26): windows, S(d), the grace samples, suspects, restarts, the row evidence
+        over E(d) and the settle state. Every read is strict (B-36): an absent table or column is an unavailable source; with `escalate`, any
+        other failing source is unavailable too (B-44 row 5) - never zero evidence."""
+        from autorun import calendar as CAL
+        from forward_capture import health as FH
+        from forward_validation.store import EvidenceSourceAbsent
+        unavailable: Dict[str, str] = {}
+
+        def read(source, fn, default):
+            try:
+                return fn()
+            except EvidenceSourceAbsent as exc:
+                unavailable[source] = f"absent: {exc}"[:200]
+                return default
+            except Exception as exc:  # noqa: BLE001
+                if not escalate:
+                    try:
+                        exc.evidence_source = source                                   # B-44 row 3: the EVIDENCE_READ event names its source
+                    except AttributeError:
+                        pass
+                    raise
+                unavailable[source] = f"{type(exc).__name__}: {exc}"[:200]
+                return default
+
+        def ny(at):
+            dt = _parse(at)
+            d = session_date(dt) if dt is not None else None
+            return d.isoformat() if d else None
+        w = FH.window(trading_date)
+        d0, d1 = ny_window(trading_date)
+        if w is not None:
+            w_open, w_close = w[0], w[1]
+            cut = w_close + timedelta(seconds=M.G)
+        else:                                                                          # a non-market day: its window is the whole NY day (V-09)
+            w_open = w_close = None
+            cut = _parse(d1) - timedelta(seconds=1)
+        lo, hi = d0, _iso(cut)
+        r0 = (read("forward_validation_samples", lambda: self.store.query_strict("SELECT MIN(rowid) AS r FROM forward_validation_samples WHERE at >= ? AND at < ?", (d0, d1)),
+                   [{}]) or [{}])[0].get("r")
+        rows = read("forward_validation_samples", lambda: self.store.samples_from_rowid(int(r0)), []) if r0 else []
+        prev0 = read("forward_validation_samples", lambda: self.store.query_strict("SELECT rowid AS _rowid, sample_id, at, owner FROM forward_validation_samples WHERE rowid < ? "
+                                                                                  "ORDER BY rowid DESC LIMIT 1", (int(r0),)), []) if r0 else []
+        prev0 = prev0[0] if prev0 else None
+        suspects = self._suspects(rows)
+        full = read("forward_validation_samples", lambda: self.store.samples_between(_iso(w_open), hi), []) if w is not None else []
+        for s in full:
+            s["at_iso"], s["at"], s["last_cycle_at_dt"] = s["at"], _parse(s["at"]), _parse(s.get("last_cycle_at"))
+        S = [s for s in full if s["sample_id"] not in suspects and s["at"] is not None and w_open <= s["at"] <= w_close]
+        grace = [s for s in full if s["sample_id"] not in suspects and s["at"] is not None and w_close < s["at"] <= cut]
+        affects = False
+        order = [r["_rowid"] for r in rows]
+        for i, r in enumerate(rows):                                                   # B-16: the suspect's own date and its anchor's date
+            if r["sample_id"] not in suspects:
+                continue
+            anchor = next((rows[j] for j in range(i - 1, -1, -1) if rows[j]["sample_id"] not in suspects), None) or prev0
+            if anchor is None:
+                anchor = next((rows[j] for j in range(i + 1, len(order)) if rows[j]["sample_id"] not in suspects), None)
+            if trading_date in ({ny(r["at"])} | ({ny(anchor["at"])} if anchor else set())):
+                affects = True
+                break
+        restarts = self._restart_times(rows, prev0, w_open, w_close, trading_date, unavailable, escalate) if w is not None else []
+        failed_rows, row_degraded = self._row_evidence(lo, hi, read)
+        exec_ok, refresh_ok = read("settle", lambda: self._settled(cut if w is not None else _parse(d1), trigger), (False, False))
+        ev = {"market_day": w is not None, "window": (w_open, w_close) if w is not None else None, "covered": CAL.covered(date.fromisoformat(trading_date)), "S": S,
+              "end_state": ([S[-1]] if S else []) + grace, "suspect_affects": affects, "clock_inconsistent": affects, "restarts": restarts,
+              "failed_rows": failed_rows, "row_degraded": row_degraded, "unavailable": dict(unavailable), "not_settled": bool(late) and not (exec_ok and refresh_ok),
+              "min_coverage": FH.MIN_COVERAGE}
+        info = {"window": {"open": _iso(w_open) if w_open else None, "close": _iso(w_close) if w_close else None, "cutoff": hi, "minutes": w[2] if w is not None else None},
+                "suspects": len([r for r in rows if r["sample_id"] in suspects]), "settled": {"executor": exec_ok, "refresh": refresh_ok}}
+        return ev, info
 
     def _backfill_not_run(self, now: datetime, today: str) -> List[str]:
-        last = self.store.last_session_date()
-        if last is None or last >= today:
+        """B-19 steps 1-2 (observe calls this first): the clock check (B-27) at every own sample; then, at a confirmed own sample only,
+        the session accounting of past days (B-24). Returns the dates back-filled NOT_RUN. Contained (B-44 row 3): nothing escapes into observe()."""
+        try:
+            self._clock_check(now)
+            self._conf = self._confirmed(now)
+        except Exception as exc:  # noqa: BLE001 - B-44 row 3: the clock or confirmation read failed - not confirmed, one event, no transition
+            self._evidence_read_failed(now, today, "confirm", exc)
+            self._conf = None
+        if self._conf is None:
             return []
-        done = []
-        for d in weekdays_between(last, today):
-            if self.store.session(d) is None:
-                self.store.insert_not_run(d, now, "NO_OBSERVATION|HOLIDAYS_NOT_MODELLED")
-                self.store.add_event(now, "SESSION_NOT_RUN", "NO_OBSERVATION", {"note": "no observer tick on this weekday (an exchange holiday reads the same: no calendar exists)"},
+        try:
+            return self._account_days(now, today, self._conf)
+        except Exception as exc:  # noqa: BLE001 - B-44 row 3: the accounting itself failed (each date is contained inside it)
+            self._evidence_read_failed(now, today, "accounting_pass", exc)
+            return []
+
+    # ---------------------------------------------------------------- Wave 2 PR B: helpers of the classifier v2 ------------------------------
+    def _confirmed(self, now: datetime) -> Optional[dict]:
+        """B-13: the latest own sample when it and its two own predecessors are joined by two plausible steps (0 <= step <= G); else None."""
+        tail = self.store.own_tail(self.owner, M.K)
+        if len(tail) < M.K:
+            return None
+        ats = [_parse(s["at"]) for s in tail]
+        if any(a is None for a in ats) or not all(0 <= (b - a).total_seconds() <= M.G for a, b in zip(ats, ats[1:])):
+            return None
+        return {**tail[-1], "at_dt": ats[-1]}
+
+    @staticmethod
+    def _suspects(rows: List[dict]) -> set:
+        """B-14: the sample ids of `rows` (by rowid) that a later-inserted sample of ANY owner proves clock-suspect (t.at < s.at - h)."""
+        out, later_min = set(), None
+        for r in reversed(rows):
+            at = _parse(r["at"])
+            if at is None:
+                continue
+            if later_min is not None and later_min < at - timedelta(seconds=M.H):
+                out.add(r["sample_id"])
+            later_min = at if later_min is None else min(later_min, at)
+        return out
+
+    def _clock_check(self, now: datetime) -> Optional[dict]:
+        """B-27: at each own sample t, when t.at < MAX(at of earlier samples) - h, write ONE retroactive CLOCK_INCONSISTENT event naming the
+        samples t newly proves suspect (each suspect is named once)."""
+        def ny(at):
+            dt = _parse(at)
+            d = session_date(dt) if dt is not None else None
+            return d.isoformat() if d else None
+        tail = self.store.own_tail(self.owner, 1)
+        if not tail:
+            return None
+        t = tail[-1]
+        ta, ma = _parse(t["at"]), _parse(self.store.max_at_before(int(t["_rowid"])))
+        if ta is None or ma is None or ta >= ma - timedelta(seconds=M.H):
+            return None
+        proven = self.store.query_strict("SELECT rowid AS _rowid, sample_id, at, owner FROM forward_validation_samples WHERE rowid < ? AND at > ? ORDER BY rowid",
+                                         (int(t["_rowid"]), _iso(ta + timedelta(seconds=M.H))))
+        known = set()
+        for e in self.store.query_strict("SELECT detail_json FROM forward_validation_events WHERE kind = 'CLOCK_INCONSISTENT'"):
+            try:
+                known |= {str(s.get("sample_id")) for s in (json.loads(e["detail_json"] or "{}").get("suspects") or [])}
+            except (ValueError, AttributeError):
+                continue
+        new = [p for p in proven if p["sample_id"] not in known]
+        if not new:
+            return None
+        ids = {p["sample_id"] for p in new} | known                                    # every suspect: never an anchor
+        mine = {p["sample_id"] for p in new}
+        seq = self.store.query_strict("SELECT rowid AS _rowid, sample_id, at FROM forward_validation_samples WHERE rowid <= ? ORDER BY rowid", (int(t["_rowid"]),))
+        prev_ok, last = [], None                                                       # one pass each way, however many suspects (a large clock jump)
+        for r in seq:
+            prev_ok.append(last)
+            if r["sample_id"] not in ids:
+                last = r
+        next_ok, nxt = [None] * len(seq), None
+        for j in range(len(seq) - 1, -1, -1):
+            next_ok[j] = nxt
+            if seq[j]["sample_id"] not in ids:
+                nxt = seq[j]
+        pos = {r["sample_id"]: i for i, r in enumerate(seq)}
+        affected = set()
+        for p in new:                                                                  # B-16: the suspect's date and its anchor's (the latest earlier non-suspect, else the earliest later one)
+            affected.add(ny(p["at"]))
+            i = pos.get(p["sample_id"])
+            anchor = (prev_ok[i] or next_ok[i]) if i is not None else None
+            if anchor is not None:
+                affected.add(ny(anchor["at"]))
+        triggered = []
+        for r in self.store.query_strict("SELECT trading_date, assessment_json FROM forward_validation_sessions WHERE assessment_json IS NOT NULL"):
+            try:
+                a = json.loads(r["assessment_json"] or "{}")
+            except ValueError:
+                continue
+            if any(((a.get(k) or {}).get("sample_id") in mine) for k in ("opened_by", "finalized_by", "backfilled_by")):   # B-27: the rows N triggered
+                triggered.append(r["trading_date"])
+        detail = {"proven_by": {"sample_id": t["sample_id"], "at": t["at"], "owner": t["owner"]},
+                  "suspects": [{"sample_id": p["sample_id"], "at": p["at"], "owner": p["owner"]} for p in new],
+                  "affected_dates": sorted(d for d in affected if d), "rows_triggered": sorted(triggered)}
+        self.store.add_event(now, "CLOCK_INCONSISTENT", "RETROACTIVE", detail, trading_date=ny(t["at"]), owner=self.owner)
+        return detail
+
+    def _restart_times(self, rows: List[dict], prev0: Optional[dict], w_open, w_close, trading_date: str, unavailable: Optional[dict] = None,
+                       escalate: bool = False) -> List[str]:
+        """B-25: the restart time of every owner change (by rowid, any owner) on the date: the matching autorun STARTUP (detail.pid = the new
+        owner's pid, previous owner's last sample <= at <= first sample), else the first sample. Only times in (W.open, W.close]. A restart
+        time that stays unknown (no matching STARTUP, or the lookup unreadable) for a change that straddles the close is counted at W.close,
+        and an unreadable lookup follows B-44 (R-4): an absent table, or an escalated read, is unavailable at once; any other failure raises
+        (contained by the caller and retried). Never HEALTHY on an unknown restart time."""
+        from forward_validation.store import EvidenceSourceAbsent
+        out, prev = [], prev0
+        for r in rows:
+            dt = _parse(r["at"])
+            if prev is not None and r["owner"] != prev["owner"] and dt is not None and session_date(dt) and session_date(dt).isoformat() == trading_date:
+                t, matched, failed = dt, False, None
+                pid = str(r["owner"]).split(":")[0]
+                try:
+                    evs = self.store.query_strict("SELECT at, detail_json FROM autorun_events WHERE kind = 'STARTUP' AND at >= ? AND at <= ? ORDER BY at DESC, rowid DESC",
+                                                  (prev["at"], r["at"]))
+                except Exception as exc:  # noqa: BLE001 - absent or unreadable: no STARTUP known
+                    evs, failed = [], exc
+                for e in evs:
+                    try:
+                        det = json.loads(e["detail_json"] or "{}")
+                    except ValueError:
+                        det = {}
+                    if str(det.get("pid")) == pid and _parse(e["at"]) is not None:
+                        t, matched = _parse(e["at"]), True
+                        break
+                pa = _parse(prev["at"])
+                if not matched and pa is not None and pa <= w_close < dt:                 # R-4: the restart may lie before the close - counted, never hidden
+                    t = w_close
+                    if failed is not None and not (escalate or isinstance(failed, EvidenceSourceAbsent)):
+                        try:
+                            failed.evidence_source = "autorun_events"                         # B-44 rows 3-4: contained by the caller, retried
+                        except AttributeError:
+                            pass
+                        raise failed
+                    if failed is not None and unavailable is not None:
+                        unavailable.setdefault("autorun_events", f"{type(failed).__name__}: {failed}"[:200])
+                if w_open < t <= w_close:
+                    out.append(_iso(t))
+            prev = r
+        return out
+
+    def _settled(self, cut: datetime, trigger: dict) -> Tuple[bool, bool]:
+        """B-17: (S2) the trigger sample's last completed executor cycle started after the cutoff; (S3) an account-refresh attempt started in
+        (cutoff, trigger.at]. Strict reads; a failure raises (contained by the caller)."""
+        row = self.store.query_strict("SELECT last_cycle_at FROM forward_validation_samples WHERE sample_id = ?", (trigger["sample_id"],))
+        lc = _parse(row[0]["last_cycle_at"]) if row else None
+        n = self.store.query_strict("SELECT count(*) AS n FROM account_refresh_attempts WHERE started_at > ? AND started_at <= ?", (_iso(cut), trigger["at"]))
+        return bool(lc is not None and lc > cut), bool(n and _n(n[0]["n"]) > 0)
+
+    def _duplicate_evidence(self, lo: str, hi: str) -> int:
+        """DUPLICATE_BROKER_ORDER, the rule deployed (v1; PR C's W2-6 changes it together with order_reliability, T-S46): client-order-id groups
+        with >= 2 members first seen <= hi and one in [lo, hi] (V-12), plus MULTIPLE_ORDERS / UNKNOWN_INTERNAL_ORDER findings in [lo, hi]."""
+        groups: Dict[Any, List[str]] = {}
+        for r in self.store.query_strict("SELECT client_order_id, first_seen_at FROM execution_orders WHERE first_seen_at <= ?", (hi,)):
+            groups.setdefault(r["client_order_id"], []).append(str(r["first_seen_at"] or ""))
+        n = sum(1 for v in groups.values() if len(v) >= 2 and any(lo <= x <= hi for x in v))
+        rec = self.store.query_strict("SELECT count(*) AS n FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER') AND at >= ? AND at <= ?", (lo, hi))
+        return n + _n(rec[0]["n"] if rec else 0)
+
+    def _live_host_evidence(self, lo: str, hi: str) -> int:
+        """LIVE_HOST_ATTEMPT: the transport's refusal text in the append-only sources with a stamp in [lo, hi], plus a mutable control row whose
+        mark is present with updated_at >= lo and NO upper bound (U-11, fail-closed)."""
+        like, n = f"%{LIVE_HOST_MARK}%", 0
+        for table, col, at in (("account_refresh_attempts", "error_text", "started_at"), ("cash_flow_refresh_attempts", "error_text", "started_at"),
+                               ("execution_reconciliations", "detail_json", "at"), ("execution_runs", "error", "started_at")):
+            n += _n(self.store.query_strict(f"SELECT count(*) AS n FROM {table} WHERE {col} LIKE ? AND {at} >= ? AND {at} <= ?", (like, lo, hi))[0]["n"])
+        n += _n(self.store.query_strict("SELECT count(*) AS n FROM execution_controls WHERE last_error LIKE ? AND updated_at >= ?", (like, lo))[0]["n"])
+        return n
+
+    def _row_evidence(self, lo: str, hi: str, read) -> Tuple[Dict[str, int], Dict[str, int]]:
+        """The row-based FAILED and DEGRADED evidence over E(d) = [lo, hi] by event time (5.2, 5.3); `read` marks a failing source unavailable."""
+        q = self.store.query_strict
+
+        def count(sql, args):
+            return _n(q(sql, args)[0]["n"])
+
+        def gate():                                                                    # V-11: strict probes before the pinned tolerant reader
+            q("SELECT execution_id, symbol, submitted_at, attempt_count, intent_type FROM execution_intents LIMIT 0")
+            q("SELECT state, allowed_new_entry, evaluated_at, reason_codes_json FROM execution_safety_evaluations LIMIT 0")
+            return len(self._gate_violations(lo, _iso(_parse(hi) + timedelta(seconds=1))))
+        failed = {"DUPLICATE_BROKER_ORDER": read("execution_orders+execution_reconciliations", lambda: self._duplicate_evidence(lo, hi), 0),
+                  "LIVE_HOST_ATTEMPT": read("live_host_sources", lambda: self._live_host_evidence(lo, hi), 0),
+                  "SAFETY_GATE_ALLOWED_UNDER_BAD_STATE": read("execution_intents+execution_safety_evaluations", gate, 0),
+                  "EARLY_STOP": read("forward_validation_events", lambda: count("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'EARLY_STOP' AND at >= ? AND at <= ?",
+                                                                               (lo, hi)), 0)}
+        runs_err = read("execution_runs", lambda: count("SELECT count(*) AS n FROM execution_runs WHERE result = 'ERROR' AND started_at >= ? AND started_at <= ?", (lo, hi)), 0)
+        acct = read("account_refresh_attempts", lambda: q("SELECT result, error_code FROM account_refresh_attempts WHERE started_at >= ? AND started_at <= ?", (lo, hi)), [])
+        cf = read("cash_flow_refresh_attempts", lambda: q("SELECT result, error_code FROM cash_flow_refresh_attempts WHERE started_at >= ? AND started_at <= ?", (lo, hi)), [])
+        bu = read("execution_reconciliations", lambda: count("SELECT count(*) AS n FROM execution_reconciliations WHERE kind = 'BROKER_UNAVAILABLE' AND at >= ? AND at <= ?", (lo, hi)), 0)
+        acct_bad = [r for r in acct if r.get("result") != "SUCCESS"]
+        cf_bad = [r for r in cf if r.get("result") not in ("SUCCESS", "INCOMPLETE")]
+        degraded = {"EXECUTOR_CYCLE_ERRORS": runs_err, "REFRESH_FAILURES": len(acct_bad) + len(cf_bad),
+                    "BROKER_ERRORS": sum(1 for r in acct_bad + cf_bad if r.get("error_code")) + runs_err + bu}   # the v1 broker_health counting
+        return failed, degraded
+
+    def _assess(self, trading_date: str, row: Optional[dict], trigger: dict, late: bool, escalate: bool) -> Tuple[str, dict, dict, dict]:
+        """Classify one date (design 5) and build its assessment record (B-37) and v1's display columns."""
+        ev, info = self._session_observations(trading_date, trigger, late, escalate)
+        status, res = M.classify_session_v2(ev)
+        S, end = ev["S"], ev["end_state"]
+        last = S[-1] if S else None
+        gaps = res["gaps"]
+        prior = (row or {}).get("assessment") or {}
+        attempts = None
+        if ev["unavailable"]:                                                          # B-37: each unavailable source with the date's attempt count
+            try:
+                attempts = _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
+                                                      "AND trading_date = ?", (trading_date,))[0]["n"])
+            except Exception:  # noqa: BLE001
+                attempts = None
+
+        def brief(s):
+            return {"sample_id": s.get("sample_id"), "at": s.get("at_iso"), "rr_intents": s.get("rr_intents"), "attention_positions": s.get("attention_positions"),
+                    "failed_intents": s.get("failed_intents"), "safety_state": s.get("safety_state")}
+        assessment = {**({"opened_by": prior["opened_by"]} if prior.get("opened_by") else {}), "classifier_version": M.CLASSIFIER_VERSION,
+                      "window": info["window"], "covered": ev["covered"], "measures": res["measures"],
+                      "gaps": {"open": gaps[0] if gaps else None, "close": gaps[-1] if gaps else None, "max_interior": max(gaps[1:-1]) if len(gaps) > 2 else None,
+                               "over_G": sum(1 for g in gaps if g > M.G)},
+                      "samples": {"in_window": len(S), "grace": len(end) - (1 if last else 0), "suspect_excluded": info["suspects"]}, "restarts": ev["restarts"],
+                      "codes": res["notes"], "failed_codes": res["failed_codes"], "degraded_codes": res["degraded_codes"],
+                      "unavailable_sources": {k: {"error": v, "attempts": attempts} for k, v in ev["unavailable"].items()},
+                      "failed_evidence": {k: v for k, v in ev["failed_rows"].items() if v}, "row_degraded_evidence": {k: v for k, v in ev["row_degraded"].items() if v},
+                      "end_state": [brief(s) for s in end], "settled": info["settled"],
+                      "finalized_by": {"sample_id": trigger.get("sample_id"), "at": trigger.get("at"), "owner": trigger.get("owner")}, "finalized_late": bool(late)}
+        disp = {"market_close_seen": bool(S) and bool(gaps) and gaps[-1] <= M.G,
+                "account_refresh_healthy": bool(S) and any(s.get("account_status") == "FRESH" for s in S)
+                and not any(s.get("account_status") in ("STALE", "UNAVAILABLE", "DISABLED") for s in S),
+                "cash_flow_healthy": bool(S) and any(s.get("cash_flow_status") == "FRESH" for s in S)
+                and not any(s.get("cash_flow_status") in ("STALE", "UNAVAILABLE", "AMBIGUOUS") for s in S),
+                "reconciliation_healthy": bool(S) and not any(s.get("reconciliation_healthy") is False for s in S) and last is not None
+                and last.get("rr_intents") == 0 and last.get("attention_positions") == 0, "in_window_samples": len(S)}
+        return status, res, assessment, disp
+
+    def _account_days(self, now: datetime, today: str, conf: dict) -> List[str]:
+        """B-24: every past market day without a row that is observed or holds FAILED evidence is opened and finalized (late); then the market
+        days strictly between L* and today with neither are back-filled NOT_RUN (written at INSERT). A date whose evidence cannot be read is
+        retried, then escalated (B-44) - never NOT_RUN. Returns the NOT_RUN dates."""
+        from autorun import calendar as CAL
+        from forward_capture import health as FH
+        try:
+            l0 = (self.store.query_strict("SELECT MAX(trading_date) AS d FROM forward_validation_sessions WHERE trading_date < ?", (today,)) or [{}])[0].get("d")
+            have = {r["trading_date"] for r in self.store.query_strict("SELECT trading_date FROM forward_validation_sessions")}
+            dated = {r["trading_date"] for r in self.store.query_strict("SELECT DISTINCT trading_date FROM forward_validation_samples WHERE trading_date < ?", (today,))}
+            pending = {r["trading_date"] for r in self.store.query_strict("SELECT DISTINCT trading_date FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' "
+                                                                           "AND code = 'EVIDENCE_READ' AND trading_date < ?", (today,)) if r["trading_date"]}   # B-44: retried until resolved
+        except Exception as exc:  # noqa: BLE001
+            self._evidence_read_failed(now, today, "accounting", exc)
+            return []
+        evidence: Dict[str, Optional[dict]] = {}
+        escalated: set = set()
+
+        def market(d):
+            try:
+                return d not in have and d < today and FH.window(d) is not None
+            except Exception as exc:  # noqa: BLE001 - B-44 row 3: a malformed candidate date is skipped (logged, not an event per tick), never aborting the others
+                log.warning("forward validation v2: candidate date %r skipped (%s)", d, type(exc).__name__)
+                return False
+
+        def evaluate(d):                                                               # None: unreadable now (retried next tick, escalated after the bound)
+            if d in evidence:
+                return evidence[d]
+            try:
+                ev = self._session_observations(d, conf, True, False)[0]
+                ev["_class"] = M.classify_session_v2(ev)[0]                            # inside the per-date containment (B-44 row 3)
+                evidence[d] = ev
+            except Exception as exc:  # noqa: BLE001
+                evidence[d] = None
+                if self._evidence_read_failed(now, d, "accounting", exc) >= M.EVIDENCE_READ_ATTEMPTS:
+                    escalated.add(d)                                                   # B-44 row 5: the bound is reached (the date has ended: d < today)
+                    try:
+                        ev = self._session_observations(d, conf, True, True)[0]
+                        evidence[d] = ev                                               # kept even if only the classifier raises below (N-1)
+                        ev["_class"] = M.classify_session_v2(ev)[0]
+                    except Exception as exc2:  # noqa: BLE001 - even the escalated evaluation failed: unreadable, opened and finalized fail-closed below
+                        self._evidence_read_failed(now, d, "accounting_escalated", exc2)
+                        if evidence[d] is not None:
+                            evidence[d]["_class"] = "DEGRADED"                         # its samples still decide (a): an observed day keeps its row and start
+                        else:
+                            evidence[d] = {"S": [], "failed_rows": {}, "unavailable": {"accounting": f"{type(exc2).__name__}: {exc2}"[:200]}, "suspect_affects": False,
+                                           "_class": "DEGRADED"}
+            return evidence[d]
+
+        def open_and_finalize(d, ev):                                                  # B-24 (a): opened with its real start, finalized at once (late)
+            try:
+                first = ev["S"][0]["at_iso"] if ev["S"] else conf["at"]
+                if self.store.session(d) is None:
+                    self.store.open_session(d, now, self.owner, in_session=False, started_at=first)
+                    self.store.update_session(d, now, assessment_json=json.dumps({"opened_by": {"sample_id": conf["sample_id"], "at": conf["at"], "owner": conf["owner"]}},
+                                                                                 sort_keys=True, separators=(",", ":")))
+                    self.store.add_event(now, "SESSION_OPENED", None, {"accounted": True, "started_at": first}, trading_date=d, owner=self.owner)
+                have.add(d)
+                try:
+                    self._finalize(d, now, trigger=conf, late=True, escalate=d in escalated)   # a structurally absent source is unavailable at once anyway (row 6)
+                except Exception as exc:  # noqa: BLE001 - the row stays OPEN; the late-finalize path of _record_session retries it
+                    self._evidence_read_failed(now, d, "finalize", exc)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._evidence_read_failed(now, d, "account_open", exc)
+                return False
+        accounted = []
+        for d in sorted(x for x in dated | pending | set(weekdays_between(l0, today) if l0 else []) if market(x)):
+            ev = evaluate(d)
+            if ev is not None and (ev["S"] or ev["_class"] == "FAILED") and open_and_finalize(d, ev):   # D-2: incl. a FAILED end state in G(d)
+                accounted.append(d)
+        lstar = l0 or (min(accounted) if accounted else None)
+        done: List[str] = []
+        if lstar is None:
+            return done
+        for d in sorted(x for x in set(weekdays_between(lstar, today)) | pending if market(x)):        # a pending date stays a candidate after L0 passes it
+            ev = evaluate(d)
+            if ev is None:
+                continue                                                               # unreadable, not yet escalated: never NOT_RUN
+            if ev["_class"] != "NOT_RUN":                                                  # D-2 / B-20: observed, FAILED, unreadable, unknown or clock-suspect: a row
+                open_and_finalize(d, ev)
+                continue
+            try:
+                notes = "NO_OBSERVATION" + ("" if CAL.covered(date.fromisoformat(d)) else "|CALENDAR_NOT_COVERED")
+                self.store.insert_not_run(d, now, notes, classifier_version=M.CLASSIFIER_VERSION,
+                                          assessment={"backfilled_by": {"sample_id": conf["sample_id"], "at": conf["at"], "owner": conf["owner"]},
+                                                      "classifier_version": M.CLASSIFIER_VERSION, "codes": notes.split("|")})
+                have.add(d)
+                self.store.add_event(now, "SESSION_NOT_RUN", "NO_OBSERVATION", {"note": "no observer sample inside this market day's regular session and no FAILED evidence"},
                                      trading_date=d, owner=self.owner)
                 done.append(d)
+            except Exception as exc:  # noqa: BLE001
+                self._evidence_read_failed(now, d, "backfill", exc)
         return done
+
+    def _evidence_read_failed(self, now: datetime, trading_date: Optional[str], phase: str, exc: BaseException) -> int:
+        """B-44 row 3: record one OBSERVER_ERROR / EVIDENCE_READ event for the date (guarded) and return the persisted attempt count."""
+        log.warning("forward validation v2: %s of %s failed (%s)", phase, trading_date, type(exc).__name__)
+        try:
+            self.store.add_event(now, "OBSERVER_ERROR", "EVIDENCE_READ", {"phase": phase, "source": getattr(exc, "evidence_source", None), "error": type(exc).__name__,
+                                                                          "text": str(exc)[:200]},
+                                 trading_date=trading_date, owner=self.owner)
+        except Exception:  # noqa: BLE001 - the event itself failed: logged; the date is retried, never silently HEALTHY
+            log.warning("forward validation v2: the EVIDENCE_READ event of %s was not recorded", trading_date)
+        try:
+            return _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
+                                              "AND trading_date = ?", (trading_date,))[0]["n"])
+        except Exception:  # noqa: BLE001
+            return 0
 
     # ---------------------------------------------------------------- restart detection ----------------------------------------
     def _detect_restart(self, now: datetime, sample: dict) -> Optional[dict]:
