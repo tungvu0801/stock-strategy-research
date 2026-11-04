@@ -4,7 +4,9 @@ and 8; WAVE2_PRB_TEST_PLAN_REV3_4.md section 3: T-W04B, T-W05B, F01B ... F03B), 
 
   T-W04B      the production diff since 5d6f7dd is exactly PR A's files plus PR B's five, and PR B's added lines carry no PR C token
   T-W05B      the closed list of functions PR B may change or add (design 7) against 50cb2d7b, and no new module-level statement
+  T-W06B      D-5 (operator round 3): cumulative() and REASON_TEXT differ from 50cb2d7b by exactly the unreadable-evidence exclusion
   F01B..F03B  PR B's change set, its declared test changes (SEMANTIC_TESTS_W2B) and every bookkeeping edit of an older test file, exactly
+  F04B        the Stage 6.1 Browser Harness flow's k = 3 observations (operator round 3), exactly; T-A42's pinned lines stay in place
 """
 import ast
 import hashlib
@@ -22,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 
 PR_B_FILES = {"database/forward_validation_migrations.py", "forward_validation/store.py", "forward_validation/metrics.py", "forward_validation/service.py",
               "forward_capture/health.py"}                                                    # design 7: the five production files
+HARNESS_B = {"browser_tests/flows.py"}                                                         # operator round 3: the Stage 6.1 harness flow (a LEDGER file; F04B)
 PR_C_TOKENS_B = ("forward_runs", "forward_run_events", "bot_exposed", "bot_orders", "pa_cov", "paper_auto_cov")   # T-W04B (U-03: no eligibility in PR B)
 N01_TOKENS = ("post_order", "insert_intent", "enable_auto", "import requests", "from requests", "robinhood", "anthropic", "paper-api.alpaca.markets", "alpaca_order_writer",
               "TradingClient", "update_intent", "update_position", "set_mode(", "apply_fill", "record_order(")   # V-18: Stage 6.1 N01's list
@@ -32,13 +35,13 @@ CLOSED_LIST_B = {                                                               
                                     {"class EvidenceSourceAbsent"} | {"ForwardValidationStore." + n for n in ("query_strict", "samples_between", "own_tail", "samples_from_rowid",
                                                                                                              "max_at_before")}),
     "forward_validation/metrics.py": (set(), {"=G", "=H", "=K", "=CLASSIFIER_VERSION", "=EVIDENCE_READ_ATTEMPTS", "classify_session_v2", "hold_coverage", "session_gaps"}),
-    "forward_validation/service.py": ({FN + n for n in ("_snapshot", "_record_session", "_finalize", "_session_observations", "_backfill_not_run")},
+    "forward_validation/service.py": ({FN + n for n in ("_snapshot", "_record_session", "_finalize", "_session_observations", "_backfill_not_run", "cumulative")},   # cumulative: D-5 (T-W06B)
                                       {FN + n for n in ("_confirmed", "_suspects", "_clock_check", "_restart_times", "_settled", "_row_evidence", "_duplicate_evidence",
                                                         "_live_host_evidence", "_assess", "_account_days", "_evidence_read_failed")}),
-    "forward_capture/health.py": ({"compute"}, {"_auto_disarm_exempt"}),
+    "forward_capture/health.py": ({"compute", "=REASON_TEXT"}, {"_auto_disarm_exempt"}),                         # =REASON_TEXT: D-5 (T-W06B)
 }
 PINNED_B = [("forward_validation/service.py", FN + n) for n in ("observe", "_early_stop", "attention", "_detect_restart", "_previous_sample", "_live_host_attempts",
-                                                                "_gate_violations", "order_reliability", "freshness", "broker_health", "cumulative", "daily_summary")] + \
+                                                                "_gate_violations", "order_reliability", "freshness", "broker_health", "daily_summary")] + \
            [("forward_validation/metrics.py", "classify_session")]                                # design 7: "pinned, notably"
 SCRATCH = ("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")
 
@@ -102,9 +105,9 @@ def added_lines(rel):
 # ================================================================ T-W04B, T-W05B: the allow-list and the closed function list ================
 
 def test_TW04B_the_production_diff_is_pr_a_plus_pr_b_and_pr_b_adds_no_pr_c_or_order_token():
-    prod = {p for p in changed_files(FL.BASE_W2A) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}
+    prod = {p for p in changed_files(FL.BASE_W2A) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}   # the harness: F04B
     assert prod == PR_A_FILES | PR_B_FILES, {"unexpected": sorted(prod - PR_A_FILES - PR_B_FILES), "missing": sorted((PR_A_FILES | PR_B_FILES) - prod)}
-    mine = {p for p in changed_files(FL.BASE_W2B) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}
+    mine = {p for p in changed_files(FL.BASE_W2B) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}
     assert mine == PR_B_FILES, sorted(mine ^ PR_B_FILES)
     for rel in sorted(PR_B_FILES):
         added = added_lines(rel)
@@ -136,6 +139,44 @@ def test_TW05B_only_the_listed_functions_changed_and_only_the_listed_names_are_n
     assert len(unnamed('"""doc"""\nimport os\nx = 1\nA.f = 2\n')) == 2
 
 
+D5_CUMULATIVE = [                                                                              # D-5: (50cb2d7b, PR B) in cumulative(), each exactly once
+    ('        completed = by["HEALTHY"] + by["DEGRADED"] + by["FAILED"]\n',
+     '        unreadable = sum(1 for s in sessions if s["session_status"] == "DEGRADED" and "EVIDENCE_UNREADABLE" in (s.get("notes") or []))   # D-5: never acceptable\n'
+     '        completed = by["HEALTHY"] + by["DEGRADED"] + by["FAILED"] - unreadable\n'),
+    ('and not any(a["critical"] for a in att) and by["FAILED"] == 0\n', 'and not any(a["critical"] for a in att) and by["FAILED"] == 0 and unreadable == 0\n'),
+    ('"not_run": by["NOT_RUN"], "in_progress": by["OPEN"],\n', '"not_run": by["NOT_RUN"], "in_progress": by["OPEN"], "unreadable": unreadable,\n'),
+]
+D5_REASON = ("FV_SESSION_EVIDENCE_UNREADABLE", "the Stage 6.1 session evidence was unreadable (EVIDENCE_UNREADABLE): never acceptable evidence")
+D5_HEALTH = ('    if fv_status == "DEGRADED" and "EVIDENCE_UNREADABLE" in ((fv_row or {}).get("notes") or []):\n'
+             '        inv.append("FV_SESSION_EVIDENCE_UNREADABLE")                       # Wave 2 PR B (D-5): unreadable evidence never qualifies; not a FAILED record\n')
+
+
+def fn_text(text, qual):
+    """The source lines of a top-level function or a method ('Class.name'), as written."""
+    cls, name = qual.split(".") if "." in qual else (None, qual)
+    for n in ast.parse(text).body:
+        for m in ([n] if cls is None else (n.body if isinstance(n, ast.ClassDef) and n.name == cls else [])):
+            if isinstance(m, ast.FunctionDef) and m.name == name:
+                return "\n".join(text.splitlines()[m.lineno - 1:m.end_lineno]) + "\n"
+    raise AssertionError(qual)
+
+
+def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the_declared_lines():
+    rel = "forward_validation/service.py"
+    now, base = fn_text(now_text(rel), FN + "cumulative"), fn_text(at_base(rel), FN + "cumulative")
+    undone = now
+    for old, new in D5_CUMULATIVE:
+        assert undone.count(new) == 1 and base.count(old) == 1, new[:80]
+        undone = undone.replace(new, old)
+    assert undone == base                                                                       # cumulative() is 50cb2d7b's plus the D-5 lines, nothing else
+    rel = "forward_capture/health.py"
+    reasons = lambda t: ast.literal_eval(next(n for n in ast.parse(t).body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "REASON_TEXT").value)  # noqa: E731
+    assert reasons(now_text(rel)) == {**reasons(at_base(rel)), D5_REASON[0]: D5_REASON[1]} and D5_REASON[0] not in reasons(at_base(rel))
+    comp = fn_text(now_text(rel), "compute")
+    assert comp.count(D5_HEALTH) == 1 and comp.count("FV_SESSION_EVIDENCE_UNREADABLE") == 1 and "FV_SESSION_EVIDENCE_UNREADABLE" not in at_base(rel)
+    assert comp.index('inv.append("FV_SESSION_FAILED" if fv_status == "FAILED" else "FV_SESSION_NOT_RUN")') < comp.index(D5_HEALTH)   # FAILED kept, never relabelled
+
+
 # ================================================================ F: scope and bookkeeping (as every stage since 6.8) =========================
 
 def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
@@ -146,7 +187,7 @@ def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_
     assert {p for p in changed if p not in in_base} == FL.NEW_W2B and {p for p in changed if p in in_base} == FL.EDITED_W2B
     assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_W2B).split()                 # nothing of 50cb2d7b is deleted
     app = {p for p in FL.EDITED_W2B | FL.NEW_W2B if not p.startswith("tests/")}
-    assert app == PR_B_FILES | {".github/ci/pytest_groups.json"} and set(FL.SEMANTIC_W2B) == PR_B_FILES and FL.INSTRUMENTATION_W2B == {}
+    assert app == PR_B_FILES | HARNESS_B | {".github/ci/pytest_groups.json"} and set(FL.SEMANTIC_W2B) == PR_B_FILES and FL.INSTRUMENTATION_W2B == {}
     assert all(len(v) > 40 for v in FL.SEMANTIC_W2B.values())
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")                                       # a marked block an older freeze test would strip unseen
     for rel in sorted(changed):
@@ -213,3 +254,31 @@ def test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
         assert FL.undo_w2b("tests/_probe.py", "x = 1\ny = 3\n") == text and FL.undo_w2b("tests/other.py", "z\r\n") == "z\n"
     finally:
         del FL.UNDO_W2B["tests/_probe.py"]
+
+
+FLOWS_EDIT_B = [                                                                               # F04B: (50cb2d7b, PR B) in browser_tests/flows.py, each exactly once
+    ("against the REAL observer (one observation through the service, no thread),\n", "against the REAL observer (k = 3 observations through the service, no thread),\n"),
+    ("    from datetime import datetime, timezone\n    from api.routes.trader_view import stream\n    st = stream()\n    fv, xsvc = st.forward_validation, st.execution\n",
+     "    from datetime import datetime, timedelta, timezone\n    from api.routes.trader_view import stream\n    st = stream()\n    fv, xsvc = st.forward_validation, st.execution\n"),
+    ('    out = fv.observe(now, "TEST")\n'
+     '    c.r.eq("one observation through the real service records a sample, opens the session record and finds no attention condition", [out["result"], out["session_status"], out["attention"]], ["OK", "OPEN", []])\n',
+     '    outs = [fv.observe(now + timedelta(seconds=s), "TEST") for s in (-120, -60, 0)]      # Wave 2 PR B: k = 3 plausible observations confirm the session (B-12)\n'
+     '    c.r.eq("three observations through the real service record samples; only the third (confirmed, k = 3) opens the session record; none finds an attention condition", '
+     '[[o["result"] for o in outs], [o["session_status"] for o in outs], [o["attention"] for o in outs]], [["OK", "OK", "OK"], [None, None, "OPEN"], [[], [], []]])\n'),
+]
+
+
+def test_F04B_the_harness_flow_gives_k3_observations_exactly_and_keeps_t_a42s_lines_in_place():
+    rel = "browser_tests/flows.py"
+    now, base = now_text(rel), at_base(rel)
+    undone = now
+    for old, new in reversed(FLOWS_EDIT_B):
+        assert undone.count(new) == 1 and base.count(old) == 1, new[:80]
+        undone = undone.replace(new, old)
+    assert undone == base and rel in FL.EDITED_W2B and rel in FL.LEDGER and FL.sha(now) == FL.LEDGER[rel]   # the edit alone; the ledger holds PR B's text
+    assert now.count("\n") == base.count("\n")                                                  # no line moves: T-A42 (ii) reads flows[2569:2590] by position
+    t_a42 = subprocess.run(["git", "show", f"{FL.BASE_W2A}:{rel}"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n").splitlines()
+    assert now.splitlines()[2569:2590] == t_a42[2569:2590] and len(t_a42[2569:2590]) == 21
+    edit = "".join(n for _, n in FLOWS_EDIT_B)
+    assert not [x for x in N01_TOKENS if x in edit] and "disable_auto(" not in edit and edit.count("fv.observe(") == 1 and '"TEST")' in edit   # observe only, TEST trigger
+    assert "c.r.check(" not in edit and edit.count("c.r.eq(") == 1 and "[None, None, \"OPEN\"]" in edit   # one equality, stricter than v1's: unconfirmed, unconfirmed, OPEN

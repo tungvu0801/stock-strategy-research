@@ -28,6 +28,7 @@ SETUP_COVERAGE = 0.90
 FINALIZE_AFTER_S = 600                    # after the close (and the Stage 6.1 session record closed)
 INVALID_FAULTS = ("SINK_OVERFLOW", "EVIDENCE_LOST", "DUPLICATE_INSTANCE")
 REASON_TEXT = {"FV_SESSION_FAILED": "the Stage 6.1 session record is FAILED", "FV_SESSION_NOT_RUN": "the Stage 6.1 observer did not run in the session",
+               "FV_SESSION_EVIDENCE_UNREADABLE": "the Stage 6.1 session evidence was unreadable (EVIDENCE_UNREADABLE): never acceptable evidence",
                "WORKER_COVERAGE_LOW": "the executor loop ran for less than 75 % of the regular session",
                "ACCOUNT_DATA_COVERAGE_LOW": "the PAPER account data was fresh for less than 75 % of the regular session",
                "UNRESOLVED_RECONCILIATION": "reconciliation was unresolved at the end of the session", "CAPTURE_LOST": "candidate evidence was lost (not recorded)",
@@ -218,6 +219,8 @@ def compute(cap, td: str, now: datetime) -> Optional[Dict[str, Any]]:
     inv, deg = [], []
     if fv_status in ("FAILED", "NOT_RUN") and (closed or fv_status == "FAILED"):
         inv.append("FV_SESSION_FAILED" if fv_status == "FAILED" else "FV_SESSION_NOT_RUN")
+    if fv_status == "DEGRADED" and "EVIDENCE_UNREADABLE" in ((fv_row or {}).get("notes") or []):
+        inv.append("FV_SESSION_EVIDENCE_UNREADABLE")                       # Wave 2 PR B (D-5): unreadable evidence never qualifies; not a FAILED record
     if worker_cov is not None and (end - o).total_seconds() >= 1800 and worker_cov < MIN_COVERAGE:
         inv.append("WORKER_COVERAGE_LOW")
     if fresh_cov is not None and (end - o).total_seconds() >= 1800 and fresh_cov < MIN_COVERAGE:

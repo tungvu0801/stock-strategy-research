@@ -370,11 +370,7 @@ class ForwardValidationService:
             if not escalate:
                 raise
             err = f"{type(exc).__name__}: {exc}"[:200]                                # B-44 row 5: even the escalated assessment failed - fail-closed, never OPEN forever
-            try:
-                n = _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
-                                               "AND trading_date = ?", (trading_date,))[0]["n"])
-            except Exception:  # noqa: BLE001
-                n = None
+            n = self._evidence_read_failed(None, trading_date, None, None)
             prior = row.get("assessment") or {}
             status, res = "DEGRADED", {"notes": ["EVIDENCE_UNREADABLE"]}
             assessment = {**({"opened_by": prior["opened_by"]} if prior.get("opened_by") else {}), "classifier_version": M.CLASSIFIER_VERSION, "codes": ["EVIDENCE_UNREADABLE"],
@@ -674,13 +670,7 @@ class ForwardValidationService:
         last = S[-1] if S else None
         gaps = res["gaps"]
         prior = (row or {}).get("assessment") or {}
-        attempts = None
-        if ev["unavailable"]:                                                          # B-37: each unavailable source with the date's attempt count
-            try:
-                attempts = _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
-                                                      "AND trading_date = ?", (trading_date,))[0]["n"])
-            except Exception:  # noqa: BLE001
-                attempts = None
+        attempts = self._evidence_read_failed(None, trading_date, None, None) if ev["unavailable"] else None   # B-37: the date's classification attempts
 
         def brief(s):
             return {"sample_id": s.get("sample_id"), "at": s.get("at_iso"), "rr_intents": s.get("rr_intents"), "attention_positions": s.get("attention_positions"),
@@ -717,7 +707,7 @@ class ForwardValidationService:
             pending = {r["trading_date"] for r in self.store.query_strict("SELECT DISTINCT trading_date FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' "
                                                                            "AND code = 'EVIDENCE_READ' AND trading_date < ?", (today,)) if r["trading_date"]}   # B-44: retried until resolved
         except Exception as exc:  # noqa: BLE001
-            self._evidence_read_failed(now, today, "accounting", exc)
+            self._evidence_read_failed(now, today, "accounting_scan", exc)            # R-1: the scan itself, not a classification attempt of a date
             return []
         evidence: Dict[str, Optional[dict]] = {}
         escalated: set = set()
@@ -799,20 +789,33 @@ class ForwardValidationService:
                 self._evidence_read_failed(now, d, "backfill", exc)
         return done
 
-    def _evidence_read_failed(self, now: datetime, trading_date: Optional[str], phase: str, exc: BaseException) -> int:
-        """B-44 row 3: record one OBSERVER_ERROR / EVIDENCE_READ event for the date (guarded) and return the persisted attempt count."""
-        log.warning("forward validation v2: %s of %s failed (%s)", phase, trading_date, type(exc).__name__)
+    def _evidence_read_failed(self, now: Optional[datetime], trading_date: Optional[str], phase: Optional[str], exc: Optional[BaseException]) -> Optional[int]:
+        """B-44 row 3: record one OBSERVER_ERROR / EVIDENCE_READ event for the date (guarded; nothing is recorded when `exc` is None), then return
+        the date's persisted CLASSIFICATION ATTEMPTS (R-1): the distinct ticks with a failed `finalize` or `accounting` read of that date. Failures
+        of other phases (the confirmation, the counters, the accounting scan, ...) never count toward its escalation (B-44 row 5). A count that
+        cannot be read is 0 for the escalation decision (retried, never escalated on an unknown count) and None for the B-37 record (`exc` None)."""
+        if exc is not None:
+            log.warning("forward validation v2: %s of %s failed (%s)", phase, trading_date, type(exc).__name__)
+            try:
+                self.store.add_event(now, "OBSERVER_ERROR", "EVIDENCE_READ", {"phase": phase, "source": getattr(exc, "evidence_source", None), "error": type(exc).__name__,
+                                                                              "text": str(exc)[:200]},
+                                     trading_date=trading_date, owner=self.owner)
+            except Exception:  # noqa: BLE001 - the event itself failed: logged; the date is retried, never silently HEALTHY
+                log.warning("forward validation v2: the EVIDENCE_READ event of %s was not recorded", trading_date)
         try:
-            self.store.add_event(now, "OBSERVER_ERROR", "EVIDENCE_READ", {"phase": phase, "source": getattr(exc, "evidence_source", None), "error": type(exc).__name__,
-                                                                          "text": str(exc)[:200]},
-                                 trading_date=trading_date, owner=self.owner)
-        except Exception:  # noqa: BLE001 - the event itself failed: logged; the date is retried, never silently HEALTHY
-            log.warning("forward validation v2: the EVIDENCE_READ event of %s was not recorded", trading_date)
-        try:
-            return _n(self.store.query_strict("SELECT count(*) AS n FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
-                                              "AND trading_date = ?", (trading_date,))[0]["n"])
+            rows = self.store.query_strict("SELECT at, detail_json FROM forward_validation_events WHERE kind = 'OBSERVER_ERROR' AND code = 'EVIDENCE_READ' "
+                                           "AND trading_date = ?", (trading_date,))
         except Exception:  # noqa: BLE001
-            return 0
+            return 0 if exc is not None else None                                      # B-37: an unknown count is NULL, never 0
+        ticks = set()
+        for r in rows:
+            try:
+                phase_of = (json.loads(r["detail_json"] or "{}") or {}).get("phase")
+            except Exception:  # noqa: BLE001 - an unreadable detail is not an attempt; nothing escapes the caller's containment (B-44 row 3)
+                continue
+            if phase_of in ("finalize", "accounting"):                                 # R-1: the date's own classification attempts, one per tick
+                ticks.add(r["at"])
+        return len(ticks)
 
     # ---------------------------------------------------------------- restart detection ----------------------------------------
     def _detect_restart(self, now: datetime, sample: dict) -> Optional[dict]:
@@ -1562,7 +1565,8 @@ class ForwardValidationService:
         now = _utc(now or self.clock())
         sessions = self.store.sessions(limit=100000)
         by = {k: sum(1 for s in sessions if s["session_status"] == k) for k in ("HEALTHY", "DEGRADED", "FAILED", "NOT_RUN", "OPEN")}
-        completed = by["HEALTHY"] + by["DEGRADED"] + by["FAILED"]
+        unreadable = sum(1 for s in sessions if s["session_status"] == "DEGRADED" and "EVIDENCE_UNREADABLE" in (s.get("notes") or []))   # D-5: never acceptable
+        completed = by["HEALTHY"] + by["DEGRADED"] + by["FAILED"] - unreadable
         trades = self.closed_trades(limit=5000)
         wl = M.win_loss([t["realized_pnl"] for t in trades])                         # Wave 2 PR A: verified trades only; no gross fallback (W2-N05)
         unverified = sum(1 for t in trades if not t["verified"])
@@ -1578,9 +1582,9 @@ class ForwardValidationService:
             edge = {**edge, "status": "INSUFFICIENT_DATA", "reasons": [f"{unverified} unverified trade(s): no positive label while any closed trade's P/L is unverified"] + edge["reasons"]}
         att = self.attention(now)
         refresh_fail = self._count("SELECT count(*) AS n FROM account_refresh_attempts WHERE result != 'SUCCESS'") + self._count("SELECT count(*) AS n FROM cash_flow_refresh_attempts WHERE result NOT IN ('SUCCESS', 'INCOMPLETE')")
-        operational_ok = rel["duplicate_broker_orders"] == 0 and self._live_host_attempts() == 0 and rec["open"] == 0 and not any(a["critical"] for a in att) and by["FAILED"] == 0
+        operational_ok = rel["duplicate_broker_orders"] == 0 and self._live_host_attempts() == 0 and rec["open"] == 0 and not any(a["critical"] for a in att) and by["FAILED"] == 0 and unreadable == 0
         return {"version": VERSION, "stage": STAGE, "as_of": _iso(now), "targets": {"sessions": self.target_sessions, "events": self.target_events, "min_trades_for_edge": self.min_trades},
-                "sessions": {"completed": completed, "healthy": by["HEALTHY"], "degraded": by["DEGRADED"], "failed": by["FAILED"], "not_run": by["NOT_RUN"], "in_progress": by["OPEN"],
+                "sessions": {"completed": completed, "healthy": by["HEALTHY"], "degraded": by["DEGRADED"], "failed": by["FAILED"], "not_run": by["NOT_RUN"], "in_progress": by["OPEN"], "unreadable": unreadable,
                              "target": self.target_sessions, "target_met": completed >= self.target_sessions, "label": f"{completed} / {self.target_sessions}"},
                 "events": {"ready_transitions": funnel["counts"]["READY"], "reviewable_proposals": funnel["counts"]["REVIEWABLE"], "total": events, "target": self.target_events, "target_met": events >= self.target_events},
                 "operational": {"duplicate_broker_orders": rel["duplicate_broker_orders"], "reconciliation_attention": rec["needs_attention_cases"], "reconciliation_open": rec["open"],

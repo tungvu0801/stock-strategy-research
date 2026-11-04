@@ -142,7 +142,8 @@ clock-skew guard and the 6.10A AUTO_DISARM SESSION_ENDED exception (database/for
 forward_validation/metrics.py, forward_validation/service.py, forward_capture/health.py). SEMANTIC_W2B names those files; pre_w2b() gives an
 older freeze test main's text of them (BASE_W2B); NEW_LEDGER_W2B registers the three that existed at BASE_68; UNDO_W2B undoes PR B's exact
 in-place edits of older test files; SEMANTIC_TESTS_W2B declares every changed test function. tests/test_wave2_prb.py pins it (BASE_W2B /
-NEW_W2B / EDITED_W2B, the closed function list).
+NEW_W2B / EDITED_W2B, the closed function list). Its Stage 6.1 Browser Harness flow (browser_tests/flows.py, re-hashed here) gives the v2
+classifier its k = 3 observations before it asserts the confirmed OPEN record (F04B pins that edit exactly; T-A42's lines are untouched).
 """
 import hashlib
 import subprocess
@@ -425,13 +426,13 @@ VERSION_PINS_W2A = {
 }
 BASE_W2B = "50cb2d7bc0384f1a020c01c9ba22c52c1283f339"                                   # main: Wave 2 PR A merged (PR #51); the PR B base
 NEW_W2B = {'tests/test_wave2_prb.py', 'tests/test_wave2_prb_sessions.py', 'tests/wave2_prb_support.py'}   # Wave 2 PR B: its new files
-EDITED_W2B = {'.github/ci/pytest_groups.json', 'database/forward_validation_migrations.py', 'forward_capture/health.py', 'forward_validation/metrics.py', 'forward_validation/service.py', 'forward_validation/store.py', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_forward_paper_610a.py', 'tests/test_forward_validation_61.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_product_ui_611.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py'}   # the classifier, its CI entry, the earlier freeze tests' unions / views, the 6.1 / 6.10A rigs, bookkeeping
+EDITED_W2B = {'.github/ci/pytest_groups.json', 'browser_tests/flows.py', 'database/forward_validation_migrations.py', 'forward_capture/health.py', 'forward_validation/metrics.py', 'forward_validation/service.py', 'forward_validation/store.py', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_forward_paper_610a.py', 'tests/test_forward_validation_61.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_product_ui_611.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py'}   # the classifier, its CI entry, the earlier freeze tests' unions / views, the 6.1 / 6.10A rigs, the 6.1 harness flow, bookkeeping
 SEMANTIC_W2B = {                                                                            # Wave 2 PR B: the INTENTIONAL behaviour change, file by file
     "database/forward_validation_migrations.py": "additive nullable sample and session columns (ALTER guarded by PRAGMA table_info), an at index and the three 3b session triggers",
     "forward_validation/store.py": "the four new sample columns written uncoerced, classifier_version / assessment_json writable while OPEN, insert_not_run with its assessment, strict and at-range reads",
     "forward_validation/metrics.py": "classify_session_v2 beside the unchanged v1 classify_session, with the literal G / H / K, EVIDENCE_READ_ATTEMPTS and CLASSIFIER_VERSION",
-    "forward_validation/service.py": "session classifier v2: confirmed transitions, the post-close evidence grace with settle conditions, strict evidence reads, the clock-skew guard, rows for every observed day",
-    "forward_capture/health.py": "the AUTO_DISARM SESSION_ENDED exception at the close (its code set, trading date and time bounds)",
+    "forward_validation/service.py": "session classifier v2: confirmed transitions, the post-close evidence grace with settle conditions, strict evidence reads, the clock-skew guard, rows for every observed day; D-5: unreadable evidence never counts toward the target or readiness",
+    "forward_capture/health.py": "the AUTO_DISARM SESSION_ENDED exception at the close (its code set, trading date and time bounds); D-5: an EVIDENCE_UNREADABLE session record is INVALID evidence",
 }
 INSTRUMENTATION_W2B: dict = {}                                                             # Wave 2 PR B: no executor instrumentation
 NEW_LEDGER_W2B = {'database/forward_validation_migrations.py', 'forward_validation/metrics.py', 'forward_validation/store.py'}   # main's files PR B registers (unchanged since BASE_68)
@@ -695,7 +696,7 @@ LEDGER = {
     "api/routes/forward_validation.py": "3d6bb8824338b53c72af3ae03ac911cef1958771500b07d1ad108ad8b7d39afd",
     "api/routes/ops_status.py": "5f80dc548368809b88e47a329f51dbadbb81e9dede47ff073e681924ae0b5ec2",
     "api/server.py": "8af3d1f26026023dc3bd704eaafb22533d191a49b1f233ab8edf395e71bc1ea8",
-    "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
+    "browser_tests/flows.py": "fb9491405ab3b7e6c227e75ac6cb072828b85e3542ce8d5904cd398116b093e7",
     "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
     "database/forward_validation_migrations.py": "98ef4bc528c8f62481944f5c507048728ce6b5e10be4cd978ea570b26ace24ab",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
@@ -707,7 +708,7 @@ LEDGER = {
     "execution/store.py": "e2bc106565703da3a9af938556fa841daa777f0beab97a215f6f858f24ec50c4",
     "forward_validation/metrics.py": "7e302d5c5ae5444a65f8030626e80ad6d61b48d02453eec60c4d1e29397eecab",
     "forward_validation/reports.py": "140b04b1fe7693092b31177c2210e9390f8293c087138a052a93ed9e47bfe655",
-    "forward_validation/service.py": "88f97f06ce0e7dce19f0b1e40f1ebeb557b8336b7d1ae063bc51f3e620eb6012",
+    "forward_validation/service.py": "ec6f9e25b86d4fe7e2a976aa0e8d9e9c95b52b031333a527d9f0b9eacd8056ef",
     "forward_validation/store.py": "aad3d3286a93d4e73330559b64cfbffbf45f9753dd86baddf62715601dba66c8",
     "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",

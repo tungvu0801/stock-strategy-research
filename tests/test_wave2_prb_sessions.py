@@ -1470,3 +1470,210 @@ def test_TS55_xii_a_malformed_candidate_date_is_skipped_and_the_other_dates_proc
     row = lab.session("2026-10-20")
     assert (row["session_status"], row["notes"]) == ("FAILED", ["DUPLICATE_BROKER_ORDER"])
     assert lab.session("2026-02-30") is None
+
+
+# ================================================================ operator round 3: R-1 (classification attempts) and D-5 (fail-closed acceptance) ====
+R1_FAIL = "FROM execution_orders WHERE first_seen_at"                                  # the duplicate-order read: the source of the FAILED evidence below
+
+
+def _r1_phases(lab, d):
+    return [(e["detail"] or {}).get("phase") for e in lab.events("OBSERVER_ERROR") if e["code"] == "EVIDENCE_READ" and e["trading_date"] == d]
+
+
+def _r1_reads(monkeypatch, state, scan=False):
+    """query_strict fails while state["fail"] for the duplicate-order read (every such read of that tick), and while state["scan"] for the
+    accounting scan's first query."""
+    from forward_validation import store as FS
+    real = FS.ForwardValidationStore.query_strict
+
+    def q(self, sql, args=()):
+        if (state.get("fail") and R1_FAIL in sql) or (state.get("scan") and "SELECT MAX(trading_date) AS d FROM forward_validation_sessions" in sql):
+            state["n"] = state.get("n", 0) + 1
+            raise sqlite3.OperationalError("database is locked")
+        return real(self, sql, args)
+    monkeypatch.setattr(FS.ForwardValidationStore, "query_strict", q)
+
+
+def _r1_duplicates(lab, d_open=O):
+    S2B.add_order(lab.db, "c1", d_open + timedelta(minutes=90))
+    S2B.add_order(lab.db, "c1", d_open + timedelta(minutes=91))                         # confirmed FAILED evidence: DUPLICATE_BROKER_ORDER
+
+
+def test_TS55_xiii_two_unrelated_failures_never_escalate_a_transient_classification_failure_and_failed_stays_failed(lab, monkeypatch):
+    """R-1 (operator round 3; B-44 row 5): 10-21 already holds two EVIDENCE_READ events of unrelated phases (the confirmation and the display
+    counters). Its first classification attempt (the accounting pass) fails - every read of the duplicate-order source fails for that whole
+    tick - and counts alone (1 < 3): no escalation, the date is retried, the source recovers and the confirmed FAILED evidence is FAILED."""
+    day(lab, O, et(2026, 10, 21, 15, 0))                                              # observed, then the bot stopped: no row, accounted late
+    _r1_duplicates(lab)
+    for at, phase in ((et(2026, 10, 21, 12, 0), "confirm"), (et(2026, 10, 21, 12, 1), "counters")):
+        S2B.add_event(lab.db, at, "OBSERVER_ERROR", "EVIDENCE_READ", {"phase": phase, "source": None, "error": "OperationalError", "text": "database is locked"},
+                      trading_date=D, owner=lab.owner)
+    state = {}
+    _r1_reads(monkeypatch, state)
+    lab.run([et(2026, 10, 22, 9, 0), et(2026, 10, 22, 9, 5)])                         # not yet confirmed
+    state["fail"] = True
+    o = lab.tick(et(2026, 10, 22, 9, 10))                                             # confirmed: the first classification attempt of 10-21 fails
+    state["fail"] = False
+    assert state["n"] >= 1 and o["result"] == "OK" and lab.session(D) is None and not lab.events("SESSION_NOT_RUN")   # retried: never escalated, never NOT_RUN
+    assert _r1_phases(lab, D) == ["confirm", "counters", "accounting"] and lab.fv._evidence_read_failed(None, D, None, None) == 1
+    lab.tick(et(2026, 10, 22, 9, 15))                                                 # the transient failure recovers
+    row = lab.session(D)
+    assert (row["session_status"], row["notes"]) == ("FAILED", ["DUPLICATE_BROKER_ORDER"]) and not row["assessment"].get("unavailable_sources")
+
+
+def test_TS55_xiv_accounting_scan_failures_are_not_classification_attempts_of_the_date(lab, monkeypatch):
+    """R-1: the accounting scan fails at two confirmed ticks of 10-21 (recorded under today, phase accounting_scan, renamed from 'accounting').
+    They are not classification attempts of 10-21: its late finalize the next morning fails for one whole tick, counts 1 and is retried, and
+    the confirmed FAILED evidence is FAILED - never downgraded to EVIDENCE_UNREADABLE by the scan's counters."""
+    day(lab)
+    _r1_duplicates(lab)
+    state = {"scan": True}
+    _r1_reads(monkeypatch, state)
+    lab.run([CL + timedelta(seconds=30), CL + timedelta(seconds=330)])                # before C + h: no on-time finalize
+    state["scan"] = False
+    assert lab.session(D)["session_status"] == "OPEN" and _r1_phases(lab, D) == ["accounting_scan", "accounting_scan"]
+    assert lab.fv._evidence_read_failed(None, D, None, None) == 0
+    lab.run([et(2026, 10, 22, 9, 0), et(2026, 10, 22, 9, 5)])
+    state["fail"] = True
+    lab.tick(et(2026, 10, 22, 9, 10))                                                 # confirmed: the late finalize of 10-21 fails for the whole tick
+    state["fail"] = False
+    assert lab.session(D)["session_status"] == "OPEN" and _r1_phases(lab, D) == ["accounting_scan", "accounting_scan", "finalize"]
+    assert lab.fv._evidence_read_failed(None, D, None, None) == 1
+    lab.tick(et(2026, 10, 22, 9, 15))
+    row = lab.session(D)
+    assert (row["session_status"], row["notes"]) == ("FAILED", ["DUPLICATE_BROKER_ORDER"]) and row["assessment"]["finalized_late"] is True
+
+
+def test_TS55_xv_attempts_count_once_per_tick_and_persistent_unreadable_evidence_is_degraded_never_ready(lab, monkeypatch):
+    """R-1: an observed day accounted late whose classification read fails at every tick. In its first confirmed tick it fails twice (the
+    accounting pass opens and finalizes it, then the late finalize of OPEN rows retries it): ONE attempt. The second tick is attempt 2 (still
+    OPEN); the third reaches the bound and the date is DEGRADED EVIDENCE_UNREADABLE with attempts 3 - never FAILED, never NOT_RUN - and (D-5)
+    it never counts toward the session target or readiness."""
+    from forward_validation import service as SV
+    from forward_validation import store as FS
+    day(lab, O, et(2026, 10, 21, 15, 0))
+    real_q, real_fin = FS.ForwardValidationStore.query_strict, SV.ForwardValidationService._finalize
+    state = {"in": False}
+
+    def fin(self, *a, **k):
+        state["in"] = True
+        try:
+            return real_fin(self, *a, **k)
+        finally:
+            state["in"] = False
+
+    def q(self, sql, args=()):
+        if state["in"] and R1_FAIL in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return real_q(self, sql, args)
+    monkeypatch.setattr(SV.ForwardValidationService, "_finalize", fin)
+    monkeypatch.setattr(FS.ForwardValidationStore, "query_strict", q)
+    t1 = et(2026, 10, 22, 9, 10)
+    lab.run([et(2026, 10, 22, 9, 0), et(2026, 10, 22, 9, 5), t1])
+    errs = [e for e in lab.events("OBSERVER_ERROR") if e["code"] == "EVIDENCE_READ" and e["trading_date"] == D]
+    assert [(e["detail"]["phase"], e["at"]) for e in errs] == [("finalize", iso(t1)), ("finalize", iso(t1))]   # two failures in one tick
+    assert lab.session(D)["session_status"] == "OPEN" and lab.fv._evidence_read_failed(None, D, None, None) == 1   # ... one attempt
+    lab.tick(et(2026, 10, 22, 9, 15))
+    assert lab.session(D)["session_status"] == "OPEN" and lab.fv._evidence_read_failed(None, D, None, None) == 2   # under the bound: retried
+    lab.tick(et(2026, 10, 22, 9, 20))
+    row = lab.session(D)
+    assert row["session_status"] == "DEGRADED" and "EVIDENCE_UNREADABLE" in row["notes"] and row["started_at"] == iso(O)
+    assert {k: v["attempts"] for k, v in row["assessment"]["unavailable_sources"].items()} == {"execution_orders+execution_reconciliations": 3}
+    assert not lab.events("SESSION_NOT_RUN") and "DUPLICATE_BROKER_ORDER" not in row["notes"]
+    cum = lab.fv.cumulative(et(2026, 10, 22, 9, 21))
+    assert (cum["sessions"]["unreadable"], cum["sessions"]["degraded"], cum["sessions"]["completed"], cum["sessions"]["label"]) == (1, 1, 0, "0 / 30")
+    assert cum["operational"]["status"] == "NOT READY"
+
+
+def test_TS55_xvi_the_attempt_count_reads_only_the_dates_classification_phases_one_per_tick(lab, monkeypatch):
+    """R-1, the count itself: distinct ticks of the date's finalize / accounting EVIDENCE_READ events. Every other phase, the escalated reads,
+    another date, another code and an unreadable detail (malformed, or nested beyond the parser) are not attempts and never raise; a call with
+    an exception records one event and counts it. An unreadable count is 0 for the escalation decision and None (never 0) for B-37."""
+    def ev(at, phase, d=D, code="EVIDENCE_READ"):
+        S2B.add_event(lab.db, at, "OBSERVER_ERROR", code, {"phase": phase, "source": None, "error": "OperationalError", "text": "x"}, trading_date=d, owner=lab.owner)
+    for k, phase in enumerate(("confirm", "counters", "status", "open", "open_sessions", "accounting_scan", "accounting_pass", "account_open", "backfill", "clock_check")):
+        ev(et(2026, 10, 21, 12, k), phase)
+    t1, t2, t3 = et(2026, 10, 22, 9, 10), et(2026, 10, 22, 9, 15), et(2026, 10, 22, 9, 20)
+    ev(t1, "accounting")
+    ev(t1, "finalize")                                                                # the same tick: one attempt
+    ev(t2, "finalize")
+    ev(t3, "finalize_escalated")
+    ev(t3, "accounting_escalated")
+    ev(et(2026, 10, 22, 9, 25), "finalize", d="2026-10-20")
+    ev(et(2026, 10, 22, 9, 30), "finalize", code="OTHER")
+    lab.sql("INSERT INTO forward_validation_events (event_id, at, trading_date, kind, code, detail_json, owner) VALUES ('bad', ?, ?, 'OBSERVER_ERROR', 'EVIDENCE_READ', "
+            "'not json', 'x')", (iso(et(2026, 10, 22, 9, 35)), D))
+    assert lab.fv._evidence_read_failed(None, D, None, None) == 2
+    n0 = len(lab.events("OBSERVER_ERROR"))
+    assert lab.fv._evidence_read_failed(et(2026, 10, 22, 9, 40), D, "finalize", sqlite3.OperationalError("database is locked")) == 3
+    assert len(lab.events("OBSERVER_ERROR")) == n0 + 1 and _r1_phases(lab, D)[-1] == "finalize"
+    assert lab.fv._evidence_read_failed(et(2026, 10, 22, 9, 40), D, "counters", sqlite3.OperationalError("x")) == 3   # recorded, not an attempt
+    assert lab.fv._evidence_read_failed(None, "2026-10-20", None, None) == 1 and lab.fv._evidence_read_failed(None, "2026-10-19", None, None) == 0
+    lab.sql("INSERT INTO forward_validation_events (event_id, at, trading_date, kind, code, detail_json, owner) VALUES ('deep', ?, ?, 'OBSERVER_ERROR', 'EVIDENCE_READ', "
+            "?, 'x')", (iso(et(2026, 10, 22, 9, 50)), D, "[" * 200000 + "]" * 200000))   # json.loads raises RecursionError, not ValueError (append-only: last)
+    assert lab.fv._evidence_read_failed(None, D, None, None) == 3                       # not an attempt, and nothing escapes
+    from forward_validation import store as FS
+    real = FS.ForwardValidationStore.query_strict
+    monkeypatch.setattr(FS.ForwardValidationStore, "query_strict",
+                        lambda self, sql, args=(): (_ for _ in ()).throw(sqlite3.OperationalError("locked")) if "FROM forward_validation_events" in sql else real(self, sql, args))
+    assert lab.fv._evidence_read_failed(None, D, None, None) is None                    # B-37: unknown, never 0
+    assert lab.fv._evidence_read_failed(et(2026, 10, 22, 9, 45), D, "finalize", sqlite3.OperationalError("x")) == 0   # no escalation on an unknown count
+
+
+def _d5_seed(lab, d, status, notes=()):
+    lab.store.open_session(d, et(2026, 1, 1), "seed", in_session=True)
+    lab.store.update_session(d, et(2026, 1, 1), session_status=status, notes_code="|".join(notes))
+
+
+def test_TS68_ii_d5_unreadable_days_never_count_toward_the_target_or_readiness(tmp_path, monkeypatch):
+    """D-5 (operator round 3): a DEGRADED day whose notes hold EVIDENCE_UNREADABLE is never acceptable evidence - it is not a completed session
+    (the target, its label and the strategy registry's sessions_completed read `completed`) and operational readiness is NOT READY while
+    one exists. It stays DEGRADED (never relabelled FAILED); other DEGRADED and FAILED days keep their merged meaning."""
+    def cum(seeds, target=3):
+        lab = S2B.Lab(tmp_path / str(len(list(tmp_path.iterdir()))), monkeypatch)
+        for d, status, notes in seeds:
+            _d5_seed(lab, d, status, notes)
+        lab.fv.target_sessions = target
+        c = lab.fv.cumulative(et(2026, 10, 23, 12, 0))
+        return c["sessions"], c["operational"]["status"], c["strategy"]["edge_status"]
+    H3 = [("2026-10-19", "HEALTHY", ()), ("2026-10-20", "HEALTHY", ()), ("2026-10-21", "HEALTHY", ())]
+    s, status, edge = cum(H3)                                                         # positive: three healthy days meet the target, READY
+    assert (s["completed"], s["healthy"], s["unreadable"], s["target_met"], s["label"], status) == (3, 3, 0, True, "3 / 3", "READY")
+    s, status, edge2 = cum(H3[:2] + [("2026-10-21", "DEGRADED", ("EVIDENCE_UNREADABLE",))])   # negative: the unreadable day never qualifies
+    assert (s["completed"], s["healthy"], s["degraded"], s["failed"], s["unreadable"], s["target_met"], s["label"], status) == (2, 2, 1, 0, 1, False, "2 / 3", "NOT READY")
+    assert edge2 == edge                                                              # the edge status reads HEALTHY sessions only: unchanged
+    s, status, _ = cum(H3[:2] + [("2026-10-21", "DEGRADED", ("COVERAGE_LOW", "EVIDENCE_UNREADABLE"))])   # mixed codes: still unreadable
+    assert (s["completed"], s["unreadable"], status) == (2, 1, "NOT READY")
+    s, status, _ = cum(H3[:2] + [("2026-10-21", "DEGRADED", ("COVERAGE_LOW",))])      # regression: an ordinary DEGRADED day is unchanged
+    assert (s["completed"], s["degraded"], s["unreadable"], s["target_met"], status) == (3, 1, 0, True, "READY")
+    s, status, _ = cum(H3[:2] + [("2026-10-21", "FAILED", ("DUPLICATE_BROKER_ORDER",))])   # regression: FAILED is completed and NOT READY, as merged
+    assert (s["completed"], s["failed"], s["unreadable"], status) == (3, 1, 0, "NOT READY")
+    s, status, _ = cum(H3 + [("2026-10-22", "DEGRADED", ("EVIDENCE_UNREADABLE",)), ("2026-10-23", "NOT_RUN", ("NO_OBSERVATION",))])   # mixed healthy + unreadable
+    assert (s["completed"], s["healthy"], s["degraded"], s["unreadable"], s["not_run"], s["target_met"], status) == (3, 3, 1, 1, 1, True, "NOT READY")
+
+
+def test_TS68_i_d5_an_unreadable_session_record_is_invalid_610a_evidence_never_a_failed_record(tmp_path, monkeypatch):
+    """D-5 in the 6.10A evidence record (forward_capture/health.compute): EVIDENCE_UNREADABLE is INVALID with its own reason, never
+    FV_SESSION_FAILED; a plain DEGRADED record and a FAILED record keep their merged reasons; the healthy day stays HEALTHY."""
+    from autorun.service import STARTUP
+    from forward_capture import health as HL
+    from test_forward_paper_610a import DAY, observed_day, rig
+    for k, v in {"pending": False, "code": None, "text": None, "attempts": 0, "demoted": None, "at": None, "components_started": True, "passive": False,
+                 "lease_taken": False, "owned_since": None}.items():
+        monkeypatch.setitem(STARTUP, k, v)                                            # test_forward_paper_610a's autouse fresh_startup_state
+    r = rig(tmp_path, monkeypatch)
+    observed_day(r, monkeypatch)
+    real = r.fv.store.session
+
+    def as_(status, notes):
+        monkeypatch.setattr(r.fv.store, "session", lambda d: dict(real(d), session_status=status, notes_code="|".join(notes), notes=list(notes)))
+        return HL.compute(r.cap, DAY, r.clock.now)
+    assert as_("HEALTHY", [])["status"] == "HEALTHY"                                    # positive
+    rec = as_("DEGRADED", ["EVIDENCE_UNREADABLE"])
+    assert rec["status"] == "INVALID" and rec["reasons"] == ["FV_SESSION_EVIDENCE_UNREADABLE", "FV_SESSION_DEGRADED"] and "FV_SESSION_FAILED" not in rec["reasons"]
+    assert "evidence was unreadable (EVIDENCE_UNREADABLE)" in rec["summary_text"] and rec["source_session_status"] == "DEGRADED"
+    rec = as_("DEGRADED", ["COVERAGE_LOW", "EVIDENCE_UNREADABLE"])
+    assert rec["status"] == "INVALID" and "FV_SESSION_EVIDENCE_UNREADABLE" in rec["reasons"]
+    assert as_("DEGRADED", ["COVERAGE_LOW"])["reasons"] == ["FV_SESSION_DEGRADED"]       # regression: unchanged
+    rec = as_("FAILED", ["DUPLICATE_BROKER_ORDER"])
+    assert rec["status"] == "INVALID" and "FV_SESSION_FAILED" in rec["reasons"] and "FV_SESSION_EVIDENCE_UNREADABLE" not in rec["reasons"]

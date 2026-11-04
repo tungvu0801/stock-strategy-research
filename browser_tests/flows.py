@@ -2522,11 +2522,11 @@ def portfolio_rotation(c: Ctx):
 
 # ---------------------------------------------------------------- Stage 6.1: forward paper validation ---------------------------------------
 def forward_validation(c: Ctx):
-    """Stage 6.1: the compact Forward Paper Validation panel on the real page against the REAL observer (one observation through the service, no thread),
+    """Stage 6.1: the compact Forward Paper Validation panel on the real page against the REAL observer (k = 3 observations through the service, no thread),
     the read-only API (sessions, closed paper trades, daily summaries, reports, exports, the frozen controls) and the separate page's markup. The paper_bot
     flow closed one paper trade earlier in this run: it must appear as a closed paper trade with slippage and P/L and the strategy status must still read
     INSUFFICIENT FOR STRATEGY CONCLUSION. Read only: no order intent, no broker write, no mode change, no Robinhood, no model call."""
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from api.routes.trader_view import stream
     st = stream()
     fv, xsvc = st.forward_validation, st.execution
@@ -2539,8 +2539,8 @@ def forward_validation(c: Ctx):
     _tv_details(c)
     intents0, posts0, mode0 = len(xsvc.store.intents()), sim.post_count(), xsvc.mode()["mode"]
     now = datetime(2026, 10, 21, 15, 30, tzinfo=timezone.utc)                       # Wednesday 11:30 New York: an in-session observation whatever the wall clock says
-    out = fv.observe(now, "TEST")
-    c.r.eq("one observation through the real service records a sample, opens the session record and finds no attention condition", [out["result"], out["session_status"], out["attention"]], ["OK", "OPEN", []])
+    outs = [fv.observe(now + timedelta(seconds=s), "TEST") for s in (-120, -60, 0)]      # Wave 2 PR B: k = 3 plausible observations confirm the session (B-12)
+    c.r.eq("three observations through the real service record samples; only the third (confirmed, k = 3) opens the session record; none finds an attention condition", [[o["result"] for o in outs], [o["session_status"] for o in outs], [o["attention"] for o in outs]], [["OK", "OK", "OK"], [None, None, "OPEN"], [[], [], []]])
     c.wait("!!document.getElementById('tv-fv')", 20, "forward validation panel mounted")
     c.js("ForwardValidation.refresh()")
     c.wait("(document.querySelector('#tv-fv [data-fv-state]') || {}).dataset && document.querySelector('#tv-fv [data-fv-state]').dataset.fvState === 'OK'", 20, "panel loaded")
