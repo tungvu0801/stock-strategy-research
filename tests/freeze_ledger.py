@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A + NEW_W2B plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -135,6 +135,15 @@ acknowledges it (forward_validation/*, api/routes/forward_validation.py). SEMANT
 test main's text of them (BASE_W2A, where every earlier freeze test passed); VERSION_PINS_W2A pins each decision / accounting block to the
 execution.VERSION it belongs to. No threshold, frozen control (b5d4a56e...), strategy, sizing, risk, broker or market-data rule changes.
 tests/test_wave2_pra.py pins it (BASE_W2A / NEW_W2A / EDITED_W2A, the closed function list, the version pins).
+
+Wave 2 PR B (the Stage 6.1 session classifier v2; design Revision 3.4.1) changes SESSION HEALTH on purpose, and nothing of execution, risk,
+strategy or the early stop: confirmed date transitions, the post-close evidence grace with settle conditions, strict evidence reads, the
+clock-skew guard and the 6.10A AUTO_DISARM SESSION_ENDED exception (database/forward_validation_migrations.py, forward_validation/store.py,
+forward_validation/metrics.py, forward_validation/service.py, forward_capture/health.py). SEMANTIC_W2B names those files; pre_w2b() gives an
+older freeze test main's text of them (BASE_W2B); NEW_LEDGER_W2B registers the three that existed at BASE_68; UNDO_W2B undoes PR B's exact
+in-place edits of older test files; SEMANTIC_TESTS_W2B declares every changed test function. tests/test_wave2_prb.py pins it (BASE_W2B /
+NEW_W2B / EDITED_W2B, the closed function list). Its Stage 6.1 Browser Harness flow (browser_tests/flows.py, re-hashed here) gives the v2
+classifier its k = 3 observations before it asserts the confirmed OPEN record (F04B pins that edit exactly; T-A42's lines are untouched).
 """
 import hashlib
 import subprocess
@@ -415,16 +424,281 @@ VERSION_PINS_W2A = {
         "forward_validation/attention_signature.py::=READERS": "d913c004b042826f9c6cc20b79ba45756d878cfa8d6ad306c3b5c39a92099ee4",
     },
 }
+BASE_W2B = "50cb2d7bc0384f1a020c01c9ba22c52c1283f339"                                   # main: Wave 2 PR A merged (PR #51); the PR B base
+NEW_W2B = {'tests/test_wave2_prb.py', 'tests/test_wave2_prb_sessions.py', 'tests/wave2_prb_support.py'}   # Wave 2 PR B: its new files
+EDITED_W2B = {'.github/ci/pytest_groups.json', 'browser_tests/flows.py', 'database/forward_validation_migrations.py', 'forward_capture/health.py', 'forward_validation/metrics.py', 'forward_validation/service.py', 'forward_validation/store.py', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_forward_paper_610a.py', 'tests/test_forward_validation_61.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_product_ui_611.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py'}   # the classifier, its CI entry, the earlier freeze tests' unions / views, the 6.1 / 6.10A rigs, the 6.1 harness flow, bookkeeping
+SEMANTIC_W2B = {                                                                            # Wave 2 PR B: the INTENTIONAL behaviour change, file by file
+    "database/forward_validation_migrations.py": "additive nullable sample and session columns (ALTER guarded by PRAGMA table_info), an at index and the three 3b session triggers",
+    "forward_validation/store.py": "the four new sample columns written uncoerced, classifier_version / assessment_json writable while OPEN, insert_not_run with its assessment, strict and at-range reads",
+    "forward_validation/metrics.py": "classify_session_v2 beside the unchanged v1 classify_session, with the literal G / H / K, EVIDENCE_READ_ATTEMPTS and CLASSIFIER_VERSION",
+    "forward_validation/service.py": "session classifier v2: confirmed transitions, the post-close evidence grace with settle conditions, strict evidence reads, the clock-skew guard, rows for every observed day; D-5: unreadable evidence never counts toward the target or readiness",
+    "forward_capture/health.py": "the AUTO_DISARM SESSION_ENDED exception at the close (its code set, trading date and time bounds); D-5: an EVIDENCE_UNREADABLE session record is INVALID evidence",
+}
+INSTRUMENTATION_W2B: dict = {}                                                             # Wave 2 PR B: no executor instrumentation
+NEW_LEDGER_W2B = {'database/forward_validation_migrations.py', 'forward_validation/metrics.py', 'forward_validation/store.py'}   # main's files PR B registers (unchanged since BASE_68)
+UNDO_W2B = {                                                                                 # Wave 2 PR B's in-place edits of older test files: (main, PR B)
+    'tests/test_bot_activity_68.py': [
+        ('    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS | FL.NEW_610D | FL.NEW_542 | FL.NEW_70 | FL.NEW_71 | FL.NEW_72 | FL.NEW_73 | FL.NEW_731 | FL.NEW_74 | FL.NEW_75 | FL.NEW_78 | FL.NEW_78B1 | FL.NEW_W1 | FL.NEW_W2A, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C - FL.NEW_541 - FL.NEW_611FIX - FL.NEW_OPS - FL.NEW_610D - FL.NEW_542 - FL.NEW_70 - FL.NEW_71 - FL.NEW_72 - FL.NEW_73 - FL.NEW_731 - FL.NEW_74 - FL.NEW_75 - FL.NEW_78 - FL.NEW_78B1 - FL.NEW_W1 - FL.NEW_W2A),\n                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS | FL.NEW_610D | FL.NEW_542 | FL.NEW_70 | FL.NEW_71 | FL.NEW_72 | FL.NEW_73 | FL.NEW_731 | FL.NEW_74 | FL.NEW_75 | FL.NEW_78 | FL.NEW_78B1 | FL.NEW_W1 | FL.NEW_W2A) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1\n',
+         '    assert new == FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS | FL.NEW_610D | FL.NEW_542 | FL.NEW_70 | FL.NEW_71 | FL.NEW_72 | FL.NEW_73 | FL.NEW_731 | FL.NEW_74 | FL.NEW_75 | FL.NEW_78 | FL.NEW_78B1 | FL.NEW_W1 | FL.NEW_W2A | FL.NEW_W2B, {"unexpected_new": sorted(new - FL.NEW_68 - FL.NEW_69 - FL.NEW_691 - FL.NEW_610A - FL.NEW_610C - FL.NEW_541 - FL.NEW_611FIX - FL.NEW_OPS - FL.NEW_610D - FL.NEW_542 - FL.NEW_70 - FL.NEW_71 - FL.NEW_72 - FL.NEW_73 - FL.NEW_731 - FL.NEW_74 - FL.NEW_75 - FL.NEW_78 - FL.NEW_78B1 - FL.NEW_W1 - FL.NEW_W2A - FL.NEW_W2B),\n                                                                     "missing_new": sorted((FL.NEW_68 | FL.NEW_69 | FL.NEW_691 | FL.NEW_610A | FL.NEW_610C | FL.NEW_541 | FL.NEW_611FIX | FL.NEW_OPS | FL.NEW_610D | FL.NEW_542 | FL.NEW_70 | FL.NEW_71 | FL.NEW_72 | FL.NEW_73 | FL.NEW_731 | FL.NEW_74 | FL.NEW_75 | FL.NEW_78 | FL.NEW_78B1 | FL.NEW_W1 | FL.NEW_W2A | FL.NEW_W2B) - new)}   # + Stage 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1\n'),
+        ('        base, now = FL.base_text(rel).splitlines(), set(FL.pre_w2a(rel, FL.now_text(rel)).splitlines())   # Wave 2 PR A: its declared accounting change, pinned by its own tests\n',
+         '        base, now = FL.base_text(rel).splitlines(), set(FL.pre_w2a(rel, FL.pre_w2b(rel, FL.now_text(rel))).splitlines())   # Wave 2 PR A: its declared accounting change, pinned by its own tests\n'),
+    ],
+    'tests/test_chart_empty_state_611fix.py': [
+        ('    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A\n',
+         '    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B\n'),
+    ],
+    'tests/test_decision_flow_610c.py': [
+        ('    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n',
+         '    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n'),
+        ("            assert now_text(rel) == post(rel) or rel in FL.SEMANTIC_541 or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A, rel   # since then: only Stage 5.4.1's and Wave 1's declared corrections\n",
+         "            assert now_text(rel) == post(rel) or rel in FL.SEMANTIC_541 or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B, rel   # since then: only Stage 5.4.1's and Wave 1's declared corrections\n"),
+    ],
+    'tests/test_dynamic_universe_610c.py': [
+        ('from freeze_ledger import SEMANTIC_W1, SEMANTIC_W2A  # noqa: E402 - Wave 1: its declared execution-safety files (tests/freeze_ledger.py)\n',
+         'from freeze_ledger import SEMANTIC_W1, SEMANTIC_W2A, SEMANTIC_W2B  # noqa: E402 - Wave 1: its declared execution-safety files (tests/freeze_ledger.py)\n'),
+        ('        assert base and ((ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n") == base or rel in SEMANTIC_W1 or rel in SEMANTIC_W2A), rel   # Wave 1: its declared stop-check change, no universe wiring\n',
+         '        assert base and ((ROOT / rel).read_text(encoding="utf-8").replace("\\r\\n", "\\n") == base or rel in SEMANTIC_W1 or rel in SEMANTIC_W2A or rel in SEMANTIC_W2B), rel   # Wave 1: its declared stop-check change, no universe wiring\n'),
+    ],
+    'tests/test_engine_health_610d.py': [
+        ('    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                      # Stage 5.4.2, pinned by its own F tests\n',
+         '    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                      # Stage 5.4.2, pinned by its own F tests\n'),
+        ('            assert rel in FL.NEW_W2A or rel in FL.SEMANTIC_W2A or p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == at_base(rel) or rel in FL.SEMANTIC_W1, rel   # Wave 1\'s declared safety files: its own F tests\n',
+         '            assert rel in FL.NEW_W2A or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B or p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == at_base(rel) or rel in FL.SEMANTIC_W1, rel   # Wave 1\'s declared safety files: its own F tests\n'),
+    ],
+    'tests/test_evidence_gate_541.py': [
+        ('    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests\n',
+         '    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests\n'),
+        ('            assert p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel) or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A, rel   # since then: Stage 6.10D touches none of these; Wave 1 only its declared safety files\n',
+         '            assert p.read_text(encoding="utf-8").replace("\\r\\n", "\\n") == post(rel) or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B, rel   # since then: Stage 6.10D touches none of these; Wave 1 only its declared safety files\n'),
+    ],
+    'tests/test_evidence_refresh_542.py': [
+        ('    later = FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                         # Stage 7.0, pinned by its own F tests\n',
+         '    later = FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                         # Stage 7.0, pinned by its own F tests\n'),
+    ],
+    'tests/test_forward_paper_610a.py': [
+        ('',
+         'import wave2_prb_support as S2B  # noqa: E402 - Wave 2 PR B: the time-ordered minute cover of observed_day (design 8.5)\n'),
+        ('    """A whole regular session observed at a 30-minute cadence (the coverage cadences set to match), then the post-close observation."""\n',
+         '    """A whole regular session observed at a 30-minute cadence (the coverage cadences set to match), then the post-close observation.\n    Wave 2 PR B (design 8.5): the executor tables exist (W-01); between the 30-minute ticks a time-ordered minute-cadence cover of observer\n    samples with the variant\'s worker flag (W-05) keeps the Stage 6.1 v2 session observed; three settled post-close ticks (16:05 / 16:10 / 16:15)\n    confirm and finalize it before the 16:20 observation."""\n'),
+        ('',
+         '    r.x.store.ensure()\n'),
+        ('',
+         '        S2B.cover_until(r, r.clock.now + timedelta(minutes=step_min), loop_running=worker)\n'),
+        ('',
+         '    S2B.cover_until(r, CLOSE_AT, inclusive=True, loop_running=worker)\n    for k in (5, 10, 15):\n        r.clock.now = CLOSE_AT + timedelta(minutes=k)\n        r.x.run_cycle(r.clock.now, "TEST")\n        cycle(r)\n        obs(r)\n'),
+        ('',
+         '    obs(r, 60)\n    obs(r, 60)                                                                         # Wave 2 PR B: the third (confirmed) tick back-fills Thursday NOT_RUN\n'),
+        ('    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n',
+         '    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n'),
+        ('    assert not (changed - set(FL.SEMANTIC_W1)) & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",   # Wave 1: its declared conftest change\n',
+         '    assert not (changed - set(FL.SEMANTIC_W1) - set(FL.SEMANTIC_W2B)) & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",   # Wave 1: its declared conftest change\n'),
+        ("        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, now_text(rel))).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)\n",
+         "        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, FL.pre_w2b(rel, now_text(rel)))).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)\n"),
+    ],
+    'tests/test_forward_validation_61.py': [
+        ('from datetime import datetime, timezone\n',
+         'from datetime import datetime, timedelta, timezone\n'),
+        ('',
+         'import wave2_prb_support as S2B  # noqa: E402 - Wave 2 PR B: the time-ordered cover and the worker status of the rig (design 8.4)\n'),
+        ('',
+         "    r.x.store.ensure()                                                # Wave 2 PR B (W-01): the executor tables exist, as the executor's startup makes them in production\n    S2B.worker_status(monkeypatch, running=True, interval_s=30)       # Wave 2 PR B (V-23): the worker status the samples persist (loop_running, stale_after_s 90)\n"),
+        ('',
+         '    r.cover_rows = 0\n'),
+        ('    """The first observation after the close. The Stage 6.0.1 loop refreshes every five minutes outside the session, so the data is fresh then."""\n    r.clock.now = AFTER_CLOSE\n    cycle(r)\n    return obs(r)\n',
+         '    """The post-close sequence (Wave 2 PR B, design 8.4): at 16:05, 16:10 and 16:15 ET an executor cycle, a refresh cycle (the Stage 6.0.1 loop\n    refreshes every five minutes outside the session), then the observer tick. The 16:05 tick is in the 360 s grace; the session is finalized\n    at the first confirmed, settled tick after 16:07 (16:10 after a full_day cover, else 16:15). Returns the last observation."""\n    for k in range(3):\n        r.clock.now = AFTER_CLOSE + timedelta(minutes=5 * k)\n        r.x.run_cycle(r.clock.now, "TEST")\n        cycle(r)\n        o = obs(r)\n    return o\n'),
+        ('    """A complete observed session: fresh data, one closed paper trade, observations through the day, the post-close observation."""\n',
+         '    """A complete observed session: fresh data, one closed paper trade, observations through the day (Wave 2 PR B: a time-ordered minute-cadence\n    cover of the rest of the regular session, design 8.4), the post-close sequence."""\n'),
+        ('',
+         '    S2B.cover_until(r, r.clock.now)\n'),
+        ('',
+         '    S2B.cover_until(r, datetime(2026, 10, 21, 20, 0, tzinfo=UTC), inclusive=True)\n'),
+        ('    s0 = r.fv.store.samples(DATE)[0]\n',
+         '    by_at = {s["at"]: s for s in r.fv.store.samples(DATE)}                # Wave 2 PR B: the real ticks among the design-8.4 minute cover\n    s0 = by_at[o0["at"]]\n'),
+        ('    s1 = r.fv.store.samples(DATE)[1]\n',
+         '    s1 = by_at[o1["at"]]\n'),
+        ('    assert row["account_refresh_healthy"] and row["cash_flow_healthy"] and row["reconciliation_healthy"] and row["in_session_samples"] == 3 and row["ended_at"] == AFTER_CLOSE.isoformat(timespec="seconds")\n    assert row["bot_start_time"] == o0["at"] and row["bot_stop_time"] == o3["at"] and row["owners"] == [r.fv.owner]\n',
+         '    closed_at = (AFTER_CLOSE + timedelta(minutes=5)).isoformat(timespec="seconds")    # v2: the 16:10 tick (confirmed by 300 s steps after the 16:00 cover sample, past C + h, settled)\n    assert row["account_refresh_healthy"] and row["cash_flow_healthy"] and row["reconciliation_healthy"] and row["in_session_samples"] == 3 and row["ended_at"] == closed_at\n    assert row["bot_start_time"] == "2026-10-21T13:30:00+00:00" and row["bot_stop_time"] == closed_at and row["owners"] == [r.fv.owner]   # v2: started at the first in-window sample (B-22)\n    assert row["classifier_version"] == "session_classifier_v2" and row["assessment"]["finalized_by"]["at"] == closed_at and row["assessment"]["finalized_late"] is False\n'),
+        ('    assert ctl["observer"]["evaluation_count"] == 4 and ctl["session_recorder"]["fire_count"] == 2 and ctl["summary_builder"]["fire_count"] == 1 and ctl["attention_monitor"]["last_result"] == "PASS"\n',
+         '    assert ctl["observer"]["evaluation_count"] == 6 and ctl["session_recorder"]["fire_count"] == 2 and ctl["summary_builder"]["fire_count"] == 1 and ctl["attention_monitor"]["last_result"] == "PASS"\n'),
+        ('    obs(r)\n',
+         '    obs(r)                                                                          # Wednesday: one (unconfirmed) sample - observed, no row yet (v2)\n'),
+        ('    o = obs(r)\n',
+         '    first, second, o = obs(r), obs(r, 60), obs(r, 60)                              # v2 (design 8.4): the third Monday tick is the first confirmed one\n    assert first["backfilled"] == [] and second["backfilled"] == []\n'),
+        ('    old = r.fv.store.session(DATE)\n    assert old["session_status"] == "DEGRADED" and "CLOSE_NOT_OBSERVED" in old["notes"] and old["market_close_seen"] is False and old["ended_at"] == NEXT_MONDAY.isoformat(timespec="seconds")\n',
+         '    old = r.fv.store.session(DATE)                                                  # accounted (B-24 (a)) and finalized late, unsettled (no executor cycle)\n    assert old["session_status"] == "DEGRADED" and "CLOSE_NOT_OBSERVED" in old["notes"] and old["market_close_seen"] is False and old["ended_at"] == o["at"]\n    assert {"OPEN_NOT_OBSERVED", "COVERAGE_LOW", "EVIDENCE_NOT_SETTLED"} <= set(old["notes"]) and old["assessment"]["finalized_late"] is True\n'),
+        ('        assert nr["session_status"] == "NOT_RUN" and nr["notes"] == ["NO_OBSERVATION", "HOLIDAYS_NOT_MODELLED"] and nr["in_session_samples"] == 0\n',
+         '        assert nr["session_status"] == "NOT_RUN" and nr["notes"] == ["NO_OBSERVATION"] and nr["in_session_samples"] == 0       # holidays are modelled now\n'),
+        ('    o = obs(r)\n',
+         '    obs(r)\n    obs(r, 60)\n    o = obs(r, 60)                                                    # v2 (design 8.4): the third pre-open tick confirms and opens the row (B-22)\n'),
+        ('    assert r.fv.store.session(DATE)["session_status"] == "NOT_RUN" and r.fv.store.session(DATE)["notes"] == ["NO_OBSERVATION", "CLOSE_NOT_OBSERVED"]\n',
+         '    obs(r, 60)\n    obs(r, 60)                                                        # the next day\'s third tick: the late finalize (unsettled: NOT_RUN kept, B-20)\n    row = r.fv.store.session(DATE)\n    assert row["session_status"] == "NOT_RUN" and row["notes"] == ["NO_OBSERVATION"] and row["assessment"]["degraded_codes"] == ["EVIDENCE_NOT_SETTLED"]\n'),
+        ('    assert one["session"]["trading_date"] == DATE and one["daily"]["funnel"]["CLOSED"] == 1 and one["samples"] == 4\n',
+         '    assert one["session"]["trading_date"] == DATE and one["daily"]["funnel"]["CLOSED"] == 1 and one["samples"] == 6 + r.cover_rows   # v2: 6 real ticks + the cover\n'),
+        ('    assert len(api.get(f"/api/forward-validation/samples?date={DATE}").json()["samples"]) == 4 and api.get(f"/api/forward-validation/funnel/{DATE}").json()["counts"]["CLOSED"] == 1\n',
+         '    assert len(api.get(f"/api/forward-validation/samples?date={DATE}").json()["samples"]) == min(6 + r.cover_rows, 500) and api.get(f"/api/forward-validation/funnel/{DATE}").json()["counts"]["CLOSED"] == 1\n'),
+        ('    assert r.fv.store.counts()["forward_validation_samples"] == 4 and r.fv.store.counts()["forward_validation_sessions"] == 1\n',
+         '    assert r.fv.store.counts()["forward_validation_samples"] == 6 + r.cover_rows and r.fv.store.counts()["forward_validation_sessions"] == 1   # v2: 6 real ticks + the cover\n'),
+    ],
+    'tests/test_market_intel_70.py': [
+        ('    later = FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # Stages 7.1-7.3: pinned by their own F tests\n',
+         '    later = FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B   # Stages 7.1-7.3: pinned by their own F tests\n'),
+    ],
+    'tests/test_market_intel_collector_73.py': [
+        ('    later = FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                           # Stages 7.3.1, 7.4: pinned by their own F tests\n',
+         '    later = FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                           # Stages 7.3.1, 7.4: pinned by their own F tests\n'),
+    ],
+    'tests/test_market_intel_quality_74.py': [
+        ('    later = FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                         # Stage 7.5, pinned by its own F tests\n',
+         '    later = FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                         # Stage 7.5, pinned by its own F tests\n'),
+    ],
+    'tests/test_market_intel_schema_v2_731.py': [
+        ('    later = FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                         # Stage 7.4, pinned by its own F tests\n',
+         '    later = FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                         # Stage 7.4, pinned by its own F tests\n'),
+    ],
+    'tests/test_market_intel_sources_72.py': [
+        ('    later = FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                           # Stages 7.3, 7.3.1: pinned by their own F tests\n',
+         '    later = FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                           # Stages 7.3, 7.3.1: pinned by their own F tests\n'),
+    ],
+    'tests/test_market_intel_store_71.py': [
+        ('    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                             # Stages 7.2, 7.3: pinned by their own F tests\n',
+         '    later = FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                             # Stages 7.2, 7.3: pinned by their own F tests\n'),
+    ],
+    'tests/test_market_scan_75.py': [
+        ('    later = FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                           # Stages 7.8, 7.8B-1: pinned by their own F tests\n',
+         '    later = FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                           # Stages 7.8, 7.8B-1: pinned by their own F tests\n'),
+    ],
+    'tests/test_product_ui_611.py': [
+        ('    assert now_text("forward_validation/metrics.py") == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")\n',
+         '    assert ledger_view("forward_validation/metrics.py", now_text("forward_validation/metrics.py")) == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")\n'),
+    ],
+    'tests/test_robinhood_portfolio_69.py': [
+        ('    later = FL.NEW_691 | FL.EDITED_691 | FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # the 6.1.1 CSS fix, Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), Stage 6.10C, Stage 5.4.1 (FL.SEMANTIC_541),\n',
+         '    later = FL.NEW_691 | FL.EDITED_691 | FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B   # the 6.1.1 CSS fix, Stage 6.9.1 (FL.SEMANTIC_691), Stage 6.10A (FL.SEMANTIC_610A), Stage 6.10C, Stage 5.4.1 (FL.SEMANTIC_541),\n'),
+    ],
+    'tests/test_runtime_reliability_ops.py': [
+        ('    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A\n',
+         '    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B\n'),
+    ],
+    'tests/test_sip_eval_78b1.py': [
+        ('    later = FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                              # Wave 1 / Wave 2 PR A, pinned by their own F tests\n',
+         '    later = FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                              # Wave 1 / Wave 2 PR A, pinned by their own F tests\n'),
+    ],
+    'tests/test_strategy_validation_62.py': [
+        ('from freeze_ledger import NEW_68, NEW_69, NEW_691, NEW_610A, NEW_610C, NEW_541, NEW_611FIX, NEW_OPS, NEW_610D, NEW_542, NEW_70, NEW_71, NEW_72, NEW_73, NEW_731, NEW_74, NEW_75, NEW_78, NEW_78B1, NEW_W1, NEW_W2A, unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)\n',
+         'from freeze_ledger import NEW_68, NEW_69, NEW_691, NEW_610A, NEW_610C, NEW_541, NEW_611FIX, NEW_OPS, NEW_610D, NEW_542, NEW_70, NEW_71, NEW_72, NEW_73, NEW_731, NEW_74, NEW_75, NEW_78, NEW_78B1, NEW_W1, NEW_W2A, NEW_W2B, unchanged as ledger_unchanged, view as ledger_view  # noqa: E402 - Stage 6.8: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)\n'),
+        ('NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67 | NEW_68 | NEW_69 | NEW_691 | NEW_610A | NEW_610C | NEW_541 | NEW_611FIX | NEW_OPS | NEW_610D | NEW_542 | NEW_70 | NEW_71 | NEW_72 | NEW_73 | NEW_731 | NEW_74 | NEW_75 | NEW_78 | NEW_78B1 | NEW_W1 | NEW_W2A   # Stage 6.8 / 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix: + their new files (tests/freeze_ledger.py); every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else\n',
+         'NEW_62 = NEW_62_OWN | NEW_63 | NEW_631 | NEW_64 | NEW_641 | NEW_65 | NEW_651 | NEW_66 | NEW_67 | NEW_68 | NEW_69 | NEW_691 | NEW_610A | NEW_610C | NEW_541 | NEW_611FIX | NEW_OPS | NEW_610D | NEW_542 | NEW_70 | NEW_71 | NEW_72 | NEW_73 | NEW_731 | NEW_74 | NEW_75 | NEW_78 | NEW_78B1 | NEW_W1 | NEW_W2A | NEW_W2B   # Stage 6.8 / 6.9 / 6.9.1 / 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix: + their new files (tests/freeze_ledger.py); every file added after main 9fae08b: the earlier freeze tests import THIS set, so a later stage extends it here, nowhere else\n'),
+        ('    assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "paper/", "portfolio/", "forward_validation/", "account_refresh/", "cash_flow/", "scripts/")) for p in (new - NEW_68 - NEW_691 - NEW_OPS - NEW_W2A) | changed)   # Stage 6.8: its own files are pinned by tests/test_bot_activity_68.py; Stage 6.9.1\'s new execution file (an intentional semantic change) by tests/test_unified_exposure_gate_691.py\n',
+         '    assert not any(p.startswith(("execution/", "safety/", "proposals/", "setups/", "paper/", "portfolio/", "forward_validation/", "account_refresh/", "cash_flow/", "scripts/")) for p in (new - NEW_68 - NEW_691 - NEW_OPS - NEW_W2A - NEW_W2B) | changed)   # Stage 6.8: its own files are pinned by tests/test_bot_activity_68.py; Stage 6.9.1\'s new execution file (an intentional semantic change) by tests/test_unified_exposure_gate_691.py\n'),
+    ],
+    'tests/test_swing_pullback_78.py': [
+        ('    later = FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                     # Stage 7.8B-1, pinned by its own F tests\n',
+         '    later = FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                     # Stage 7.8B-1, pinned by its own F tests\n'),
+    ],
+    'tests/test_unified_exposure_gate_691.py': [
+        ('    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # Stage 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n',
+         '    later = FL.NEW_610A | FL.EDITED_610A | FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B   # Stage 6.10A / 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests\n'),
+        ("        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, _now(rel))).splitlines())], rel   # Stage 6.10A keeps every line Stage 6.9.1 left (Wave 1's declared config.py edit undone first)\n",
+         "        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, FL.pre_w2b(rel, _now(rel)))).splitlines())], rel   # Stage 6.10A keeps every line Stage 6.9.1 left (Wave 1's declared config.py edit undone first)\n"),
+    ],
+    'tests/test_wave1_safety_remediation.py': [
+        ('    later = FL.NEW_W2A | FL.EDITED_W2A                                                         # Wave 2 PR A, pinned by its own F tests\n',
+         '    later = FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                         # Wave 2 PR A, pinned by its own F tests\n'),
+    ],
+    'tests/test_wave2_pra.py': [
+        ('',
+         'def pra_files():\n    """Wave 2 PR B: PR A\'s own change set, between the two fixed commits (main before / after PR #51). PR B\'s delta: tests/test_wave2_prb.py."""\n    return set(_git("diff", "--name-only", FL.BASE_W2A, FL.BASE_W2B).split())\n\n\n'),
+        ('    prod = {p for p in changed_files() if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}\n',
+         '    prod = {p for p in pra_files() if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}\n'),
+        ('        added = "\\n".join(l for l in now_text(rel).splitlines() if l not in base)\n',
+         '        added = "\\n".join(l for l in FL.pre_w2b(rel, now_text(rel)).splitlines() if l not in base)\n'),
+        ('    assert {"execution/engine.py", "execution/broker.py", "execution/exposure_gate.py", "config.py"}.isdisjoint(changed_files())\n    assert not {p for p in changed_files() if p.startswith(("safety/", "cash_flow/", "autorun/", "forward_capture/", "setups/", "proposals/", "frontend/"))}\n',
+         '    assert {"execution/engine.py", "execution/broker.py", "execution/exposure_gate.py", "config.py"}.isdisjoint(pra_files())\n    assert not {p for p in pra_files() if p.startswith(("safety/", "cash_flow/", "autorun/", "forward_capture/", "setups/", "proposals/", "frontend/"))}\n'),
+        ('        now, base = named_nodes(now_text(rel)), named_nodes(at_base(rel))\n',
+         '        now, base = named_nodes(FL.pre_w2b(rel, now_text(rel))), named_nodes(at_base(rel))\n'),
+        ('        u_now, u_base = unnamed(now_text(rel)), unnamed(at_base(rel))\n',
+         '        u_now, u_base = unnamed(FL.pre_w2b(rel, now_text(rel))), unnamed(at_base(rel))\n'),
+        ('        assert _normalized(rel, name, now_text(rel)) == ast.dump(base_node), (rel, name)\n',
+         '        assert _normalized(rel, name, FL.pre_w2b(rel, now_text(rel))) == ast.dump(base_node), (rel, name)\n'),
+        ('    assert changed == FL.NEW_W2A | FL.EDITED_W2A, {"unexpected": sorted(changed - FL.NEW_W2A - FL.EDITED_W2A), "missing": sorted((FL.NEW_W2A | FL.EDITED_W2A) - changed)}\n',
+         '    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A)   # Wave 2 PR B: its own sets (its edits of PR A\'s new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py\n    assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}\n'),
+        ('    assert {p for p in changed if p not in in_base} == FL.NEW_W2A and {p for p in changed if p in in_base} == FL.EDITED_W2A\n',
+         '    assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited\n'),
+        ('        assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel\n',
+         '        assert not [l for l in FL.pre_w2b(rel, now_text(rel)).splitlines() if l not in base and marker.match(l)], rel\n'),
+        ('        text = now_text(rel)\n',
+         '        text = FL.undo_w2b(rel, now_text(rel))                                                 # Wave 2 PR B: its own in-place edits undone first (its F03B)\n'),
+        ('    fl = now_text("tests/freeze_ledger.py")\n',
+         '    fl = subprocess.run(["git", "show", f"{FL.BASE_W2B}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\\r\\n", "\\n")   # Wave 2 PR B: the ledger as PR #51 left it\n'),
+        ('    assert set(FL.LEDGER) - set(main_ledger) == NEW_LEDGER_W2A and set(main_ledger) <= set(FL.LEDGER)\n    assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == FL.EDITED_W2A & set(main_ledger)   # every re-hash is a declared PR A edit\n',
+         '    pra_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # Wave 2 PR B: PR A\'s ledger; PR B\'s re-hashes are its F03B\n    assert set(pra_ledger) - set(main_ledger) == NEW_LEDGER_W2A and set(main_ledger) <= set(pra_ledger)\n    assert {k for k in main_ledger if main_ledger[k] != pra_ledger[k]} == FL.EDITED_W2A & set(main_ledger)   # every re-hash is a declared PR A edit\n'),
+    ],
+    'tests/test_wave2_pra_accounting.py': [
+        ('',
+         "import freeze_ledger as FL  # Wave 2 PR B (D-1): T-A42 reads the 6.1 / 6.10A tests on PR A's own delta\n"),
+        ('    now61 = (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8")\n',
+         '    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8"))   # Wave 2 PR B (D-1): PR A\'s delta; PR B\'s own edits are pinned by F02B / F03B\n'),
+        ('    now610a, base610a = (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"), at_base("tests/test_forward_paper_610a.py")\n',
+         '    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")), at_base("tests/test_forward_paper_610a.py")\n'),
+    ],
+}
+SEMANTIC_TESTS_W2B = {                                                                       # Wave 2 PR B: every changed test function -> its finding (F02B)
+    'tests/test_bot_activity_68.py::test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_bot_activity_68.py::test_F02_the_executor_and_scheduler_only_gained_display_bookkeeping_and_every_guard_line_is_kept': "V-01 / design 8.3 (c): the raw read goes through FL.pre_w2b, so the test still proves main's 50cb2d7b text; T-W05B pins PR B's delta",
+    'tests/test_chart_empty_state_611fix.py::test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_decision_flow_610c.py::test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_decision_flow_610c.py::test_F02_execution_setups_auto_run_and_the_live_coverage_are_byte_identical_and_only_the_router_and_three_inert_flags_were_added': "V-01 (e) / design 8.3 (b): a SEMANTIC_W2B file is a declared exemption beside SEMANTIC_W2A; PR B's own delta is pinned by T-W05B",
+    'tests/test_dynamic_universe_610c.py::test_I01_no_live_module_imports_the_dynamic_universe_and_the_live_coverage_files_are_byte_identical_to_the_base': "V-01 (e) / design 8.3 (b): a SEMANTIC_W2B file is a declared exemption beside SEMANTIC_W2A; PR B's own delta is pinned by T-W05B",
+    'tests/test_engine_health_610d.py::test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B; V-01 (e) / design 8.3 (b): a SEMANTIC_W2B file is a declared exemption beside SEMANTIC_W2A; PR B's own delta is pinned by T-W05B",
+    'tests/test_evidence_gate_541.py::test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B; V-01 (e) / design 8.3 (b): a SEMANTIC_W2B file is a declared exemption beside SEMANTIC_W2A; PR B's own delta is pinned by T-W05B",
+    'tests/test_evidence_refresh_542.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_forward_paper_610a.py::observed_day': "W-01 / W-05 / design 8.5: the executor tables (store.ensure()), a time-ordered minute cover with the variant's worker flag, and the three settled post-close ticks",
+    'tests/test_forward_paper_610a.py::test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B; V-01 (b) / design 8.3 (d): the 6.10A change-set ban subtracts SEMANTIC_W2B; T-S54 and T-W05B are the replacement pins for metrics.py",
+    'tests/test_forward_paper_610a.py::test_F02_the_order_decision_logic_is_unchanged_and_the_executor_only_gained_failure_swallowing_markers': "V-01 / design 8.3 (c): the raw read goes through FL.pre_w2b, so the test still proves main's 50cb2d7b text; T-W05B pins PR B's delta",
+    'tests/test_forward_paper_610a.py::test_H03_a_day_without_the_executor_loop_is_invalid_and_a_missed_market_day_is_recorded_not_skipped': 'W-05 / design 8.5: the Friday back-fill needs a confirmed tick (k = 3), so two more observations; its 6.10A assertions are kept',
+    'tests/test_forward_validation_61.py::end_day': 'V-04 / design 8.4: three settled post-close ticks (16:05 / 16:10 / 16:15 ET: executor cycle, refresh, observe) confirm and finalize the v2 session',
+    'tests/test_forward_validation_61.py::full_day': 'V-04 / design 8.4: a time-ordered minute-cadence in-window cover (cover_until) keeps the v2 session observed; its row count is kept exact',
+    'tests/test_forward_validation_61.py::rig': "W-01 / V-23 / design 8.4: the rig creates the executor tables (store.ensure(), as the executor's startup) and persists the worker flag and threshold",
+    'tests/test_forward_validation_61.py::test_N01_the_observer_never_orders_never_imports_a_broker_wire_and_writes_only_its_own_tables_plus_the_early_stop': "V-04 / design 8.4: the sample count becomes the helper's exact count; the token bans, one disable_auto( and post_count 2 are unchanged",
+    'tests/test_forward_validation_61.py::test_S01_a_complete_session_is_recorded_and_classified_healthy_with_its_daily_summary': 'V-04 / design 8.4: HEALTHY through the denser full_day; the exact values (samples, ended_at, evaluation count, events) re-pinned from the construction',
+    'tests/test_forward_validation_61.py::test_S02_an_unobserved_close_reads_degraded_and_unobserved_weekdays_are_backfilled_as_not_run': 'W-01 / design 8.4: re-derived on the ensure()d rig - Wednesday accounted late and DEGRADED, Thursday and Friday NOT_RUN, cumulative (1, 1, 2, 1)',
+    'tests/test_forward_validation_61.py::test_S03_pre_market_only_observations_read_not_run_and_a_first_observation_after_the_close_opens_nothing': 'W-01 / design 8.4: re-derived - NOT_RUN with notes NO_OBSERVATION and EVIDENCE_NOT_SETTLED in the assessment; the r2 part is unchanged',
+    'tests/test_forward_validation_61.py::test_X01_read_only_api_routes_shapes_and_route_words': "V-04 / design 8.4: session rows gain classifier_version and assessment; the sample counts become the helper's exact count",
+    'tests/test_market_intel_70.py::test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_intel_collector_73.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_intel_quality_74.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_intel_schema_v2_731.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_intel_sources_72.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_intel_store_71.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_market_scan_75.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_product_ui_611.py::test_F02_strategy_execution_risk_and_broker_constants_and_the_validation_calculations_are_unchanged': "V-01 (c) / design 8.3 (e): metrics.py is read through ledger_view (a NEW_LEDGER_W2B entry), so the check still proves 50cb2d7b's text",
+    'tests/test_robinhood_portfolio_69.py::test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_risk_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_runtime_reliability_ops.py::test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_trading_code': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_sip_eval_78b1.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_strategy_validation_62.py::=NEW_62': 'V-01 (d) / design 8.3 (f): NEW_62 gains NEW_W2B (its import and the F01 subtraction); it feeds 6.1 Z02, 6.1.1, 6.1.2 and the WAL fix',
+    'tests/test_strategy_validation_62.py::test_F01_main_plus_only_the_stage_62_files_and_exact_edits': 'V-01 (d) / design 8.3 (f): NEW_62 gains NEW_W2B (its import and the F01 subtraction); it feeds 6.1 Z02, 6.1.1, 6.1.2 and the WAL fix',
+    'tests/test_swing_pullback_78.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_unified_exposure_gate_691.py::test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_unified_exposure_gate_691.py::test_F02_the_execution_semantics_changed_on_purpose_and_exactly_as_declared': "V-01 / design 8.3 (c): the raw read goes through FL.pre_w2b, so the test still proves main's 50cb2d7b text; T-W05B pins PR B's delta",
+    'tests/test_wave1_safety_remediation.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed': "U-01 / design 8.3 (a): the change-set union gains NEW_W2B / EDITED_W2B, every earlier set kept; PR B's own sets are pinned by F01B",
+    'tests/test_wave2_pra.py::pra_files': "U-01 / design 8.1: PR A's own change set between the fixed commits BASE_W2A and BASE_W2B, read by T-W04's set checks",
+    'tests/test_wave2_pra.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': 'U-01 / design 8.1: the exact-set rule over both PRs (new = NEW_W2A | NEW_W2B, edited = EDITED_W2A | (EDITED_W2B - NEW_W2A)); marked blocks read pre_w2b',
+    'tests/test_wave2_pra.py::test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': 'U-01 / design 8.1: REPLAY_W2A is replayed on FL.undo_w2b (F03B), the ledger of 50cb2d7b is rebuilt and compared; the view() loop is unchanged',
+    'tests/test_wave2_pra.py::test_TW04_the_production_diff_is_exactly_pr_a_and_names_no_pr_c_object': "U-01 / design 8.1: T-W04's three set checks are evaluated on PR A's delta (pra_files) and its token ban on pre_w2b text; PR B's T-W04B pins the rest",
+    'tests/test_wave2_pra.py::test_TW05_only_the_listed_functions_changed_and_only_the_listed_names_are_new': "U-01 / design 8.1: T-W05's three reads take FL.pre_w2b, so PR A's closed list is proven on PR A's text; PR B's T-W05B proves design 7",
+    'tests/test_wave2_pra_accounting.py::test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_consumers_are_unchanged': "U-01 / D-1 (design 8.1): T-A42 (ii) reads the 6.1 / 6.10A tests through FL.undo_w2b, so 'PR A changed none of them' stays pinned exactly on PR A's delta; PR B's own changes are pinned by F02B / F03B",
+}
 LEDGER = {
-    ".github/ci/pytest_groups.json": "4c2da29d99a35a8401b7f276bcd1350e2ec05d427bac7fe6c95d2ae6072e13e2",
+    ".github/ci/pytest_groups.json": "06042ce712fee67d0834174c11c6d20e0b926f86b84d52f492ff3ec04e923db1",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "1bf1b7ecb079ecffe1e44141405c747e6deb18053cf527de35d628a313a930b2",
     "api/routes/forward_validation.py": "3d6bb8824338b53c72af3ae03ac911cef1958771500b07d1ad108ad8b7d39afd",
     "api/routes/ops_status.py": "5f80dc548368809b88e47a329f51dbadbb81e9dede47ff073e681924ae0b5ec2",
     "api/server.py": "8af3d1f26026023dc3bd704eaafb22533d191a49b1f233ab8edf395e71bc1ea8",
-    "browser_tests/flows.py": "5965eaac2f5ae36ebfe1e52eed45cafcc4f0aaf33a3dbb3c30c3d35ea36679fc",
+    "browser_tests/flows.py": "fb9491405ab3b7e6c227e75ac6cb072828b85e3542ce8d5904cd398116b093e7",
     "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
+    "database/forward_validation_migrations.py": "98ef4bc528c8f62481944f5c507048728ce6b5e10be4cd978ea570b26ace24ab",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
     "execution/__init__.py": "59d68cae075c2b843083a7dd9400b86b01d3ce73b33247aaaa228de54237f296",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
@@ -432,8 +706,10 @@ LEDGER = {
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
     "execution/service.py": "0a9fceea9e5b26cdb62aeb3d0af3a91837062eb34720fc6f50a17ce4c846d9ca",
     "execution/store.py": "e2bc106565703da3a9af938556fa841daa777f0beab97a215f6f858f24ec50c4",
+    "forward_validation/metrics.py": "7e302d5c5ae5444a65f8030626e80ad6d61b48d02453eec60c4d1e29397eecab",
     "forward_validation/reports.py": "140b04b1fe7693092b31177c2210e9390f8293c087138a052a93ed9e47bfe655",
-    "forward_validation/service.py": "d1af1242e04e642d96ad0cd3edc9a9d03590439e3af9f4b098bc57e5e7c47d2b",
+    "forward_validation/service.py": "ec6f9e25b86d4fe7e2a976aa0e8d9e9c95b52b031333a527d9f0b9eacd8056ef",
+    "forward_validation/store.py": "aad3d3286a93d4e73330559b64cfbffbf45f9753dd86baddf62715601dba66c8",
     "frontend/product_ui.css": "7ccb310cc903b95740ba84f9a76a97766640f7f5c1d3ac2747575f061b2f356a",
     "frontend/product_ui.js": "5238523c099f374ee41cb1407cee1bf775681775af77b550626f179be298f72d",
     "frontend/trader_view.js": "cc83857e686c92ea04235c86954c96ea505073381d31664af26d1f18c356bebd",
@@ -454,14 +730,14 @@ LEDGER = {
     "tests/test_demand_57.py": "fa6319bbc49a5770c52b6647973a3376df40d08df26e4ee9a21356b17eb981c9",
     "tests/test_execution_60.py": "ebc8b8aef3e07dc0b5db390bfc805476619577e8271ef609160a15dc7c9e7387",
     "tests/test_execution_safety_591.py": "7b8eb537ecf3cf3b554e4e983e3e4d8c5d3c318d38c5c0d74db14d1fb77beef2",
-    "tests/test_forward_validation_61.py": "d7b5260e7b70bdae9344f5d26212ac0dcf3200651b374ab72e668166a4363fe7",
+    "tests/test_forward_validation_61.py": "10cd174b60efd94c079fd81b1c0e331f3f2e02adb516c199c191a62fea081cba",
     "tests/test_history_budget_39.py": "97fb1fc1432b815a1a8b1c73ceff00d8728d5acde4aff9a16c75a6cd55babdd9",
     "tests/test_product_flow_612.py": "28f95d614292bc8f8f98aaf2e0b40da0427fd8aefc45a9b45a0a91e0c486f4f7",
-    "tests/test_product_ui_611.py": "f509da178c165ab302115600de476e0914ea27dfe98d2e11174d9a5f335415f8",
+    "tests/test_product_ui_611.py": "bfee639c228f6629d7c73270b3d8da630588cb4ef16a8f52b6c6edf2b9b04d89",
     "tests/test_proposals_59.py": "8ee1f4e30ae1e7044865b75ad0a8f53548f8941e5bed2777aa98e08b1e502883",
     "tests/test_regression_isolation.py": "f596017894f68ced030b1d4de720b201150b9637d390c2211347f9bb7cb15b83",
     "tests/test_setups_58.py": "3d89c910788e9ebf64c6ff97fb02d1932e77d24c0b7867ffa69b8b59f73684ea",
-    "tests/test_strategy_validation_62.py": "ecb38d760432d199c2f121be15def84d8fe2bc1bc16b723cb6d7e176bc007a86",
+    "tests/test_strategy_validation_62.py": "252c6ead518776f880f0bf38293ab9d68f96caed1ada79e315397c9f38f0c449",
     "tests/test_trader_view_55.py": "b90299119e4f2ab2790fb514149900ad841e662057027ee4c010b3b551504846",
     "tests/test_trader_view_561.py": "c98637d7b4acaf253c26bfee172a0b1d775454ac912c8a2406b33f5f87eae620",
     "tests/test_windows_runner_60.py": "7862cdc250a7c5da7db73a1385cefccd969a1b872d6c88e31199736500bedf58",
@@ -523,6 +799,26 @@ def pre_w2a(rel: str, text: str) -> str:
     out = subprocess.run(["git", "show", f"{BASE_W2A}:{rel}"], cwd=ROOT, capture_output=True)
     assert out.returncode == 0, f"{rel} is not in {BASE_W2A} (fetch-depth 0 is required)"
     return _norm(out.stdout.decode("utf-8"))
+
+
+def pre_w2b(rel: str, text: str) -> str:
+    """`text` (a current file) as main left it at BASE_W2B when Wave 2 PR B changed it on purpose (SEMANTIC_W2B): an older freeze test reads
+    main's text, where it passed. tests/test_wave2_prb.py pins the delta from that text (the closed function list). Any other file passes through."""
+    if rel not in SEMANTIC_W2B:
+        return text
+    out = subprocess.run(["git", "show", f"{BASE_W2B}:{rel}"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"{rel} is not in {BASE_W2B} (fetch-depth 0 is required)"
+    return _norm(out.stdout.decode("utf-8"))
+
+
+def undo_w2b(rel: str, text: str) -> str:
+    """`text` (a current test file) with Wave 2 PR B's exact in-place edits undone (last first): as on main BASE_W2B. Any other file passes
+    through. tests/test_wave2_prb.py (F03B) proves the result is main, byte for byte."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_W2B.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
 
 
 def unchanged(paths, blob_fn) -> set:

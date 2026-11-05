@@ -45,6 +45,7 @@ from forward_capture.store import ForwardCaptureStore, fid  # noqa: E402
 from forward_validation import reports as REP  # noqa: E402
 from test_cash_flow_602 import cash_config, cycle, make_rig, started  # noqa: E402,F401 - cash_config: the autouse config fixture of the shared rig
 from test_setups_58 import READY_IN, WATCH_IN, fx  # noqa: E402
+import wave2_prb_support as S2B  # noqa: E402 - Wave 2 PR B: the time-ordered minute cover of observed_day (design 8.5)
 
 UTC = timezone.utc
 DAY = "2026-10-21"                                                    # the rig's session: Wednesday, 11:00 New York at the start
@@ -673,15 +674,20 @@ CLOSE_AT = datetime(2026, 10, 21, 20, 0, tzinfo=UTC)                            
 
 
 def observed_day(r, monkeypatch, *, worker=True, during=None, step_min=30, paused_from=None):
-    """A whole regular session observed at a 30-minute cadence (the coverage cadences set to match), then the post-close observation."""
+    """A whole regular session observed at a 30-minute cadence (the coverage cadences set to match), then the post-close observation.
+    Wave 2 PR B (design 8.5): the executor tables exist (W-01); between the 30-minute ticks a time-ordered minute-cadence cover of observer
+    samples with the variant's worker flag (W-05) keeps the Stage 6.1 v2 session observed; three settled post-close ticks (16:05 / 16:10 / 16:15)
+    confirm and finalize it before the 16:20 observation."""
     monkeypatch.setattr(config, "FORWARD_VALIDATION_INTERVAL_SECONDS", step_min * 60.0)
     monkeypatch.setattr(config, "SETUP_EVAL_INTERVAL_SECONDS", step_min * 60.0)
     healthy_loops(monkeypatch, r, worker=worker)
+    r.x.store.ensure()
     r.clock.now = OPEN_AT
     started(r)
     obs(r)
     n = 0
     while r.clock.now + timedelta(minutes=step_min) < CLOSE_AT:
+        S2B.cover_until(r, r.clock.now + timedelta(minutes=step_min), loop_running=worker)
         r.clock.advance(step_min * 60)
         cycle(r)
         paused = paused_from is not None and n >= paused_from
@@ -690,6 +696,12 @@ def observed_day(r, monkeypatch, *, worker=True, during=None, step_min=30, pause
             during(r, n)
         obs(r)
         n += 1
+    S2B.cover_until(r, CLOSE_AT, inclusive=True, loop_running=worker)
+    for k in (5, 10, 15):
+        r.clock.now = CLOSE_AT + timedelta(minutes=k)
+        r.x.run_cycle(r.clock.now, "TEST")
+        cycle(r)
+        obs(r)
     r.clock.now = AFTER_CLOSE
     cycle(r)
     return obs(r)
@@ -777,6 +789,8 @@ def test_H03_a_day_without_the_executor_loop_is_invalid_and_a_missed_market_day_
     r.clock.now = datetime(2026, 10, 23, 15, 0, tzinfo=UTC)                           # Friday: Thursday 22nd was never observed
     cycle(r)
     obs(r)
+    obs(r, 60)
+    obs(r, 60)                                                                         # Wave 2 PR B: the third (confirmed) tick back-fills Thursday NOT_RUN
     missed = r.store.health("2026-10-22")
     assert missed is not None and missed["status"] == "INVALID" and missed["final"] == 1 and "FV_SESSION_NOT_RUN" in missed["reasons"], missed
     r.clock.now = datetime(2026, 11, 26, 15, 0, tzinfo=UTC)                           # Thanksgiving: an exchange holiday is MARKET_CLOSED, not a failure
@@ -1373,14 +1387,14 @@ def test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_
     assert {p for p in stage610a if p.startswith("scripts/")} == {"scripts/install_stock_agent_task.ps1"}
     changed = set(_git("diff", "--name-only", FL.BASE_610A).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
+    later = FL.NEW_610C | FL.EDITED_610C | FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B   # Stage 6.10C / 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610A | FL.EDITED_610A | later, {"unexpected": sorted(changed - FL.NEW_610A - FL.EDITED_610A - later),
                                                               "missing": sorted((FL.NEW_610A | FL.EDITED_610A | later) - changed)}
     for d in ("safety", "proposals", "setups", "strategy_validation", "strategy_registry", "momentum", "value_quality", "mean_reversion", "breakout", "account_refresh",
               "cash_flow", "paper", "portfolio", "rh_gateway", "trader_view", "unified_portfolio", "forward", "ppe", "demand", "evidence"):
         assert not [p for p in stage610a if p.startswith(d + "/")], d                        # no strategy, risk, broker, market-data or Robinhood file
         assert not [p for p in changed - later if p.startswith(d + "/")], d                  # ... and none since but Stage 6.10C's / 5.4.1's / the 6.1.1 CSS fix's declared files
-    assert not (changed - set(FL.SEMANTIC_W1)) & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",   # Wave 1: its declared conftest change
+    assert not (changed - set(FL.SEMANTIC_W1) - set(FL.SEMANTIC_W2B)) & {"frontend/index.html", "tests/conftest.py", ".github/workflows/tests.yml", "DESIGN_60_AUTONOMOUS_PAPER.md", "forward_validation/__init__.py",   # Wave 1: its declared conftest change
                           "forward_validation/metrics.py", "README.md"}
     assert set(FL.SEMANTIC_610A) <= FL.NEW_610A | FL.EDITED_610A and all(len(v) > 40 for v in FL.SEMANTIC_610A.values())
     assert set(FL.INSTRUMENTATION_610A) <= FL.EDITED_610A and all(len(v) > 40 for v in FL.INSTRUMENTATION_610A.values())
@@ -1424,7 +1438,7 @@ def test_F02_the_order_decision_logic_is_unchanged_and_the_executor_only_gained_
     assert life.index("_autorun_startup()") < life.index("_exec_start()") < life.index("_fv_start()") < life.index("_autorun_start()") < life.index("yield")
     assert life.index("yield") < life.index("_autorun_shutdown()") < life.index("_fv_shutdown()")   # the supervisor stops first
     for rel in ("execution/engine.py", "execution/service.py", "config.py", "api/server.py"):
-        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, now_text(rel))).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)
+        assert not [l for l in post(rel).splitlines() if l not in set(FL.undo_w1(rel, FL.pre_w2a(rel, FL.pre_w2b(rel, now_text(rel)))).splitlines())], rel   # a later stage keeps every line Stage 6.10A left (Wave 1's declared config.py edit undone first)
 
 
 def test_F03_the_frozen_and_entry_contract_hashes_and_the_default_policy_hold_in_a_clean_process():

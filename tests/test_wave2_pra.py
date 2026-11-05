@@ -144,16 +144,21 @@ def changed_files():
     return {p for p in c if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
 
 
+def pra_files():
+    """Wave 2 PR B: PR A's own change set, between the two fixed commits (main before / after PR #51). PR B's delta: tests/test_wave2_prb.py."""
+    return set(_git("diff", "--name-only", FL.BASE_W2A, FL.BASE_W2B).split())
+
+
 def test_TW04_the_production_diff_is_exactly_pr_a_and_names_no_pr_c_object():
-    prod = {p for p in changed_files() if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}
+    prod = {p for p in pra_files() if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}
     assert prod == PR_A_FILES, {"unexpected": sorted(prod - PR_A_FILES), "missing": sorted(PR_A_FILES - prod)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2A).split())
     for rel in sorted(prod):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        added = "\n".join(l for l in now_text(rel).splitlines() if l not in base)
+        added = "\n".join(l for l in FL.pre_w2b(rel, now_text(rel)).splitlines() if l not in base)
         assert not [t for t in PR_C_TOKENS if t in added], rel
-    assert {"execution/engine.py", "execution/broker.py", "execution/exposure_gate.py", "config.py"}.isdisjoint(changed_files())
-    assert not {p for p in changed_files() if p.startswith(("safety/", "cash_flow/", "autorun/", "forward_capture/", "setups/", "proposals/", "frontend/"))}
+    assert {"execution/engine.py", "execution/broker.py", "execution/exposure_gate.py", "config.py"}.isdisjoint(pra_files())
+    assert not {p for p in pra_files() if p.startswith(("safety/", "cash_flow/", "autorun/", "forward_capture/", "setups/", "proposals/", "frontend/"))}
 
 
 def _normalized(rel, name, text):
@@ -176,12 +181,12 @@ def _normalized(rel, name, text):
 
 def test_TW05_only_the_listed_functions_changed_and_only_the_listed_names_are_new():
     for rel, (may_change, may_add) in CLOSED_LIST.items():
-        now, base = named_nodes(now_text(rel)), named_nodes(at_base(rel))
+        now, base = named_nodes(FL.pre_w2b(rel, now_text(rel))), named_nodes(at_base(rel))
         assert set(base) <= set(now), (rel, sorted(set(base) - set(now)))                          # nothing of 5d6f7dd disappears
         assert set(now) - set(base) <= may_add, (rel, sorted(set(now) - set(base) - may_add))        # nothing new outside the list
         changed = {k for k in base if digest(base[k]) != digest(now[k])}
         assert changed <= may_change, (rel, sorted(changed - may_change))                           # every pinned function hash-equal
-        u_now, u_base = unnamed(now_text(rel)), unnamed(at_base(rel))
+        u_now, u_base = unnamed(FL.pre_w2b(rel, now_text(rel))), unnamed(at_base(rel))
         added = [ast.dump(ast.parse(s).body[0]) for s in NEW_IMPORTS.get(rel, [])]
         assert sorted(u_now) == sorted(u_base + added), (rel, sorted(set(u_now) ^ set(u_base + added)))   # L-07: imports and other statements too
     probe = unnamed("x = 1\nclass A:\n    def f(self):\n        pass\nA.f = lambda self: None\nA.g, h = 1, 2\n")       # M-01: a rebinding of a pinned method is seen
@@ -190,7 +195,7 @@ def test_TW05_only_the_listed_functions_changed_and_only_the_listed_names_are_ne
     for rel, name in narrow:
         base_node = named_nodes(at_base(rel))[name]
         base_node.decorator_list = []
-        assert _normalized(rel, name, now_text(rel)) == ast.dump(base_node), (rel, name)
+        assert _normalized(rel, name, FL.pre_w2b(rel, now_text(rel))) == ast.dump(base_node), (rel, name)
     for col, extra in (("TRADE_COLS", ("verified",)), ("DAILY_COLS", ("pnl_status", "unverified"))):
         val = lambda t: tuple(ast.literal_eval(named_nodes(t)["=" + col].value))  # noqa: E731
         assert val(now_text("forward_validation/reports.py")) == val(at_base("forward_validation/reports.py")) + extra, col
@@ -228,16 +233,17 @@ NEW_LEDGER_W2A = {"execution/__init__.py", "execution/store.py"}                
 def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2A == "5d6f7dd1e1beb90fc5b2909a7dafabfd8e932a6a" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2A}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files()
-    assert changed == FL.NEW_W2A | FL.EDITED_W2A, {"unexpected": sorted(changed - FL.NEW_W2A - FL.EDITED_W2A), "missing": sorted((FL.NEW_W2A | FL.EDITED_W2A) - changed)}
+    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A)   # Wave 2 PR B: its own sets (its edits of PR A's new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py
+    assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2A).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_W2A and {p for p in changed if p in in_base} == FL.EDITED_W2A
+    assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
     app = {p for p in FL.EDITED_W2A | FL.NEW_W2A if not p.startswith("tests/")}
     assert app == PR_A_FILES | {".github/ci/pytest_groups.json"} and set(FL.SEMANTIC_W2A) == PR_A_FILES - FL.NEW_W2A and FL.INSTRUMENTATION_W2A == {}
     assert all(len(v) > 40 for v in FL.SEMANTIC_W2A.values())
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")                                       # a marked block an older freeze test would strip unseen
     for rel in sorted(app):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
+        assert not [l for l in FL.pre_w2b(rel, now_text(rel)).splitlines() if l not in base and marker.match(l)], rel
 
 
 def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_threshold_or_frozen_control_moved():
@@ -259,7 +265,7 @@ def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_thre
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_W2A.items():
-        text = now_text(rel)
+        text = FL.undo_w2b(rel, now_text(rel))                                                 # Wave 2 PR B: its own in-place edits undone first (its F03B)
         for old, new in reversed(edits):
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)
@@ -268,15 +274,16 @@ def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_onl
     led = lambda t: t[t.index("\nLEDGER = {") + 1:t.index("}\n", t.index("\nLEDGER = {")) + 2]  # noqa: E731
     main_ledger = ast.literal_eval(led(main_fl)[len("LEDGER = "):])
     assert set(REPLAY_W2A) == {p for p in FL.EDITED_W2A if p.startswith("tests/")} - set(main_ledger) - set(NEW_LEDGER_W2A) - {"tests/freeze_ledger.py"}
-    fl = now_text("tests/freeze_ledger.py")
+    fl = subprocess.run(["git", "show", f"{FL.BASE_W2B}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # Wave 2 PR B: the ledger as PR #51 left it
     start = fl.index("\nWave 2 PR A (forward-validation accounting")
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1).replace(" + NEW_W1 + NEW_W2A plus this ledger.", " + NEW_W1 plus this ledger.", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_W2A = "):rebuilt.index("LEDGER = {")], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_w2a("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, the helper and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == NEW_LEDGER_W2A and set(main_ledger) <= set(FL.LEDGER)
-    assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == FL.EDITED_W2A & set(main_ledger)   # every re-hash is a declared PR A edit
+    pra_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # Wave 2 PR B: PR A's ledger; PR B's re-hashes are its F03B
+    assert set(pra_ledger) - set(main_ledger) == NEW_LEDGER_W2A and set(main_ledger) <= set(pra_ledger)
+    assert {k for k in main_ledger if main_ledger[k] != pra_ledger[k]} == FL.EDITED_W2A & set(main_ledger)   # every re-hash is a declared PR A edit
     for rel in sorted(NEW_LEDGER_W2A):
         assert FL.base_text(rel) == at_base(rel), rel                                        # unchanged from BASE_68 to main: the ledger view IS main's text
     for rel in FL.LEDGER:

@@ -20,7 +20,7 @@ import re
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -43,6 +43,7 @@ from forward_validation.store import ForwardValidationStore, ForwardValidationSt
 from database.forward_validation_migrations import TABLES, run_forward_validation_migrations  # noqa: E402
 from api.routes import trader_view as RT  # noqa: E402
 from test_cash_flow_602 import cash_config, cycle, equity, make_rig, started, go_ready  # noqa: E402,F401 - cash_config: the autouse config fixture of the shared rig
+import wave2_prb_support as S2B  # noqa: E402 - Wave 2 PR B: the time-ordered cover and the worker status of the rig (design 8.4)
 
 BASE = "3904175bcd9dd7dbc875442aac36fde429694d06"                       # main = the Stage 6.0.3 merge (PR #16): the base this stage is built on
 UTC = timezone.utc
@@ -70,8 +71,11 @@ from test_strategy_validation_62 import NEW_62  # noqa: E402 - Stage 6.2: the st
 
 def rig(tmp_path, monkeypatch):
     r = make_rig(tmp_path, monkeypatch)
+    r.x.store.ensure()                                                # Wave 2 PR B (W-01): the executor tables exist, as the executor's startup makes them in production
+    S2B.worker_status(monkeypatch, running=True, interval_s=30)       # Wave 2 PR B (V-23): the worker status the samples persist (loop_running, stale_after_s 90)
     r.fv = r.s.forward_validation                                     # wired by the stream on the same database
     r.fv.clock = r.clock
+    r.cover_rows = 0
     return r
 
 
@@ -110,21 +114,29 @@ def close_one(r, pv):
 
 
 def end_day(r):
-    """The first observation after the close. The Stage 6.0.1 loop refreshes every five minutes outside the session, so the data is fresh then."""
-    r.clock.now = AFTER_CLOSE
-    cycle(r)
-    return obs(r)
+    """The post-close sequence (Wave 2 PR B, design 8.4): at 16:05, 16:10 and 16:15 ET an executor cycle, a refresh cycle (the Stage 6.0.1 loop
+    refreshes every five minutes outside the session), then the observer tick. The 16:05 tick is in the 360 s grace; the session is finalized
+    at the first confirmed, settled tick after 16:07 (16:10 after a full_day cover, else 16:15). Returns the last observation."""
+    for k in range(3):
+        r.clock.now = AFTER_CLOSE + timedelta(minutes=5 * k)
+        r.x.run_cycle(r.clock.now, "TEST")
+        cycle(r)
+        o = obs(r)
+    return o
 
 
 def full_day(r):
-    """A complete observed session: fresh data, one closed paper trade, observations through the day, the post-close observation."""
+    """A complete observed session: fresh data, one closed paper trade, observations through the day (Wave 2 PR B: a time-ordered minute-cadence
+    cover of the rest of the regular session, design 8.4), the post-close sequence."""
     started(r)
+    S2B.cover_until(r, r.clock.now)
     o0 = obs(r)
     pv, pos = trade_one(r)
     o1 = obs(r)
     closed = close_one(r, pv)
     cycle(r)
     o2 = obs(r)
+    S2B.cover_until(r, datetime(2026, 10, 21, 20, 0, tzinfo=UTC), inclusive=True)
     o3 = end_day(r)
     return pv, pos, closed, (o0, o1, o2, o3)
 
@@ -144,39 +156,44 @@ def test_S01_a_complete_session_is_recorded_and_classified_healthy_with_its_dail
     r = rig(tmp_path, monkeypatch)
     pv, pos, closed, (o0, o1, o2, o3) = full_day(r)
     assert (o0["result"], o0["trading_date"], o0["session_status"], o0["attention"], o0["early_stop"], o0["restart"]) == ("OK", DATE, "OPEN", [], None, None)
-    s0 = r.fv.store.samples(DATE)[0]
+    by_at = {s["at"]: s for s in r.fv.store.samples(DATE)}                # Wave 2 PR B: the real ticks among the design-8.4 minute cover
+    s0 = by_at[o0["at"]]
     assert s0["in_session"] and s0["mode"] == "MONITOR_ONLY" and s0["account_status"] == "FRESH" and s0["cash_flow_status"] == "FRESH" and s0["safety_state"] == "TRADING_ALLOWED"
     assert s0["equity"] == "100000.00" and s0["reconciliation_healthy"] is True and s0["attention"] == [] and s0["positions"] == [] and s0["controls"] == {}   # no executor cycle yet
-    s1 = r.fv.store.samples(DATE)[1]
+    s1 = by_at[o1["at"]]
     assert s1["mode"] == "PAPER_AUTO" and s1["open_positions"] == 1 and s1["positions"][0]["position_id"] == pos.position_id and s1["positions"][0]["quantity"] == pv.final_qty
     assert "SAFETY_GATE" in s1["controls"] and s1["controls"]["ENTRY_SUBMISSION"] >= 1 and s1["executor_ready"] is True
     assert r.fv.store.marks(pos.position_id) and r.fv.store.marks(pos.position_id)[0]["last_price"] == pos.last_price
     assert o3["session_status"] == "HEALTHY" and o3["backfilled"] == []
     row = r.fv.store.session(DATE)
     assert row["session_status"] == "HEALTHY" and row["notes_code"] == "" and row["market_open_seen"] and row["market_close_seen"] and row["paper_auto_enabled"]
-    assert row["account_refresh_healthy"] and row["cash_flow_healthy"] and row["reconciliation_healthy"] and row["in_session_samples"] == 3 and row["ended_at"] == AFTER_CLOSE.isoformat(timespec="seconds")
-    assert row["bot_start_time"] == o0["at"] and row["bot_stop_time"] == o3["at"] and row["owners"] == [r.fv.owner]
+    closed_at = (AFTER_CLOSE + timedelta(minutes=5)).isoformat(timespec="seconds")    # v2: the 16:10 tick (confirmed by 300 s steps after the 16:00 cover sample, past C + h, settled)
+    assert row["account_refresh_healthy"] and row["cash_flow_healthy"] and row["reconciliation_healthy"] and row["in_session_samples"] == 3 and row["ended_at"] == closed_at
+    assert row["bot_start_time"] == "2026-10-21T13:30:00+00:00" and row["bot_stop_time"] == closed_at and row["owners"] == [r.fv.owner]   # v2: started at the first in-window sample (B-22)
+    assert row["classifier_version"] == "session_classifier_v2" and row["assessment"]["finalized_by"]["at"] == closed_at and row["assessment"]["finalized_late"] is False
     kinds = [e["kind"] for e in r.fv.store.events(newest_first=False)]
     assert kinds == ["SESSION_OPENED", "SESSION_CLOSED"] and r.fv.store.events(kind="SESSION_CLOSED")[0]["code"] == "HEALTHY"
     daily = r.fv.store.daily(DATE)
     assert daily and daily["session_status"] == "HEALTHY" and daily["funnel"]["CLOSED"] == 1 and daily["closed_trades"][0]["symbol"] == "SNDK" and daily["realized_pnl"] == closed.realized_pnl
     assert daily["duplicates"] == 0 and daily["reconciliation_issues"] == 0 and daily["drawdown"]["points"] >= 3 and daily["freshness"]["account"]["refresh_failures"] == 0
     ctl = {c["control_id"]: c for c in r.fv.store.controls()}
-    assert ctl["observer"]["evaluation_count"] == 4 and ctl["session_recorder"]["fire_count"] == 2 and ctl["summary_builder"]["fire_count"] == 1 and ctl["attention_monitor"]["last_result"] == "PASS"
+    assert ctl["observer"]["evaluation_count"] == 6 and ctl["session_recorder"]["fire_count"] == 2 and ctl["summary_builder"]["fire_count"] == 1 and ctl["attention_monitor"]["last_result"] == "PASS"
 
 
 def test_S02_an_unobserved_close_reads_degraded_and_unobserved_weekdays_are_backfilled_as_not_run(tmp_path, monkeypatch):
     r = rig(tmp_path, monkeypatch)
     started(r)
-    obs(r)
+    obs(r)                                                                          # Wednesday: one (unconfirmed) sample - observed, no row yet (v2)
     r.clock.now = NEXT_MONDAY
-    o = obs(r)
+    first, second, o = obs(r), obs(r, 60), obs(r, 60)                              # v2 (design 8.4): the third Monday tick is the first confirmed one
+    assert first["backfilled"] == [] and second["backfilled"] == []
     assert o["backfilled"] == ["2026-10-22", "2026-10-23"] and o["session_status"] == "OPEN"
-    old = r.fv.store.session(DATE)
-    assert old["session_status"] == "DEGRADED" and "CLOSE_NOT_OBSERVED" in old["notes"] and old["market_close_seen"] is False and old["ended_at"] == NEXT_MONDAY.isoformat(timespec="seconds")
+    old = r.fv.store.session(DATE)                                                  # accounted (B-24 (a)) and finalized late, unsettled (no executor cycle)
+    assert old["session_status"] == "DEGRADED" and "CLOSE_NOT_OBSERVED" in old["notes"] and old["market_close_seen"] is False and old["ended_at"] == o["at"]
+    assert {"OPEN_NOT_OBSERVED", "COVERAGE_LOW", "EVIDENCE_NOT_SETTLED"} <= set(old["notes"]) and old["assessment"]["finalized_late"] is True
     for d in ("2026-10-22", "2026-10-23"):
         nr = r.fv.store.session(d)
-        assert nr["session_status"] == "NOT_RUN" and nr["notes"] == ["NO_OBSERVATION", "HOLIDAYS_NOT_MODELLED"] and nr["in_session_samples"] == 0
+        assert nr["session_status"] == "NOT_RUN" and nr["notes"] == ["NO_OBSERVATION"] and nr["in_session_samples"] == 0       # holidays are modelled now
     assert r.fv.store.session("2026-10-24") is None and r.fv.store.session("2026-10-25") is None                      # the weekend is never a session
     assert [e["code"] for e in r.fv.store.events(kind="SESSION_NOT_RUN")] == ["NO_OBSERVATION", "NO_OBSERVATION"]
     cum = r.fv.cumulative(r.clock.now)
@@ -187,11 +204,16 @@ def test_S03_pre_market_only_observations_read_not_run_and_a_first_observation_a
     r = rig(tmp_path, monkeypatch)
     started(r)
     r.clock.now = datetime(2026, 10, 21, 13, 0, tzinfo=UTC)          # 09:00 ET: before the open
-    o = obs(r)
+    obs(r)
+    obs(r, 60)
+    o = obs(r, 60)                                                    # v2 (design 8.4): the third pre-open tick confirms and opens the row (B-22)
     assert o["session_status"] == "OPEN" and r.fv.store.session(DATE)["market_open_seen"] is False
     r.clock.now = datetime(2026, 10, 22, 13, 0, tzinfo=UTC)
     obs(r)
-    assert r.fv.store.session(DATE)["session_status"] == "NOT_RUN" and r.fv.store.session(DATE)["notes"] == ["NO_OBSERVATION", "CLOSE_NOT_OBSERVED"]
+    obs(r, 60)
+    obs(r, 60)                                                        # the next day's third tick: the late finalize (unsettled: NOT_RUN kept, B-20)
+    row = r.fv.store.session(DATE)
+    assert row["session_status"] == "NOT_RUN" and row["notes"] == ["NO_OBSERVATION"] and row["assessment"]["degraded_codes"] == ["EVIDENCE_NOT_SETTLED"]
     r2 = rig(tmp_path / "second", monkeypatch)
     r2.clock.now = AFTER_CLOSE
     o = obs(r2)
@@ -630,7 +652,7 @@ def test_X01_read_only_api_routes_shapes_and_route_words(tmp_path, monkeypatch):
     s = api.get("/api/forward-validation/sessions").json()
     assert s["total"] == 1 and s["sessions"][0]["session_status"] == "HEALTHY"
     one = api.get(f"/api/forward-validation/sessions/{DATE}").json()
-    assert one["session"]["trading_date"] == DATE and one["daily"]["funnel"]["CLOSED"] == 1 and one["samples"] == 4
+    assert one["session"]["trading_date"] == DATE and one["daily"]["funnel"]["CLOSED"] == 1 and one["samples"] == 6 + r.cover_rows   # v2: 6 real ticks + the cover
     assert api.get("/api/forward-validation/sessions/2026-10-22").status_code == 404 and api.get("/api/forward-validation/sessions/20261021").status_code == 400
     c = api.get("/api/forward-validation/closed").json()
     assert c["count"] == 1 and c["closed"][0]["exit_reason"] == "HARD_INVALIDATION" and c["closed"][0]["entry_slippage"]["slippage_bps"] == "0.00"
@@ -647,7 +669,7 @@ def test_X01_read_only_api_routes_shapes_and_route_words(tmp_path, monkeypatch):
     xj = api.get("/api/forward-validation/export/sessions?format=json")
     assert xj.status_code == 200 and json.loads(xj.text)["rows"][0]["session_status"] == "HEALTHY" and api.get("/api/forward-validation/export/nope").status_code == 400
     assert api.get("/api/forward-validation/restarts").json()["count"] == 0 and [e["kind"] for e in api.get("/api/forward-validation/events").json()["events"]] == ["SESSION_CLOSED", "SESSION_OPENED"]
-    assert len(api.get(f"/api/forward-validation/samples?date={DATE}").json()["samples"]) == 4 and api.get(f"/api/forward-validation/funnel/{DATE}").json()["counts"]["CLOSED"] == 1
+    assert len(api.get(f"/api/forward-validation/samples?date={DATE}").json()["samples"]) == min(6 + r.cover_rows, 500) and api.get(f"/api/forward-validation/funnel/{DATE}").json()["counts"]["CLOSED"] == 1
     fz = api.get("/api/forward-validation/frozen-controls").json()
     assert fz["hash"] == FV.frozen_hash() and fz["controls"]["ready_demand"] == 60 and "never tunes" in fz["note"]
     assert "APCA" not in json.dumps(j) and "secret" not in json.dumps(j).lower()
@@ -688,7 +710,7 @@ def test_N01_the_observer_never_orders_never_imports_a_broker_wire_and_writes_on
     tables = {n for (n,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     conn.close()
     assert set(TABLES) <= tables and all(t.startswith("forward_validation_") for t in TABLES)
-    assert r.fv.store.counts()["forward_validation_samples"] == 4 and r.fv.store.counts()["forward_validation_sessions"] == 1
+    assert r.fv.store.counts()["forward_validation_samples"] == 6 + r.cover_rows and r.fv.store.counts()["forward_validation_sessions"] == 1   # v2: 6 real ticks + the cover
 
 
 # ================================================================ Z freeze ======================================================================

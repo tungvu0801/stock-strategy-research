@@ -223,7 +223,7 @@ def test_F02_strategy_execution_risk_and_broker_constants_and_the_validation_cal
     assert c["session_rule"] == "regular session only (weekdays 09:30-16:00 ET), no extended hours"
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO") and X.SIDE == "LONG" and X.ORDER_TYPE == "market"
-    assert now_text("forward_validation/metrics.py") == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")
+    assert ledger_view("forward_validation/metrics.py", now_text("forward_validation/metrics.py")) == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")
     assert ledger_view("execution/__init__.py", now_text("execution/__init__.py")) == blob("execution/__init__.py") and now_text("safety/__init__.py") == blob("safety/__init__.py") and now_text("setups/__init__.py") == blob("setups/__init__.py")
 
 

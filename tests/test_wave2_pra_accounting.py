@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 
 from test_execution_60 import (arm, below_invalidation, cyc, entered, execution_config, make_stack, no_execution_wire)  # noqa: F401 - the rig and its two autouse fixtures
 import wave2_pra_support as S
+import freeze_ledger as FL  # Wave 2 PR B (D-1): T-A42 reads the 6.1 / 6.10A tests on PR A's own delta
 from wave2_pra_support import DAY, Direct, T0, content_hash, order
 from execution.engine import money
 from execution.models import Intent
@@ -1047,11 +1048,11 @@ def test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_co
     def fn_src(text, name):
         tree = ast.parse(text)
         return ast.dump(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith(name)))
-    now61 = (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8")
+    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8"))   # Wave 2 PR B (D-1): PR A's delta; PR B's own edits are pinned by F02B / F03B
     base61 = at_base("tests/test_forward_validation_61.py")
     for name in ("test_T01_", "test_T02_", "test_R01_", "test_R02_", "test_S01_", "test_X01_"):         # (ii) they run in this suite, unchanged
         assert fn_src(now61, name) == fn_src(base61, name), name
-    now610a, base610a = (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"), at_base("tests/test_forward_paper_610a.py")
+    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")), at_base("tests/test_forward_paper_610a.py")
     tests610a = [n.name for n in ast.parse(base610a).body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_") and not n.name.startswith("test_F")]
     assert len(tests610a) > 20 and all(fn_src(now610a, n) == fn_src(base610a, n) for n in tests610a)   # only its F (freeze bookkeeping) tests carry the PR A union
     for rel in ("tests/frontend/forward_validation.test.cjs", "frontend/forward_validation.js"):

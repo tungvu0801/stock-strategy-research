@@ -198,14 +198,14 @@ def test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_ev
     assert stage541 == FL.NEW_541 | FL.EDITED_541, {"unexpected": sorted(stage541 - FL.NEW_541 - FL.EDITED_541), "missing": sorted(FL.NEW_541 | FL.EDITED_541 - stage541)}
     changed = set(_git("diff", "--name-only", FL.BASE_541).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
+    later = FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                  # the Stage 6.1.1 CSS fix, pinned by its own F tests
     assert changed == FL.NEW_541 | FL.EDITED_541 | later, {"unexpected": sorted(changed - FL.NEW_541 - FL.EDITED_541 - later), "missing": sorted((FL.NEW_541 | FL.EDITED_541 | later) - changed)}
     assert set(FL.SEMANTIC_541) == {"trader_view/research.py"}
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
             assert post(rel) == at_base(rel), rel
-            assert p.read_text(encoding="utf-8").replace("\r\n", "\n") == post(rel) or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A, rel   # since then: Stage 6.10D touches none of these; Wave 1 only its declared safety files
+            assert p.read_text(encoding="utf-8").replace("\r\n", "\n") == post(rel) or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B, rel   # since then: Stage 6.10D touches none of these; Wave 1 only its declared safety files
     for rel in sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "trader_view").glob("*.py")):
         if rel != "trader_view/research.py":
             assert post(rel) == at_base(rel), rel
