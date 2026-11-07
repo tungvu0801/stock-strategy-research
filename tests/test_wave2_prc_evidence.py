@@ -894,3 +894,58 @@ def test_TRR15_L2_an_unreadable_ownership_read_is_read_failed_never_no_duplicate
     monkeypatch.setattr(r.store, "query_strict", flaky)
     b = r.fv._run_block(evening(d1))
     assert b["readiness"]["status"] == "NOT READY" and any(x["code"] == "READ_FAILED" for x in b["readiness"]["reasons"])
+
+
+# ================================================================ L-b (operator policy 2026-11-07): an unresolved unrelated manual pair ======
+
+def _manual_att(r, now):
+    return [(a["critical"], a["detail"], a["count"]) for a in r.fv.attention(now) if a["code"] == "MANUAL_ORDERS_UNRESOLVED"]
+
+
+def test_TRR16_LB_an_unresolved_unrelated_manual_pair_never_invalidates_the_run_and_is_never_hidden(tmp_path, monkeypatch):
+    from test_wave2_prc_pnl import run_row
+    r, run = rig(tmp_path, monkeypatch)
+    d1, d2 = mdays("2026-11-10", 2)
+    C.member_day(r, d1, run, mode="PAPER_AUTO")
+    C.put_recon(r.db, at(d1, 11), "AMD", C.L2_CASES["manual_unrelated"][0])
+    rec = r.fv.reconciliation(None)
+    assert [x["resolution"] for x in rec["detail"] if x["kind"] == "MULTIPLE_ORDERS" and x["symbol"] == "AMD"] == ["OPEN"] and rec["open"] >= 1   # reconciliation shows it, unresolved
+    assert _manual_att(r, evening(d1)) == [(False, ["AMD"], 1)]                          # attention shows it - informational, never critical
+    assert not [a for a in r.fv.attention(evening(d1)) if a["critical"]]                 # so no early stop and nothing to name at a start (C-07)
+    ov = r.fv.overview(evening(d1))
+    assert ov["needs_attention"] is True and "MANUAL_ORDERS_UNRESOLVED" in {a["code"] for a in ov["attention"]}
+    assert ov["operational"]["reconciliation_open"] >= 1 and ov["operational"]["status"] == "NOT READY"     # the all-time line still counts it (D-5, unchanged)
+    assert r.fv._run_block(evening(d1))["readiness"]["status"] == "READY"               # ... but the bot-only run is not invalidated by it
+    C.member_day(r, d2, run, mode="PAPER_AUTO")
+    later = r.fv._run_block(evening(d2))
+    assert later["readiness"]["status"] == "READY" and later["sessions"]["strategy_days"] == 2 and _manual_att(r, evening(d2)) == [(False, ["AMD"], 1)]   # still unresolved, still shown
+    run_row(r.db, at(d2, 18), {"findings": 0})                                           # F-09 (C-66): a later clean reconciliation resolves it
+    assert [x["resolution"] for x in r.fv.reconciliation(None)["detail"] if x["kind"] == "MULTIPLE_ORDERS"] == ["RESOLVED"]
+    assert _manual_att(r, at(d2, 18, 5)) == [] and r.fv._run_block(at(d2, 18, 5))["readiness"]["status"] == "READY"
+
+
+@pytest.mark.parametrize("history", ["manual_only", "genuine_on_record"])
+def test_TRR17_LB_a_manual_pair_reaches_run_readiness_only_through_the_preserved_early_stop(tmp_path, monkeypatch, history):
+    """L-b point 2 vs point 5 (operator decision D-Lb-1): with a counted duplicate on record (here a historic client-order-id duplicate,
+    acknowledged at the start) DUPLICATE_BROKER_ORDER is critical, so a NEW manual pair is a new sigma element and PR A's stop fires; its
+    EARLY_STOP is FAILED row evidence for the day (PR B) and the run reads NOT READY (a). With nothing counted on record the pair stops nothing."""
+    r = C.RunLab(tmp_path, monkeypatch)
+    if history == "genuine_on_record":
+        for i, boid in enumerate(("b1", "b2")):
+            C.sql(r.db, "INSERT INTO execution_orders (broker_order_id, client_order_id, symbol, side, first_seen_at, last_seen_at) VALUES (?,?,?,?,?,?)",
+                  (boid, "sa-old", "SNDK", "buy", iso(START - timedelta(days=3, seconds=i)), iso(START - timedelta(days=3))))
+    r.ready(START)
+    out = r.start(START, acknowledge_attention=["DUPLICATE_BROKER_ORDER"] if history == "genuine_on_record" else [])
+    assert out["ok"], out
+    run, d1 = out["run"], "2026-11-10"
+    r.x.store.set_mode("PAPER_AUTO", at(d1, 9, 31), "user", "arm", {})
+    C.put_recon(r.db, at(d1, 11), "AMD", C.L2_CASES["manual_unrelated"][0])           # a new unrelated manual pair during the run
+    es = r.fv._early_stop(at(d1, 11, 1), r.fv.attention(at(d1, 11, 1)), {"trading_date": d1}) or {}
+    stopped = history == "genuine_on_record"
+    assert bool(es.get("stopped")) is stopped and (r.x.mode()["mode"] == "MONITOR_ONLY") is stopped   # the early stop exactly as before L-b
+    failed, _ = r.fv._row_evidence(iso(at(d1, 0)), iso(at(d1, 23, 59, 59)), lambda name, fn, default: fn())
+    assert failed["DUPLICATE_BROKER_ORDER"] == 0 and failed["EARLY_STOP"] == int(stopped)   # the pair is never duplicate evidence; the stop is
+    C.member_day(r, d1, run, mode="PAPER_AUTO", status="FAILED" if stopped else "HEALTHY")   # the 6.1 row the classifier writes from that evidence
+    b = r.fv._run_block(evening(d1))
+    assert b["readiness"]["status"] == ("NOT READY" if stopped else "READY") and ({"code": "FAILED_DAY", "dates": [d1]} in b["readiness"]["reasons"]) is stopped
+    assert _manual_att(r, evening(d1)) == [(False, ["AMD"], 1)]                         # shown either way, never critical

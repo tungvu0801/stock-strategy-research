@@ -116,7 +116,7 @@ def _preconditions(store, now, opts):
     from forward_validation import CRITICAL_CODES, MIN_TRADES_FOR_EDGE, TARGET_EVENTS, TARGET_SESSIONS, frozen_hash
     from forward_validation import metrics as M
     from forward_validation.attention_signature import signature
-    from forward_validation.service import _iso, _n, _parse
+    from forward_validation.service import _iso, _parse
     from setups.market_hours import session_date
     blockers = ("PF-18", "EX-13", "PF-08", "W2-N23", "W2-N03")                   # C-09: run_admin's open Paper Auto blocker ids (function-local)
     errors = []
@@ -174,9 +174,9 @@ def _preconditions(store, now, opts):
             d = json.loads(r["detail_json"] or "{}")
         except ValueError:
             return True
-        if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
-            return True                                                             # a legacy row without the keys: counted (fail-closed)
-        return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+        if not isinstance(d, dict) or type(d.get("bot_orders")) is not int or type(d.get("bot_exposed")) is not bool or d["bot_orders"] < 0:
+            return True                                                             # a legacy row, or ownership the row does not establish: counted (L-b)
+        return d["bot_orders"] >= 2 or d["bot_exposed"]
     manual = sorted(int(r["rid"]) for r in store.query_strict("SELECT rowid AS rid, kind, detail_json FROM execution_reconciliations WHERE kind = 'MULTIPLE_ORDERS'")
                     if not counted(r))                                              # strict: an unreadable ownership read refuses the start
     strict = store.strict_view()

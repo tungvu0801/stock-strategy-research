@@ -29,7 +29,7 @@ CLOSED_LIST_C = {                                                               
     "forward_validation/store.py": ({"=SAMPLE_COLS", "ForwardValidationStore.add_sample"},
                                     {"ForwardValidationStore." + n for n in ("active_run", "runs", "run_events", "insert_run", "end_run", "add_run_event", "strict_view")}),
     "forward_validation/service.py": ({FN + n for n in ("__init__", "_snapshot", "observe", "_early_stop", "cumulative", "overview", "order_reliability", "_duplicate_evidence",
-                                                        "_resolution", "trace", "unrealized_pnl")},                   # __init__: self._run_* counters only (NARROW_INIT)
+                                                        "_resolution", "trace", "unrealized_pnl", "attention")},       # __init__: self._run_* counters only (NARROW_INIT); attention: L-b
                                       {FN + n for n in ("_run_ack", "_run_check", "_session_membership", "_trade_membership", "_strategy_day", "_pa_cov", "_run_readiness",
                                                         "_run_block", "_bot_drawdown", "_fill_times")} | {"=ROW_CAP"}),
     "forward_validation/metrics.py": ({"edge_status", "=CLASSIFIER_VERSION"}, {"price_age_unknown", "bot_drawdown_pct"}),

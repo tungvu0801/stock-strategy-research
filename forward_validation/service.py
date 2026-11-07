@@ -648,9 +648,9 @@ class ForwardValidationService:
                 d = json.loads(r["detail_json"] or "{}")
             except ValueError:
                 return True
-            if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
-                return True                                                            # a legacy row without the keys: counted (fail-closed)
-            return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+            if not isinstance(d, dict) or type(d.get("bot_orders")) is not int or type(d.get("bot_exposed")) is not bool or d["bot_orders"] < 0:
+                return True                                                            # a legacy row, or ownership the row does not establish: counted (L-b)
+            return d["bot_orders"] >= 2 or d["bot_exposed"]
         return n + sum(1 for r in rec if counted(r))
 
     def _live_host_evidence(self, lo: str, hi: str) -> int:
@@ -931,6 +931,9 @@ class ForwardValidationService:
         rel = self.order_reliability(None)
         if _n(rel["duplicate_broker_orders"]):
             add("DUPLICATE_BROKER_ORDER", rel["duplicate_detail"], _n(rel["duplicate_broker_orders"]))
+        if rel.get("manual_orders_open"):                                                # Wave 2 PR C (L-b): an unresolved unrelated manual pair is never hidden
+            out.append({"code": "MANUAL_ORDERS_UNRESOLVED", "text": "manual open orders in a symbol without bot exposure are unresolved (not a bot duplicate)",
+                        "critical": False, "detail": rel["manual_orders_open"], "count": len(rel["manual_orders_open"])})   # informational: no early stop, no C-07
         live = self._live_host_attempts()
         if live:
             add("LIVE_HOST_ATTEMPT", "a request to a non-paper host was refused by the transport", live)
@@ -1090,7 +1093,7 @@ class ForwardValidationService:
         if start:
             dup_rows = [r for r in dup_rows if self.store.query("SELECT 1 FROM execution_orders WHERE client_order_id = ? AND first_seen_at >= ? AND first_seen_at < ?", (r["client_order_id"], start, end))]
         w3, a3 = self._where("at", start, end)
-        multi = self.store.query(f"SELECT kind, symbol, detail_json FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER'){w3}", a3)
+        multi = self.store.query(f"SELECT kind, symbol, at, detail_json FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER'){w3}", a3)
 
         def counted(r) -> bool:                                                        # Wave 2 PR C (C-65, W2-6): manual orders in a symbol with no bot exposure are not a duplicate
             if r["kind"] != "MULTIPLE_ORDERS":
@@ -1099,13 +1102,18 @@ class ForwardValidationService:
                 d = json.loads(r["detail_json"] or "{}")
             except ValueError:
                 return True
-            if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
-                return True                                                            # a legacy row without the keys: counted (fail-closed)
-            return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+            if not isinstance(d, dict) or type(d.get("bot_orders")) is not int or type(d.get("bot_exposed")) is not bool or d["bot_orders"] < 0:
+                return True                                                            # a legacy row, or ownership the row does not establish: counted (L-b)
+            return d["bot_orders"] >= 2 or d["bot_exposed"]
+        manual: Dict[str, dict] = {}
+        for m in multi:                                                                 # Wave 2 PR C (L-b): each symbol's latest not-counted row
+            if not counted(m) and str(m["at"] or "") >= str((manual.get(m.get("symbol") or "") or {}).get("at") or ""):
+                manual[m.get("symbol") or ""] = m
         multi = [m for m in multi if counted(m)]
         out["duplicate_broker_orders"] = len(dup_rows) + len(multi)
         out["duplicate_detail"] = [f"{r['client_order_id']}: {r['n']} broker orders" for r in dup_rows] + [f"{m['kind']} {m.get('symbol') or ''}".strip() for m in multi]
         out["duplicate_entry_blocks"] = _n(next((c.get("fire_count") for c in self.store.query("SELECT fire_count FROM execution_controls WHERE control_id = 'DUPLICATE_ENTRY'")), 0))
+        out["manual_orders_open"] = sorted(s for s, m in manual.items() if self._resolution(m) != "RESOLVED")   # L-b: visible while unresolved, never a duplicate
         out["target"] = {"duplicate_broker_orders": 0, "met": out["duplicate_broker_orders"] == 0}
         return out
 
@@ -2131,7 +2139,12 @@ class ForwardValidationService:
         """C-30...C-34 (semantics 2-4): run NOT READY while any day of O(R), member or not, is FAILED (a), unreadable (b), past its B-20 bound
         without a final row of the run's classifier (c), or 6.10A-INVALID for evidence integrity (h); an unacknowledged critical attention
         element is active (d); a run-window operational count is non-zero (e); the run is suspended (f); any of these reads fails (g). READY
-        also needs an active, unsuspended run with at least one member session that is not unreadable (C-34). Never reads prior_invalid_days."""
+        also needs an active, unsuspended run with at least one member session that is not unreadable (C-34). Never reads prior_invalid_days.
+        L-b (operator policy, 2026-11-07): a MULTIPLE_ORDERS row that establishes unrelated manual orders (an int bot_orders < 2 and bot_exposed
+        false) is never run evidence here, resolved or not - (d) and (e) skip it, and it stays visible in reconciliation() and as the informational
+        attention MANUAL_ORDERS_UNRESOLVED; a row that does not establish ownership (legacy, unparsable, null or mistyped values) is counted, and an
+        unreadable ownership read is READ_FAILED. The preserved X2 early stop is not filtered: with a counted duplicate on record, a new manual pair
+        still stops Paper Auto, and that EARLY_STOP makes its day FAILED (a), so the run then reads NOT READY (T-RR17)."""
         from forward_validation.store import ForwardValidationStoreError
         reasons: List[dict] = []
         try:
@@ -2159,9 +2172,9 @@ class ForwardValidationService:
                     d = json.loads(r["detail_json"] or "{}")
                 except ValueError:
                     return True
-                if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
-                    return True                                                        # a legacy row without the keys: counted (fail-closed)
-                return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+                if not isinstance(d, dict) or type(d.get("bot_orders")) is not int or type(d.get("bot_exposed")) is not bool or d["bot_orders"] < 0:
+                    return True                                                        # a legacy row, or ownership the row does not establish: counted (L-b)
+                return d["bot_orders"] >= 2 or d["bot_exposed"]
             manual = {int(r["rid"]) for r in self.store.query_strict("SELECT rowid AS rid, kind, detail_json FROM execution_reconciliations WHERE kind = 'MULTIPLE_ORDERS'")
                       if not counted(r)}                                               # strict: an unreadable ownership read is READ_FAILED (g), never 'no duplicate'
             strict = self.store.strict_view()

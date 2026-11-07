@@ -512,3 +512,42 @@ def test_TR12_L2_one_canonical_duplicate_predicate_everywhere():
              **counted_nodes("forward_validation/run_admin.py", {"_preconditions"})}
     assert len(set(nodes.values())) == 1, sorted(nodes)                             # W2-6's rule (C-65) is one predicate in all four readers
     assert (ROOT / "forward_validation" / "attention_signature.py").read_text(encoding="utf-8").replace("\r\n", "\n") == at_base("forward_validation/attention_signature.py")
+
+
+# ================================================================ L-b (operator policy 2026-11-07): visible, never critical, fail-closed =====
+
+def test_TR13_LB_the_executors_own_manual_pair_stays_visible_until_a_clean_reconciliation(tmp_path):
+    from test_execution_60 import cyc
+    st = _stack(tmp_path, ("AMD", "manual-2"), ("AMD", "manual-1"))
+    fv = fv_over(st.db, st.x)
+    shown = lambda: [(a["critical"], a["detail"], a["count"]) for a in fv.attention(st.clock.now) if a["code"] == "MANUAL_ORDERS_UNRESOLVED"]   # noqa: E731
+    assert shown() == [(False, ["AMD"], 1)] and fv.order_reliability(None)["duplicate_broker_orders"] == 0      # shown, never a duplicate (W2-6)
+    assert [d["resolution"] for d in fv.reconciliation(None)["detail"] if d["kind"] == "MULTIPLE_ORDERS"] == ["OPEN"]
+    for k in [k for k, o in st.sim.orders.items() if o["client_order_id"].startswith("manual-")]:
+        del st.sim.orders[k]                                                       # the operator clears the manual orders at the broker
+    cyc(st)                                                                        # the next reconciliation is clean: F-09 resolves the finding
+    assert [d["resolution"] for d in fv.reconciliation(None)["detail"] if d["kind"] == "MULTIPLE_ORDERS"] == ["RESOLVED"] and shown() == []
+
+
+@pytest.mark.parametrize("case", C.LB_UNESTABLISHED)
+def test_TR14_LB_ownership_the_row_does_not_establish_is_counted_by_both_readers_and_never_listed_as_manual(tmp_path, monkeypatch, case):
+    r = C.RunLab(tmp_path, monkeypatch)
+    recon_row(r.db, et(2026, 11, 10, 11), "AMD", C.L2_CASES[case][0])
+    rel = r.fv.order_reliability(None)
+    assert rel["duplicate_broker_orders"] == r.fv._duplicate_evidence("", "9999") == 1 and rel["manual_orders_open"] == [], (case, rel)
+    att = {a["code"]: a for a in r.fv.attention(et(2026, 11, 10, 12))}
+    assert att["DUPLICATE_BROKER_ORDER"]["critical"] is True and "MANUAL_ORDERS_UNRESOLVED" not in att      # fail-closed: a duplicate, critical
+
+
+def test_TE13d_LB_the_informational_manual_item_never_stops_paper_auto(tmp_path, monkeypatch):
+    r = C.RunLab(tmp_path, monkeypatch)
+    now = et(2026, 11, 9, 11)
+    r.ready(now)
+    assert r.start(now)["ok"]
+    r.x.store.set_mode("PAPER_AUTO", now + timedelta(seconds=1), "user", "arm", {})
+    C.put_recon(r.db, now + timedelta(minutes=1), "MU", C.L2_CASES["manual_unrelated"][0])
+    o = r.tick(now + timedelta(minutes=2))
+    assert "MANUAL_ORDERS_UNRESOLVED" in o["attention"] and (o.get("early_stop") or {}).get("stopped") is not True and r.x.mode()["mode"] == "PAPER_AUTO"
+    C.put_recon(r.db, now + timedelta(minutes=3), "SNDK", C.L2_CASES["null_ownership"][0])   # ownership not established: counted, critical, a new element
+    o = r.tick(now + timedelta(minutes=4))
+    assert o["early_stop"]["stopped"] is True and r.x.mode()["mode"] == "MONITOR_ONLY"      # PR A's stop, unchanged

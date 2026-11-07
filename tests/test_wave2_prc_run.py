@@ -461,3 +461,16 @@ def test_TC26_L2_an_unreadable_ownership_read_refuses_the_start(tmp_path, monkey
         r.start(NOW)
     monkeypatch.setattr(r.store, "query_strict", real)
     assert r.store.runs() == []
+
+
+def test_TC27_LB_an_unresolved_manual_pair_is_shown_but_never_has_to_be_named_at_the_start(tmp_path, monkeypatch):
+    r = lab(tmp_path, monkeypatch)
+    rid = C.put_recon(r.db, NOW - timedelta(days=2), "AMD", C.L2_CASES["manual_unrelated"][0])   # unresolved: no clean reconciliation after it
+    att = {a["code"]: a for a in r.fv.attention(NOW)}
+    assert (att["MANUAL_ORDERS_UNRESOLVED"]["critical"], att["MANUAL_ORDERS_UNRESOLVED"]["detail"]) == (False, ["AMD"]) and "DUPLICATE_BROKER_ORDER" not in att
+    bad = r.start(NOW, acknowledge_attention=["MANUAL_ORDERS_UNRESOLVED"])           # C-07 names critical codes only: an informational code is refused
+    assert not bad["ok"] and any(e.startswith("C-07") for e in bad["errors"]), bad
+    out = r.start(NOW)
+    assert out["ok"], out
+    started = [e for e in r.store.run_events(out["run"]["run_id"]) if e["kind"] == "STARTED"][0]
+    assert started["detail"]["duplicate_rows_not_counted"] == [rid]

@@ -144,14 +144,23 @@ def put_recon(db: Path, at: datetime, symbol: str, detail_json: str, kind: str =
         conn.close()
 
 
-# L-2: the MULTIPLE_ORDERS details _reconcile writes (C-64), by ownership case; counted = W2-6's canonical predicate (C-65)
+# L-2: the MULTIPLE_ORDERS details _reconcile writes (C-64), by ownership case; counted = W2-6's canonical predicate (C-65). L-b: a row whose
+# ownership values do not establish anything (null, mistyped, a negative or a bool count) is counted, like a legacy row (fail-closed).
 L2_CASES = {
     "manual_unrelated": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": 0, "bot_exposed": false}', False),
     "bot_owned": ('{"count": 2, "client_order_ids": ["stockagent-a", "stockagent-b"], "bot_orders": 2, "bot_exposed": false}', True),
     "mixed_exposed": ('{"count": 2, "client_order_ids": ["manual-1", "stockagent-a"], "bot_orders": 1, "bot_exposed": true}', True),
     "legacy_no_keys": ('{"count": 2}', True),
     "unparsable": ("not json", True),
+    "null_ownership": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": null, "bot_exposed": null}', True),
+    "mistyped_ownership": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": "0", "bot_exposed": 0}', True),
+    "negative_bot_orders": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": -1, "bot_exposed": false}', True),
+    "bool_bot_orders": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": true, "bot_exposed": false}', True),
+    "exposure_null": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": 0, "bot_exposed": null}', True),   # a valid count, exposure unknown
+    "exposure_mistyped": ('{"count": 2, "client_order_ids": ["manual-1", "stockagent-a"], "bot_orders": 1, "bot_exposed": 0}', True),
+    "exposure_missing": ('{"count": 2, "client_order_ids": ["manual-1", "manual-2"], "bot_orders": 0}', True),
 }
+LB_UNESTABLISHED = ("null_ownership", "mistyped_ownership", "negative_bot_orders", "bool_bot_orders", "exposure_null", "exposure_mistyped", "exposure_missing")
 
 
 def fresh_marks(a: datetime, b: datetime, px: str = "10.50", step_s: int = 60) -> List[tuple]:
