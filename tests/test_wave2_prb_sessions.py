@@ -74,7 +74,7 @@ def test_TS01_observer_level(tmp_path, monkeypatch):
     row = lab.session(D)
     assert row["session_status"] == "DEGRADED" and {"COVERAGE_LOW", "OPEN_NOT_OBSERVED"} <= set(row["notes"])
     assert row["started_at"] == iso(et(2026, 10, 21, 15, 55)) and row["assessment"]["finalized_by"]["at"] == iso(et(2026, 10, 21, 16, 15, 30))
-    assert row["assessment"]["opened_by"]["at"] == iso(et(2026, 10, 21, 16, 15, 30)) and row["classifier_version"] == "session_classifier_v2"
+    assert row["assessment"]["opened_by"]["at"] == iso(et(2026, 10, 21, 16, 15, 30)) and row["classifier_version"] == "session_classifier_v2_1"
 
 
 def test_TS02_two_short_runs_are_a_long_gap_with_low_coverage(lab):
@@ -848,7 +848,7 @@ def test_TS54_v1_classify_session_is_unchanged_and_v2_is_separate_with_literal_c
     pick = lambda t, n: next(ast.dump(x) for x in ast.parse(t).body if isinstance(x, ast.FunctionDef) and x.name == n)  # noqa: E731
     assert pick(base, "classify_session") == pick(now, "classify_session")
     consts = {x.targets[0].id: x.value.value for x in ast.parse(now).body if isinstance(x, ast.Assign) and isinstance(x.value, ast.Constant) and isinstance(x.targets[0], ast.Name)}
-    assert (consts["G"], consts["H"], consts["K"], consts["CLASSIFIER_VERSION"], consts["EVIDENCE_READ_ATTEMPTS"]) == (360, 60, 3, "session_classifier_v2", 3)
+    assert (consts["G"], consts["H"], consts["K"], consts["CLASSIFIER_VERSION"], consts["EVIDENCE_READ_ATTEMPTS"]) == (360, 60, 3, "session_classifier_v2_1", 3)
     v2 = now[now.index("# ---------------------------------------------------------------- Wave 2 PR B"):]
     assert "getenv" not in v2 and "config." not in v2 and "import config" not in v2                  # T-S59 (i): nothing from the environment
     init_now = (ROOT / "forward_validation" / "__init__.py").read_text(encoding="utf-8")
@@ -998,7 +998,7 @@ def test_TS55_ix_a_bug_in_the_assessment_is_contained_every_tick_and_escalates_f
     row = lab.session(D)
     assert at_midnight == "OPEN" and row["session_status"] == "DEGRADED" and row["notes"] == ["EVIDENCE_UNREADABLE"]
     assert row["assessment"]["finalized_late"] is True and row["assessment"]["unavailable_sources"]["assessment"]["error"].startswith("RuntimeError")
-    assert row["assessment"]["unavailable_sources"]["assessment"]["attempts"] >= 3 and row["classifier_version"] == "session_classifier_v2"
+    assert row["assessment"]["unavailable_sources"]["assessment"]["attempts"] >= 3 and row["classifier_version"] == "session_classifier_v2_1"
     n = len([e for e in lab.events("OBSERVER_ERROR") if e["code"] == "EVIDENCE_READ" and e["trading_date"] == D])
     lab.tick(et(2026, 10, 22, 9, 20))
     assert len([e for e in lab.events("OBSERVER_ERROR") if e["code"] == "EVIDENCE_READ" and e["trading_date"] == D]) == n   # closed: the events stop
@@ -1176,7 +1176,7 @@ def test_TS65_a_fresh_database_accounts_its_first_observed_day(lab):
         lab.tick(t)
     assert lab.session(D) is not None and [r["trading_date"] for r in lab.store.sessions(newest_first=False)] == [D, "2026-10-22"]
     row = lab.session(D)                                                               # B-24 (a): accounted by P2's confirmed sample (v1 opened it at P1's first tick)
-    assert row["classifier_version"] == "session_classifier_v2" and row["assessment"]["opened_by"]["owner"] == "7002:bbbbbbbb"
+    assert row["classifier_version"] == "session_classifier_v2_1" and row["assessment"]["opened_by"]["owner"] == "7002:bbbbbbbb"
     assert row["assessment"]["finalized_late"] is True and row["session_status"] == "DEGRADED" and row["started_at"] == iso(et(2026, 10, 21, 10, 0))
 
 

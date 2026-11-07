@@ -40,7 +40,7 @@ test("2 advanced metrics only under View details; the details link to the separa
   assert.ok(!visible.includes("Expectancy") && !visible.includes("Win rate") && !visible.includes("Max drawdown"));
   assert.ok(/class="tv-bot-details tv-hidden" data-fv-details/.test(closed));
   const open = text(FV.compactHtml(BASE, { detailsOpen: true }));
-  for (const s of ["Win / loss / flat 2 / 1 / 0", "Win rate 66.67 %", "Expectancy per trade (descriptive) +13.73", "Max drawdown (adjusted equity) +120.00 (0.12 %)", "Safety fires 3", "Restarts observed 1",
+  for (const s of ["Win / loss / flat 2 / 1 / 0", "Win rate 66.67 %", "Expectancy per trade (descriptive) +13.73", "Max drawdown (adjusted equity · informational) +120.00 (0.12 %)", "Safety fires 3", "Restarts observed 1",   // Wave 2 PR C: C-81 labels the account curve informational (the drawdown tile is the run's)
                    "Operational status READY", "Setup events (READY + reviewable) 12 / 100", "Observer running · every 60 s in session"]) assert.ok(open.includes(s), s);
   assert.ok(FV.compactHtml(BASE, { detailsOpen: true }).includes('href="forward_validation.html"'));
 });
@@ -51,7 +51,7 @@ test("3 a critical condition reads NEEDS ATTENTION and is never hidden", () => {
   assert.ok(h.includes('data-fv-state="ATTENTION"') && text(h).includes("NEEDS ATTENTION") && text(h).includes("critical: duplicate broker order"));
   const w = FV.compactHtml({ ...BASE, attention: [{ code: "FAILED_EXECUTION", critical: false, count: 1 }], needs_attention: true }, {});
   assert.ok(w.includes('data-fv-state="WARN"') && text(w).includes("Needs a look"));
-  assert.equal(FV.headline(FV.summaryModel({ ...BASE, sessions: { ...BASE.sessions, completed: 30 } })).text, "Validation target reached");
+  assert.equal(FV.headline(FV.summaryModel({ ...BASE, sessions: { ...BASE.sessions, completed: 30 }, run: { sessions: { target_met: true }, readiness: { status: "READY" } } })).text, "Validation target reached");   // Wave 2 PR C: C-85 needs the run's target_met and run READY
 });
 
 test("4 the strategy status is never a profitability word; a positive early P/L still reads insufficient", () => {
@@ -60,7 +60,7 @@ test("4 the strategy status is never a profitability word; a positive early P/L 
   assert.ok(t.includes("Paper P/L +8000.00") && t.includes("INSUFFICIENT FOR STRATEGY CONCLUSION") && !words.test(t), t);
   const m = FV.summaryModel(rich);
   assert.equal(m.edge, "INSUFFICIENT_DATA");
-  const pos = FV.summaryModel({ ...BASE, strategy: { ...BASE.strategy, insufficient: false, edge_status: "EARLY_POSITIVE", edge_label: "Early positive" } });
+  const pos = FV.summaryModel({ ...BASE, strategy: { ...BASE.strategy, insufficient: false, edge_status: "EARLY_POSITIVE", edge_label: "Early positive" }, run: { strategy: { edge_status: "EARLY_POSITIVE", edge_label: "Early positive" } } });   // Wave 2 PR C: the edge label is the run block's (design 7.2)
   assert.deepEqual([pos.insufficient, pos.edgeLabel, pos.edgeIcon], [false, "Early positive", "🟢"]);
 });
 

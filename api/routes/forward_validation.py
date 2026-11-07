@@ -167,3 +167,9 @@ def get_funnel(trading_date: str) -> JSONResponse:
 @router.get("/frozen-controls")
 def get_frozen_controls() -> JSONResponse:
     return JSONResponse({"version": VERSION, "hash": frozen_hash(), "controls": frozen_controls(), "note": "the strategy controls Stage 6.1 observes and never tunes"})
+
+
+@router.get("/run")
+def get_run() -> JSONResponse:
+    """Wave 2 PR C (design 4): the forward run's block - identity, suspension, membership, readiness, statistics - read only (never its equity)."""
+    return JSONResponse(_service()._run_block())

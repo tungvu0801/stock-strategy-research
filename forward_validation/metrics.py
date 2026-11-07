@@ -124,28 +124,39 @@ def drawdown(series: Sequence[Tuple[str, Any]]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------- strategy edge status (conservative) ----------------------------------
 def edge_status(closed_trades: int, healthy_sessions: int, expectancy: Any, win_rate_pct: Any, max_drawdown_pct: Any, *,
-                min_trades: int = MIN_TRADES_FOR_EDGE, min_sessions: int = TARGET_SESSIONS) -> Dict[str, Any]:
-    """INSUFFICIENT_DATA until at least `min_trades` closed trades AND `min_sessions` healthy sessions exist. Then: expectancy < 0 ->
-    EARLY_NEGATIVE; expectancy > 0 with a win rate >= 40 % and a maximum drawdown < 10 % -> EARLY_POSITIVE; anything else -> MIXED. These are
-    descriptive labels of a small forward sample, never a forecast; nothing is tuned from them."""
+                min_trades: int = MIN_TRADES_FOR_EDGE, min_sessions: int = TARGET_SESSIONS, session_kind: str = "healthy", unverified: int = 0,
+                truncated: bool = False) -> Dict[str, Any]:
+    """INSUFFICIENT_DATA until at least `min_trades` closed trades AND `min_sessions` sessions of `session_kind` exist (Wave 2 PR C: a run
+    passes its strategy days, D-W2-c). Then: expectancy < 0 -> EARLY_NEGATIVE; expectancy > 0 with a win rate >= 40 % and a maximum drawdown
+    < 10 % -> EARLY_POSITIVE; anything else -> MIXED. Wave 2 PR C (PF-06, C-52...C-55): a drawdown of None is UNKNOWN - never a pass - so a
+    non-negative expectancy reads INSUFFICIENT_DATA "drawdown unknown"; EARLY_POSITIVE also needs `unverified` = 0 (cap 0); a truncated
+    statistic is INSUFFICIENT_DATA. These are descriptive labels of a small forward sample, never a forecast; nothing is tuned from them."""
     reasons: List[str] = []
+    sample = {"closed_trades": closed_trades, f"{session_kind}_sessions": healthy_sessions}
+    if truncated:
+        return {"status": "INSUFFICIENT_DATA", "reasons": ["statistics truncated (the row cap was reached)"], "sample": sample}
     if closed_trades < min_trades:
         reasons.append(f"{closed_trades} closed trade(s) of the {min_trades} needed")
     if healthy_sessions < min_sessions:
-        reasons.append(f"{healthy_sessions} healthy session(s) of the {min_sessions} needed")
+        reasons.append(f"{healthy_sessions} {session_kind} session(s) of the {min_sessions} needed")
     if reasons:
-        return {"status": "INSUFFICIENT_DATA", "reasons": reasons, "sample": {"closed_trades": closed_trades, "healthy_sessions": healthy_sessions}}
+        return {"status": "INSUFFICIENT_DATA", "reasons": reasons, "sample": sample}
     e, wr, dd = D(expectancy), D(win_rate_pct), D(max_drawdown_pct)
     if e is None:
-        return {"status": "INSUFFICIENT_DATA", "reasons": ["no expectancy could be computed"], "sample": {"closed_trades": closed_trades, "healthy_sessions": healthy_sessions}}
+        return {"status": "INSUFFICIENT_DATA", "reasons": ["no expectancy could be computed"], "sample": sample}
     if e < 0:
         status = "EARLY_NEGATIVE"
-    elif e > 0 and (wr is not None and wr >= 40) and (dd is None or dd < 10):
+    elif dd is None:
+        return {"status": "INSUFFICIENT_DATA", "reasons": ["drawdown unknown: no positive or mixed label without a known drawdown"], "sample": sample}
+    elif e > 0 and (wr is not None and wr >= 40) and dd < 10:
         status = "EARLY_POSITIVE"
     else:
         status = "MIXED"
-    return {"status": status, "reasons": [f"expectancy {money(e)} per trade over {closed_trades} trades", f"win rate {pct(wr)} %", f"max drawdown {pct(dd)} %"],
-            "sample": {"closed_trades": closed_trades, "healthy_sessions": healthy_sessions}}
+    if status == "EARLY_POSITIVE" and unverified:
+        return {"status": "INSUFFICIENT_DATA", "reasons": [f"unverified trades: {unverified} closed trade(s) with unverified P/L (no positive label while any is unverified)"],
+                "sample": sample}
+    return {"status": status, "reasons": [f"expectancy {money(e)} per trade over {closed_trades} trades", f"win rate {pct(wr)} %",
+                                          f"max drawdown {pct(dd) if dd is not None else 'unknown'} %"], "sample": sample}
 
 
 # ---------------------------------------------------------------- session health ------------------------------------------------------
@@ -223,7 +234,7 @@ def classify_safety_fires(evaluations: List[Dict[str, Any]]) -> List[Dict[str, A
 G = 360                                   # seconds: the maximum gap, the plausible step and the post-close evidence grace (D-W2-b)
 H = 60                                    # seconds: the sample-and-hold cap, the suspect tolerance and the settle margin
 K = 3                                     # samples (= 2 plausible steps) confirming a date transition (D-W2-j)
-CLASSIFIER_VERSION = "session_classifier_v2"
+CLASSIFIER_VERSION = "session_classifier_v2_1"                 # Wave 2 PR C (C-65a): the W2-6 duplicate attribution changes the classifier's input
 EVIDENCE_READ_ATTEMPTS = 3                # failed evidence reads of one date before escalation (B-44): bounds work only
 
 
@@ -348,3 +359,45 @@ def classify_session_v2(ev: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     else:
         status, notes = "HEALTHY", []
     return status, {"notes": notes, "failed_codes": failed_codes, "degraded_codes": degraded_codes, "measures": measures, "gaps": gaps}
+
+
+# ---------------------------------------------------------------- Wave 2 PR C: the bot-only drawdown (design 9) -------------------------
+def price_age_unknown(a, b, ref0, resets: Sequence[Tuple[Any, Any]], g: int = G) -> Dict[str, Any]:
+    """C-41 / C-42 (semantic 1): the price age a(t) = t - ref(t) over an in-position interval [a, b] (datetimes), measured CONTINUOUSLY - not on
+    a grid. `ref0` is the reference at a (the window open, the entry observation or the latest price evidence, whichever is newest); `resets`
+    are (time, new_ref) events in (a, b] (a mark carrying a newer last_price_at, or the entry observation). The age peaks just before a reset
+    and at b. UNKNOWN <=> the age exceeds G at any instant (G counted once, no stretch, no tolerance). Returns {unknown, max_age_s, fresh_s,
+    total_s}: fresh_s is the in-position time with age <= G (C-44: information only - it never decides 'known')."""
+    ref = ref0
+    t0 = a
+    max_age, fresh = 0.0, 0.0
+
+    def span(lo, hi, r):                                                       # the age over [lo, hi] rises linearly from lo - r to hi - r
+        lo_age, hi_age = (lo - r).total_seconds(), (hi - r).total_seconds()
+        within = max(0.0, min(hi_age, float(g)) - max(lo_age, 0.0)) if hi_age > max(lo_age, 0.0) else 0.0
+        return max(lo_age, hi_age), min(within, (hi - lo).total_seconds())
+    for at, new_ref in sorted((x for x in resets if a < x[0] <= b), key=lambda x: x[0]):
+        m, f = span(t0, at, ref)
+        max_age, fresh = max(max_age, m), fresh + f
+        if new_ref is not None and new_ref > ref:
+            ref = new_ref
+        t0 = at
+    m, f = span(t0, b, ref)
+    max_age, fresh = max(max_age, m), fresh + f
+    total = max(0.0, (b - a).total_seconds())
+    return {"unknown": max_age > g, "max_age_s": max_age, "fresh_s": round(min(fresh, total), 3), "total_s": total}
+
+
+def bot_drawdown_pct(base: Any, values: Sequence[Any]) -> Optional[str]:
+    """C-45: the maximum PERCENTAGE drawdown of the bot-only value curve V(t) over the grid, computed directly: peak_t = max(B, max V(s) for
+    s <= t); dd_pct(t) = 100 * (peak_t - V(t)) / peak_t. Not drawdown() (W2-N31: 100 -> 90 -> 200 -> 189 is 10.00 %, not 5.50 %). None when a
+    value is missing (the caller passes UNKNOWN as None: never 0, C-57)."""
+    b = D(base)
+    vals = [D(v) for v in values]
+    if b is None or b <= 0 or any(v is None for v in vals):
+        return None
+    peak, worst = b, Decimal(0)
+    for v in vals:
+        peak = max(peak, v)
+        worst = max(worst, (peak - v) / peak * 100)
+    return pct(worst)

@@ -27,11 +27,11 @@ function status(over) {
 }
 const AUTO = status({ mode: "PAPER_AUTO", mode_label: "Paper Auto", icon: "🟢", headline: "Paper Auto", open_positions: 1, pending_exits: 1, mode_changed_at: "2026-10-21T15:00:00+00:00", mode_changed_by: "user" });
 const ATTN = status({ mode: "PAPER_AUTO", icon: "🔴", headline: "Needs attention", attention: true, attention_reasons: ["SNDK: order needs reconciliation"], reconciliation_healthy: false });
-const TRADE = { kind: "TRADE", symbol: "SNDK", at: "2026-10-21T15:03:00+00:00", shares: 7, entry: "1325.50", exit: "1310.00", pnl: "-108.50", reason: "Price reached the invalidation level", reason_code: "HARD_INVALIDATION" };
+const TRADE = { kind: "TRADE", symbol: "SNDK", at: "2026-10-21T15:03:00+00:00", shares: 7, entry: "1325.50", exit: "1310.00", pnl: "-108.50", reason: "Price reached the invalidation level", reason_code: "HARD_INVALIDATION", pnl_status: "VERIFIED", pnl_display: "-108.50", pnl_kind: "realized" };   // Wave 2 PR C: a verified (route-decorated) history row; an undecorated one reads "P/L unknown"
 const NO_TRADE = { kind: "NO_TRADE", symbol: "AMD", at: "2026-10-21T15:04:00+00:00", shares: 3, state: "REJECTED", code: "INSUFFICIENT_BUYING_POWER", reason: "insufficient buying power" };
 function card(over) {
   return Object.assign({ symbol: "SNDK", key: "IN_TRADE", icon: "🟢", label: "In trade", line: "7 shares · entry 1325.50 · now 1330.00 · 31.50", state: "POSITION_OPEN", setup_state: "READY",
-                         execution_id: "69e4050e43bb97c1ff4ca710aad3f6fd", position_id: "f47d95810e336b9e64f0129336b99495", shares: 7, entry: "1325.50", current: "1330.00", pnl: "31.50", pnl_pct: "0.34",
+                         execution_id: "69e4050e43bb97c1ff4ca710aad3f6fd", position_id: "f47d95810e336b9e64f0129336b99495", shares: 7, entry: "1325.50", current: "1330.00", pnl: "31.50", pnl_pct: "0.34", pnl_status: "VERIFIED", pnl_display: "31.50", pnl_kind: "unrealized",   // Wave 2 PR C: a verified (route-decorated) card; an undecorated one reads "P/L unknown"
                          reason: null, since: "2026-10-21T15:01:30+00:00", details: { position_state: "HEALTHY", exit_cycle: 0, sessions_held: 0, invalidation_price: "1256.99",
                          events: [{ at: "2026-10-21T15:01:30+00:00", kind: "OPENED", to_state: "OPEN", reason: "7 of 7 filled at 1325.50" }] } }, over || {});
 }
@@ -88,7 +88,7 @@ test("7 the symbol card: In trade shows shares / entry / current / P/L; other ke
   assert.ok(t.includes("Shares 7") && t.includes("Entry 1325.50") && t.includes("Current 1330.00") && t.includes("P/L 31.50 (+0.34%)"));
   const ex = text(P.cardHtml(card({ key: "EXITING", icon: "🟠", label: "Exiting", line: "7 shares · Price reached the invalidation level", reason: "Price reached the invalidation level", state: "EXIT_SUBMITTED" }), {}));
   assert.ok(ex.startsWith("🟠 Exiting") && ex.includes("Reason: Price reached the invalidation level"));
-  const cl = text(P.cardHtml(card({ key: "CLOSED", icon: "⚪", label: "Closed", line: "Trade completed · -108.50 · Price reached the invalidation level", current: "1310.00", pnl: "-108.50", pnl_pct: null, state: "CLOSED" }), {}));
+  const cl = text(P.cardHtml(card({ key: "CLOSED", icon: "⚪", label: "Closed", line: "Trade completed · -108.50 · Price reached the invalidation level", current: "1310.00", pnl: "-108.50", pnl_pct: null, state: "CLOSED", pnl_display: "-108.50", pnl_kind: "realized" }), {}));   // Wave 2 PR C: the verified closed card's decoration
   assert.ok(cl.startsWith("⚪ Closed") && cl.includes("Exit 1310.00") && cl.includes("P/L -108.50"));
   const none = text(P.cardHtml(null, { symbol: "MSFT" }));
   assert.ok(none.startsWith("⚪ No setup") && none.includes("No active setup") && !none.includes("View Details"));

@@ -70,7 +70,12 @@
         "test_wave2_pra.py",
         "test_wave2_pra_early_stop.py",
         "test_wave2_prb.py",
-        "test_wave2_prb_sessions.py"
+        "test_wave2_prb_sessions.py",
+        "test_wave2_prc.py",
+        "test_wave2_prc_run.py",
+        "test_wave2_prc_evidence.py",
+        "test_wave2_prc_drawdown.py",
+        "test_wave2_prc_pnl.py"
       ]
     },
     "account": {

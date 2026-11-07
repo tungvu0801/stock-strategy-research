@@ -194,6 +194,42 @@ for _t, _key in (("forward_validation_samples", "sample_id"), ("forward_validati
 _STATEMENTS.append("CREATE TRIGGER IF NOT EXISTS forward_validation_sessions_no_replace BEFORE INSERT ON forward_validation_sessions "
                    "WHEN EXISTS (SELECT 1 FROM forward_validation_sessions WHERE trading_date = NEW.trading_date) "
                    "BEGIN SELECT RAISE(ABORT, 'already stored: a trading session row is never replaced'); END;")
+RUN_STATEMENTS = [                                                                       # Wave 2 PR C (design 4.1): the forward run, additive
+    "CREATE TABLE IF NOT EXISTS forward_runs (run_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, started_at TEXT NOT NULL, first_session_date TEXT NOT NULL, "
+    "frozen_hash TEXT NOT NULL, frozen_controls_json TEXT NOT NULL, cohort_id TEXT NOT NULL, config_hash TEXT NOT NULL, execution_version TEXT NOT NULL, "
+    "classifier_version TEXT NOT NULL, min_trades INTEGER NOT NULL, target_sessions INTEGER NOT NULL, target_events INTEGER NOT NULL, minimums_source TEXT NOT NULL, "
+    "base_equity TEXT NOT NULL, approved_by TEXT NOT NULL, approval_ref TEXT, evidence_ref TEXT NOT NULL, accepted_blockers_json TEXT NOT NULL, "
+    "acknowledged_attention_json TEXT NOT NULL, server_config_json TEXT NOT NULL, prior_invalid_days_json TEXT NOT NULL, ended_at TEXT, end_reason TEXT);",
+    "CREATE TABLE IF NOT EXISTS forward_run_events (event_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, at TEXT NOT NULL, "
+    "kind TEXT NOT NULL CHECK (kind IN ('STARTED', 'SUSPENDED', 'ENDED', 'PRIOR_INVALID_ACKNOWLEDGED')), code TEXT, detail_json TEXT NOT NULL DEFAULT '{}');",
+    "CREATE UNIQUE INDEX IF NOT EXISTS forward_runs_one_active ON forward_runs(IFNULL(ended_at, '')) WHERE ended_at IS NULL;",
+    "CREATE TRIGGER IF NOT EXISTS forward_runs_immutable BEFORE UPDATE ON forward_runs WHEN OLD.ended_at IS NOT NULL OR NEW.ended_at IS NULL "
+    "OR NEW.run_id IS NOT OLD.run_id OR NEW.created_at IS NOT OLD.created_at OR NEW.started_at IS NOT OLD.started_at "
+    "OR NEW.first_session_date IS NOT OLD.first_session_date OR NEW.frozen_hash IS NOT OLD.frozen_hash OR NEW.frozen_controls_json IS NOT OLD.frozen_controls_json "
+    "OR NEW.cohort_id IS NOT OLD.cohort_id OR NEW.config_hash IS NOT OLD.config_hash OR NEW.execution_version IS NOT OLD.execution_version "
+    "OR NEW.classifier_version IS NOT OLD.classifier_version OR NEW.min_trades IS NOT OLD.min_trades OR NEW.target_sessions IS NOT OLD.target_sessions "
+    "OR NEW.target_events IS NOT OLD.target_events OR NEW.minimums_source IS NOT OLD.minimums_source OR NEW.base_equity IS NOT OLD.base_equity "
+    "OR NEW.approved_by IS NOT OLD.approved_by OR NEW.approval_ref IS NOT OLD.approval_ref OR NEW.evidence_ref IS NOT OLD.evidence_ref "
+    "OR NEW.accepted_blockers_json IS NOT OLD.accepted_blockers_json OR NEW.acknowledged_attention_json IS NOT OLD.acknowledged_attention_json "
+    "OR NEW.server_config_json IS NOT OLD.server_config_json OR NEW.prior_invalid_days_json IS NOT OLD.prior_invalid_days_json "
+    "BEGIN SELECT RAISE(ABORT, 'a forward run is immutable; only ended_at / end_reason are set, once'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_runs_start_order BEFORE INSERT ON forward_runs "
+    "WHEN EXISTS (SELECT 1 FROM forward_runs WHERE ended_at IS NULL OR ended_at > NEW.started_at) "
+    "BEGIN SELECT RAISE(ABORT, 'a forward run starts only after the previous one ended'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_runs_no_replace BEFORE INSERT ON forward_runs WHEN EXISTS (SELECT 1 FROM forward_runs WHERE run_id = NEW.run_id) "
+    "BEGIN SELECT RAISE(ABORT, 'already stored: a forward run is never replaced'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_runs_no_delete BEFORE DELETE ON forward_runs BEGIN SELECT RAISE(ABORT, 'a forward run is never deleted'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_run_events_no_update BEFORE UPDATE ON forward_run_events BEGIN SELECT RAISE(ABORT, 'forward_run_events rows are append-only'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_run_events_no_delete BEFORE DELETE ON forward_run_events BEGIN SELECT RAISE(ABORT, 'forward_run_events rows are append-only'); END;",
+    "CREATE TRIGGER IF NOT EXISTS forward_run_events_no_replace BEFORE INSERT ON forward_run_events "
+    "WHEN EXISTS (SELECT 1 FROM forward_run_events WHERE event_id = NEW.event_id) BEGIN SELECT RAISE(ABORT, 'already stored: forward_run_events rows are never replaced'); END;",
+]
+RUN_SAMPLE_COLUMNS = (("frozen_hash", "TEXT"), ("run_id", "TEXT"))                          # Wave 2 PR C (C-14): the sample stamps; NULL = written without PR C
+
+
+def _add_run_columns(conn: sqlite3.Connection) -> None:
+    """Wave 2 PR C: the nullable run stamps of the samples (PRAGMA-guarded, as PR B's); old rows stay NULL."""
+    _add_columns(conn, "forward_validation_samples", RUN_SAMPLE_COLUMNS)
 
 
 def run_forward_validation_migrations(conn: sqlite3.Connection) -> None:
@@ -201,4 +237,7 @@ def run_forward_validation_migrations(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
     _add_columns(conn, "forward_validation_samples", V2_SAMPLE_COLUMNS)
     _add_columns(conn, "forward_validation_sessions", V2_SESSION_COLUMNS)
+    _add_run_columns(conn)                                                                   # Wave 2 PR C
+    for stmt in RUN_STATEMENTS:
+        conn.execute(stmt)
     conn.commit()

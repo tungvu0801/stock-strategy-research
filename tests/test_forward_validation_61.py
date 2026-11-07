@@ -170,7 +170,7 @@ def test_S01_a_complete_session_is_recorded_and_classified_healthy_with_its_dail
     closed_at = (AFTER_CLOSE + timedelta(minutes=5)).isoformat(timespec="seconds")    # v2: the 16:10 tick (confirmed by 300 s steps after the 16:00 cover sample, past C + h, settled)
     assert row["account_refresh_healthy"] and row["cash_flow_healthy"] and row["reconciliation_healthy"] and row["in_session_samples"] == 3 and row["ended_at"] == closed_at
     assert row["bot_start_time"] == "2026-10-21T13:30:00+00:00" and row["bot_stop_time"] == closed_at and row["owners"] == [r.fv.owner]   # v2: started at the first in-window sample (B-22)
-    assert row["classifier_version"] == "session_classifier_v2" and row["assessment"]["finalized_by"]["at"] == closed_at and row["assessment"]["finalized_late"] is False
+    assert row["classifier_version"] == "session_classifier_v2_1" and row["assessment"]["finalized_by"]["at"] == closed_at and row["assessment"]["finalized_late"] is False
     kinds = [e["kind"] for e in r.fv.store.events(newest_first=False)]
     assert kinds == ["SESSION_OPENED", "SESSION_CLOSED"] and r.fv.store.events(kind="SESSION_CLOSED")[0]["code"] == "HEALTHY"
     daily = r.fv.store.daily(DATE)
@@ -512,8 +512,9 @@ def test_R01_the_daily_and_weekly_reports_are_deterministic_plain_text_without_m
     assert not re.search(r"(?i)\b(profitable|winning|guaranteed|high confidence|you should|buy now|sell now|recommend)\b", rep)
     cum = r.fv.cumulative(r.clock.now)
     weekly = REP.weekly_report(cum, r.fv.store.dailies(newest_first=False))
-    assert "Not yet available: 1 closed session(s) of the 5 needed" in weekly
+    assert "Not yet available: 0 closed member session(s) of the forward run of the 5 needed for a weekly aggregate (no forward run defined)." in weekly   # Wave 2 PR C (C-88)
     dailies = [dict(summary, trading_date=f"2026-10-{20 + i:02d}") for i in range(5)]
+    cum = {**cum, "run": {**cum["run"], "defined": True, "sessions": {**cum["run"]["sessions"], "member_dates": [x["trading_date"] for x in dailies]}}}   # Wave 2 PR C (C-88): a run whose members are the five days
     weekly = REP.weekly_report(cum, dailies)
     assert "HEALTH (last 5 sessions: 2026-10-20 .. 2026-10-24)" in weekly and re.search(r"Healthy / degraded / failed / not run\s+5 / 0 / 0 / 0", weekly)
     assert re.search(r"Strategy status\s+Insufficient data - INSUFFICIENT FOR STRATEGY CONCLUSION", weekly) and "EXIT REASONS" in weekly and weekly == REP.weekly_report(cum, dailies)
@@ -550,10 +551,14 @@ def test_D01_raw_rows_are_append_only_sessions_are_never_reclassified_and_the_mi
     conn.execute("INSERT INTO earlier (v) VALUES ('kept')")
     conn.execute("PRAGMA user_version = 7")
     conn.commit()
-    before = sorted(conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE '%forward_validation%'"))
+    before = sorted(conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE '%forward_validation%' AND tbl_name NOT IN ('forward_runs', 'forward_run_events')"))   # Wave 2 PR C: its run tables
     for _ in range(3):
         run_forward_validation_migrations(conn)
-    assert sorted(conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE '%forward_validation%'")) == before and conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert sorted(conn.execute("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE '%forward_validation%' AND tbl_name NOT IN ('forward_runs', 'forward_run_events')")) == before and conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    run_objects = lambda: sorted(conn.execute("SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN ('forward_runs', 'forward_run_events')"))  # noqa: E731 - Wave 2 PR C [Q43-6]
+    first = run_objects()
+    run_forward_validation_migrations(conn)
+    assert run_objects() == first and {r[1] for r in first if r[0] == "table"} == {"forward_runs", "forward_run_events"}   # Wave 2 PR C: its run objects are additive and idempotent
     assert {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")} >= set(TABLES) and conn.execute("SELECT v FROM earlier").fetchone()[0] == "kept"
     conn.close()
     st = ForwardValidationStore(db)
@@ -640,7 +645,7 @@ def test_X01_read_only_api_routes_shapes_and_route_words(tmp_path, monkeypatch):
                     "/api/forward-validation/closed/{position_id}": {"get"}, "/api/forward-validation/daily": {"get"}, "/api/forward-validation/daily/{trading_date}": {"get"},
                     "/api/forward-validation/report/daily": {"get"}, "/api/forward-validation/report/daily/{trading_date}": {"get"}, "/api/forward-validation/report/weekly": {"get"},
                     "/api/forward-validation/export/{kind}": {"get"}, "/api/forward-validation/restarts": {"get"}, "/api/forward-validation/events": {"get"}, "/api/forward-validation/samples": {"get"},
-                    "/api/forward-validation/funnel": {"get"}, "/api/forward-validation/funnel/{trading_date}": {"get"}, "/api/forward-validation/frozen-controls": {"get"}}
+                    "/api/forward-validation/funnel": {"get"}, "/api/forward-validation/funnel/{trading_date}": {"get"}, "/api/forward-validation/frozen-controls": {"get"}, "/api/forward-validation/run": {"get"}}
     for p in mine:
         assert not re.search(r"(?i)order|execute|broker|place|cancel|submit|buy|sell|preview|trade|alpaca|robinhood|paper|tune|optimi", p), p
     j = api.get("/api/forward-validation").json()

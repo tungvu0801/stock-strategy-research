@@ -163,10 +163,16 @@ def _paper_results(facts: Optional[Dict[str, Any]]) -> Section:
         errs = ", ".join((facts or {}).get("errors") or []) or "no runtime facts in this process"
         return Section(key="paper_results", title="Paper results", state="UNAVAILABLE", note=f"Forward paper validation summary unavailable ({errs}). See forward_validation.html when the app runs.")
     completed, target = int(v.get("sessions_completed") or 0), v.get("sessions_target")
-    closed = v.get("closed_trades")
+    ver = v.get("verified_trades") if "verified_trades" in v else v.get("closed_trades")   # Wave 2 PR C (C-79): verified and unverified counted apart (Rule F)
+    unv = v.get("unverified_trades")
+    closed = (f"{ver if ver is not None else '—'} verified · {unv if unv is not None else '—'} unverified"
+              + (" (no closed paper trade yet)" if not ver and not unv else ""))
     items = [f"Forward paper validation sessions: {completed} / {target if target is not None else '—'}" + (f" ({v['sessions_label']})" if v.get("sessions_label") else ""),
-             f"Closed paper trades: {closed if closed is not None else '—'}" + (" (no closed paper trade yet)" if closed in (0, None) else ""),
+             f"Closed paper trades: {closed}",
              f"Strategy status: {v.get('edge_label') or '—'}" + (f" ({v['edge_status']})" if v.get("edge_status") else "") + (f" - {v['insufficient_text']}" if v.get("insufficient") and v.get("insufficient_text") else ""),
-             "Attention: " + (", ".join(str(a) for a in v.get("attention") or []) if v.get("needs_attention") else "none")]
+             "Attention: " + (", ".join(str(a) for a in v.get("attention") or []) if v.get("needs_attention") else "none"),
+             f"Forward run: {v.get('run_readiness_text') or 'No forward run defined'}" + (f" - {v['run_label']}" if v.get("run_label") else ""),   # C-37: both blocks
+             v.get("all_time_text") or "All-time record: unknown",
+             v.get("promotion_text") or "promotion: unknown"]                         # C-59 / N-11: "promotion blocked: all-time record NOT READY (dates)"
     return Section(key="paper_results", title="Paper results", state="LIVE", items=items, facts=dict(v),
                    sources=["GET /api/forward-validation", "forward_validation.html", f"{D61}"], note="Descriptive paper results from the Alpaca PAPER account; not a forecast and not a recommendation.")

@@ -107,16 +107,28 @@
 
   function historyLine(h) {
     if (!h) return "";
-    if (h.kind === "TRADE") return `${h.symbol} · Closed ${dateOf(h.at)} · ${h.shares} shares · entry ${h.entry || "—"} → exit ${h.exit || "—"} · P/L ${h.pnl || "—"}${h.reason ? ` · ${h.reason}` : ""}`;
+    // Wave 2 PR C (C-77, C-78, T-P19): the P/L is the server's decoration - the verified value, "P/L unverified" or "P/L unknown"; a row without pnl_status (a POST
+    // action reply) is "P/L unknown", never the raw `pnl`
+    const pl = h.pnl_status === "VERIFIED" && h.pnl_display != null && h.pnl_display !== "" ? `P/L ${h.pnl_display}` : h.pnl_status === "UNVERIFIED" ? "P/L unverified" : "P/L unknown";
+    if (h.kind === "TRADE") return `${h.symbol} · Closed ${dateOf(h.at)} · ${h.shares} shares · entry ${h.entry || "—"} → exit ${h.exit || "—"} · ${pl}${h.reason ? ` · ${h.reason}` : ""}`;
     return `${h.symbol} · Not filled ${dateOf(h.at)} · ${h.shares} shares · ${h.reason || words(h.state)}`;
   }
 
   function cardModel(c, symbol) {
     const loaded = !!c && !!c.key;
     const key = loaded ? c.key : "NONE";
-    return { loaded, symbol: (c && c.symbol) || symbol || "", key, icon: loaded ? c.icon : "⚪", label: loaded ? c.label : "No setup", line: (c && c.line) || "No active setup", cls: key.toLowerCase(),
+    // Wave 2 PR C (C-75, C-76, C-78, T-P19): a card that shows a P/L renders the server's decoration only - VERIFIED: pnl_display; UNVERIFIED: "P/L unverified";
+    // an open card with an unpriced entry (null, "0.00", <= 0) or UNKNOWN: "unknown"; otherwise (UNKNOWN, or no pnl_status: an undecorated POST reply) "P/L unknown".
+    // The raw `pnl` stays in the payload as evidence and is replaced in the card's line too, so it is never rendered as a number
+    const x = c || {}, open = ["IN_TRADE", "EXITING", "ATTENTION"].includes(key), shows = x.position_id != null || x.pnl != null || x.pnl_status != null;
+    const unpriced = x.entry == null || x.entry === "" || !isFinite(Number(x.entry)) || Number(x.entry) <= 0;
+    const verified = x.pnl_status === "VERIFIED" && x.pnl_display != null && x.pnl_display !== "";
+    const pl = !shows ? "—" : open && (unpriced || x.pnl_status === "UNKNOWN") ? "unknown" : verified ? String(x.pnl_display) : x.pnl_status === "UNVERIFIED" ? "P/L unverified" : "P/L unknown";
+    const raw = ` · ${x.pnl != null && x.pnl !== "" ? x.pnl : "—"}`, line0 = (c && c.line) || "No active setup", at = shows ? line0.lastIndexOf(raw) : -1;
+    const line = at >= 0 && (at + raw.length === line0.length || line0.startsWith(" · ", at + raw.length)) ? `${line0.slice(0, at)} · ${pl === "unknown" ? "P/L unknown" : pl}${line0.slice(at + raw.length)}` : line0;
+    return { loaded, symbol: (c && c.symbol) || symbol || "", key, icon: loaded ? c.icon : "⚪", label: loaded ? c.label : "No setup", line, cls: key.toLowerCase(),
              hasNumbers: !!(c && c.shares != null && c.entry), shares: c && c.shares != null ? String(c.shares) : "—", entry: (c && c.entry) || "—", current: (c && c.current) || "—",
-             pnl: c && c.pnl ? `${c.pnl}${c.pnl_pct ? ` (${Number(c.pnl_pct) >= 0 ? "+" : ""}${c.pnl_pct}%)` : ""}` : "—", reason: (c && c.reason) || "", since: c && c.since ? dateOf(c.since) : "",
+             pnl: verified && pl !== "unknown" ? `${pl}${x.pnl_pct ? ` (${Number(x.pnl_pct) >= 0 ? "+" : ""}${x.pnl_pct}%)` : ""}` : pl, reason: (c && c.reason) || "", since: c && c.since ? dateOf(c.since) : "",
              state: (c && c.state) || "IDLE", setupState: (c && c.setup_state) || "NONE", details: (c && c.details) || {}, raw: c || null };
   }
 

@@ -549,6 +549,8 @@ def test_TA25_a_heal_after_the_close_is_served_by_every_read_site_and_persisted_
     stored = d.fvs.daily(DAY)
     assert (stored["pnl_status"], stored["realized_pnl"]) == ("UNVERIFIED_PRESENT", None)             # before the heal the entry was still open: fail-closed, not 6.00
     heal()
+    real_block = d.fv._run_block                                                            # Wave 2 PR C (C-88): the weekly gate counts a run's member sessions;
+    monkeypatch.setattr(d.fv, "_run_block", lambda now=None: (lambda b: {**b, "defined": True, "sessions": {**b["sessions"], "member_dates": list(DATES)}})(real_block(now)))   # here the five days are
     c = api(monkeypatch, d)
     before = content_hash(d.db)
     j = {"session": c.get(f"/api/forward-validation/sessions/{DAY}").json()["daily"], "daily": c.get("/api/forward-validation/daily").json()["daily"][0],
@@ -727,7 +729,7 @@ def test_TA29b_every_read_and_export_path_running_pr_a_code_leaves_the_database_
     from forward_validation import EXPORTS
     fv = "/api/forward-validation"
     paths = ([fv, f"{fv}/sessions", f"{fv}/closed", f"{fv}/closed?date={DAY}", f"{fv}/daily", f"{fv}/report/daily", f"{fv}/report/weekly", f"{fv}/restarts",
-              f"{fv}/events", f"{fv}/samples", f"{fv}/funnel", f"{fv}/funnel/{DAY}", f"{fv}/frozen-controls", "/api/strategy-registry",
+              f"{fv}/events", f"{fv}/samples", f"{fv}/funnel", f"{fv}/funnel/{DAY}", f"{fv}/frozen-controls", f"{fv}/run", "/api/strategy-registry",
               "/api/strategy-registry/DOWNSIDE_DISLOCATION_RECOVERY"]
              + [f"{fv}/closed/{p}" for p in pids.values()] + [f"{fv}/sessions/{t}" for t in DATES]
              + [f"{fv}/{r}/{t}" for r in ("daily", "report/daily") for t in DATES + ["2026-10-22"]]           # 2026-10-22: no stored row
@@ -854,12 +856,15 @@ def test_TA34_no_early_positive_while_a_trade_is_unverified(tmp_path):
     for n in range(30):
         d.closed_trade(d.entry(xid=f"{n:032d}"), "10.00", "11.00", xid=f"x{n:031d}")
     st = d.fv.cumulative()["strategy"]
-    assert st["edge_status"] == "EARLY_POSITIVE" and st["unverified"] == 0                     # the control: the rule can say positive
+    from forward_validation import metrics as M                                                # Wave 2 PR C (C-35): the all-time label is informational; the rule is the run block's
+    assert st["edge_status"] == "INSUFFICIENT_DATA" and st["unverified"] == 0 and st["expectancy_status"]["reasons"][0].startswith("not a forward run")
+    assert M.edge_status(st["closed_trades"], 30, st["expectancy"], st["win_rate"], "0.00", unverified=st["unverified"])["status"] == "EARLY_POSITIVE"   # the control: the rule can say positive
     bad = d.entry(xid="b" * 32)
     d.observe(bad, "filled", 10, "10.00")
     d.observe(d.exit(d.pos(bad), "c" * 32, 10), "filled", 10, None)
     st = d.fv.cumulative()["strategy"]
-    assert st["edge_status"] == "INSUFFICIENT_DATA" and st["unverified"] == 1 and "unverified trade" in st["expectancy_status"]["reasons"][0]
+    assert st["edge_status"] == "INSUFFICIENT_DATA" and st["unverified"] == 1
+    assert "unverified trade" in M.edge_status(st["closed_trades"], 30, st["expectancy"], st["win_rate"], "0.00", unverified=st["unverified"])["reasons"][0]   # the cap (C-53)
 
 
 def test_TA35_a_new_process_persists_each_stale_date_once_at_most_three_per_tick(tmp_path):
@@ -934,13 +939,13 @@ def test_TA37_the_trades_export_appends_verified_and_leaves_unverified_pnl_cells
     import io as _io
     rd = list(_csv.DictReader(_io.StringIO(txt)))
     header = txt.splitlines()[0].split(",")
-    assert tuple(header) == _base_tuple("TRADE_COLS") + ("verified",) and header[0] == "position_id"
+    assert tuple(header) == _base_tuple("TRADE_COLS") + ("verified", "run_id", "member", "exclusion_reason", "time_source") and header[0] == "position_id"   # Wave 2 PR C: the run columns
     rows = {r["position_id"]: r for r in rd}
     assert (rows[ok.position_id]["realized_pnl"], rows[ok.position_id]["gross_pnl"], rows[ok.position_id]["return_pct"], rows[ok.position_id]["verified"]) == ("10.00", "10.00", "10.00", "True")
     assert (rows[amb.position_id]["realized_pnl"], rows[amb.position_id]["gross_pnl"], rows[amb.position_id]["return_pct"], rows[amb.position_id]["verified"]) == ("", "", "", "False")
     assert (rows[zero.position_id]["mfe_pnl"], rows[zero.position_id]["entry_slippage_bps"]) == ("", "")
     j = json.loads(c.get("/api/forward-validation/export/trades?format=json").text)
-    assert j["columns"][-1] == "verified" and {r["position_id"]: r["gross_pnl"] for r in j["rows"]}[amb.position_id] is None
+    assert j["columns"][-5:] == ["verified", "run_id", "member", "exclusion_reason", "time_source"] and {r["position_id"]: r["gross_pnl"] for r in j["rows"]}[amb.position_id] is None   # Wave 2 PR C
 
 
 def test_TA38_the_daily_export_appends_the_pnl_status_and_never_writes_a_zero_for_a_null(tmp_path, monkeypatch):
@@ -961,7 +966,7 @@ def test_TA38_the_daily_export_appends_the_pnl_status_and_never_writes_a_zero_fo
     c = api(monkeypatch, d)
     txt = c.get("/api/forward-validation/export/daily").text
     header = txt.splitlines()[0].split(",")
-    assert tuple(header) == _base_tuple("DAILY_COLS") + ("pnl_status", "unverified")
+    assert tuple(header) == _base_tuple("DAILY_COLS") + ("pnl_status", "unverified", "run_id", "member", "exclusion_reason", "time_source")   # Wave 2 PR C: the run columns
     import csv as _csv
     import io as _io
     rows = {r["trading_date"]: r for r in _csv.DictReader(_io.StringIO(txt))}
@@ -1012,7 +1017,8 @@ def test_TA39_the_daily_report_labels_partial_unstable_and_unknown_pnl(tmp_path,
 def test_TA40_the_weekly_report_never_sums_an_unstable_or_unknown_day_silently(tmp_path):
     def day(i, status, realized, unv=0, n=1):
         return {"trading_date": f"2026-10-{19 + i}", "session_status": "HEALTHY", "pnl_status": status, "realized_pnl": realized, "unverified": unv, "win_loss": {"closed_trades": n}}
-    cum0 = {"as_of": "x", "strategy": {"closed_trades": 5, "win_rate": "60.00", "average_win": "2.00", "average_loss": "1.00", "expectancy": "0.80", "unverified": 0}}
+    cum0 = {"as_of": "x", "strategy": {"closed_trades": 5, "win_rate": "60.00", "average_win": "2.00", "average_loss": "1.00", "expectancy": "0.80", "unverified": 0},
+            "run": {"defined": True, "sessions": {"member_dates": [f"2026-10-{19 + i}" for i in range(5)]}}}   # Wave 2 PR C (C-88): the five days are run members
     cum1 = {**cum0, "strategy": {**cum0["strategy"], "unverified": 1}}
     week = [day(i, "OK", "1.00") for i in range(5)]
 
@@ -1048,15 +1054,15 @@ def test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_co
     def fn_src(text, name):
         tree = ast.parse(text)
         return ast.dump(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith(name)))
-    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8"))   # Wave 2 PR B (D-1): PR A's delta; PR B's own edits are pinned by F02B / F03B
+    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", FL.undo_w2c("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8")))   # Wave 2 PR B (D-1) / PR C (T-WC06): PR A's delta; their own edits: F02B / F03B, F02C / F03C
     base61 = at_base("tests/test_forward_validation_61.py")
     for name in ("test_T01_", "test_T02_", "test_R01_", "test_R02_", "test_S01_", "test_X01_"):         # (ii) they run in this suite, unchanged
         assert fn_src(now61, name) == fn_src(base61, name), name
-    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")), at_base("tests/test_forward_paper_610a.py")
+    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", FL.undo_w2c("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))), at_base("tests/test_forward_paper_610a.py")
     tests610a = [n.name for n in ast.parse(base610a).body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_") and not n.name.startswith("test_F")]
     assert len(tests610a) > 20 and all(fn_src(now610a, n) == fn_src(base610a, n) for n in tests610a)   # only its F (freeze bookkeeping) tests carry the PR A union
     for rel in ("tests/frontend/forward_validation.test.cjs", "frontend/forward_validation.js"):
-        assert (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel), rel
+        assert FL.undo_w2c(rel, FL.pre_w2c(rel, (ROOT / rel).read_text(encoding="utf-8"))) == at_base(rel), rel   # Wave 2 PR C (T-WC06): its W2-7 edits are its own pins
     flows = (ROOT / "browser_tests" / "flows.py").read_text(encoding="utf-8").replace("\r\n", "\n").splitlines()
     assert flows[2569:2590] == at_base("browser_tests/flows.py").splitlines()[2569:2590]
 
