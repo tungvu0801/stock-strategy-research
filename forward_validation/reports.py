@@ -68,18 +68,40 @@ def export_rows(service, kind: str) -> Tuple[Sequence[str], List[dict]]:
     """(columns, rows) of one export. Deterministic order: by trading date / time. No secret, no credential, no raw broker description."""
     if kind in CAPTURE_EXPORTS:                                                        # Stage 6.10A: read-only rows of the forward dataset
         from forward_capture.exports import export_rows as capture_rows
-        return capture_rows(service.capture.store, kind)
+        cols, rows = capture_rows(service.capture.store, kind)
+        if kind != "outcomes":
+            return cols, rows
+        xs = service.execution.store                                                   # Wave 2 PR C (C-84c): verified and a verified-only pnl, joined by position_id;
+        out = []                                                                       # the raw `outcome` and its `outcome_sha256` are never altered
+        for r in rows:
+            try:
+                p = xs.position(r.get("position_id")) if r.get("position_id") else None
+            except Exception:  # noqa: BLE001 - an unreadable position is unverified with no pnl, never a 500; the raw columns are kept
+                p = None
+            ok = bool(p is not None and service.verification(p).get("verified"))
+            out.append({**r, "verified": ok, "pnl": p.realized_pnl if ok else None})
+        return tuple(cols) + ("verified", "pnl"), out
     if kind not in EXPORTS:
         raise ValueError(f"unknown export {kind!r}; one of {', '.join(EXPORTS)}")
     st = service.store
+    run = service._run_block() if kind in ("trades", "daily") else None              # Wave 2 PR C: the run columns (run_id, member, exclusion_reason, time_source)
+    rid = (run or {}).get("run_id")
     if kind == "sessions":
         return SESSION_COLS, [{k: s.get(k) for k in SESSION_COLS} for s in st.sessions(limit=100000, newest_first=False)]
     if kind == "trades":
         rows = sorted(service.closed_trades(limit=100000), key=lambda t: (t.get("closed_at") or "", t["position_id"]))
-        return TRADE_COLS, [{**_flat_trade(t), **_lineage(service, t)} for t in rows]
+        tr = {r["position_id"]: r for r in ((run or {}).get("trades") or {}).get("rows") or []}
+        return TRADE_COLS + ("run_id", "member", "exclusion_reason", "time_source"), [
+            {**_flat_trade(t), **_lineage(service, t), "run_id": rid if t["position_id"] in tr else None, "member": (tr[t["position_id"]]["status"] == "member") if t["position_id"] in tr else None,
+             "exclusion_reason": (tr.get(t["position_id"]) or {}).get("exclusion"), "time_source": (tr.get(t["position_id"]) or {}).get("time_source")} for t in rows]
     if kind == "daily":
         rows = service.fresh_dailies(limit=100000, newest_first=False)              # Wave 2 PR A: each stored day current, else computed fresh (never written here)
-        return DAILY_COLS, [_flat_daily(d) for d in rows]
+        ss = (run or {}).get("sessions") or {}
+        members, nonmember, pend = set(ss.get("member_dates") or []), ss.get("nonmember") or {}, set(ss.get("pending_dates") or [])
+        overlap = set(ss.get("overlap_dates") or [])
+        return DAILY_COLS + ("run_id", "member", "exclusion_reason", "time_source"), [
+            {**_flat_daily(d), "run_id": rid if d.get("trading_date") in overlap else None, "member": (d.get("trading_date") in members) if d.get("trading_date") in overlap else None,
+             "exclusion_reason": nonmember.get(d.get("trading_date")) or ("pending" if d.get("trading_date") in pend else None), "time_source": None} for d in rows]
     if kind == "control_events":
         return EVENT_COLS, [{**{k: e.get(k) for k in EVENT_COLS if k != "detail"}, "detail": json.dumps(e.get("detail") or {}, sort_keys=True)} for e in st.events(limit=100000, newest_first=False)]
     if kind == "samples":
@@ -153,7 +175,8 @@ def daily_report(summary: Dict[str, Any]) -> str:
             _line("Closed trades (win / loss / flat)", (f"{wl.get('closed_trades')} ({wl.get('win_count')} / {wl.get('loss_count')} / {wl.get('flat_count')})"
                                                         + (" (verified trades only)" if s.get("pnl_status") == "UNVERIFIED_PRESENT" else ""))
                   if s.get("pnl_status") in ("OK", "NO_TRADES", "UNVERIFIED_PRESENT") else "not available"),
-            _line("Unrealized paper P/L", s.get("unrealized_pnl")), _line("Max drawdown (adjusted equity)", f"{_v(dd.get('max_drawdown'))} ({_v(dd.get('max_drawdown_pct'), ' %')})"), "",
+            _line("Unrealized paper P/L (priced positions only; informational)", s.get("unrealized_pnl")),   # C-83: never a partial total unlabelled
+            _line("Max drawdown (account curve; informational)", f"{_v(dd.get('max_drawdown'))} ({_v(dd.get('max_drawdown_pct'), ' %')})"), "",   # Wave 2 PR C (C-57): never an edge input
             "OPEN POSITIONS", _line("Open at end of observation", s.get("open_positions_at_end")), ""]
     fc = s.get("forward_capture") or {}
     if fc.get("summary_text"):                                                         # Stage 6.10A: the day's evidence health (operational only)
@@ -169,13 +192,21 @@ def daily_report(summary: Dict[str, Any]) -> str:
 def weekly_report(cumulative: Dict[str, Any], dailies: List[Dict[str, Any]], sessions_needed: int = 5) -> str:
     """After at least `sessions_needed` closed sessions: health, trade funnel, execution quality, safety, P/L, drawdown, exit reasons."""
     c = cumulative
-    closed = [d for d in dailies if d.get("session_status") in ("HEALTHY", "DEGRADED", "FAILED", "NOT_RUN")]
+    run = c.get("run") or {}                                                            # Wave 2 PR C (C-88, C-35): the gate counts the run's closed member sessions that
+    members = set((run.get("sessions") or {}).get("member_dates") or [])               # are not unreadable; every edge label and drawdown shown comes from the run block
+
+    def unreadable(d):
+        return d.get("session_status") == "DEGRADED" and "EVIDENCE_UNREADABLE" in ((d.get("session") or {}).get("notes") or [])
+    closed = [d for d in dailies if d.get("session_status") in ("HEALTHY", "DEGRADED", "FAILED", "NOT_RUN") and d.get("trading_date") in members and not unreadable(d)]
     out = [f"FORWARD PAPER VALIDATION - WEEKLY REPORT - as of {c.get('as_of')}", f"(descriptive; Alpaca PAPER only; {VERSION})", ""]
     if len(closed) < sessions_needed:
-        out += [f"Not yet available: {len(closed)} closed session(s) of the {sessions_needed} needed for a weekly aggregate.", ""]
+        out += [f"Not yet available: {len(closed)} closed member session(s) of the forward run of the {sessions_needed} needed for a weekly aggregate"
+                + ("" if run.get("defined") else " (no forward run defined)") + ".", ""]
         return "\n".join(out) + "\n"
     week = closed[-sessions_needed:]
     st = {k: sum(1 for d in week if d.get("session_status") == k) for k in ("HEALTHY", "DEGRADED", "FAILED", "NOT_RUN")}
+    span = [d for d in dailies if week[0].get("trading_date") <= str(d.get("trading_date")) <= week[-1].get("trading_date")]
+    own = {"unreadable": sum(1 for d in span if unreadable(d)), "failed": sum(1 for d in span if d.get("session_status") == "FAILED")}   # P-09: their own columns
     f_sum = {k: sum(int((d.get("funnel") or {}).get(k) or 0) for d in week) for k in ("universe_scanned", "WATCH", "READY", "REVIEWABLE", "BLOCKED", "ENTRY_SUBMITTED", "ENTRY_FILLED", "POSITION_OPEN", "CLOSED", "ATTENTION")}
     pnl = sum((float(d.get("realized_pnl")) for d in week if d.get("realized_pnl") not in (None, "")), 0.0)
     bad = [str(d.get("trading_date")) for d in week if d.get("pnl_status") not in ("OK", "NO_TRADES", "UNVERIFIED_PRESENT")]   # Wave 2 PR A: never summed silently
@@ -186,7 +217,10 @@ def weekly_report(cumulative: Dict[str, Any], dailies: List[Dict[str, Any]], ses
     lab = f" (verified trades only; {s.get('unverified')} unverified)" if s.get("unverified") else ""
     out += ["HEALTH (last %d sessions: %s .. %s)" % (sessions_needed, week[0].get("trading_date"), week[-1].get("trading_date")),
             _line("Healthy / degraded / failed / not run", f"{st['HEALTHY']} / {st['DEGRADED']} / {st['FAILED']} / {st['NOT_RUN']}"),
-            _line("Sessions completed overall", (c.get("sessions") or {}).get("label")), "",
+            _line("Unreadable / failed days in the span", f"{own['unreadable']} / {own['failed']}"),
+            _line("Sessions completed overall", (c.get("sessions") or {}).get("label")), _line("Forward run", (run.get("sessions") or {}).get("label")),
+            _line("Forward run readiness", (run.get("readiness") or {}).get("text") or "No forward run defined"),   # C-37: both blocks wherever readiness shows
+            _line("All-time record", (c.get("all_time") or {}).get("text") or "unknown"), "",
             "TRADE FUNNEL (sum of the week)", *[_line(k, v) for k, v in f_sum.items()], "",
             "EXECUTION QUALITY (week)", _line("Duplicate broker orders", sum(int(d.get("duplicates") or 0) for d in week)), _line("Rejections", sum(int(d.get("rejections") or 0) for d in week)),
             _line("Partial fills", sum(int(d.get("partials") or 0) for d in week)), _line("Reconciliation issues", sum(int(d.get("reconciliation_issues") or 0) for d in week)),
@@ -195,8 +229,10 @@ def weekly_report(cumulative: Dict[str, Any], dailies: List[Dict[str, Any]], ses
             "P/L (descriptive, paper)", _line("Realized paper P/L (week)", pnl_text), _line("Closed trades overall", _v(s.get("closed_trades")) + lab),
             _line("Win rate overall (%)", _v(s.get("win_rate")) + lab), _line("Average win / loss", f"{_v(s.get('average_win'))} / {_v(s.get('average_loss'))}" + lab),
             _line("Expectancy per trade", _v(s.get("expectancy")) + lab),
-            _line("Strategy status", f"{s.get('edge_label')}" + (f" - {INSUFFICIENT_TEXT}" if s.get("insufficient") else "")), "",
-            "DRAWDOWN (adjusted equity, overall)", _line("Max drawdown", f"{_v((s.get('drawdown') or {}).get('max_drawdown'))} ({_v((s.get('drawdown') or {}).get('max_drawdown_pct'), ' %')})"), "",
+            _line("Strategy status", f"{(run.get('strategy') or {}).get('edge_label')}"
+                  + (f" - {INSUFFICIENT_TEXT}" if (run.get("strategy") or {}).get("edge_status") == "INSUFFICIENT_DATA" else "")), "",
+            "DRAWDOWN (forward run, bot-only)", _line("Max drawdown", (run.get("drawdown") or {}).get("text") or "not available"),
+            _line("Account curve (informational)", f"{_v((s.get('drawdown') or {}).get('max_drawdown'))} ({_v((s.get('drawdown') or {}).get('max_drawdown_pct'), ' %')})"), "",
             "EXIT REASONS (overall)", *[_line(k, v) for k, v in sorted((s.get("exit_reasons") or {}).items())], "",
             "OPERATIONAL STATUS", _line("Status", o.get("status")), _line("Live-host attempts / early stops", f"{o.get('live_host_attempts')} / {o.get('early_stops')}"), "",
             "No threshold, rule, size or exit was changed. These numbers describe a small paper sample; they are not a forecast."]

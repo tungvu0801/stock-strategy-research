@@ -20,6 +20,7 @@ import pytest
 from test_cash_flow_602 import cash_config  # noqa: F401 - the autouse config fixture of the shared rig
 from test_forward_validation_61 import obs, rig, started, trade_one
 import wave2_pra_support as S
+import freeze_ledger as FL  # Wave 2 PR C: T-E13p reads PR A's text of the service (pre_w2c)
 from execution.models import ControlEvaluation, Finding, Intent
 from forward_validation import attention_signature as SIG
 from forward_validation import service as FVS
@@ -225,10 +226,10 @@ def test_TE12_the_acknowledgement_holds_for_the_process(tmp_path, monkeypatch):
 
 def test_TE13p_pr_a_has_no_run_acknowledgement_path_so_an_element_on_record_stops(tmp_path, monkeypatch):
     r = armed(tmp_path, monkeypatch)
-    assert not r.fv.store.query("SELECT name FROM sqlite_master WHERE name IN ('forward_runs', 'forward_run_events')")
+    assert not r.fv.store.query("SELECT run_id FROM forward_runs WHERE ended_at IS NULL")   # Wave 2 PR C: its tables exist; no run is active, so no run acknowledgement applies
     rec(r)
     assert tick(r)["stopped"] is True
-    src = (ROOT / "forward_validation" / "service.py").read_text(encoding="utf-8") + (ROOT / "forward_validation" / "attention_signature.py").read_text(encoding="utf-8")
+    src = FL.pre_w2c("forward_validation/service.py", (ROOT / "forward_validation" / "service.py").read_text(encoding="utf-8")) + (ROOT / "forward_validation" / "attention_signature.py").read_text(encoding="utf-8")   # Wave 2 PR C: PR A's text
     assert "forward_runs" not in src and "run_ack" not in src
 
 
@@ -623,10 +624,11 @@ def test_TE25_a_persistence_failure_never_prevents_the_early_stop(tmp_path, monk
     cls = next(n for n in ast.parse(src).body if isinstance(n, ast.ClassDef) and n.name == "ForwardValidationService")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "observe")
     trys = [n for n in fn.body if isinstance(n, ast.Try)]
-    assert len(trys) == 3
-    main, capture, persist = trys
+    assert len(trys) == 4                                                                               # Wave 2 PR C (design 4.4): + the guarded run check
+    main, capture, run_check, persist = trys
+    assert [ast.unparse(s) for s in run_check.body] == ["out['run'] = self._run_check(now)"] and fn.body.index(run_check) == fn.body.index(capture) + 1
     in_body = lambda node, name: any(isinstance(c, ast.Call) and getattr(c.func, "attr", None) == name for c in ast.walk(node))  # noqa: E731
     assert in_body(main, "_early_stop") and not in_body(main, "_persist_stale_summaries") and in_body(capture, "tick") and not in_body(capture, "_persist_stale_summaries")
     assert [ast.unparse(s) for s in persist.body] == ["out['summaries'] = self._persist_stale_summaries(now)"]
     assert len(persist.handlers) == 1 and ast.unparse(persist.handlers[0].type) == "Exception"
-    assert fn.body.index(persist) == fn.body.index(capture) + 1 and ast.unparse(fn.body[fn.body.index(persist) + 1]) == "self.last_observation = out"
+    assert fn.body.index(persist) == fn.body.index(run_check) + 1 and ast.unparse(fn.body[fn.body.index(persist) + 1]) == "self.last_observation = out"

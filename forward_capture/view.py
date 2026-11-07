@@ -75,18 +75,17 @@ def evidence(store: ForwardCaptureStore, fv=None, now: Optional[datetime] = None
     """Forward evidence per cohort for the Stage 6.1 overview (read only). The Stage 6.1 edge rule decides the label; the minimums (healthy
     sessions, closed trades) come from the Stage 6.1 configuration - nothing here approves a strategy."""
     from forward_validation import EDGE_LABELS, INSUFFICIENT_TEXT, MIN_TRADES_FOR_EDGE, TARGET_EVENTS, TARGET_SESSIONS
-    from forward_validation import metrics as M
     now = now or datetime.now(UTC)
     target_sessions = int(getattr(fv, "target_sessions", TARGET_SESSIONS) or TARGET_SESSIONS)
     min_trades = int(getattr(fv, "min_trades", MIN_TRADES_FOR_EDGE) or MIN_TRADES_FOR_EDGE)
     target_events = int(getattr(fv, "target_events", TARGET_EVENTS) or TARGET_EVENTS)
     healths = store.healths(limit=10000)
     cohorts = store.cohorts()
-    dd = None
-    try:
-        dd = M.drawdown(fv.equity_series()).get("max_drawdown_pct") if fv is not None else None
-    except Exception:  # noqa: BLE001 - unreadable drawdown stays unknown (the rule treats it conservatively below)
-        dd = None
+    run = None
+    try:                                                                  # Wave 2 PR C (C-80, C-35): the run's cohort is labelled from the run block's verified members;
+        run = fv._run_block(now) if fv is not None else None             # every other cohort is "not a forward run" with no P/L edge (the `else 100` is gone)
+    except Exception:  # noqa: BLE001 - reporting only: no run label, never a raw-P/L edge
+        run = None
     rows: List[Dict[str, Any]] = []
     for c in cohorts:
         cid = c["cohort_id"]
@@ -99,16 +98,20 @@ def evidence(store: ForwardCaptureStore, fv=None, now: Optional[datetime] = None
                               "AND NOT EXISTS (SELECT 1 FROM forward_capture_decisions e WHERE e.candidate_id = d.candidate_id AND e.decision = 'ENTRY_INTENT' "
                               "AND e.decided_at <= d.decided_at)", (cid,))       # a block before (or without) an entry, never its own entry's re-evaluation
         outs = store.query("SELECT outcome_json FROM forward_capture_outcomes WHERE cohort_id = ? AND cross_cohort = 0 ORDER BY closed_at, position_id", (cid,))
-        pnls = [(json.loads(o["outcome_json"]) or {}).get("realized_pnl") for o in outs]
-        wl = M.win_loss(pnls)
-        edge = M.edge_status(wl["closed_trades"], len(healthy), wl["expectancy"], wl["win_rate"], dd if dd is not None else 100, min_trades=min_trades, min_sessions=target_sessions)
+        is_run = bool(run and run.get("defined") and run.get("active") and run.get("cohort_id") == cid)   # C-80: the ACTIVE run's cohort only
+        if is_run:
+            rs = run.get("strategy") or {}
+            edge, closed_n, expectancy, win_rate = {"status": rs.get("edge_status") or "INSUFFICIENT_DATA", "reasons": rs.get("reasons") or []}, rs.get("closed_trades"), rs.get("expectancy"), rs.get("win_rate")
+        else:
+            edge, closed_n, expectancy, win_rate = {"status": "INSUFFICIENT_DATA", "reasons": ["not a forward run"]}, len(outs), None, None
         n_ready = int(ready[0]["n"]) if ready else 0
         rows.append({"cohort_id": cid, "label": c["label"], "started_at": c["started_at"], "sessions": {s: sum(1 for h in days if h["status"] == s) for s in ("HEALTHY", "DEGRADED", "INVALID")},
                      "in_progress": sum(1 for h in mine if not h.get("final")),
                      "healthy_sessions": len(healthy), "healthy_target": target_sessions, "ready_candidates": n_ready, "events_target": target_events,
-                     "blocked_ready_candidates": int(blocked[0]["n"]) if blocked else 0, "closed_trades": wl["closed_trades"], "min_trades": min_trades,
-                     "expectancy": wl["expectancy"], "win_rate": wl["win_rate"], "status": edge["status"], "label_text": EDGE_LABELS[edge["status"]], "reasons": edge["reasons"],
-                     "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None})
+                     "blocked_ready_candidates": int(blocked[0]["n"]) if blocked else 0, "closed_trades": closed_n, "min_trades": min_trades,
+                     "expectancy": expectancy, "win_rate": win_rate, "status": edge["status"], "label_text": EDGE_LABELS[edge["status"]], "reasons": edge["reasons"],
+                     "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None, "forward_run": is_run,
+                     "strategy_days": (run.get("sessions") or {}).get("strategy_days") if is_run else None})
     return {"version": VERSION, "as_of": _iso(now), "cohorts": rows, "current_cohort": current_cohort(store),
             "sessions": {**{s: sum(1 for h in healths if h["status"] == s and h.get("final")) for s in ("HEALTHY", "DEGRADED", "INVALID", "MARKET_CLOSED")},
                          "in_progress": sum(1 for h in healths if not h.get("final"))},

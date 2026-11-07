@@ -229,20 +229,20 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_executi
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_610D, FL.BASE_542).split())             # Stage 6.10D itself, between two fixed commits (main before / after PR #38)
     assert stage == FL.NEW_610D | FL.EDITED_610D, {"unexpected": sorted(stage - FL.NEW_610D - FL.EDITED_610D), "missing": sorted(FL.NEW_610D | FL.EDITED_610D - stage)}
-    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B                                                      # Stage 5.4.2, pinned by its own F tests
+    later = FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C                                                      # Stage 5.4.2, pinned by its own F tests
     assert changed == FL.NEW_610D | FL.EDITED_610D | later, {"unexpected": sorted(changed - FL.NEW_610D - FL.EDITED_610D - later),
                                                              "missing": sorted((FL.NEW_610D | FL.EDITED_610D | later) - changed)}
     assert FL.SEMANTIC_610D == {} and FL.INSTRUMENTATION_610D == {}                                      # observability only
     for d in ("setups", "ppe", "evidence", "execution", "proposals", "safety", "autorun", "decision_flow", "dynamic_universe", "unified_portfolio", "trader_view", "scripts", "forward_validation"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
-            assert rel in FL.NEW_W2A or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B or p.read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel) or rel in FL.SEMANTIC_W1, rel   # Wave 1's declared safety files: its own F tests
+            assert rel in FL.NEW_W2A or rel in FL.NEW_W2C or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B or rel in FL.SEMANTIC_W2C or p.read_text(encoding="utf-8").replace("\r\n", "\n") == at_base(rel) or rel in FL.SEMANTIC_W1, rel   # Wave 1's declared safety files: its own F tests
     for rel in ("api/server.py", "config.py", "frontend/index.html", "frontend/product_ui.css", "frontend/trader_view.js", "browser_tests/flows.py", "README.md"):
         assert post(rel) == at_base(rel), rel                                               # what Stage 6.10D left (later edits: their own F tests)
     src = (ROOT / "api/routes/ops_status.py").read_text(encoding="utf-8").replace("\r\n", "\n")
     assert src.startswith(at_base("api/routes/ops_status.py").rstrip("\n")) and src.count("# >>> Engine health visibility, Stage 6.10D") == 1    # additive: the old module text is a prefix
     assert ("# >>> " + "Stage 6.1") not in src                                                            # never a Stage 6.1 marker carrier (tests/test_forward_validation_61.py::test_Z02 scans every file)
-    js = (ROOT / "frontend/product_ui.js").read_text(encoding="utf-8").replace("\r\n", "\n")
+    js = FL.pre_w2c("frontend/product_ui.js", (ROOT / "frontend/product_ui.js").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Wave 2 PR C: main's text; its W2-7 edit: T-W05C
     base_js = at_base("frontend/product_ui.js")
     end_marker = "  // <<< Engine health visibility, Stage 6.10D\n"
     stripped = js[:js.index("  // >>> Engine health visibility, Stage 6.10D")] + js[js.index(end_marker) + len(end_marker) + 1:]

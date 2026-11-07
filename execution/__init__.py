@@ -12,7 +12,7 @@ Boundaries (tests/test_execution_60.py pins them):
   - the safety gate blocks NEW ENTRIES only; deterministic risk-reducing exits continue; an Emergency Stop never liquidates;
   - the user controls the mode (MONITOR_ONLY by default; PAPER_AUTO is an explicit, persisted choice).
 """
-VERSION = "execution_v2"                                     # Wave 2 PR A: exit P/L recomputed from every exit order's cumulative fill (PF-09); a new 6.10A cohort
+VERSION = "execution_v3"                                     # Wave 2 PR C: the W2-6 MULTIPLE_ORDERS attribution (_reconcile) and the run acknowledgement (_early_stop); a new 6.10A cohort
 STAGE = "6.0"
 
 MODES = ("MONITOR_ONLY", "PAPER_AUTO")

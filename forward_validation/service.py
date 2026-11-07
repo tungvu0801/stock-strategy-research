@@ -42,6 +42,7 @@ BLOCKING_FINDINGS = ("ORDER_MISSING_AT_BROKER", "UNKNOWN_INTERNAL_ORDER", "QTY_M
 RESTART_GRACE_TICKS = 3
 BRACKET_ATTEMPTS = 3                                          # Wave 2 PR A: a summary whose P/L inputs moved on every attempt is UNSTABLE (null P/L), never a mixed number
 SUMMARY_REBUILDS_PER_TICK = 3                                 # Wave 2 PR A: stored summaries made current per observer tick (bounds work only; reads stay fresh)
+ROW_CAP = 1_000_000                                           # Wave 2 PR C (design 2, C-55): a run statistic over more rows is truncated and fails closed
 
 
 def _iso(dt: datetime) -> str:
@@ -136,6 +137,7 @@ class ForwardValidationService:
         self._acked: Dict[str, frozenset] = {}                                    # Wave 2 PR A (X2): elements a person's later PAPER_AUTO arm acknowledged (this process)
         self._summary_token: Optional[tuple] = None                               # Wave 2 PR A: the accounting rows' state at the last summary scan (None: scan once)
         self._summary_backlog = False
+        self._run_ticks = {"config_unreadable": 0, "config_first_at": None, "lease_mismatch": 0, "lease_first_at": None, "run_id": None}   # Wave 2 PR C (C-13, N-2): bounded retries
         self.capture = ForwardCapture(self)                                       # Stage 6.10A: no I/O here; the executor hands it markers, observe() records them
 
     # ---------------------------------------------------------------- collaborators (through the Trader View stream) ------------------
@@ -186,6 +188,11 @@ class ForwardValidationService:
             out["capture"] = self.capture.tick(now, trigger)
         except Exception as exc:  # noqa: BLE001 - never into the observer loop; the day's evidence health records the gap
             out["capture"] = {"result": "ERROR", "error": type(exc).__name__}
+        try:                                                                      # Wave 2 PR C (design 4.4): the forward-run suspension check - after the early stop and capture, under its own guard
+            out["run"] = self._run_check(now)
+        except Exception as exc:  # noqa: BLE001 - never into the observer loop (T-C22); _run_check counts its own failures toward CONFIG_UNREADABLE
+            out["run"] = {"result": "ERROR", "error": type(exc).__name__}
+            log.warning("forward validation: forward-run check failed (%s)", type(exc).__name__)
         try:                                                                      # Wave 2 PR A (design 3.12.1): stored summaries made current - after the early stop and capture, under their own guard
             out["summaries"] = self._persist_stale_summaries(now)
         except Exception as exc:  # noqa: BLE001 - never into the observer loop: every read stays fresh, so only persistence is deferred
@@ -233,6 +240,15 @@ class ForwardValidationService:
             counts["worker_stale_after_s"] = float(stale) if stale is not None else None
         except Exception:  # noqa: BLE001
             counts["worker_stale_after_s"] = None
+        try:                                                                  # Wave 2 PR C (C-14): the run stamps, written at INSERT; never NULL from PR C code
+            counts["frozen_hash"] = frozen_hash()
+        except Exception:  # noqa: BLE001
+            counts["frozen_hash"] = "UNREADABLE"
+        try:
+            run = self.store.active_run()
+            counts["run_id"] = run["run_id"] if run is not None else ""
+        except Exception:  # noqa: BLE001 - an unreadable run read is stamped, never NULL (C-21 d keeps such a day's trades unverified)
+            counts["run_id"] = "UNREADABLE"
         return {**counts, "at": _iso(now), "trading_date": td, "in_session": is_regular_session(now), "owner": self.owner, "mode": mode,
                 "executor_ready": bool(getattr(x, "ready", False)), "safety_state": getattr(sv, "state", None), "allowed_new_entry": getattr(sv, "allowed_new_entry", None),
                 "safety_codes": list(getattr(sv, "reason_codes", []) or []), "reconciliation_healthy": bool(getattr(x, "recon_healthy", True)), "attention_count": len(attention),
@@ -623,8 +639,19 @@ class ForwardValidationService:
         for r in self.store.query_strict("SELECT client_order_id, first_seen_at FROM execution_orders WHERE first_seen_at <= ?", (hi,)):
             groups.setdefault(r["client_order_id"], []).append(str(r["first_seen_at"] or ""))
         n = sum(1 for v in groups.values() if len(v) >= 2 and any(lo <= x <= hi for x in v))
-        rec = self.store.query_strict("SELECT count(*) AS n FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER') AND at >= ? AND at <= ?", (lo, hi))
-        return n + _n(rec[0]["n"] if rec else 0)
+        rec = self.store.query_strict("SELECT kind, detail_json FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER') AND at >= ? AND at <= ?", (lo, hi))
+
+        def counted(r) -> bool:                                                        # Wave 2 PR C (C-65, W2-6): exactly order_reliability's rule (T-R09)
+            if r["kind"] != "MULTIPLE_ORDERS":
+                return True
+            try:
+                d = json.loads(r["detail_json"] or "{}")
+            except ValueError:
+                return True
+            if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
+                return True                                                            # a legacy row without the keys: counted (fail-closed)
+            return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+        return n + sum(1 for r in rec if counted(r))
 
     def _live_host_evidence(self, lo: str, hi: str) -> int:
         """LIVE_HOST_ATTEMPT: the transport's refusal text in the append-only sources with a stamp in [lo, hi], plus a mutable control row whose
@@ -977,7 +1004,7 @@ class ForwardValidationService:
             except Exception:  # noqa: BLE001 - G-05: an unreadable signature stops (UNSIGNED), never skips
                 el = frozenset()
             elements[c] = el or frozenset({("UNSIGNED", c)})
-        new = [c for c in critical if not elements[c] <= self._acked.get(c, frozenset())]
+        new = [c for c in critical if not elements[c] <= self._acked.get(c, frozenset()) | self._run_ack(c)]   # Wave 2 PR C (C-67): the active run's acknowledgement
         if not new:
             return {"critical": critical, "stopped": False}
         reason = "Stage 6.1 early stop: " + ", ".join(ATTENTION_TEXT.get(c, c) for c in new)
@@ -1064,6 +1091,18 @@ class ForwardValidationService:
             dup_rows = [r for r in dup_rows if self.store.query("SELECT 1 FROM execution_orders WHERE client_order_id = ? AND first_seen_at >= ? AND first_seen_at < ?", (r["client_order_id"], start, end))]
         w3, a3 = self._where("at", start, end)
         multi = self.store.query(f"SELECT kind, symbol, detail_json FROM execution_reconciliations WHERE kind IN ('MULTIPLE_ORDERS', 'UNKNOWN_INTERNAL_ORDER'){w3}", a3)
+
+        def counted(r) -> bool:                                                        # Wave 2 PR C (C-65, W2-6): manual orders in a symbol with no bot exposure are not a duplicate
+            if r["kind"] != "MULTIPLE_ORDERS":
+                return True
+            try:
+                d = json.loads(r["detail_json"] or "{}")
+            except ValueError:
+                return True
+            if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
+                return True                                                            # a legacy row without the keys: counted (fail-closed)
+            return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+        multi = [m for m in multi if counted(m)]
         out["duplicate_broker_orders"] = len(dup_rows) + len(multi)
         out["duplicate_detail"] = [f"{r['client_order_id']}: {r['n']} broker orders" for r in dup_rows] + [f"{m['kind']} {m.get('symbol') or ''}".strip() for m in multi]
         out["duplicate_entry_blocks"] = _n(next((c.get("fire_count") for c in self.store.query("SELECT fire_count FROM execution_controls WHERE control_id = 'DUPLICATE_ENTRY'")), 0))
@@ -1109,6 +1148,17 @@ class ForwardValidationService:
         if finding["kind"] == "BROKER_UNAVAILABLE":
             later = self.store.query("SELECT 1 FROM execution_runs WHERE started_at > ? AND result = 'RUN' AND IFNULL(error, '') = '' LIMIT 1", (finding["at"],))
             return "RESOLVED" if later else "OPEN"
+        if finding["kind"] == "MULTIPLE_ORDERS":                                       # Wave 2 PR C (C-66, F-09): a later successful reconciliation with no finding
+            later = self.store.query("SELECT summary_json FROM execution_runs WHERE started_at > ? AND result = 'RUN' AND IFNULL(error, '') = '' ORDER BY started_at",
+                                     (finding["at"],))                                 # found nothing: <= 1 open order in every symbol, its own included
+            for r in later:
+                try:
+                    s = json.loads(r["summary_json"] or "{}")
+                except ValueError:
+                    continue
+                if isinstance(s, dict) and "findings" in s and _n(s.get("findings")) == 0:
+                    return "RESOLVED"
+            return "OPEN"
         return "OPEN"
 
     def safety_fires(self, trading_date: Optional[str] = None) -> dict:
@@ -1358,6 +1408,9 @@ class ForwardValidationService:
         for it in ([entry] if entry else []) + exits:
             if it.broker_order_id:
                 orders[it.execution_id] = self._safe(lambda it=it: x.store.order_events(it.broker_order_id, 50), []) or []
+        t = {**t, "recorded_pnl": {**(t.get("recorded_pnl") or {}), "verified": t["verified"], "raw": True}}   # Wave 2 PR C (C-84): raw P/L sub-records labelled; keys kept
+        events = [{**e, "verified": t["verified"], "raw": True} if isinstance(e, dict) and isinstance(e.get("detail"), dict) and "pnl_snapshot" in e["detail"] else e
+                  for e in events]
         return {**t, "why_considered": [tr for tr in transitions if tr["to_state"] == "WATCH"], "why_ready": [tr for tr in transitions if tr["to_state"] == "READY"],
                 "why_quantity": {k: (prop or {}).get(k) for k in ("equity", "equity_source", "risk_fraction", "risk_budget", "risk_per_share", "base_qty", "position_cap_qty", "buying_power_qty",
                                                                  "final_qty", "cap_source", "reference_price", "invalidation_price", "stop_rule")} if prop else {"note": "proposal row not found"},
@@ -1385,14 +1438,19 @@ class ForwardValidationService:
 
     def unrealized_pnl(self) -> dict:
         x = self.execution
-        total, rows = Decimal(0), []
+        total, rows, unknown = Decimal(0), [], 0
         for p in (self._safe(lambda: x.store.positions(open_only=True), []) or []):
             px, e = M.D(p.last_price), M.D(p.average_entry_price)
-            u = (px - e) * p.quantity if px is not None and e is not None else None
+            u = (px - e) * p.quantity if px is not None and e is not None and e > 0 else None   # Wave 2 PR C (C-83): an unpriced entry ("0.00") is unknown, never last x qty
             if u is not None:
                 total += u
+            else:
+                unknown += 1
             rows.append({"symbol": p.symbol, "quantity": p.quantity, "entry": p.average_entry_price, "last_price": p.last_price, "unrealized_pnl": M.money(u), "state": p.state})
-        return {"open_positions": len(rows), "unrealized_pnl": M.money(total) if rows else None, "positions": rows, "basis": "the executor's last price per position (not a broker mark)"}
+        known = len(rows) - unknown
+        status = "NONE" if not rows else "OK" if not unknown else "PARTIAL" if known else "UNKNOWN"
+        return {"open_positions": len(rows), "unrealized_pnl": M.money(total) if known else None, "positions": rows, "basis": "the executor's last price per position (not a broker mark)",
+                "unrealized_status": status, "unknown_positions": unknown}
 
     # ================================================================ summaries ====================================================
     def exit_reason_distribution(self, trades: List[dict]) -> Dict[str, int]:
@@ -1577,13 +1635,23 @@ class ForwardValidationService:
         fires = self.safety_fires(None)
         bh = self.broker_health(None)
         events = funnel["counts"]["READY"] + funnel["counts"]["REVIEWABLE"]
-        edge = M.edge_status(wl["closed_trades"], by["HEALTHY"], wl["expectancy"], wl["win_rate"], dd["max_drawdown_pct"], min_trades=self.min_trades, min_sessions=self.target_sessions)
-        if unverified and edge["status"] == "EARLY_POSITIVE":                          # Wave 2 PR A (G-12d): never a positive label while a trade's P/L is unverified
-            edge = {**edge, "status": "INSUFFICIENT_DATA", "reasons": [f"{unverified} unverified trade(s): no positive label while any closed trade's P/L is unverified"] + edge["reasons"]}
+        edge = {"status": "INSUFFICIENT_DATA", "reasons": ["not a forward run: the all-time record is informational; every displayed edge label comes from the run block"],
+                "sample": {"closed_trades": wl["closed_trades"], "healthy_sessions": by["HEALTHY"]}}   # Wave 2 PR C (C-35, D-W2-i): the account curve never feeds an edge rule
         att = self.attention(now)
         refresh_fail = self._count("SELECT count(*) AS n FROM account_refresh_attempts WHERE result != 'SUCCESS'") + self._count("SELECT count(*) AS n FROM cash_flow_refresh_attempts WHERE result NOT IN ('SUCCESS', 'INCOMPLETE')")
         operational_ok = rel["duplicate_broker_orders"] == 0 and self._live_host_attempts() == 0 and rec["open"] == 0 and not any(a["critical"] for a in att) and by["FAILED"] == 0 and unreadable == 0
-        return {"version": VERSION, "stage": STAGE, "as_of": _iso(now), "targets": {"sessions": self.target_sessions, "events": self.target_events, "min_trades_for_edge": self.min_trades},
+        run = self._run_block(now)                                                     # Wave 2 PR C (C-35, C-37): the run block beside the unchanged all-time blocks
+        invalid = sorted(s["trading_date"] for s in sessions if s["session_status"] == "FAILED" or (s["session_status"] == "DEGRADED" and "EVIDENCE_UNREADABLE" in (s.get("notes") or [])))
+        all_time = {"status": "READY" if operational_ok else "NOT READY", "invalid_days": invalid,
+                    "text": "All-time record: READY" if operational_ok else (f"All-time record: NOT READY ({len(invalid)} invalid day(s): {', '.join(invalid)})" if invalid
+                                                                             else "All-time record: NOT READY (operational)")}
+        blocked = [r for r, bad in (("all-time record NOT READY" + (f" ({', '.join(invalid)})" if invalid else ""), not operational_ok),
+                                    (f"run {run.get('run_id') or ''} NOT READY".replace("run  ", "run "), run["readiness"]["status"] != "READY"),
+                                    ("target not met", not run["sessions"]["target_met"]), ("the run's edge label is not EARLY_POSITIVE", run["strategy"]["edge_status"] != "EARLY_POSITIVE"))
+                   if bad]                                                             # C-59 (D-W2-m A): a run READY never overrides the all-time NOT READY
+        promotion = {"eligible": not blocked, "blocked_by": blocked, "approved": False,
+                     "text": ("promotion blocked: " + "; ".join(blocked)) if blocked else "eligible for a promotion review (an operator decision; nothing is approved here)"}
+        return {"version": VERSION, "stage": STAGE, "as_of": _iso(now), "run": run, "all_time": all_time, "promotion": promotion, "targets": {"sessions": self.target_sessions, "events": self.target_events, "min_trades_for_edge": self.min_trades},
                 "sessions": {"completed": completed, "healthy": by["HEALTHY"], "degraded": by["DEGRADED"], "failed": by["FAILED"], "not_run": by["NOT_RUN"], "in_progress": by["OPEN"], "unreadable": unreadable,
                              "target": self.target_sessions, "target_met": completed >= self.target_sessions, "label": f"{completed} / {self.target_sessions}"},
                 "events": {"ready_transitions": funnel["counts"]["READY"], "reviewable_proposals": funnel["counts"]["REVIEWABLE"], "total": events, "target": self.target_events, "target_met": events >= self.target_events},
@@ -1593,7 +1661,8 @@ class ForwardValidationService:
                                 "daily_loss_halts": fires["daily_loss_halts"], "emergency_stops": fires["emergency_stops"], "restarts": self.restarts_view()["count"],
                                 "live_host_attempts": self._live_host_attempts(), "early_stops": len(self.store.events(kind="EARLY_STOP", limit=1000)), "status": "READY" if operational_ok else "NOT READY"},
                 "strategy": {**wl, "unverified": unverified, "expectancy_status": edge, "edge_status": edge["status"], "edge_label": EDGE_LABELS[edge["status"]], "insufficient": edge["status"] == "INSUFFICIENT_DATA",
-                             "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None, "drawdown": dd, "exit_reasons": self.exit_reason_distribution(trades),
+                             "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None, "drawdown": dd,
+                             "drawdown_basis": "account curve (informational; never used by the edge rule)", "exit_reasons": self.exit_reason_distribution(trades),
                              "funnel": funnel["counts"], "conversion": funnel["rates"], "unrealized": self.unrealized_pnl(), "note": "descriptive only; nothing is tuned from these numbers"},
                 "attention": att, "needs_attention": bool(att), "frozen_controls_hash": frozen_hash(), "disclaimer": DISCLAIMER,
                 "entry_controls": {**exposure_gate.summary(exposure_gate.from_config(config)), "closed_trades_by_entry_controls": entry_controls_mix(trades),   # Stage 6.9.1
@@ -1609,7 +1678,626 @@ class ForwardValidationService:
         except Exception:  # noqa: BLE001
             loop = {}
         today = (session_date(now) or now.date()).isoformat()
-        return {**cum, "today": today, "today_session": self.store.session(today), "recent_sessions": self.store.sessions(limit=10), "loop": loop, "controls": self.store.controls(),
+        tt = self.closed_trades(trading_date=today)                                    # Wave 2 PR C (C-70, Q43-A): today's verified-only total, additively
+        st = self._pnl_status(tt)
+        today_summary = {"trading_date": today, "realized_pnl": None if st == "UNSTABLE" else M.win_loss([t["realized_pnl"] for t in tt])["gross_pnl"], "pnl_status": st,
+                         "unverified": sum(1 for t in tt if not t["verified"]), "closed_trades": len(tt)}
+        return {**cum, "today": today, "today_summary": today_summary, "today_session": self.store.session(today), "recent_sessions": self.store.sessions(limit=10), "loop": loop, "controls": self.store.controls(),
                 "counts": self.store.counts(), "last_observation": self.last_observation, "forward_evidence": self._forward_evidence(now), "policy": {"paper_auto": "ON during intended validation sessions (regular hours, existing near-close cutoff)",
                 "early_stop": "Paper Auto -> Monitor only on a critical defect (duplicate broker order, non-paper host attempt, entry under a blocked gate, persistent reconciliation mismatch); never a liquidation",
                 "no_tuning": "no threshold, rule, size or exit changes during Stage 6.1", "attention_codes": list(ATTENTION_CODES), "controls": list(CONTROLS)}}
+
+    # ================================================================ Wave 2 PR C: the forward run (design 4-11) =======================
+    def _run_ack(self, code: str) -> frozenset:
+        """C-67 (X2, P-14): the elements of `code` in the ACTIVE, UNSUSPENDED run's acknowledged_attention_json. Empty when the table is missing,
+        the read raises, there is no active run, the run is suspended or ended, or the JSON is malformed. It enters only _early_stop's pending set."""
+        def tup(e):
+            return tuple(tup(x) for x in e) if isinstance(e, list) else e
+        try:
+            run = self.store.active_run()
+            if run is None or any(e["kind"] in ("SUSPENDED", "ENDED") for e in self.store.run_events(run["run_id"])):
+                return frozenset()
+            acked = run.get("acknowledged_attention")
+            els = acked.get(code, []) if isinstance(acked, dict) else None
+            if not isinstance(els, list):
+                return frozenset()
+            return frozenset(tup(e) for e in els)
+        except Exception:  # noqa: BLE001 - fail-closed: an unreadable acknowledgement acknowledges nothing (it stops)
+            return frozenset()
+
+    def _run_check(self, now: datetime) -> dict:
+        """C-13 (design 4.4): the active run's suspension check, once per tick, after the early stop and the capture. The first time a code
+        holds, ONE SUSPENDED event is appended with the code, its evidence and the first-evidence time - there is no resume. A failed read
+        counts toward CONFIG_UNREADABLE (3 consecutive ticks; the first failed tick is the first-evidence time); the lease clause (d) must
+        persist 3 ticks (N-2). The caller's guard is a last resort: every read failure is counted here."""
+        import execution as X
+        from forward_validation.run_admin import _capture_live, _drift_fields
+        from forward_validation.store import ForwardValidationStoreError
+        t = self._run_ticks
+        try:
+            run = self.store.active_run()
+            if run is None:
+                t.update(config_unreadable=0, config_first_at=None, lease_mismatch=0, lease_first_at=None, run_id=None)
+                return {"result": "NO_RUN"}
+            if t.get("run_id") != run["run_id"]:
+                t.update(config_unreadable=0, config_first_at=None, lease_mismatch=0, lease_first_at=None, run_id=run["run_id"], unreadable_suspended=False)
+            if any(e["kind"] == "SUSPENDED" for e in self.store.run_events(run["run_id"])):
+                return {"result": "SUSPENDED", "run_id": run["run_id"]}                   # no resume: nothing more is checked
+            snaps = self.store.query_strict("SELECT * FROM forward_capture_config_snapshots ORDER BY at DESC, rowid DESC LIMIT 1")
+            if not snaps:
+                raise ForwardValidationStoreError("no 6.10A config snapshot")
+            snap = snaps[0]
+            cfg = json.loads(snap["config_json"] or "{}")
+            last = self.store.query_strict("SELECT at FROM forward_validation_samples ORDER BY at DESC, rowid DESC LIMIT 1")
+            s_at = last[0]["at"] if last else _iso(now)
+            hits: List[Tuple[str, str, dict]] = []                                        # (first-evidence time, code, evidence)
+            fh = frozen_hash()
+            if fh != run["frozen_hash"]:
+                hits.append((_iso(now), "HASH_MISMATCH", {"run": run["frozen_hash"], "now": fh}))
+            if snap["cohort_id"] != run["cohort_id"]:
+                hits.append((snap["at"], "COHORT_CHANGED", {"run": run["cohort_id"], "snapshot": snap["cohort_id"]}))
+            if X.VERSION != run["execution_version"]:
+                hits.append((_iso(now), "EXECUTION_VERSION_CHANGED", {"run": run["execution_version"], "now": X.VERSION}))
+            base, cur = run.get("server_config") or {}, _drift_fields(cfg)
+            changed = sorted(k for k in set(base) | set(cur) if cur.get(k) is None or cur.get(k) != base.get(k))   # a null value is drift
+            if changed:
+                hits.append((snap["at"], "CONFIG_CHANGED", {"fields": changed, "run": {k: base.get(k) for k in changed}, "snapshot": {k: cur.get(k) for k in changed}}))
+            cap = _capture_live(self.store, now, s_at, snap, lease_since=True)
+            bc, lease = [c for c in cap if c["clause"] != "d"], [c for c in cap if c["clause"] == "d"]
+            t["lease_mismatch"] = t["lease_mismatch"] + 1 if lease else 0
+            t["lease_first_at"] = (t["lease_first_at"] or _iso(now)) if lease else None
+            if bc:
+                hits.append((min(c["first_evidence_at"] or _iso(now) for c in bc), "CAPTURE_STALE", {"clauses": bc}))
+            elif t["lease_mismatch"] >= 3:
+                hits.append((t["lease_first_at"], "CAPTURE_STALE", {"clauses": lease, "ticks": t["lease_mismatch"]}))
+            foreign = self.store.query_strict("SELECT MIN(at) AS a FROM forward_validation_samples WHERE at >= ? AND (frozen_hash IS NULL OR run_id IS NULL)",
+                                              (run["started_at"],))
+            if foreign and foreign[0]["a"]:
+                hits.append((foreign[0]["a"], "FOREIGN_CODE", {"what": "a sample without the run stamps (written by code without PR C)"}))
+            start_day = (session_date(_parse(run["started_at"])) or _parse(run["started_at"]).date()).isoformat()
+            other = self.store.query_strict("SELECT trading_date, updated_at FROM forward_validation_sessions WHERE trading_date >= ? AND session_status != 'OPEN' "
+                                            "AND updated_at >= ? AND IFNULL(classifier_version, '') != ?", (start_day, run["started_at"], run["classifier_version"]))
+            if other:
+                hits.append((min(r["updated_at"] for r in other), "FOREIGN_CODE", {"what": "a session inside the run finalized by another classifier",
+                                                                                   "dates": sorted(r["trading_date"] for r in other)}))
+        except Exception as exc:  # noqa: BLE001 - CONFIG_UNREADABLE: the bounded retry; never raised into the observer
+            t["config_unreadable"] = int(t.get("config_unreadable") or 0) + 1
+            t["config_first_at"] = t.get("config_first_at") or _iso(now)
+            log.warning("forward validation: forward-run check unreadable (%s)", type(exc).__name__)
+            if t["config_unreadable"] >= 3 and t.get("run_id") and not t.get("unreadable_suspended"):   # ONE suspension (C-13), however long the failure lasts
+                try:
+                    self.store.add_run_event(t["run_id"], _iso(now), "SUSPENDED", "CONFIG_UNREADABLE",
+                                             {"first_evidence_at": t["config_first_at"], "ticks": t["config_unreadable"], "error": f"{type(exc).__name__}: {exc}"[:200]})
+                    t["unreadable_suspended"] = True
+                    return {"result": "SUSPENDED", "code": "CONFIG_UNREADABLE", "run_id": t["run_id"]}
+                except Exception:  # noqa: BLE001 - retried at the next tick
+                    pass
+            return {"result": "UNREADABLE", "ticks": t["config_unreadable"], "error": type(exc).__name__}
+        t["config_unreadable"], t["config_first_at"] = 0, None
+        if not hits:
+            return {"result": "OK", "run_id": run["run_id"]}
+        order = ("HASH_MISMATCH", "EXECUTION_VERSION_CHANGED", "COHORT_CHANGED", "CONFIG_CHANGED", "FOREIGN_CODE", "CAPTURE_STALE")   # a root cause before its symptom
+        first = min(hits, key=lambda h: (h[0] or "", order.index(h[1]) if h[1] in order else len(order)))
+        self.store.add_run_event(run["run_id"], _iso(now), "SUSPENDED", first[1],
+                                 {"first_evidence_at": first[0], "evidence": first[2], "also": sorted({h[1] for h in hits if h is not first})})
+        return {"result": "SUSPENDED", "code": first[1], "run_id": run["run_id"], "first_evidence_at": first[0]}
+
+    def _session_membership(self, run: dict, now: datetime, t_stop: datetime) -> dict:
+        """C-16 / C-17 (L3, point in time): O(R) - every market day whose [W.open, C(d)] meets [started_at, t_stop], C(d) = close + G - and the
+        member sessions (S1 the window inside the run; S2 a final 6.1 row of the run's classifier version; S3 every in-window sample stamped
+        with the run, and at least one; S4 a final 6.10A record of exactly the run's cohort). A record not final yet is pending. Strict reads:
+        an error raises (C-18: never 'all members')."""
+        from forward_capture import health as FH
+        q = self.store.query_strict
+        start = _parse(run["started_at"])
+        O: List[str] = []
+        win: Dict[str, Tuple[datetime, datetime]] = {}
+        d, last = session_date(start) or start.date(), session_date(t_stop) or t_stop.date()
+        while d <= last:
+            w = FH.window(d.isoformat())
+            if w is not None and w[0] <= t_stop and w[1] + timedelta(seconds=M.G) >= start:
+                O.append(d.isoformat())
+                win[d.isoformat()] = (w[0], w[1])
+            d += timedelta(days=1)
+        rows: Dict[str, dict] = {}
+        health: Dict[str, dict] = {}
+        samples: Dict[str, List[dict]] = {}
+        if O:
+            for r in q("SELECT * FROM forward_validation_sessions WHERE trading_date >= ? AND trading_date <= ?", (O[0], O[-1])):
+                rows[r["trading_date"]] = self.store._session(r)
+            for h in q("SELECT trading_date, status, final, reasons_json, cohort_ids_json FROM forward_capture_session_health WHERE trading_date >= ? AND trading_date <= ?",
+                       (O[0], O[-1])):
+                health[h["trading_date"]] = {"status": h["status"], "final": bool(h["final"]), "reasons": json.loads(h["reasons_json"] or "[]"),
+                                             "cohort_ids": json.loads(h["cohort_ids_json"] or "[]")}
+            for day in O:
+                o, c = win[day]
+                S = q("SELECT rowid AS _rowid, at, frozen_hash, run_id, mode, loop_running FROM forward_validation_samples WHERE at >= ? AND at <= ? ORDER BY at, rowid",
+                      (_iso(o), _iso(c)))
+                for s in S:
+                    s["at_dt"] = _parse(s["at"])
+                samples[day] = S
+        members: List[str] = []
+        pending: List[str] = []
+        nonmember: Dict[str, str] = {}
+        for day in O:
+            o, c = win[day]
+            row, h, S = rows.get(day), health.get(day), samples.get(day, [])
+            final = row is not None and row["session_status"] != "OPEN"
+            if not (day >= run["first_session_date"] and o >= start and c + timedelta(seconds=M.G) <= t_stop):
+                nonmember[day] = "S1"
+            elif not final or h is None or not h["final"]:
+                pending.append(day)
+            elif row.get("classifier_version") != run["classifier_version"]:
+                nonmember[day] = "S2"
+            elif not S or not all(s["frozen_hash"] == run["frozen_hash"] and s["run_id"] == run["run_id"] for s in S):
+                nonmember[day] = "S3"
+            elif set(h["cohort_ids"] or []) != {run["cohort_id"]}:
+                nonmember[day] = "S4"
+            else:
+                members.append(day)
+        return {"O": O, "windows": win, "rows": rows, "health": health, "samples": samples, "members": members, "pending": pending, "nonmember": nonmember}
+
+    def _strategy_day(self, day: str, run: dict, mem: dict) -> bool:
+        """C-28 (3e; P-06): THE strategy-day predicate - the only one (T-SD07). A member day, 6.1 HEALTHY of the run's classifier version, a
+        final 6.10A HEALTHY record of exactly the run's cohort, and pa_cov >= 0.75. A MONITOR_ONLY day is never one (D-W2-c)."""
+        if day not in mem["members"]:
+            return False
+        row, h = mem["rows"][day], mem["health"][day]
+        if row["session_status"] != "HEALTHY" or row.get("classifier_version") != run["classifier_version"]:
+            return False
+        if h["status"] != "HEALTHY" or set(h["cohort_ids"] or []) != {run["cohort_id"]}:
+            return False
+        return self._pa_cov(day, run, mem) >= 0.75
+
+    def _pa_cov(self, day: str, run: dict, mem: dict) -> float:
+        """C-29: metrics.hold_coverage over the day's run-stamped in-window samples with mode PAPER_AUTO and loop_running, over [W.open,
+        W.close - EXECUTION_NEAR_CLOSE_MINUTES] (an early close uses the calendar), sample-and-hold h. Process downtime has no samples, so it is
+        never Paper Auto (health.paper_auto_spans is not used)."""
+        o, c = mem["windows"][day]
+        cut = c - timedelta(minutes=int(getattr(config, "EXECUTION_NEAR_CLOSE_MINUTES", 15)))
+        S = [{**s, "at": s["at_dt"]} for s in mem["samples"].get(day, []) if s.get("at_dt") is not None]
+        return M.hold_coverage(S, o, cut, cond=lambda s: s["run_id"] == run["run_id"] and s["frozen_hash"] == run["frozen_hash"] and s["mode"] == "PAPER_AUTO"
+                               and bool(s["loop_running"]))
+
+    def _fill_times(self, pos: dict, entry: Optional[dict], exits: List[dict], events: List[dict]) -> dict:
+        """C-60 / C-61 (W2-5), for membership only (C-62): the broker fill times from the order events - raw.filled_at (BROKER_FILLED_AT), else
+        raw.updated_at (BROKER_UPDATED_AT) - each accepted only within [submitted_at - h, event.at + h], else the observation time (OBSERVED);
+        and the entry observation time (C-41: the first entry-order event with filled_qty > 0)."""
+        h = timedelta(seconds=M.H)
+
+        def raw(e):
+            try:
+                r = json.loads(e.get("raw_json") or "{}")
+            except (TypeError, ValueError):
+                return {}
+            return r if isinstance(r, dict) else {}
+
+        def ok(ts, submitted, ev_at):
+            t, sub, ea = _parse(ts), _parse(submitted), _parse(ev_at)
+            return t is not None and sub is not None and ea is not None and sub - h <= t <= ea + h
+        out = {"entry_fill_time": pos["opened_at"], "entry_time_source": "OBSERVED", "entry_observed_at": pos["opened_at"],
+               "exit_fill_time": pos.get("closed_at"), "exit_time_source": "OBSERVED" if pos.get("closed_at") else None}
+        if entry is not None:
+            fills = [e for e in events if e.get("execution_id") == entry["execution_id"] and _n(e.get("filled_qty")) > 0]
+            if fills:
+                out["entry_observed_at"] = fills[0]["at"]
+                r = raw(fills[0])
+                for key, src in (("filled_at", "BROKER_FILLED_AT"), ("updated_at", "BROKER_UPDATED_AT")):
+                    if r.get(key) and ok(r[key], entry.get("submitted_at"), fills[0]["at"]):
+                        out["entry_fill_time"], out["entry_time_source"] = _iso(_parse(r[key])), src
+                        break
+        done = [x for x in exits if _n(x.get("filled_qty")) > 0]
+        if pos.get("state") == "CLOSED" and done:
+            x = sorted(done, key=lambda i: (_n(i.get("exit_cycle")), i.get("created_at") or ""))[-1]   # the exit order that took q to 0
+            ev = [e for e in events if e.get("execution_id") == x["execution_id"]]
+            if ev:
+                final_qty = max(_n(e.get("filled_qty")) for e in ev)
+                reach, term = next(e for e in ev if _n(e.get("filled_qty")) == final_qty), ev[-1]
+                for ts, src, e in ((raw(term).get("filled_at"), "BROKER_FILLED_AT", term), (raw(reach).get("updated_at"), "BROKER_UPDATED_AT", reach)):
+                    if ts and ok(ts, x.get("submitted_at"), e["at"]):
+                        out["exit_fill_time"], out["exit_time_source"] = _iso(_parse(ts)), src
+                        break
+        return out
+
+    def _trade_membership(self, run: dict, now: datetime, t_stop: datetime, mem: dict) -> dict:
+        """C-19...C-27 (L3): every bot position classified point in time. Excluded ONLY for time, run, cohort or code (pre_run, decided_pre_run,
+        other_cohort, other_code, straddling - shown provisional); never for its outcome (I10). An eligible trade is a member once every day of
+        its hold H(p) is final in L1 and L2 (otherwise pending); data-quality problems make it an UNVERIFIED member, never an exclusion (C-21).
+        Strict reads; an error raises."""
+        from forward_capture import health as FH
+        q = self.store.query_strict
+        start, stop = run["started_at"], _iso(t_stop)
+        positions = q("SELECT * FROM paper_positions ORDER BY opened_at, position_id LIMIT ?", (ROW_CAP + 1,))
+        truncated = len(positions) > ROW_CAP
+        positions = positions[:ROW_CAP]
+        intents = {i["execution_id"]: i for i in q("SELECT * FROM execution_intents")}
+        exits: Dict[str, List[dict]] = {}
+        for i in intents.values():
+            if i["intent_type"] == "EXIT" and i.get("position_id"):
+                exits.setdefault(i["position_id"], []).append(i)
+        events: Dict[str, List[dict]] = {}
+        for e in q("SELECT rowid AS _rowid, execution_id, at, status, filled_qty, filled_avg_price, raw_json FROM execution_order_events ORDER BY at, rowid"):
+            events.setdefault(e["execution_id"], []).append(e)
+        snaps = {r["execution_id"]: r["cohort_id"] for r in q("SELECT execution_id, cohort_id FROM forward_capture_entry_snapshots")}
+        decs: Dict[str, List[dict]] = {}
+        for r in q("SELECT execution_id, cohort_id, legacy, recovered FROM forward_capture_decisions WHERE decision IN ('ENTERED', 'ENTRY_INTENT') AND execution_id IS NOT NULL"):
+            decs.setdefault(r["execution_id"], []).append(r)
+        extra: Dict[str, List[dict]] = {}
+
+        def day_samples(day):
+            if day in mem["samples"]:
+                return mem["samples"][day]
+            if day not in extra:
+                w = FH.window(day)
+                extra[day] = q("SELECT at, frozen_hash, run_id FROM forward_validation_samples WHERE at >= ? AND at <= ? ORDER BY at, rowid",
+                               (_iso(w[0]), _iso(w[1]))) if w is not None else []
+            return extra[day]
+
+        def ny(ts):
+            dt = _parse(ts)
+            return (session_date(dt) or dt.date()) if dt is not None else None
+        trades, excluded = [], {k: 0 for k in ("pre_run", "decided_pre_run", "other_cohort", "other_code", "straddling", "pending", "truncated")}
+        excluded["truncated"] = 1 if truncated else 0
+        for p in positions:
+            e = intents.get(p["execution_id"])
+            xs = exits.get(p["position_id"], [])
+            ev = [x for k in [p["execution_id"]] + [i["execution_id"] for i in xs] for x in events.get(k, [])]
+            ev.sort(key=lambda x: (x["at"], x["_rowid"]))
+            ft = self._fill_times(p, e, xs, ev)
+            created = (e or {}).get("created_at") or p["opened_at"]
+            closed = p["state"] == "CLOSED"
+            reason = None
+            if created < start:
+                reason = "decided_pre_run"
+            elif ft["entry_fill_time"] < start:
+                reason = "pre_run"
+            lo_day = min(x for x in (ny(ft["entry_fill_time"]), ny(ft["entry_observed_at"])) if x is not None)
+            hi_cands = [ny(ft["exit_fill_time"]), ny(p.get("closed_at"))] if closed else [ny(stop)]
+            hi_day = max(x for x in hi_cands + [lo_day] if x is not None)
+            H, d = [], lo_day
+            while d <= hi_day:
+                if FH.window(d.isoformat()) is not None:
+                    H.append(d.isoformat())
+                d += timedelta(days=1)
+            if reason is None:
+                for day in H:
+                    if any(s["frozen_hash"] is None or s["run_id"] is None or s["frozen_hash"] != run["frozen_hash"]
+                           or s["run_id"] not in (run["run_id"], "UNREADABLE", "") for s in day_samples(day)):
+                        reason = "other_code"                                     # T6' before T2: foreign code is the root cause (a rollback's
+                        break                                                     # trade also carries the old code's cohort: T-B18)
+            snap_cohort = snaps.get(p["execution_id"], "\x00missing")
+            mine = decs.get(p["execution_id"], [])
+            if reason is None and ((snap_cohort != "\x00missing" and snap_cohort != run["cohort_id"])
+                                   or any((d["cohort_id"] is not None and d["cohort_id"] != run["cohort_id"]) or _n(d["legacy"]) for d in mine)):
+                reason = "other_cohort"
+            straddling = reason is None and not (closed and ft["exit_fill_time"] is not None and ft["exit_fill_time"] <= stop)
+            t = {"position_id": p["position_id"], "symbol": p["symbol"], "execution_id": p["execution_id"], "state": p["state"], "realized_pnl": p.get("realized_pnl"),
+                 "fill_times": ft, "hold_days": H, "exclusion": reason or ("straddling" if straddling else None), "provisional": straddling, "unverified": [],
+                 "status": None}
+            if reason is not None or straddling:
+                excluded[t["exclusion"]] += 1
+                t["status"] = "excluded"
+                trades.append(t)
+                continue
+            final = all(mem["rows"].get(day) is not None and mem["rows"][day]["session_status"] != "OPEN" and (mem["health"].get(day) or {}).get("final")
+                        for day in H if day in mem["O"]) and all(day in mem["O"] for day in H)
+            model = self._safe(lambda pid=p["position_id"]: self.execution.store.position(pid))
+            v = self.verification(model) if model is not None else {"verified": False, "unverified_reasons": ["VERIFY_ERROR"]}
+            u = []
+            if not v["verified"]:
+                u.append("pnl_unverified:" + ",".join(v.get("unverified_reasons") or []))
+            if any(_n(d.get("recovered")) for d in mine):
+                u.append("recovered")
+            if any(not day_samples(day) for day in H):
+                u.append("zero_sample_day")
+            if any(s["run_id"] in ("UNREADABLE", "") for day in H for s in day_samples(day)):
+                u.append("unreadable_or_empty_run_stamp")
+            if any(mem["nonmember"].get(day) in ("S2", "S4") for day in H):
+                u.append("hold_day_not_member")
+            if snap_cohort == "\x00missing":
+                u.append("no_entry_snapshot")
+            t["unverified"] = u
+            if not final:
+                t["status"] = "pending"
+                excluded["pending"] += 1
+                bound = max(_parse(ny_window(day)[1]) + timedelta(seconds=M.G) for day in H) if H else now
+                t["past_bound"] = now > bound                                          # C-24: counted unverified for the cap
+            else:
+                t["status"] = "member"
+            failed_days = {day for day in H if (mem["rows"].get(day) or {}).get("session_status") == "FAILED"}
+            t["in_failed_sessions"] = bool(failed_days & {H[0], H[-1]}) if H else False
+            trades.append(t)
+        return {"trades": trades, "excluded": excluded, "truncated": truncated, "events": events, "intents": intents, "exits": exits}
+
+    def _bot_drawdown(self, run: dict, now: datetime, t_stop: datetime, mem: dict, tm: dict) -> dict:
+        """Design 9 (W2-4, F-05, P-02; semantic 1; D-W2-i A): the bot-only value V(t) = B + sum over T of [R_p(t) + U_p(t)] on the grid of every
+        day in O(R) (h steps, started_at <= t <= t_stop), with q, E and R from the bot's OWN order and position events at observation time -
+        never the broker's or the account's quantity. UNKNOWN when any in-position price age exceeds G at any instant (C-42, measured
+        continuously), an entry price is missing or <= 0, an R is NULL, or a read fails. Returns the maximum percentage (C-45) or None."""
+        import bisect
+        q = self.store.query_strict
+        B = M.D(run["base_equity"])
+        start = _parse(run["started_at"])
+        T = [t for t in tm["trades"] if t["status"] in ("member", "pending") or t["provisional"]]
+        grid: List[datetime] = []
+        for day in mem["O"]:
+            o, c = mem["windows"][day]
+            g = o
+            while g <= c:
+                if start <= g <= t_stop:
+                    grid.append(g)
+                g += timedelta(seconds=M.H)
+        out = {"status": "KNOWN", "max_drawdown_pct": None, "reasons": [], "stale_positions": [], "fresh_share": None, "points": len(grid),
+               "basis": "bot-only: the run's base equity plus the bot's own realized and unrealized P/L (funding and external positions excluded)"}
+        def curve(t):                                                                   # one position's step functions (own scope: no late binding)
+            pid, entry_id = t["position_id"], t["execution_id"]
+            orders: Dict[str, Tuple[List[datetime], List[dict]]] = {}
+            for k in [entry_id] + [i["execution_id"] for i in tm["exits"].get(pid, [])]:
+                evs = tm["events"].get(k, [])
+                orders[k] = ([_parse(e["at"]) for e in evs], evs)
+
+            def at_or_before(k, ts):
+                times, evs = orders[k]
+                i = bisect.bisect_right(times, ts) - 1
+                return evs[i] if i >= 0 else None
+
+            def q_at(ts):                                                               # the bot's own fills: entry cumulative minus exits' cumulative
+                e0 = at_or_before(entry_id, ts)
+                qty = _n(e0["filled_qty"]) if e0 else 0
+                for k in orders:
+                    if k != entry_id:
+                        ex = at_or_before(k, ts)
+                        qty -= _n(ex["filled_qty"]) if ex else 0
+                return qty
+
+            def e_at(ts):                                                               # no look-ahead: the latest entry event at or before ts
+                e0 = at_or_before(entry_id, ts)
+                return M.D(e0["filled_avg_price"]) if e0 else None
+            pev = [(_parse(r["at"]), json.loads(r["detail_json"] or "{}")) for r in
+                   q("SELECT at, detail_json FROM position_events WHERE position_id = ? ORDER BY at, rowid", (pid,))]
+            pev = [(a, d.get("pnl_snapshot")) for a, d in pev if isinstance(d, dict) and isinstance(d.get("pnl_snapshot"), dict)]
+            ptimes = [a for a, _ in pev]
+
+            def r_at(ts):                                                               # 0 before any snapshot; None (an invalid point) for a NULL one
+                i = bisect.bisect_right(ptimes, ts) - 1
+                return Decimal(0) if i < 0 else M.D(pev[i][1].get("realized_pnl"))
+            marks = [(_parse(m["at"]), M.D(m["last_price"]), _parse(m["last_price_at"])) for m in
+                     q("SELECT at, last_price, last_price_at FROM forward_validation_marks WHERE position_id = ? ORDER BY at, rowid", (pid,))]
+            change = sorted({ts for k in orders for ts in orders[k][0]})
+            return {"pid": pid, "q_at": q_at, "e_at": e_at, "r_at": r_at, "marks": marks, "mtimes": [m[0] for m in marks], "change": change,
+                    "eo": _parse(t["fill_times"]["entry_observed_at"])}
+        try:
+            fresh, total, curves = 0.0, 0.0, []
+            for t in T:
+                cv = curve(t)
+                pid, q_at, e_at, marks, mtimes, change, eo = cv["pid"], cv["q_at"], cv["e_at"], cv["marks"], cv["mtimes"], cv["change"], cv["eo"]
+                for day in mem["O"]:                                                  # C-41: the price age over every in-position interval of every window
+                    o, c = mem["windows"][day]
+                    lo, hi = max(o, start), min(c, t_stop)
+                    if lo >= hi:
+                        continue
+                    cuts = [lo] + [x for x in change if lo < x < hi] + [hi]
+                    for a, b in zip(cuts, cuts[1:]):
+                        if q_at(a) <= 0:
+                            continue
+                        ea = e_at(a)
+                        if ea is None or ea <= 0:
+                            raise ValueError(f"{pid}: entry price missing or <= 0 while in position")
+                        ref0 = o
+                        if eo is not None and o <= eo <= a:
+                            ref0 = max(ref0, eo)
+                        i = bisect.bisect_right(mtimes, a) - 1
+                        if i >= 0 and marks[i][2] is not None:
+                            ref0 = max(ref0, marks[i][2])
+                        resets = [(m[0], m[2]) for m in marks if a < m[0] <= b and m[2] is not None]
+                        if eo is not None and a < eo <= b:
+                            resets.append((eo, eo))
+                        age = M.price_age_unknown(a, b, ref0, resets)
+                        fresh, total = fresh + age["fresh_s"], total + age["total_s"]
+                        if age["unknown"] and pid not in out["stale_positions"]:
+                            out["stale_positions"].append(pid)
+                curves.append(cv)
+            out["fresh_share"] = round(fresh / total, 4) if total > 0 else None       # C-44: information only
+            if out["stale_positions"]:
+                out["status"] = "UNKNOWN"
+                out["reasons"].append(f"an in-position price-evidence gap over {M.G} s ({len(out['stale_positions'])} position(s))")
+                return out
+            values = []
+            for g in grid:
+                v = B
+                for cv in curves:
+                    r = cv["r_at"](g)
+                    if r is None:
+                        raise ValueError("a realized P/L snapshot is NULL")
+                    qty = cv["q_at"](g)
+                    u = Decimal(0)
+                    if qty > 0:
+                        ea = cv["e_at"](g)
+                        i = bisect.bisect_right(cv["mtimes"], g) - 1
+                        px = cv["marks"][i][1] if i >= 0 and cv["marks"][i][1] is not None and (cv["eo"] is None or cv["marks"][i][0] >= cv["eo"]) else ea
+                        u = (px - ea) * qty
+                    v = v + r + u
+                values.append(v)
+            out["max_drawdown_pct"] = M.bot_drawdown_pct(B, values) if values else (M.pct(Decimal(0)) if B is not None else None)
+            if out["max_drawdown_pct"] is None:
+                out["status"] = "UNKNOWN"
+                out["reasons"].append("the run's base equity or a value is missing")
+        except Exception as exc:  # noqa: BLE001 - fail-closed (D-W2-i): an unreadable or invalid input is UNKNOWN, never 0
+            out.update(status="UNKNOWN", max_drawdown_pct=None)
+            out["reasons"].append(f"drawdown input unreadable or invalid: {type(exc).__name__}: {exc}"[:200])
+        return out
+
+    def _run_readiness(self, run: dict, now: datetime, t_stop: datetime, mem: dict, suspension: Optional[dict], ended: bool) -> dict:
+        """C-30...C-34 (semantics 2-4): run NOT READY while any day of O(R), member or not, is FAILED (a), unreadable (b), past its B-20 bound
+        without a final row of the run's classifier (c), or 6.10A-INVALID for evidence integrity (h); an unacknowledged critical attention
+        element is active (d); a run-window operational count is non-zero (e); the run is suspended (f); any of these reads fails (g). READY
+        also needs an active, unsuspended run with at least one member session that is not unreadable (C-34). Never reads prior_invalid_days."""
+        from forward_validation.store import ForwardValidationStoreError
+        reasons: List[dict] = []
+        try:
+            O, rows, health = mem["O"], mem["rows"], mem["health"]
+            fail = [d for d in O if (rows.get(d) or {}).get("session_status") == "FAILED"]
+            unread = [d for d in O if (rows.get(d) or {}).get("session_status") == "DEGRADED" and "EVIDENCE_UNREADABLE" in (rows[d].get("notes") or [])]
+            nofinal = [d for d in O if now > _parse(ny_window(d)[1]) + timedelta(seconds=M.G) and not (
+                rows.get(d) is not None and rows[d]["session_status"] != "OPEN" and rows[d].get("classifier_version") == run["classifier_version"])]
+            integrity = [d for d in O if (health.get(d) or {}).get("final") and health[d]["status"] == "INVALID"
+                         and set(health[d]["reasons"] or []) & {"DUPLICATE_INSTANCE", "CAPTURE_LOST", "INCONSISTENT_TIMESTAMPS"}]
+            for code, dates in (("FAILED_DAY", fail), ("UNREADABLE_DAY", unread), ("NOT_FINAL_DAY", nofinal), ("EVIDENCE_INTEGRITY_INVALID", integrity)):
+                if dates:
+                    reasons.append({"code": code, "dates": dates})
+            acked = run.get("acknowledged_attention")
+            if not isinstance(acked, dict):
+                raise ForwardValidationStoreError("acknowledged_attention_json unreadable")
+
+            def tup(e):
+                return tuple(tup(x) for x in e) if isinstance(e, list) else e
+
+            def counted(r) -> bool:                                                    # Wave 2 PR C (L-2, Option B): W2-6's predicate (C-65), AST-identical to _duplicate_evidence's
+                if r["kind"] != "MULTIPLE_ORDERS":
+                    return True
+                try:
+                    d = json.loads(r["detail_json"] or "{}")
+                except ValueError:
+                    return True
+                if not isinstance(d, dict) or "bot_orders" not in d or "bot_exposed" not in d:
+                    return True                                                        # a legacy row without the keys: counted (fail-closed)
+                return _n(d.get("bot_orders")) >= 2 or bool(d.get("bot_exposed"))
+            manual = {int(r["rid"]) for r in self.store.query_strict("SELECT rowid AS rid, kind, detail_json FROM execution_reconciliations WHERE kind = 'MULTIPLE_ORDERS'")
+                      if not counted(r)}                                               # strict: an unreadable ownership read is READ_FAILED (g), never 'no duplicate'
+            strict = self.store.strict_view()
+            for c in sorted(CRITICAL_CODES):
+                sig = signature(strict, c)
+                if c == "DUPLICATE_BROKER_ORDER":                                        # L-2: the rows attention() does not count are not run evidence either
+                    sig = frozenset(e for e in sig if not (len(e) == 3 and e[0] == "REC" and e[1] == "execution_reconciliations" and e[2] in manual))
+                new = sig - frozenset(tup(e) for e in (acked.get(c) or []))
+                if new:
+                    reasons.append({"code": "ATTENTION_UNACKNOWLEDGED", "detail": {"attention_code": c, "elements": len(new)}})
+            lo, hi = run["started_at"], _iso(t_stop)
+            counts = {"duplicate_broker_orders": self._duplicate_evidence(lo, hi), "live_host_attempts": self._live_host_evidence(lo, hi),
+                      "failed_intents": _n(self.store.query_strict("SELECT count(*) AS n FROM execution_intents WHERE state = 'FAILED' AND updated_at >= ? AND updated_at <= ?",
+                                                                  (lo, hi))[0]["n"])}
+            findings = self.store.query_strict("SELECT * FROM execution_reconciliations WHERE at >= ? AND at <= ?", (lo, hi))
+            counts["reconciliation_open"] = sum(1 for f in findings if f["kind"] in BLOCKING_FINDINGS and counted(f) and self._resolution(f) == "OPEN")   # L-2 (e)
+            for k, v in counts.items():
+                if v:
+                    reasons.append({"code": "RUN_WINDOW_" + k.upper(), "detail": {k: v}})
+            if suspension is not None:
+                reasons.append({"code": "SUSPENDED", "detail": {"suspension_code": suspension.get("code"), "first_evidence_at": suspension.get("first_evidence_at")}})
+            if ended:
+                reasons.append({"code": "RUN_ENDED"})
+            if not [d for d in mem["members"] if d not in unread]:
+                reasons.append({"code": "NO_MEMBER_SESSION"})
+        except Exception as exc:  # noqa: BLE001 - C-30 (g): fail-closed
+            reasons.append({"code": "READ_FAILED", "detail": f"{type(exc).__name__}: {exc}"[:200]})
+            counts = {}
+        status = "NOT READY" if reasons else "READY"
+        text = f"Run {run['run_id']}: {status}" + (" (" + "; ".join(r["code"] + (" " + ", ".join(r["dates"]) if r.get("dates") else "") for r in reasons) + ")" if reasons else "")
+        return {"status": status, "reasons": reasons, "text": text, "window_counts": counts}
+
+    def _run_block(self, now: Optional[datetime] = None) -> dict:
+        """Design 4-9 (L3 / L4): the forward run's block beside the unchanged all-time block (C-35, C-37) - its identity, suspension, session and
+        trade membership, strategy days (C-28), statistics over verified members, the edge rule on the run's bot-only drawdown (D-W2-c A,
+        D-W2-i A), the milestone and run readiness. With no run: INSUFFICIENT_DATA "no forward run", "- / 30", target not met (C-56). A read
+        error never yields READY or a positive label (C-18, C-30 g)."""
+        now = _utc(now or self.clock())
+        none = {"defined": False, "active": False, "headline": "No forward run defined",
+                "readiness": {"status": "NOT READY", "reasons": [{"code": "NO_RUN"}], "text": "No forward run defined"},
+                "sessions": {"strategy_days": 0, "target": TARGET_SESSIONS, "target_met": False, "label": f"— / {TARGET_SESSIONS}", "members": 0, "pending": 0},
+                "trades": {"members": 0, "verified": 0, "unverified": 0, "pending": 0, "provisional": 0, "exclusions": {}},
+                "strategy": {"edge_status": "INSUFFICIENT_DATA", "edge_label": EDGE_LABELS["INSUFFICIENT_DATA"], "reasons": ["no forward run"], "closed_trades": 0,
+                             "expectancy": None, "win_rate": None, "gross_pnl": None, "pnl_label": None, "insufficient_text": INSUFFICIENT_TEXT, "side_text": None},
+                "drawdown": {"status": "UNKNOWN", "max_drawdown_pct": None, "text": "no forward run"}}
+        try:
+            run = self.store.active_run()
+            if run is None:
+                runs = self.store.runs()
+                run = runs[-1] if runs else None
+            if run is None:
+                return none
+            events = self.store.run_events(run["run_id"])
+        except Exception as exc:  # noqa: BLE001 - an unreadable run record is never 'no run' and never READY
+            return {**none, "defined": None, "headline": "Forward run record unreadable",
+                    "readiness": {"status": "NOT READY", "reasons": [{"code": "READ_FAILED", "detail": type(exc).__name__}], "text": "Run: NOT READY (the run record is unreadable)"},
+                    "strategy": {**none["strategy"], "reasons": ["the forward run record is unreadable"]}}
+        susp = next((e for e in events if e["kind"] == "SUSPENDED"), None)
+        suspension = {"code": susp["code"], "first_evidence_at": (susp["detail"] or {}).get("first_evidence_at") or susp["at"], "at": susp["at"]} if susp else None
+        stops = [now] + ([_parse(run["ended_at"])] if run.get("ended_at") else []) + ([_parse(suspension["first_evidence_at"])] if suspension else [])
+        t_stop = min(x for x in stops if x is not None)
+        ident = {k: run.get(k) for k in ("run_id", "started_at", "first_session_date", "frozen_hash", "cohort_id", "classifier_version", "execution_version", "approved_by",
+                                         "approval_ref", "evidence_ref", "ended_at", "end_reason", "min_trades", "target_sessions", "target_events", "minimums_source")}
+        ident.update(accepted_blockers=run.get("accepted_blockers") or [], prior_invalid_days=run.get("prior_invalid_days") or [], suspended=suspension is not None,
+                     suspension=suspension, t_stop=_iso(t_stop), defined=True, active=run.get("ended_at") is None)
+        target = int(run["target_sessions"])
+        try:
+            mem = self._session_membership(run, now, t_stop)
+            tm = self._trade_membership(run, now, t_stop, mem)
+        except Exception as exc:  # noqa: BLE001 - C-18: a membership read error is INSUFFICIENT_DATA "membership unreadable" and NOT READY, never 'all members'
+            return {**none, **ident, "headline": f"Run {run['run_id']}: membership unreadable",
+                    "readiness": {"status": "NOT READY", "reasons": [{"code": "READ_FAILED", "detail": f"membership: {type(exc).__name__}"}],
+                                  "text": f"Run {run['run_id']}: NOT READY (membership unreadable)"},
+                    "sessions": {**none["sessions"], "target": target, "label": f"? / {target} strategy sessions (membership unreadable)"},
+                    "strategy": {**none["strategy"], "reasons": ["membership unreadable"]}}
+        dd = self._bot_drawdown(run, now, t_stop, mem, tm)
+        for t in tm["trades"]:
+            if t["position_id"] in dd["stale_positions"] and t["status"] in ("member", "pending"):
+                t["unverified"] = t["unverified"] + ["price_evidence_gap"]                # C-21 f / C-43
+        members = [t for t in tm["trades"] if t["status"] == "member"]
+        verified = [t for t in members if not t["unverified"]]
+        unverified = [t for t in members if t["unverified"]]
+        pending = [t for t in tm["trades"] if t["status"] == "pending"]
+        late = [t for t in pending if t.get("past_bound")]                                 # C-24: counted unverified for the cap
+        provisional = [t for t in tm["trades"] if t["provisional"]]
+        wl = M.win_loss([t["realized_pnl"] for t in verified])
+        strategy_days = [d for d in mem["members"] if self._strategy_day(d, run, mem)]
+        readiness = self._run_readiness(run, now, t_stop, mem, suspension, run.get("ended_at") is not None)
+        dd_pct = dd["max_drawdown_pct"] if dd["status"] == "KNOWN" else None               # C-57: UNKNOWN is None, never 0
+        edge = M.edge_status(len(members), len(strategy_days), wl["expectancy"], wl["win_rate"], dd_pct, min_trades=int(run["min_trades"]), min_sessions=target,
+                             session_kind="strategy", unverified=len(unverified) + len(late), truncated=tm["truncated"])
+        if edge["status"] == "EARLY_POSITIVE" and readiness["status"] != "READY":          # I4: a suspended, ended or NOT READY run never reads EARLY_POSITIVE
+            edge = {**edge, "status": "INSUFFICIENT_DATA", "reasons": [f"run NOT READY: no positive label ({readiness['text']})"]}
+        rows = mem["rows"]
+
+        def cls(d):
+            r = rows.get(d)
+            if r is None or r["session_status"] == "OPEN":
+                return None
+            if r["session_status"] == "DEGRADED" and "EVIDENCE_UNREADABLE" in (r.get("notes") or []):
+                return "unreadable"
+            return {"HEALTHY": "healthy", "DEGRADED": "degraded", "FAILED": "failed", "NOT_RUN": "not run"}[r["session_status"]]
+        br = {k: sum(1 for d in mem["O"] if cls(d) == k) for k in ("healthy", "degraded", "failed", "unreadable", "not run")}
+        label = (f"{len(strategy_days)} / {target} strategy sessions ({br['healthy']} healthy · {br['degraded']} degraded · {br['failed']} failed · "
+                 f"{br['unreadable']} unreadable · {br['not run']} not run)")
+        lo, hi = run["started_at"], _iso(t_stop)
+        try:
+            ev_ready = _n(self.store.query_strict("SELECT count(*) AS n FROM setup_transitions WHERE to_state = 'READY' AND trigger = 'SCHEDULED' AND evaluated_at >= ? "
+                                                  "AND evaluated_at <= ?", (lo, hi))[0]["n"])
+            ev_rev = _n(self.store.query_strict("SELECT count(*) AS n FROM trade_proposals p WHERE p.status = 'REVIEWABLE' AND p.created_at >= ? AND p.created_at <= ? AND "
+                                                "EXISTS (SELECT 1 FROM setup_transitions t WHERE t.setup_id = p.setup_id AND t.to_state = 'READY' AND t.trigger = 'SCHEDULED')",
+                                                (lo, hi))[0]["n"])
+            evs = {"ready_transitions": ev_ready, "reviewable_proposals": ev_rev, "total": ev_ready + ev_rev, "target": int(run["target_events"]),
+                   "target_met": ev_ready + ev_rev >= int(run["target_events"])}
+        except Exception as exc:  # noqa: BLE001 - descriptive: unknown, never 0
+            evs = {"ready_transitions": None, "reviewable_proposals": None, "total": None, "target": int(run["target_events"]), "target_met": False, "error": type(exc).__name__}
+        target_met = len(strategy_days) >= target and readiness["status"] == "READY"      # C-58 under I4: never met while the run is NOT READY
+        crit_open = any(r["code"] == "ATTENTION_UNACKNOWLEDGED" for r in readiness["reasons"])
+        if target_met and readiness["status"] == "READY" and not crit_open:
+            headline = "Validation target reached"
+        else:
+            headline = f"Run {run['run_id']}: {label}; {readiness['status']}" + (f" (suspended: {suspension['code']})" if suspension else "")
+        pnl_label = f"partial ({len(unverified)} unverified)" if unverified and verified else ("not available" if unverified else None)
+        return {**ident, "headline": headline, "readiness": readiness,
+                "sessions": {"strategy_days": len(strategy_days), "strategy_dates": strategy_days, "target": target, "target_met": target_met, "label": label,
+                             "breakdown": br, "members": len(mem["members"]), "member_dates": mem["members"], "pending": len(mem["pending"]), "pending_dates": mem["pending"],
+                             "overlap_dates": mem["O"], "nonmember": mem["nonmember"]},
+                "trades": {"members": len(members), "verified": len(verified), "unverified": len(unverified), "pending": len(pending), "pending_past_bound": len(late),
+                           "provisional": len(provisional), "exclusions": tm["excluded"], "in_failed_sessions": sum(1 for t in verified if t["in_failed_sessions"]),
+                           "unverified_detail": {t["position_id"]: t["unverified"] for t in unverified},
+                           "rows": [{"position_id": t["position_id"], "symbol": t["symbol"], "status": t["status"], "exclusion": t["exclusion"], "unverified": t["unverified"],
+                                     "provisional": t["provisional"], "time_source": f"entry {t['fill_times']['entry_time_source']}; exit {t['fill_times']['exit_time_source']}"}
+                                    for t in tm["trades"]]},
+                "strategy": {**wl, "edge_status": edge["status"], "edge_label": EDGE_LABELS[edge["status"]], "reasons": edge["reasons"], "expectancy_status": edge,
+                             "closed_trades": len(members), "verified_trades": len(verified), "pnl_label": pnl_label, "truncated": tm["truncated"],
+                             "insufficient_text": INSUFFICIENT_TEXT if edge["status"] == "INSUFFICIENT_DATA" else None,
+                             "side_text": f"pending {len(pending)} · provisional {len(provisional)} · unverified {len(unverified) + len(late)}"},
+                "drawdown": {**dd, "text": (f"bot-only max drawdown {dd['max_drawdown_pct']} %" if dd["status"] == "KNOWN" else "bot-only drawdown unknown: " + "; ".join(dd["reasons"]))},
+                "events": evs}
