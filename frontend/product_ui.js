@@ -264,8 +264,14 @@
     const d = (card && card.details) || {};
     const held = num(p.sessions_held != null ? p.sessions_held : d.sessions_held);
     const status = card ? (AGENT[card.key] ? AGENT[card.key][0] : card.label) : words(p.state);
+    // Wave 2 PR C (C-74, C-84b): the open P/L is the server's decoration (the card's, else the position's); an unpriced entry (null, "0.00", <= 0) or UNKNOWN is
+    // "unknown" - never last price x quantity; UNVERIFIED is "P/L unverified"; a row without pnl_status is "P/L unknown"; VERIFIED shows pnl_display
+    const r = card && card.pnl_status ? card : p.pnl_status ? p : card || p, e = (card && card.entry) || p.average_entry_price;
+    const unpriced = e == null || e === "" || !isFinite(Number(e)) || Number(e) <= 0;
+    const pnl = unpriced || r.pnl_status === "UNKNOWN" ? "unknown" : r.pnl_status === "VERIFIED" && r.pnl_display != null && r.pnl_display !== ""
+      ? `${money(r.pnl_display)}${r === card && card.pnl_pct ? ` (${Number(card.pnl_pct) >= 0 ? "+" : ""}${card.pnl_pct}%)` : ""}` : r.pnl_status === "UNVERIFIED" ? "P/L unverified" : "P/L unknown";
     return { open: true, symbol: (card && card.symbol) || p.symbol, shares: card && card.shares != null ? card.shares : p.quantity, entry: (card && card.entry) || p.average_entry_price || "—",
-             current: (card && card.current) || p.last_price || "—", pnl: card && card.pnl ? `${card.pnl}${card.pnl_pct ? ` (${Number(card.pnl_pct) >= 0 ? "+" : ""}${card.pnl_pct}%)` : ""}` : "—",
+             current: (card && card.current) || p.last_price || "—", pnl,
              holding: held == null ? "—" : `Day ${held} / ${maxHold}`, status: status === "IN TRADE" ? "Monitoring" : status, reason: (card && card.reason) || p.exit_reason || p.attention_reason || "",
              state: p.state || d.position_state || (card && card.state) || "", invalidation: p.invalidation_price || d.invalidation_price || null };
   }
@@ -344,11 +350,14 @@
     }
     const sym = {};
     for (const p of (src.positions || [])) sym[p.position_id] = p.symbol;
+    // Wave 2 PR C (C-73, T-P20): a CLOSED event's P/L is the decorated event's (GET /api/execution/positions events) - pnl_display when VERIFIED, else
+    // "P/L unverified" / "P/L unknown" (an undecorated event too); detail.realized_pnl stays raw evidence and is never rendered as a number
+    const closedPnl = (e) => (e.pnl_status === "VERIFIED" && e.pnl_display != null && e.pnl_display !== "" ? `P/L ${money(e.pnl_display)}` : e.pnl_status === "UNVERIFIED" ? "P/L unverified" : "P/L unknown");
     for (const e of (src.position_events || [])) {
       const s = sym[e.position_id] || "";
       if (e.kind === "OPENED") push(e.at, `${s} · Position opened${e.reason ? ` · ${e.reason}` : ""}`, "", "position", s);
       else if (e.kind === "EXIT_REQUIRED") push(e.at, `${s} · Exit required · ${words(e.reason)}`, "", "exit", s);
-      else if (e.kind === "CLOSED") push(e.at, `${s} · Trade closed${e.detail && e.detail.realized_pnl ? ` · P/L ${money(e.detail.realized_pnl)}` : ""}`, "", "exit", s);
+      else if (e.kind === "CLOSED") push(e.at, `${s} · Trade closed · ${closedPnl(e)}`, "", "exit", s);
       else if (e.kind === "ATTENTION") push(e.at, `${s} · Needs attention · ${words(e.reason)}`, "bad", "attention", s);
       else if (e.kind === "ATTENTION_CLEARED") push(e.at, `${s} · Attention cleared`, "", "attention", s);
     }
@@ -364,14 +373,19 @@
     return items;
   }
 
-  function todaySummary(src, exec, today) {
+  function todaySummary(src, exec, today, fv) {
     const d = (x) => day(x) === today;
     const intents = (src.intents || []).filter((i) => i.intent_type === "ENTRY" && i.submitted_at && d(i.submitted_at));
     const closed = (src.positions || []).filter((p) => p.state === "CLOSED" && d(p.closed_at));
-    const pnl = closed.reduce((s, p) => s + (num(p.realized_pnl) || 0), 0);
+    // Wave 2 PR C (C-70, C-89, T-P01): the day total is the server's verified-only summary of today (GET /api/forward-validation `today_summary`), labelled by its
+    // pnl_status - never a browser sum, and a null is never 0; no summary for this date (or another date's) is "not available" when trades closed today
+    const ts = (fv && fv.today_summary) || null, u = ts && isFinite(Number(ts.unverified)) ? Number(ts.unverified || 0) : 0;
+    const amt = ts && ts.realized_pnl != null && ts.realized_pnl !== "" && num(ts.realized_pnl) != null ? money(ts.realized_pnl) : null;
+    const pnl = !ts || (ts.trading_date && day(ts.trading_date) !== today) ? (closed.length ? "not available" : "—") : ts.pnl_status === "NO_TRADES" ? "—"
+      : ts.pnl_status === "OK" && amt != null ? amt : ts.pnl_status === "UNVERIFIED_PRESENT" ? (amt != null ? `${amt} · partial (${u} unverified)` : `not available (${u} unverified)`) : "not available";
     const issues = ((exec && exec.attention_reasons) || []).length + (src.findings || []).filter((f) => f.blocking && d(f.at)).length +
       (src.safety_events || []).filter((e) => ["KILL_ON", "DAILY_HALT_TRIGGERED", "EVALUATOR_ERROR"].includes(e.kind) && d(e.at)).length;
-    return { trades: intents.length, open: (exec && exec.open_positions) || 0, closed: closed.length, pnl: closed.length ? money(pnl) : "—", issues };
+    return { trades: intents.length, open: (exec && exec.open_positions) || 0, closed: closed.length, pnl, issues };
   }
 
   function moreGroups(labViews) {
@@ -540,7 +554,12 @@
     const maxHold = num(limits && limits.max_hold_sessions) || MAX_HOLD_DEFAULT;
     const held = num(p.sessions_held != null ? p.sessions_held : d.sessions_held);
     const opened = (events || []).find((e) => e.kind === "OPENED" && (!p.position_id || e.position_id === p.position_id)) || null;
-    const pnl = stage === "CLOSED" ? (p.realized_pnl != null ? money(p.realized_pnl) : c.pnl || "—") : c.pnl ? `${c.pnl}${c.pnl_pct ? ` (${Number(c.pnl_pct) >= 0 ? "+" : ""}${c.pnl_pct}%)` : ""}` : "—";
+    // Wave 2 PR C (C-72, C-74, C-84b): the P/L is the server's decoration of the position (closed) or of the card (open) - VERIFIED: pnl_display; UNVERIFIED:
+    // "P/L unverified"; no pnl_status or UNKNOWN: "P/L unknown"; an open row with an unpriced entry: "unknown". The raw realized_pnl / pnl is never rendered
+    const r = stage === "CLOSED" ? (position ? p : c) : c.pnl_status ? c : p.pnl_status ? p : c, e = p.average_entry_price || c.entry;
+    const shown = r.pnl_status === "VERIFIED" && r.pnl_display != null && r.pnl_display !== "";
+    const pnl = stage === "ENTERING" ? "—" : stage !== "CLOSED" && (e == null || e === "" || !isFinite(Number(e)) || Number(e) <= 0 || r.pnl_status === "UNKNOWN") ? "unknown"
+      : shown ? `${money(r.pnl_display)}${stage !== "CLOSED" && r === c && c.pnl_pct ? ` (${Number(c.pnl_pct) >= 0 ? "+" : ""}${c.pnl_pct}%)` : ""}` : r.pnl_status === "UNVERIFIED" ? "P/L unverified" : "P/L unknown";
     return { stage, symbol: p.symbol || c.symbol || "—", shares: p.quantity != null ? p.quantity : c.shares != null ? c.shares : "—", entry: p.average_entry_price || c.entry || "—",
              current: stage === "CLOSED" ? p.average_exit_price || c.current || "—" : p.last_price || c.current || "—", pnl, strategy: strategyName || "—",
              entryReason: `READY setup with a reviewable proposal${opened && opened.reason ? ` · ${opened.reason}` : ""}`, holding: held == null ? "—" : `Day ${held} / ${maxHold}`,
@@ -564,11 +583,11 @@
     const closed = (src.positions || []).filter((p) => p.state === "CLOSED" && d(p.closed_at));
     const blocked = (src.proposals || []).filter((p) => p.status === "BLOCKED" && d(p.created_at));
     const safetyBlocks = (src.safety_events || []).filter((e) => ["KILL_ON", "PAUSE_ON", "DAILY_HALT_TRIGGERED"].includes(e.kind) && d(e.at));
-    const pnl = closed.reduce((s, p) => s + (num(p.realized_pnl) || 0), 0);
+    const pnl = todaySummary(src, exec, today, fv).pnl;                              // Wave 2 PR C (C-71): the server's verified-only day total (todaySummary), never a browser sum
     const attention = ((exec && exec.attention_reasons) || []).length + (src.findings || []).filter((f) => f.blocking && d(f.at)).length + ((fv && fv.attention) || []).length;
     return { today, system: sys.loaded ? sys.level : "—", systemCls: sys.cls, market: market.regular_session == null ? "—" : market.regular_session ? "OPEN" : "CLOSED", setupChanges: tr.length,
              symbols: new Set(tr.map((t) => t.symbol)).size, ready: tr.filter((t) => t.to_state === "READY").length, entries: entries.length, exits: exits.length, closed: closed.length,
-             blocked: blocked.length, safetyBlocks: safetyBlocks.length, pnl: closed.length ? money(pnl) : "—", attention };
+             blocked: blocked.length, safetyBlocks: safetyBlocks.length, pnl, attention };
   }
 
   // ---------------------------------------------------------------- rendering ------------------------------------------------------
@@ -705,9 +724,11 @@
     const filters = `<div class="pui-filters" data-pui-filters>${FILTERS.map(([id, label]) => `<button type="button" class="pui-chip${(o.filter || "all") === id ? " active" : ""}" data-pui-filter="${id}">${esc(label)}</button>`).join("")}</div>`;
     const FVlib = G.ForwardValidation || null;
     const fvm = fv && FVlib ? FVlib.summaryModel(fv) : null;
+    const fvh = fvm && fvm.loaded ? FVlib.headline(fvm) : null;                      // Wave 2 PR C (C-37, N-11): the run line and the all-time line together, the promotion view beside them
     const val = `<div class="pui-validation" data-pui-validation><h3>Validation</h3>` + (fvm && fvm.loaded ?
       `<div class="pui-kv"><span>Sessions</span><b>${esc(fvm.sessionsLabel)}</b><span>Healthy</span><b>${esc(fvm.healthy)}</b><span>Duplicates</span><b>${esc(fvm.duplicates)}</b><span>Recon issues</span><b>${esc(fvm.reconIssues)}</b></div>` +
       `<div class="pui-line" style="margin-top:6px">Strategy <b>${esc(fvm.edgeLabel)}</b>${fvm.insufficient ? ` <span class="pui-sub">${esc(fvm.insufficientText)}</span>` : ""}</div>` +
+      `<div class="pui-sub" data-pui-fv-run>${esc(fvh.run)}</div><div class="pui-sub" data-pui-fv-alltime>${esc(fvh.allTime)}</div>` + (fvh.promotion ? `<div class="pui-sub" data-pui-fv-promotion>${esc(fvh.promotion)}</div>` : "") +
       (fvm.needsAttention ? `<div class="pui-bad">⚠ ${esc(fvm.critical ? "NEEDS ATTENTION" : "Needs a look")}: ${fvm.attention.map((a) => esc(words(a.code))).join(", ")}</div>` : "")
       : `<div class="pui-empty">Validation status unavailable.</div>`) + `<div><a href="forward_validation.html" target="_blank" rel="noopener" data-pui-fv-link>View validation details</a></div></div>`;
     return `<h2>Activity</h2><h3>Today${dr.today ? ` · ${esc(dr.today)}` : ""}</h3>` + review + filters +

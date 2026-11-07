@@ -93,29 +93,40 @@ def unnamed(text):
         isinstance(n, (ast.Assign, ast.AnnAssign)) and all(isinstance(t, ast.Name) for t in (n.targets if isinstance(n, ast.Assign) else [n.target]))))]
 
 
+def named_assign(text, name):
+    """Wave 2 PR C: the value of the module-level assignment `name` (an AST node, for literal_eval)."""
+    return next(n.value for n in ast.parse(text).body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in n.targets))
+
+
 def digest(dump: str) -> str:
     return hashlib.sha256(dump.encode()).hexdigest()
 
 
 def added_lines(rel):
     base = set(at_base(rel).splitlines())
-    return "\n".join(l for l in now_text(rel).splitlines() if l not in base)
+    return "\n".join(l for l in FL.pre_w2c(rel, now_text(rel)).splitlines() if l not in base)   # Wave 2 PR C: PR B's lines (PR C's own: T-W04C)
+
+
+def prb_files(base):
+    """Wave 2 PR C: the change set between `base` and main after PR #52 (fixed commits). PR C's delta: tests/test_wave2_prc.py."""
+    return set(_git("diff", "--name-only", base, FL.BASE_W2C).split())
 
 
 # ================================================================ T-W04B, T-W05B: the allow-list and the closed function list ================
 
 def test_TW04B_the_production_diff_is_pr_a_plus_pr_b_and_pr_b_adds_no_pr_c_or_order_token():
-    prod = {p for p in changed_files(FL.BASE_W2A) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}   # the harness: F04B
+    prod = {p for p in prb_files(FL.BASE_W2A) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}   # the harness: F04B
     assert prod == PR_A_FILES | PR_B_FILES, {"unexpected": sorted(prod - PR_A_FILES - PR_B_FILES), "missing": sorted((PR_A_FILES | PR_B_FILES) - prod)}
-    mine = {p for p in changed_files(FL.BASE_W2B) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}
+    mine = {p for p in prb_files(FL.BASE_W2B) if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in HARNESS_B}
     assert mine == PR_B_FILES, sorted(mine ^ PR_B_FILES)
     for rel in sorted(PR_B_FILES):
         added = added_lines(rel)
         assert added and not [t for t in PR_C_TOKENS_B if t in added], rel
         assert not [t for t in N01_TOKENS if t in added] and "disable_auto(" not in added, rel   # V-18: the merged bans, re-run on PR B's lines
         assert not re.search(r"\brequests\b|robinhood|update_intent|set_mode\(|# >>> Stage 6\.1", added), rel   # 6.10A F05's list (health.py is a 6.10A file)
-    from database.forward_validation_migrations import V2_SAMPLE_COLUMNS, V2_SESSION_COLUMNS
-    from forward_validation.store import SAMPLE_COLS
+    lit = lambda rel, name: ast.literal_eval(named_assign(FL.pre_w2c(rel, now_text(rel)), name))  # noqa: E731 - Wave 2 PR C: PR B's text (PR C adds run_id / frozen_hash)
+    V2_SAMPLE_COLUMNS, V2_SESSION_COLUMNS = lit("database/forward_validation_migrations.py", "V2_SAMPLE_COLUMNS"), lit("database/forward_validation_migrations.py", "V2_SESSION_COLUMNS")
+    SAMPLE_COLS = lit("forward_validation/store.py", "SAMPLE_COLS")
     assert not {"run_id", "frozen_hash"} & ({c for c, _ in V2_SAMPLE_COLUMNS} | set(SAMPLE_COLS) | {c for c, _ in V2_SESSION_COLUMNS})
     assert not {p for p in mine if p.startswith(("safety/", "cash_flow/", "autorun/", "execution/", "setups/", "proposals/", "frontend/", "strategy_registry/"))}
     assert "config.py" not in changed_files(FL.BASE_W2B) and {p for p in mine if p.startswith("forward_capture/")} == {"forward_capture/health.py"}
@@ -123,17 +134,17 @@ def test_TW04B_the_production_diff_is_pr_a_plus_pr_b_and_pr_b_adds_no_pr_c_or_or
 
 def test_TW05B_only_the_listed_functions_changed_and_only_the_listed_names_are_new():
     for rel, (may_change, may_add) in CLOSED_LIST_B.items():
-        now, base = named_nodes(now_text(rel)), named_nodes(at_base(rel))
+        now, base = named_nodes(FL.pre_w2c(rel, now_text(rel))), named_nodes(at_base(rel))
         assert set(base) <= set(now), (rel, sorted(set(base) - set(now)))                          # nothing of 50cb2d7b disappears
         assert set(now) - set(base) == may_add, (rel, sorted((set(now) - set(base)) ^ may_add))     # exactly the listed names are new
         changed = {k for k in base if digest(base[k]) != digest(now[k])}
         assert changed <= may_change, (rel, sorted(changed - may_change))                           # every other function hash-equal
-        assert sorted(unnamed(now_text(rel))) == sorted(unnamed(at_base(rel))), rel                 # no new module-level statement (imports go inside)
-    store_class = ast.parse(now_text("forward_validation/store.py")).body
+        assert sorted(unnamed(FL.pre_w2c(rel, now_text(rel)))) == sorted(unnamed(at_base(rel))), rel                 # no new module-level statement (imports go inside)
+    store_class = ast.parse(FL.pre_w2c("forward_validation/store.py", now_text("forward_validation/store.py"))).body
     cls = next(n for n in store_class if isinstance(n, ast.ClassDef) and n.name == "EvidenceSourceAbsent")
     assert [ast.unparse(b) for b in cls.bases] == ["ForwardValidationStoreError"] and not cls.keywords
     for rel, name in PINNED_B:
-        assert digest(named_nodes(now_text(rel))[name]) == digest(named_nodes(at_base(rel))[name]), (rel, name)
+        assert digest(named_nodes(FL.pre_w2c(rel, now_text(rel)))[name]) == digest(named_nodes(at_base(rel))[name]), (rel, name)
     probe = named_nodes("class A(B):\n    x = 1\n    def f(self):\n        pass\n")
     assert set(probe) == {"class A", "A.f"} and named_nodes("class A(C):\n    x = 1\n")["class A"] != probe["class A"]   # bases and body are seen
     assert len(unnamed('"""doc"""\nimport os\nx = 1\nA.f = 2\n')) == 2
@@ -163,7 +174,7 @@ def fn_text(text, qual):
 
 def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the_declared_lines():
     rel = "forward_validation/service.py"
-    now, base = fn_text(now_text(rel), FN + "cumulative"), fn_text(at_base(rel), FN + "cumulative")
+    now, base = fn_text(FL.pre_w2c(rel, now_text(rel)), FN + "cumulative"), fn_text(at_base(rel), FN + "cumulative")   # Wave 2 PR C: PR B's text; the current text keeps D-5: T-W06C
     undone = now
     for old, new in D5_CUMULATIVE:
         assert undone.count(new) == 1 and base.count(old) == 1, new[:80]
@@ -182,9 +193,10 @@ def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the
 def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2B == "50cb2d7bc0384f1a020c01c9ba22c52c1283f339" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2B}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files(FL.BASE_W2B)
-    assert changed == FL.NEW_W2B | FL.EDITED_W2B, {"unexpected": sorted(changed - FL.NEW_W2B - FL.EDITED_W2B), "missing": sorted((FL.NEW_W2B | FL.EDITED_W2B) - changed)}
+    both_new, both_edited = FL.NEW_W2B | FL.NEW_W2C, FL.EDITED_W2B | (FL.EDITED_W2C - FL.NEW_W2B)   # Wave 2 PR C: its own sets (its edits of PR B's new files stay new since BASE_W2B), pinned by tests/test_wave2_prc.py
+    assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2B).split())
-    assert {p for p in changed if p not in in_base} == FL.NEW_W2B and {p for p in changed if p in in_base} == FL.EDITED_W2B
+    assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
     assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_W2B).split()                 # nothing of 50cb2d7b is deleted
     app = {p for p in FL.EDITED_W2B | FL.NEW_W2B if not p.startswith("tests/")}
     assert app == PR_B_FILES | HARNESS_B | {".github/ci/pytest_groups.json"} and set(FL.SEMANTIC_W2B) == PR_B_FILES and FL.INSTRUMENTATION_W2B == {}
@@ -193,7 +205,8 @@ def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_
     for rel in sorted(changed):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
         assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
-    groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
+    prb_groups = subprocess.run(["git", "show", f"{FL.BASE_W2C}:.github/ci/pytest_groups.json"], cwd=ROOT, capture_output=True).stdout.decode("utf-8")   # Wave 2 PR C: the manifest as PR #52 left it (PR C's entry: F01C)
+    groups, base_groups = json.loads(prb_groups)["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g != "execution"} == {g: v for g, v in base_groups.items() if g != "execution"}   # V-17: one group gains them
     assert groups["execution"] == {**base_groups["execution"], "files": base_groups["execution"]["files"] + ["test_wave2_prb.py", "test_wave2_prb_sessions.py"]}
 
@@ -214,7 +227,7 @@ def defs(text):
 def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):   # the ledger: F03B
-        b, n = defs(at_base(rel)), defs(now_text(rel))
+        b, n = defs(at_base(rel)), defs(FL.undo_w2c(rel, now_text(rel)))                          # Wave 2 PR C: its own in-place edits undone first (F02C)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))                                   # no merged test removed
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2B)
@@ -231,8 +244,9 @@ def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_
 def test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2B) == {p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py")} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2B):
-        assert FL.undo_w2b(rel, now_text(rel)) == at_base(rel), rel                             # now -> 50cb2d7b, byte for byte
-    main_fl, fl = at_base("tests/freeze_ledger.py"), now_text("tests/freeze_ledger.py")
+        assert FL.undo_w2b(rel, FL.undo_w2c(rel, now_text(rel))) == at_base(rel), rel           # now -> (F03C) 875bc06d -> 50cb2d7b, byte for byte
+    main_fl = at_base("tests/freeze_ledger.py")
+    fl = subprocess.run(["git", "show", f"{FL.BASE_W2C}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # Wave 2 PR C: the ledger as PR #52 left it
     assert fl.count("LEDGER = {") == 1 and fl.count("BASE_W2B = ") == 1                       # the anchors every older ledger test uses stay unique
     led = lambda t: t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]  # noqa: E731
     main_ledger = ast.literal_eval(led(main_fl)[len("LEDGER = "):])
@@ -242,8 +256,9 @@ def test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_w2b("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, two helpers and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_W2B and set(main_ledger) <= set(FL.LEDGER)
-    assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == FL.EDITED_W2B & set(main_ledger)   # every re-hash is a declared PR B edit
+    prb_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # Wave 2 PR C: PR B's ledger; PR C's re-hashes are its F03C
+    assert set(prb_ledger) - set(main_ledger) == FL.NEW_LEDGER_W2B and set(main_ledger) <= set(prb_ledger)
+    assert {k for k in main_ledger if main_ledger[k] != prb_ledger[k]} == FL.EDITED_W2B & set(main_ledger)   # every re-hash is a declared PR B edit
     for rel in sorted(FL.NEW_LEDGER_W2B):
         assert FL.base_text(rel) == at_base(rel) == FL.pre_w2b(rel, now_text(rel)), rel       # unchanged from BASE_68 to main: the ledger view IS main's text
     for rel in FL.LEDGER:

@@ -42,22 +42,25 @@ def _service():
 
 @router.get("")
 def get_overview() -> JSONResponse:
+    from forward_validation.pnl_view import decorate  # Wave 2 PR C (design 12): verified-only P/L, read only
     out = _service().overview()
     out.update({"modes": list(MODES), "mode_labels": MODE_LABELS, "exit_reasons": {r: EXIT_TEXT[r] for r in EXIT_REASONS}, "known_controls": list(CONTROLS)})
     import config
     from execution import exposure_gate
     out["entry_controls"] = exposure_gate.summary(exposure_gate.from_config(config))   # Stage 6.9.1: the entry-controls version a new PAPER entry is decided under
-    return JSONResponse(out)
+    return JSONResponse(decorate(out))
 
 
 @router.get("/status")
 def get_status() -> JSONResponse:
-    return JSONResponse(_service().status().model_dump())
+    from forward_validation.pnl_view import decorate  # Wave 2 PR C (design 12): verified-only P/L, read only
+    return JSONResponse(decorate(_service().status().model_dump()))
 
 
 @router.get("/history")
 def get_history(limit: int = Query(default=20, ge=1, le=200)) -> JSONResponse:
-    return JSONResponse({"history": _service().history(limit), "version": VERSION, "disclaimer": DISCLAIMER})
+    from forward_validation.pnl_view import decorate  # Wave 2 PR C (design 12): verified-only P/L, read only
+    return JSONResponse(decorate({"history": _service().history(limit), "version": VERSION, "disclaimer": DISCLAIMER}))
 
 
 @router.get("/controls")
@@ -74,8 +77,9 @@ def get_intents(symbol: Optional[str] = Query(default=None, max_length=12), limi
 
 @router.get("/positions")
 def get_positions(open_only: bool = Query(default=False), limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
+    from forward_validation.pnl_view import decorate  # Wave 2 PR C (design 12): verified-only P/L, read only
     svc = _service()
-    return JSONResponse({"positions": [p.model_dump() for p in svc.store.positions(open_only=open_only, limit=limit)], "events": svc.store.position_events(None, 100), "version": VERSION})
+    return JSONResponse(decorate({"positions": [p.model_dump() for p in svc.store.positions(open_only=open_only, limit=limit)], "events": svc.store.position_events(None, 100), "version": VERSION}))
 
 
 @router.get("/findings")
@@ -86,11 +90,12 @@ def get_findings(limit: int = Query(default=50, ge=1, le=500), blocking_only: bo
 
 @router.get("/symbol/{symbol}")
 def get_symbol(symbol: str) -> JSONResponse:
+    from forward_validation.pnl_view import decorate  # Wave 2 PR C (design 12): verified-only P/L, read only
     try:
         s = validate_symbol(symbol)
     except ValueError as exc:
         return JSONResponse({"error": "INVALID_SYMBOL", "message": str(exc)}, status_code=400)
-    return JSONResponse(_service().card(s).model_dump())
+    return JSONResponse(decorate(_service().card(s).model_dump()))
 
 
 @router.get("/activity")

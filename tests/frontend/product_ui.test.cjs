@@ -27,9 +27,9 @@ const PAUSED = { ...SAFE, state: "NO_NEW_ENTRIES", state_label: "New trades paus
 const BLOCKED = { ...SAFE, state: "NO_NEW_ENTRIES", reason_text: "Daily loss control degraded: account data stale." };
 const KILLED = { ...SAFE, state: "HALTED", state_label: "Trading stopped", reason_text: "Emergency stop active.", kill_switch: { active: true, activated_by: "user", activated_at: "2026-10-21T15:00:00Z" } };
 const DAILY = { ...SAFE, state: "HALTED", reason_text: "Daily loss limit reached.", daily_loss: { status: "TRIGGERED", daily_loss_pct: "3.2" } };
-const IN_TRADE = { key: "IN_TRADE", symbol: "SNDK", label: "In trade", line: "3 shares · entry 61.20 · now 62.10 · +2.70", shares: 3, entry: "61.20", current: "62.10", pnl: "+2.70", pnl_pct: "1.47", position_id: "p1",
+const IN_TRADE = { key: "IN_TRADE", symbol: "SNDK", label: "In trade", line: "3 shares · entry 61.20 · now 62.10 · +2.70", shares: 3, entry: "61.20", current: "62.10", pnl: "+2.70", pnl_pct: "1.47", position_id: "p1", pnl_status: "VERIFIED", pnl_display: "2.70", pnl_kind: "unrealized",   // Wave 2 PR C: a verified (route-decorated) card
                    state: "POSITION_OPEN", details: { sessions_held: 2 } };
-const MU = { key: "IN_TRADE", symbol: "MU", label: "In trade", line: "4 shares · entry 830.00 · now 835.50 · +22.00", shares: 4, entry: "830.00", current: "835.50", pnl: "+22.00", pnl_pct: "0.66", position_id: "p2",
+const MU = { key: "IN_TRADE", symbol: "MU", label: "In trade", line: "4 shares · entry 830.00 · now 835.50 · +22.00", shares: 4, entry: "830.00", current: "835.50", pnl: "+22.00", pnl_pct: "0.66", position_id: "p2", pnl_status: "VERIFIED", pnl_display: "22.00", pnl_kind: "unrealized",   // Wave 2 PR C: a verified (route-decorated) card
              state: "POSITION_OPEN", details: { sessions_held: 1 } };
 const ENTERING = { key: "ENTERING", symbol: "AAPL", label: "Entering", line: "Waiting for the paper order to fill · 2 shares", shares: 2, state: "ENTRY_SUBMITTED", details: { intent: { state: "SUBMITTED" } } };
 const FAILED = { key: "ATTENTION", symbol: "AAPL", label: "Needs attention", line: "Last paper order rejected (broker rejected)", state: "FAILED", details: { intent: { intent_type: "ENTRY", state: "REJECTED", failure_code: "BROKER_REJECTED" } } };
@@ -45,13 +45,13 @@ const SRC = { transitions: [{ symbol: "AAPL", to_state: "READY", evaluated_at: "
                         { symbol: "MSFT", intent_type: "ENTRY", side: "buy", qty: 1, state: "REJECTED", submitted_at: "2026-10-20T15:00:00Z", resolved_at: "2026-10-20T15:00:01Z", failure_code: "BROKER_REJECTED" }],
               positions: [{ position_id: "p1", symbol: "AAPL", state: "CLOSED", closed_at: "2026-10-21T19:50:00Z", realized_pnl: "4.20" }],
               position_events: [{ position_id: "p1", kind: "OPENED", at: "2026-10-21T14:36:07Z", reason: "2 of 2 filled at 227.10" }, { position_id: "p1", kind: "EXIT_REQUIRED", at: "2026-10-21T19:45:00Z", reason: "TIME_EXIT" },
-                                { position_id: "p1", kind: "CLOSED", at: "2026-10-21T19:50:00Z", detail: { realized_pnl: "4.20" } }, { position_id: "p1", kind: "FILL_UPDATED", at: "2026-10-21T14:36:06Z" }],
+                                { position_id: "p1", kind: "CLOSED", at: "2026-10-21T19:50:00Z", detail: { realized_pnl: "4.20" }, pnl_status: "VERIFIED", pnl_display: "4.20", pnl_kind: "realized" }, { position_id: "p1", kind: "FILL_UPDATED", at: "2026-10-21T14:36:06Z" }],   // Wave 2 PR C: a verified (route-decorated) CLOSED event
               safety_events: [{ kind: "KILL_ON", at: "2026-10-19T15:00:00Z" }, { kind: "KILL_OFF", at: "2026-10-19T15:10:00Z" }, { kind: "STARTUP", at: "2026-10-19T13:00:00Z" }],
               findings: [{ kind: "QTY_MISMATCH", symbol: "AAPL", blocking: true, at: "2026-10-21T16:00:00Z" }, { kind: "ORDER_ADOPTED", blocking: false, at: "2026-10-21T16:01:00Z" }],
               fv_events: [{ kind: "SESSION_OPENED", at: "2026-10-21T13:31:00Z" }, { kind: "EARLY_STOP", code: "DUPLICATE_BROKER_ORDER", at: "2026-10-21T18:00:00Z" }, { kind: "SAMPLE", at: "2026-10-21T13:32:00Z" }] };
 const FV = { sessions: { completed: 7, healthy: 7, degraded: 0, failed: 0, not_run: 0, in_progress: 1, target: 30 }, operational: { duplicate_broker_orders: 0, reconciliation_attention: 0, reconciliation_open: 0 },
              strategy: { closed_trades: 3, edge_status: "INSUFFICIENT_DATA", edge_label: "Insufficient data", insufficient: true, insufficient_text: "INSUFFICIENT FOR STRATEGY CONCLUSION", gross_pnl: "41.20" },
-             attention: [], needs_attention: false };
+             attention: [], needs_attention: false, today_summary: { trading_date: "2026-10-21", realized_pnl: "4.20", pnl_status: "OK", unverified: 0, closed_trades: 1 } };   // Wave 2 PR C: the server's verified-only day total (C-70)
 const primaryPart = (card) => card.split("<details")[0];                              // what a beginner sees before expanding Why? / Details
 const cardOf = (html, key) => { const i = html.indexOf(`data-pui-card="${key}"`); const j = html.indexOf('<div class="pui-card', i + 1); return html.slice(html.lastIndexOf('<div class="pui-card', i), j < 0 ? undefined : j); };
 const buttons = (html) => [...String(html).matchAll(/<button[^>]*data-pui="([a-z:-]+)"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => [m[1], text(m[2])]);
@@ -342,7 +342,7 @@ test("16 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fill
   assert.deepEqual(new Set(tl.map((e) => e.kind)), new Set(["setup", "proposal", "order", "fill", "position", "exit", "safety", "reconciliation", "validation"]));
   assert.deepEqual(PUI.timeline({}), []);
   assert.deepEqual(PUI.timeline({ intents: [{ symbol: "X", intent_type: "ENTRY", side: "buy", qty: 1, state: "PENDING" }] }), []);   // no timestamp -> no entry (nothing invented)
-  assert.deepEqual(PUI.todaySummary(SRC, { ...EXEC, open_positions: 1, attention_reasons: ["RECONCILIATION_REQUIRED"] }, "2026-10-21"), { trades: 1, open: 1, closed: 1, pnl: "+4.20", issues: 2 });
+  assert.deepEqual(PUI.todaySummary(SRC, { ...EXEC, open_positions: 1, attention_reasons: ["RECONCILIATION_REQUIRED"] }, "2026-10-21", FV), { trades: 1, open: 1, closed: 1, pnl: "+4.20", issues: 2 });   // Wave 2 PR C: the day total is the server's today_summary (C-70), passed as the new trailing fv
   assert.deepEqual(PUI.todaySummary(SRC, EXEC, "2026-10-22"), { trades: 0, open: 0, closed: 0, pnl: "—", issues: 0 });
 });
 

@@ -582,7 +582,13 @@ class ExecutionService:
             if cnt > 1:
                 n += 1
                 reasons.append(f"{sym}: {cnt} open broker orders")
-                self._finding(now, trigger, Finding(kind="MULTIPLE_ORDERS", symbol=sym, detail={"count": cnt}), run_id)
+                try:                                                               # Wave 2 PR C (C-64, W2-6): the finding's attribution - detail only; the entry block is unchanged
+                    coids = sorted(str(o.get("client_order_id") or "") for o in open_orders if str(o.get("symbol") or "").upper() == sym)
+                    detail = {"count": cnt, "client_order_ids": coids, "bot_orders": sum(1 for c in coids if c.startswith(COID_PREFIX)),
+                              "bot_exposed": any(p.symbol == sym for p in internal_open) or any(i.symbol == sym for i in open_intents)}
+                except Exception:  # noqa: BLE001 - contained: a legacy row without the keys, which is counted (fail-closed)
+                    detail = {"count": cnt}
+                self._finding(now, trigger, Finding(kind="MULTIPLE_ORDERS", symbol=sym, detail=detail), run_id)
         for i in open_intents:
             if i.state == "RECONCILIATION_REQUIRED":
                 reasons.append(f"{i.symbol}: intent {i.execution_id[:8]} needs reconciliation ({i.failure_code or 'ambiguous'})")

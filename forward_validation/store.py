@@ -23,7 +23,8 @@ SESSION_BOOLS = ("market_open_seen", "market_close_seen", "paper_auto_enabled", 
 SAMPLE_COLS = ("sample_id", "at", "trading_date", "in_session", "owner", "mode", "executor_ready", "safety_state", "allowed_new_entry", "safety_codes_json", "reconciliation_healthy",
                "attention_count", "attention_json", "account_status", "account_age_s", "account_failures", "equity", "cash", "buying_power", "net_external_cum", "cash_flow_status",
                "cash_flow_age_s", "cash_flow_failures", "open_positions", "pending_entries", "pending_exits", "positions_json", "controls_json", "last_cycle_at", "last_cycle_result",
-               "loop_running", "rr_intents", "attention_positions", "failed_intents", "worker_stale_after_s")   # Wave 2 PR B: NULL = unknown, written as is (never 0)
+               "loop_running", "rr_intents", "attention_positions", "failed_intents", "worker_stale_after_s",   # Wave 2 PR B: NULL = unknown, written as is (never 0)
+               "frozen_hash", "run_id")                                                        # Wave 2 PR C (C-14): the run stamps, written at INSERT; NULL only from code without PR C
 SAMPLE_JSON = {"safety_codes_json": "safety_codes", "attention_json": "attention", "positions_json": "positions", "controls_json": "controls"}
 
 
@@ -373,3 +374,77 @@ class ForwardValidationStore:
             rows = self._read(f"SELECT count(*) AS n FROM {t}")
             out[t] = int(rows[0]["n"]) if rows else 0
         return out
+
+    # ---------------------------------------------------------------- Wave 2 PR C: the forward run (design 4) ---------------------
+    def active_run(self) -> Optional[dict]:
+        """The run with ended_at NULL (at most one: a partial unique index), or None. Strict: a read error raises, never 'no run'."""
+        rows = [r for r in self.runs() if r["ended_at"] is None]
+        if len(rows) > 1:
+            raise ForwardValidationStoreError("more than one active forward run")
+        return rows[0] if rows else None
+
+    def runs(self) -> List[dict]:
+        """Every forward run, oldest first (strict), its JSON columns parsed (a malformed one reads None: the reader decides, C-67)."""
+        out = []
+        for r in self.query_strict("SELECT * FROM forward_runs ORDER BY started_at, run_id"):
+            for col in ("frozen_controls_json", "accepted_blockers_json", "acknowledged_attention_json", "server_config_json", "prior_invalid_days_json"):
+                raw = r.pop(col)
+                try:
+                    r[col[:-5]] = json.loads(raw) if raw else None
+                except (TypeError, ValueError):
+                    r[col[:-5]] = None
+            out.append(r)
+        return out
+
+    def run_events(self, run_id: str) -> List[dict]:
+        """A run's append-only events, in order (strict); each carries its parsed `detail`."""
+        rows = self.query_strict("SELECT rowid AS _rowid, * FROM forward_run_events WHERE run_id = ? ORDER BY at, rowid", (run_id,))
+        for r in rows:
+            r["detail"] = _loads(r.pop("detail_json"), {})
+        return rows
+
+    def insert_run(self, row: Dict[str, Any], events: List[Dict[str, Any]]) -> dict:
+        """One transaction: the run row and its first events (STARTED, PRIOR_INVALID_ACKNOWLEDGED). The triggers refuse a second active run,
+        a back-dated start and a replace."""
+        cols = ("run_id", "created_at", "started_at", "first_session_date", "frozen_hash", "frozen_controls_json", "cohort_id", "config_hash", "execution_version",
+                "classifier_version", "min_trades", "target_sessions", "target_events", "minimums_source", "base_equity", "approved_by", "approval_ref", "evidence_ref",
+                "accepted_blockers_json", "acknowledged_attention_json", "server_config_json", "prior_invalid_days_json")
+
+        def fn(conn):
+            conn.execute(f"INSERT INTO forward_runs ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols])
+            for e in events:
+                conn.execute("INSERT INTO forward_run_events (event_id, run_id, at, kind, code, detail_json) VALUES (?,?,?,?,?,?)",
+                             (new_id(), row["run_id"], e["at"], e["kind"], e.get("code"), _json(e.get("detail") or {})))
+        self._write(fn)
+        return next(r for r in self.runs() if r["run_id"] == row["run_id"])
+
+    def end_run(self, run_id: str, now: datetime, reason: str) -> dict:
+        """Sets ended_at / end_reason once (the trigger refuses a second time) and appends ENDED, in one transaction."""
+        stamp = _iso(now)
+
+        def fn(conn):
+            cur = conn.execute("UPDATE forward_runs SET ended_at = ?, end_reason = ? WHERE run_id = ? AND ended_at IS NULL", (stamp, reason, run_id))
+            if cur.rowcount != 1:
+                raise ForwardValidationStoreError(f"forward run {run_id} is not active")
+            conn.execute("INSERT INTO forward_run_events (event_id, run_id, at, kind, code, detail_json) VALUES (?,?,?,?,?,?)",
+                         (new_id(), run_id, stamp, "ENDED", None, _json({"reason": reason})))
+        self._write(fn)
+        return next(r for r in self.runs() if r["run_id"] == run_id)
+
+    def add_run_event(self, run_id: str, at: str, kind: str, code: Optional[str] = None, detail: Optional[dict] = None) -> str:
+        eid = new_id()
+
+        def fn(conn):
+            conn.execute("INSERT INTO forward_run_events (event_id, run_id, at, kind, code, detail_json) VALUES (?,?,?,?,?,?)", (eid, run_id, at, kind, code, _json(detail or {})))
+        self._write(fn)
+        return eid
+
+    def strict_view(self):
+        """C-07 / C-30 (d): a read-only view whose query() and sessions() are strict, for attention_signature.signature(): a missing table or a
+        read error raises instead of reading as 'no attention'."""
+        from types import SimpleNamespace
+
+        def sessions(limit: int = 400, newest_first: bool = True) -> List[dict]:
+            order = "DESC" if newest_first else "ASC"
+            return [self._session(r) for r in self.query_strict(f"SELECT * FROM forward_validation_sessions ORDER BY trading_date {order} LIMIT ?", (limit,))]
+        return SimpleNamespace(query=self.query_strict, sessions=sessions, path=self.path)

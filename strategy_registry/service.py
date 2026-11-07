@@ -40,10 +40,20 @@ def runtime_facts(stream_fn: Optional[Callable[[], Any]]) -> Dict[str, Any]:
     try:
         ov = s.forward_validation.overview() or {}
         sess, strat = ov.get("sessions") or {}, ov.get("strategy") or {}
+        run, at, promo = ov.get("run") or {}, ov.get("all_time") or {}, ov.get("promotion") or {}   # Wave 2 PR C (C-35, C-37, C-59): the edge label from the run block
+        rs, rst, rdd = run.get("strategy") or {}, run.get("sessions") or {}, run.get("drawdown") or {}
+        cur = ((ov.get("forward_evidence") or {}).get("current_cohort") or {}).get("cohort_id")
         out["validation"] = {"sessions_completed": int(sess.get("completed") or 0), "sessions_target": sess.get("target"), "sessions_label": sess.get("label"),
-                             "closed_trades": strat.get("closed_trades"), "edge_status": strat.get("edge_status"), "edge_label": strat.get("edge_label"),
-                             "insufficient": strat.get("insufficient"), "insufficient_text": strat.get("insufficient_text"), "needs_attention": bool(ov.get("needs_attention")),
-                             "attention": [a.get("code") if isinstance(a, dict) else a for a in (ov.get("attention") or [])], "frozen_controls_hash": ov.get("frozen_controls_hash")}
+                             "closed_trades": strat.get("closed_trades"), "edge_status": rs.get("edge_status"), "edge_label": rs.get("edge_label"),
+                             "insufficient": rs.get("edge_status") == "INSUFFICIENT_DATA", "insufficient_text": rs.get("insufficient_text"), "needs_attention": bool(ov.get("needs_attention")),
+                             "attention": [a.get("code") if isinstance(a, dict) else a for a in (ov.get("attention") or [])], "frozen_controls_hash": ov.get("frozen_controls_hash"),
+                             "verified_trades": strat.get("closed_trades"), "unverified_trades": strat.get("unverified"),
+                             "run_defined": bool(run.get("defined")), "run_id": run.get("run_id"), "run_active": bool(run.get("active")), "run_suspended": bool(run.get("suspended")),
+                             "run_ready": (run.get("readiness") or {}).get("status"), "run_readiness_text": (run.get("readiness") or {}).get("text"), "run_label": rst.get("label"),
+                             "strategy_days": int(rst.get("strategy_days") or 0), "run_drawdown_status": rdd.get("status"), "run_truncated": bool(rs.get("truncated")),
+                             "run_unverified": int((run.get("trades") or {}).get("unverified") or 0) + int((run.get("trades") or {}).get("pending_past_bound") or 0),
+                             "run_cohort": run.get("cohort_id"), "current_cohort": cur, "all_time_status": at.get("status"), "all_time_text": at.get("text"),
+                             "promotion_eligible": bool(promo.get("eligible")), "promotion_text": promo.get("text")}
     except Exception as exc:  # noqa: BLE001
         out["errors"].append(f"forward_validation: {type(exc).__name__}")
     out["available"] = out["mode"] is not None or out["validation"] is not None
@@ -56,19 +66,27 @@ def derive_lifecycle(entry: StrategyEntry, facts: Optional[Dict[str, Any]]) -> D
     basis: List[str] = []
     status = entry.status
     if entry.implemented and entry.status == "PAPER_CANDIDATE":
-        sessions = int(v.get("sessions_completed") or 0)
-        if sessions > 0:
-            status, basis = "PAPER_ACTIVE", [f"forward paper validation has recorded {sessions} session(s) (target {v.get('sessions_target') or '—'})"]
-        elif f.get("mode") == "PAPER_AUTO":
-            status, basis = "PAPER_ACTIVE", ["Paper Auto is ON (GET /api/execution/status mode PAPER_AUTO); no validation session recorded yet"]
-        elif f.get("available"):
-            basis = ["no forward paper validation session recorded yet and Paper Auto is OFF"]
+        # Wave 2 PR C (design 8.5, C-34, Q43-C; D-W2-c confirmed 2026-11-05): PAPER_ACTIVE needs an active, unsuspended, READY forward run with at least one
+        # strategy day (actual Paper Auto activity under the run's frozen controls) and none of I4's other conditions. MONITOR_ONLY days never count, and
+        # Paper Auto without a run is never PAPER_ACTIVE (the Paper-Auto-ON branch is removed). PAPER_ACTIVE is not promotion eligibility (C-59, D-W2-m).
+        blocks = [txt for txt, bad in (("no active forward run", not (v.get("run_defined") and v.get("run_active"))), ("the forward run is suspended", v.get("run_suspended")),
+                                       ("the forward run is NOT READY", v.get("run_ready") != "READY"), ("no strategy day yet (MONITOR_ONLY days never count)", not v.get("strategy_days")),
+                                       ("the run's bot-only drawdown is unknown", v.get("run_drawdown_status") != "KNOWN"), ("the run's statistics are truncated", v.get("run_truncated")),
+                                       ("an unverified member trade", v.get("run_unverified")),
+                                       ("the current cohort is outside the run", v.get("run_cohort") and v.get("current_cohort") and v["run_cohort"] != v["current_cohort"])) if bad]
+        if v and not blocks:
+            status, basis = "PAPER_ACTIVE", [f"forward run {v.get('run_id')}: {v.get('run_label')}"]
+        elif f.get("available") and v:
+            basis = [f"not PAPER_ACTIVE: {'; '.join(blocks)}"]
         else:
             basis = ["runtime facts unavailable: the declared status is shown"]
+        if v:
+            basis += [v.get("run_readiness_text") or "No forward run defined", v.get("all_time_text") or "All-time record: unknown", v.get("promotion_text") or "promotion: unknown"]
     elif not entry.implemented:
         basis = ["placeholder: not implemented"]
     return {"declared": entry.status, "status": status, "label": STATUS_LABELS[status], "basis": basis, "decided": False,
-            "decision": "No approval or rejection has been recorded; APPROVED / REJECTED are never derived."}
+            "decision": "No approval or rejection has been recorded; APPROVED / REJECTED are never derived.", "promotion": v.get("promotion_text"),
+            "promotion_eligible": bool(v.get("promotion_eligible"))}
 
 
 def _row(entry: StrategyEntry, facts: Optional[Dict[str, Any]]) -> Dict[str, Any]:

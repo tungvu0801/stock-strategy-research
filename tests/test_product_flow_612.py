@@ -272,7 +272,8 @@ def test_A01_registry_api_is_get_only_with_the_documented_shapes_and_derives_the
     assert list(rows) == ["DOWNSIDE_DISLOCATION_RECOVERY", "VALUE_QUALITY", "MOMENTUM", "MEAN_REVERSION", "BREAKOUT"]
     ddr = rows["DOWNSIDE_DISLOCATION_RECOVERY"]
     assert ddr["implemented"] is True and ddr["active"] is True and ddr["declared_status"] == "PAPER_CANDIDATE" and ddr["status"] == "PAPER_CANDIDATE" and ddr["setup_type"] == "DOWNSIDE_DISLOCATION_RECOVERY"
-    assert ddr["lifecycle_basis"] == ["no forward paper validation session recorded yet and Paper Auto is OFF"]
+    assert ddr["lifecycle_basis"][0] == ("not PAPER_ACTIVE: no active forward run; the forward run is NOT READY; no strategy day yet (MONITOR_ONLY days never count); "
+                                         "the run's bot-only drawdown is unknown") and any(b.startswith("promotion") for b in ddr["lifecycle_basis"][1:])   # Wave 2 PR C (C-34, C-59)
     vq = rows["VALUE_QUALITY"]                                                                    # Stage 6.4: implemented as a RESEARCH strategy - never active, no setup type
     assert vq["implemented"] is True and vq["active"] is False and vq["status"] == vq["declared_status"] == "RESEARCH" and vq["setup_type"] is None and vq["placeholder_note"] is None
     mo = rows["MOMENTUM"]                                                                         # Stage 6.5: implemented as a RESEARCH strategy - never active, no setup type
@@ -300,10 +301,12 @@ def test_A01_registry_api_is_get_only_with_the_documented_shapes_and_derives_the
     assert mo_d["entry"]["active"] is False and [x["state"] for x in mo_d["sections"]] == ["DOCUMENTED"] * 11 + ["NOT_EVALUATED"] * 2
     mr_d = api.get("/api/strategy-registry/MEAN_REVERSION").json()                                # Stage 6.6: documented from its frozen rules, never active
     assert mr_d["entry"]["active"] is False and [x["state"] for x in mr_d["sections"]] == ["DOCUMENTED"] * 11 + ["NOT_EVALUATED"] * 2
-    # the lifecycle follows persisted facts: Paper Auto ON reads PAPER_ACTIVE; APPROVED / REJECTED are never derived
+    # the lifecycle follows persisted facts (Wave 2 PR C, D-W2-c): Paper Auto ON without an active, READY forward run with a strategy day stays
+    # PAPER_CANDIDATE, and the basis says why; APPROVED / REJECTED are never derived
     stack.T.arm(stack)
     j2 = api.get("/api/strategy-registry").json()
-    assert j2["facts"]["mode"] == "PAPER_AUTO" and j2["strategies"][0]["status"] == "PAPER_ACTIVE" and j2["strategies"][0]["declared_status"] == "PAPER_CANDIDATE" and "Paper Auto is ON" in j2["strategies"][0]["lifecycle_basis"][0]
+    assert j2["facts"]["mode"] == "PAPER_AUTO" and j2["strategies"][0]["status"] == "PAPER_CANDIDATE" and j2["strategies"][0]["declared_status"] == "PAPER_CANDIDATE" \
+        and j2["strategies"][0]["lifecycle_basis"][0].startswith("not PAPER_ACTIVE: no active forward run")
     assert all(s["status"] not in ("APPROVED", "REJECTED") for s in j2["strategies"]) and j2["strategies"][1]["status"] == "RESEARCH"
 
 
@@ -346,10 +349,15 @@ def test_R01_registry_entries_sources_lifecycle_statuses_and_placeholders():
     ddr = R.get("downside_dislocation_recovery")
     assert ddr is not None and R.get("NOPE") is None
     assert S.derive_lifecycle(ddr, None)["status"] == "PAPER_CANDIDATE" and S.derive_lifecycle(ddr, {"available": True, "mode": "MONITOR_ONLY", "validation": {"sessions_completed": 0}})["status"] == "PAPER_CANDIDATE"
-    assert S.derive_lifecycle(ddr, {"available": True, "mode": "PAPER_AUTO", "validation": {"sessions_completed": 0}})["status"] == "PAPER_ACTIVE"
-    lc = S.derive_lifecycle(ddr, {"available": True, "mode": "MONITOR_ONLY", "validation": {"sessions_completed": 3, "sessions_target": 30}})
-    assert lc["status"] == "PAPER_ACTIVE" and "3 session(s)" in lc["basis"][0] and lc["decided"] is False and "never derived" in lc["decision"]
-    assert S.derive_lifecycle(R.get("MOMENTUM"), {"available": True, "mode": "PAPER_AUTO", "validation": {"sessions_completed": 9}})["status"] == "RESEARCH"   # a placeholder never becomes active
+    assert S.derive_lifecycle(ddr, {"available": True, "mode": "PAPER_AUTO", "validation": {"sessions_completed": 0}})["status"] == "PAPER_CANDIDATE"   # Wave 2 PR C (D-W2-c): Paper Auto alone never
+    assert S.derive_lifecycle(ddr, {"available": True, "mode": "MONITOR_ONLY", "validation": {"sessions_completed": 3, "sessions_target": 30}})["status"] == "PAPER_CANDIDATE"
+    run = {"run_defined": True, "run_active": True, "run_suspended": False, "run_ready": "READY", "strategy_days": 1, "run_drawdown_status": "KNOWN", "run_truncated": False,
+           "run_unverified": 0, "run_id": "FR-0001", "run_label": "1 / 30 strategy sessions (1 healthy · 0 degraded · 0 failed · 0 unreadable · 0 not run)", "sessions_completed": 3}
+    lc = S.derive_lifecycle(ddr, {"available": True, "mode": "PAPER_AUTO", "validation": run})
+    assert lc["status"] == "PAPER_ACTIVE" and lc["basis"][0] == f"forward run FR-0001: {run['run_label']}" and lc["decided"] is False and "never derived" in lc["decision"]
+    for bad in ({"strategy_days": 0}, {"run_suspended": True}, {"run_ready": "NOT READY"}, {"run_active": False}):   # MONITOR_ONLY days only, suspended, NOT READY, ended (Q43-C)
+        assert S.derive_lifecycle(ddr, {"available": True, "mode": "PAPER_AUTO", "validation": {**run, **bad}})["status"] == "PAPER_CANDIDATE", bad
+    assert S.derive_lifecycle(R.get("MOMENTUM"), {"available": True, "mode": "PAPER_AUTO", "validation": run})["status"] == "RESEARCH"   # a placeholder never becomes active
     v = S.registry_view({"available": False})
     assert v["counts"] == {"strategies": 5, "implemented": 5, "placeholders": 0} and [s["active"] for s in v["strategies"]] == [True, False, False, False, False]   # Stage 6.4 - 6.7
     assert v["sources"][1] == {"source": "QUANTCONNECT", "label": SR.SOURCE_LABELS["QUANTCONNECT"], "count": 0, "note": S.QUANTCONNECT_NOTE} and "nothing is wired" in S.QUANTCONNECT_NOTE
@@ -431,7 +439,7 @@ def test_D01_downside_recovery_sections_come_from_the_frozen_controls_and_nothin
     assert secs["paper_results"].state == "UNAVAILABLE" and secs["paper_results"].items == []               # no runtime facts in this process: said so, not invented
     live = {s.key: s for s in DR.sections({"available": True, "mode": "MONITOR_ONLY", "validation": {"sessions_completed": 2, "sessions_target": 30, "sessions_label": "2 / 30", "closed_trades": 0, "edge_status": "INSUFFICIENT_DATA",
                                                                                                      "edge_label": "Insufficient data", "insufficient": True, "insufficient_text": "INSUFFICIENT FOR STRATEGY CONCLUSION", "needs_attention": False, "attention": []}})}["paper_results"]
-    assert live.state == "LIVE" and live.items[0] == "Forward paper validation sessions: 2 / 30 (2 / 30)" and live.items[1] == "Closed paper trades: 0 (no closed paper trade yet)" and "not a forecast" in live.note
+    assert live.state == "LIVE" and live.items[0] == "Forward paper validation sessions: 2 / 30 (2 / 30)" and live.items[1] == "Closed paper trades: 0 verified · — unverified (no closed paper trade yet)" and "not a forecast" in live.note   # Wave 2 PR C (C-79)
     documented = [i for s in secs.values() if s.state == "DOCUMENTED" for i in s.items]
     assert not any(re.search(r"(?i)win rate [0-9]|expected return [0-9]|probability of|[0-9]+ ?% (return|win|edge)", i) for i in documented)   # no invented performance claim
     assert any("No expected return, recovery probability, win rate or edge is claimed" in i for i in secs["hypothesis"].items)
