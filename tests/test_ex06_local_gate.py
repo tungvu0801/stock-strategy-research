@@ -37,7 +37,7 @@ def G():
     return importlib.import_module("api.local_gate")
 
 
-def probe(client=LOCAL, base_url=O):
+def probe(client=LOCAL, base_url=O, root_path=""):
     """A probe app behind the gate: records every request that got through, answers 200 / accepts a WebSocket."""
     calls = []
 
@@ -58,7 +58,7 @@ def probe(client=LOCAL, base_url=O):
         calls.append((scope["method"], scope["path"]))
         await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
         await send({"type": "http.response.body", "body": b"{\"ok\": true}"})
-    return RawClient(G().LocalRequestGate(app), base_url=base_url, client=client), calls
+    return RawClient(G().LocalRequestGate(app), base_url=base_url, client=client, root_path=root_path), calls
 
 
 def refused(r):
@@ -238,11 +238,21 @@ def test_X06_host_origin_and_referer_forms():
 
 
 # ---------------------------------------------------------------- state-changing GETs (D-14)
+FV_READ = {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Referer": O + "/forward_validation.html"}   # the FV page's reads
+TYPED = {k.title(): v for k, v in EDGE_NAVIGATE.items()}                                   # a typed, bookmarked or externally opened URL
+
+
 def test_X07_every_api_read_needs_the_intent_or_browser_same_origin_metadata_pages_do_not(monkeypatch):
+    """H-1 (review LOW-1): an /api read needs the intent header, or strict same-origin browser evidence: Sec-Fetch-Site same-origin with
+    exactly one Sec-Fetch-Mode and one Sec-Fetch-Dest, the Host with the bound port, and exactly one Referer (and any Origin) whose origin is
+    exactly http://<that Host>. A typed, bookmarked or externally opened /api URL (Sec-Fetch-Site none) is refused; pages and static files
+    still open from a typed URL or an outside link."""
     c, calls = probe()
     ok = [GET_H, {"X-Stock-Agent-Intent": "dashboard"},                                  # the dashboard (app.js wrapper); a local tool (runner, scripts)
-          {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Referer": O + "/forward_validation.html"},   # the FV page
-          {**{k.title(): v for k, v in EDGE_NAVIGATE.items()}}, {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}]   # typed URL; export link
+          FV_READ,                                                                        # the FV page (no app.js, no intent)
+          {**FV_READ, "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},        # its export link, clicked on the page
+          {**FV_READ, "Referer": O},                                                      # an origin-only Referer
+          {"X-Stock-Agent-Intent": "dashboard", "Host": "127.0.0.1"}]                     # the runner probe: a portless Host with the intent (D-1 b')
     for h in ok:
         assert c.get("/api/forward-validation/export/trades", headers=h).status_code == 200, h
         assert c.head("/api/execution-safety", headers=h).status_code == 200, h
@@ -250,15 +260,30 @@ def test_X07_every_api_read_needs_the_intent_or_browser_same_origin_metadata_pag
            ({**CROSS, "Sec-Fetch-Site": "same-site"}, "LOCAL_GATE_FETCH_SITE"), ({"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, "LOCAL_GATE_FETCH_SITE"),
            ({"Referer": "http://evil.example/"}, "LOCAL_GATE_REFERER"), ({"Sec-Fetch-Site": "garbage", "X-Stock-Agent-Intent": "dashboard"}, "LOCAL_GATE_FETCH_SITE"),
            ([("X-Stock-Agent-Intent", "dashboard"), ("X-Stock-Agent-Intent", "dashboard")], "LOCAL_GATE_INTENT"),
-           ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "same-origin")], "LOCAL_GATE_FETCH_SITE")]
+           ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Site", "same-origin")], "LOCAL_GATE_FETCH_SITE"),
+           (TYPED, "LOCAL_GATE_INTENT"),                                                                   # H-1: a typed / bookmarked / externally opened /api URL
+           ({**TYPED, "Referer": O + "/"}, "LOCAL_GATE_INTENT"),                                           # ... even with a Referer
+           ({k: v for k, v in FV_READ.items() if k != "Referer"}, "LOCAL_GATE_INTENT"),                    # H-1: same-origin metadata without a Referer
+           ({**FV_READ, "Referer": "http://localhost:8000/forward_validation.html"}, "LOCAL_GATE_INTENT"), # H-1: an allowed origin, but not THIS one (Host 127.0.0.1:8000)
+           ({**FV_READ, "Origin": "http://localhost:8000"}, "LOCAL_GATE_INTENT"),                          # H-1: an Origin that is allowed, but not this Host's
+           ({**FV_READ, "Host": "127.0.0.1"}, "LOCAL_GATE_INTENT"),                                        # H-1: a portless Host carries no browser evidence
+           ({k: v for k, v in FV_READ.items() if k != "Sec-Fetch-Mode"}, "LOCAL_GATE_INTENT"),             # H-1: incomplete metadata
+           ({k: v for k, v in FV_READ.items() if k != "Sec-Fetch-Dest"}, "LOCAL_GATE_INTENT"),
+           ([("Sec-Fetch-Site", "same-origin"), ("Sec-Fetch-Mode", "cors"), ("Sec-Fetch-Dest", "empty"), ("Referer", O + "/"), ("Referer", O + "/")], "LOCAL_GATE_REFERER")]
     for h, want in bad:
         assert refused(c.get("/api/execution-safety", headers=h)) == (403, want), h
-    assert c.head("/api/execution-safety").status_code == 403                             # HEAD is a read like GET
+        assert c.head("/api/execution-safety", headers=h).status_code == 403, h           # HEAD is a read like GET
+    c6, _ = probe(base_url="http://[::1]:8000")                                           # the strict branch on the other two loopback names
+    assert c6.get("/api/x", headers={**FV_READ, "Host": "[::1]:8000", "Referer": "http://[::1]:8000/forward_validation.html"}).status_code == 200
+    cl, _ = probe(base_url="http://localhost:8000")
+    assert cl.get("/api/x", headers={**FV_READ, "Host": "localhost:8000", "Referer": "http://localhost:8000/forward_validation.html"}).status_code == 200
+    assert refused(cl.get("/api/x", headers={**FV_READ, "Host": "localhost:8000"})) == (403, "LOCAL_GATE_INTENT")   # a 127.0.0.1 Referer is not localhost's
     for m in ("POST", "PUT", "PATCH", "DELETE", "OPTIONS"):                                 # a state change is never a "page", whatever the path
         assert refused(c.request(m, "/", headers={"Content-Type": "application/json"}, content=b"{}")) == (403, "LOCAL_GATE_INTENT"), m
         assert refused(c.request(m, "/index.html")) == (403, "LOCAL_GATE_INTENT"), m
     for page in ("/", "/index.html", "/app.js", "/forward_validation.html", "/product_ui.css"):
         assert c.get(page).status_code == 200, page                                      # pages and static files: no side effect
+        assert c.get(page, headers=TYPED).status_code == 200, page                       # a typed / bookmarked page URL stays allowed (H-1 narrows /api only)
         assert c.get(page, headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
                                     "Referer": "http://evil.example/"}).status_code == 200, page   # a link from another site opens the dashboard
         for dest in ("iframe", "image", "script", "empty"):
@@ -273,10 +298,11 @@ def test_X07_every_api_read_needs_the_intent_or_browser_same_origin_metadata_pag
     monkeypatch.setattr(importlib.import_module("api.routes.execution_safety"), "_service", lambda: svc)
     from api.server import app
     real = RawClient(app, base_url=O, client=LOCAL)
-    for h in ({**CROSS, "Sec-Fetch-Dest": "image", "Referer": "http://evil.example/"}, {"Referer": "http://evil.example/"}, {}):
+    for h in ({**CROSS, "Sec-Fetch-Dest": "image", "Referer": "http://evil.example/"}, {"Referer": "http://evil.example/"}, {}, TYPED, {**TYPED, "Referer": O + "/"}):
         assert real.get("/api/execution-safety", headers=h).status_code == 403            # GET /api/execution-safety may persist (safety/service.py)
-    assert svc.calls == []
+    assert svc.calls == []                                                                # a link opened from an email, a PDF or the address bar never reaches it
     assert real.get("/api/execution-safety", headers=GET_H).status_code == 200 and svc.calls == ["overview"]
+    assert real.get("/api/execution-safety", headers=FV_READ).status_code == 200 and svc.calls == ["overview", "overview"]   # the FV page's own read
 
 
 # ---------------------------------------------------------------- WebSocket origin
@@ -339,6 +365,16 @@ def test_X11_the_gate_fails_closed(monkeypatch):
                       ({"method": None, "headers": [(b"host", b"127.0.0.1:8000")]}, "LOCAL_GATE_INTENT"),
                       ({"path": None}, "LOCAL_GATE_ERROR"), ({"path": ""}, "LOCAL_GATE_ERROR"), ({"path": "api/x"}, "LOCAL_GATE_ERROR"), ({"path": b"/api/x"}, "LOCAL_GATE_ERROR")):
         assert mod.refusal({**base, **bad})[2] == want, bad
+    for rp in ("/x", "/", b"/x", "x"):                                                    # H-4 (review I-c): a mounted / prefixed deployment is refused, fail closed
+        assert mod.refusal({**base, "root_path": rp}) == (403, "FORBIDDEN", "LOCAL_GATE_ROOT_PATH"), rp
+        assert mod.refusal({**base, "type": "websocket", "method": None, "root_path": rp})[2] == "LOCAL_GATE_ROOT_PATH", rp
+    assert mod.refusal({**base, "root_path": ""}) is None and mod.refusal({**base, "root_path": None}) is None
+    rooted, rcalls = probe(root_path="/x")
+    assert refused(rooted.get("/api/x", headers=GET_H)) == (403, "LOCAL_GATE_ROOT_PATH") and refused(rooted.get("/")) == (403, "LOCAL_GATE_ROOT_PATH")
+    assert ws_close_code(rooted, "ws://127.0.0.1:8000/api/terminal/stream", {"Origin": O}) == 1008 and rcalls == []
+    with rooted:                                                                          # startup is unaffected (L-3): lifespan still passes through
+        pass
+    assert rcalls == [("lifespan",)]
     with c:                                                                               # lifespan passes straight through
         pass
     assert ("lifespan",) in calls
@@ -349,6 +385,11 @@ def test_X11_the_gate_fails_closed(monkeypatch):
     with pytest.raises(RuntimeError, match="unsupported ASGI scope type"):
         asyncio.run(mod.LocalRequestGate(app)({"type": "custom"}, None, None))
     assert seen == []                                                                     # an unknown scope type never reaches the app
+    svc = _Svc()                                                                          # H-4 on the real app: Starlette routes /<root>/api/... to the handler
+    monkeypatch.setattr(importlib.import_module("api.routes.execution_safety"), "_service", lambda: svc)
+    from api.server import app as real_app
+    rooted_real = RawClient(real_app, base_url=O, client=LOCAL, root_path="/x")
+    assert refused(rooted_real.get("/x/api/execution-safety")) == (403, "LOCAL_GATE_ROOT_PATH") and svc.calls == []   # before H-4 this read reached the service
 
 
 # ---------------------------------------------------------------- the refusal contract (D-22) and framing (D-17)
@@ -373,7 +414,7 @@ def test_X12_refusal_contract_log_line_framing_and_json_body(caplog):
     assert c.delete("/api/x", headers={k: v for k, v in POST_H.items() if k != "Content-Type"}).status_code == 200   # the watchlist DELETE (app.js:260)
     ok = c.get("/")
     assert ok.status_code == 200 and ok.headers["x-frame-options"] == "DENY" and ok.headers["content-security-policy"] == "frame-ancestors 'none'"
-    assert G().CODES == ("CLIENT", "HOST", "PROXY", "ORIGIN", "REFERER", "FETCH_SITE", "INTENT", "CONTENT_TYPE", "ERROR")
+    assert G().CODES == ("CLIENT", "HOST", "PROXY", "ORIGIN", "REFERER", "FETCH_SITE", "INTENT", "CONTENT_TYPE", "ERROR", "ROOT_PATH")
 
 
 # ---------------------------------------------------------------- Stage 4.6B unchanged (D-21)
@@ -409,10 +450,13 @@ def test_X18_the_stage_46b_gate_is_still_a_working_second_layer_on_its_own():
     assert gate46(query=b"x=1") == (422, "This endpoint takes no query parameters.")
     assert gate46() == (403, "Missing X-Stock-Agent-Intent header.")                       # the dashboard intent is not 4.6B's
     assert gate46(origin=O, intent="paper-order") is None                                  # only its own intent passes (the gate alone)
+    assert gate46(intent=None) == (403, "Missing X-Stock-Agent-Intent header.")           # H-2 (review I-a): an ABSENT header, not only a wrong value
+    assert gate46(origin=O, intent=None) == (403, "Missing X-Stock-Agent-Intent header.")  # ... and a valid Origin never stands in for it
     good = b'{"symbol": "AMD", "side": "BUY", "quantity": 1}'
     for client, headers, want in ((("192.168.1.50", 50000), POST_H, (403, "LOCAL_GATE_CLIENT")), (LOCAL, {**POST_H, "Host": "evil.example:8000"}, (403, "LOCAL_GATE_HOST")),
                                   (LOCAL, {**POST_H, "Origin": "http://evil.example"}, (403, "LOCAL_GATE_ORIGIN")),
-                                  (LOCAL, {**POST_H, "Content-Type": "text/plain"}, (422, "LOCAL_GATE_CONTENT_TYPE"))):
+                                  (LOCAL, {**POST_H, "Content-Type": "text/plain"}, (422, "LOCAL_GATE_CONTENT_TYPE")),
+                                  (LOCAL, {k: v for k, v in POST_H.items() if k != "X-Stock-Agent-Intent"}, (403, "LOCAL_GATE_INTENT"))):   # H-2: no header at all
         c, calls = probe(client=client)
         assert refused(c.post("/api/alpaca-paper-orders/preview", headers=headers, content=good)) == want and calls == [], want
 
@@ -467,6 +511,65 @@ def test_X15_the_runner_probe_and_every_local_tool_read_carry_the_intent():
         assert text.count("X-Stock-Agent-Intent") == n, rel
     tools = [p for p in (ROOT / "scripts").rglob("*") if p.suffix in (".ps1", ".py") and re.search(r"Invoke-RestMethod|Invoke-WebRequest|urlopen\(", p.read_text(encoding="utf-8", errors="replace"))]
     assert sorted(p.relative_to(ROOT).as_posix() for p in tools) == sorted(callers), "a new local HTTP caller must send the intent"
+
+
+# ---------------------------------------------------------------- every local-capable HTTP caller in production code (H-3)
+CALLER_CONSTRUCT = re.compile(r"urllib\.request|urlopen\(|urllib3|http\.client|HTTPConnection|import requests|from requests import|requests\.(get|post|put|patch|delete|head|Session|request)\(|"
+                              r"\bhttpx\b|aiohttp|websockets\.(connect|client|sync|asyncio)|create_connection\(|socket\.socket\(|from socket import|Invoke-WebRequest|Invoke-RestMethod|"
+                              r"\b(iwr|irm)\s|WebRequest\]::Create|HttpWebRequest|Start-Process\s+[\"']?https?://|startfile\(|\bcurl(\.exe)?[\s\"']|\bwget\s|Net\.WebClient|HttpClient|TcpClient|"
+                              r"fetch\(|XMLHttpRequest|new WebSocket\(|EventSource\(|sendBeacon\(|webbrowser\.open")
+LOCAL_MARKER = re.compile(r"127\.0\.0\.\d+|\blocalhost\b|\[::1\]|[\"']::1[\"']|0\.0\.0\.0|FASTAPI_PORT|FASTAPI_HOST|:8000\b")
+CALLERS_X19 = {   # every production file outside frontend/ that both constructs an HTTP / socket client AND names a local endpoint -> its class
+    "scripts/stock_agent_common.ps1": "INTENT", "scripts/start_market_morning.ps1": "INTENT", "scripts/run_aapl_paper_smoke.py": "INTENT", "browser_tests/flows.py": "INTENT",
+    "notifications/windows.py": "PAGE",            # webbrowser.open of the Daily Brief PAGE (a navigation the gate allows); no /api call
+    "portfolio/provider.py": "OTHER_LOCAL",        # the Robinhood gateway (RH_GATEWAY_URL, loopback), not this app
+    "browser_tests/cdp.py": "OTHER_LOCAL",         # the browser's DevTools port, not this app
+    "browser_tests/app_server.py": "GUARD",        # the harness network guard wraps socket.create_connection; its fetch( is the bar replay
+    "scripts/run_stock_agent.py": "NAMES_ONLY",    # names requests / httpx only to silence their loggers; constructs no client
+}
+SKIP_X19 = ("tests/", "frontend/vendor/", "scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")   # data/ is a package: scanned
+EXT_X19 = (".py", ".ps1", ".psm1", ".cmd", ".bat", ".vbs", ".sh", ".js", ".cjs", ".mjs", ".html")
+
+
+def _production_files():
+    out = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout.split("\n")
+    return sorted(p for p in out if p and p.endswith(EXT_X19) and not p.startswith(SKIP_X19) and (ROOT / p).is_file())
+
+
+def test_X19_every_local_capable_http_caller_in_production_code_is_classified():
+    """H-3 (review I-b): X15 covers scripts/ and three call names only. Here EVERY tracked or untracked production file (any language; tests and
+    the vendored frontend libraries excluded) that both constructs an HTTP / socket client AND names a local endpoint must be in CALLERS_X19
+    with evidence for its class: a new local caller fails CI until it is classified (and sends the intent). Not covered: callers outside the
+    repo (I-5: deploy / EVR tooling); a URL assembled entirely from non-literal parts in a file naming neither a loopback address nor the
+    config port names; and the browser's own non-fetch navigations (<a href>, <img src>, location.assign), which the gate judges by their
+    fetch metadata, not here. A UTF-16 or binary script would evade a text scan, so one fails the test."""
+    files = _production_files()
+    assert len(files) > 400 and "api/local_gate.py" in files and "frontend/app.js" in files and any(p.startswith("data/") for p in files)
+    text = {p: (ROOT / p).read_text(encoding="utf-8-sig", errors="replace") for p in files}
+    assert not [p for p in files if "\x00" in text[p]], "a UTF-16 / binary script cannot be scanned"
+    callers = {p for p, t in text.items() if not p.startswith("frontend/") and CALLER_CONSTRUCT.search(t) and LOCAL_MARKER.search(t)}
+    assert callers == set(CALLERS_X19), {"unclassified": sorted(callers - set(CALLERS_X19)), "stale": sorted(set(CALLERS_X19) - callers)}
+    for p, cls in CALLERS_X19.items():
+        t = text[p]
+        if cls == "INTENT":
+            assert "X-Stock-Agent-Intent" in t, p
+        elif cls == "PAGE":
+            assert "webbrowser.open" in t and "/api/" not in t, p
+        elif cls == "OTHER_LOCAL":
+            assert not re.search(r"FASTAPI_PORT|FASTAPI_HOST|:8000\b", t), p
+        elif cls == "GUARD":
+            assert "create_connection" in t and "/api" not in t, p
+        elif cls == "NAMES_ONLY":
+            assert not re.search(r"requests\.\w+\(|httpx\.\w+\(|urlopen\(|http\.client", t), p
+    front = [p for p in files if p.startswith("frontend/")]
+    for p in front:                                                                       # every browser request is same-origin (the wrapper tags only those)
+        assert not re.search(r"(fetch|WebSocket|EventSource)\(\s*[\"'`]https?://(127\.0\.0\.1|localhost|\[::1\])", text[p]), p
+        assert not re.search(r"(fetch|WebSocket|EventSource)\(\s*[\"'`]wss?://", text[p]), p
+    assert sorted(p for p in front if p.endswith(".html")) == ["frontend/forward_validation.html", "frontend/index.html"]
+    fv = text["frontend/forward_validation.html"]
+    assert "<form" not in fv and re.findall(r'<script[^>]*src="([^"]+)"', fv) == ["forward_validation.js"]
+    assert not re.search(r"method\s*:\s*[\"'](POST|PUT|PATCH|DELETE)", text["frontend/forward_validation.js"], re.I)   # the FV page only reads
+    assert "referrer" not in fv.lower() and not re.search(r"noreferrer|referrerpolicy", text["frontend/forward_validation.js"], re.I)   # H-1's strict branch needs the Referer
 
 
 # ---------------------------------------------------------------- the independent emergency shutdown (D-19)
