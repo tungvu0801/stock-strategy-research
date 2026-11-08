@@ -71,7 +71,7 @@ def http_raw(port, path, timeout=20):
     s.settimeout(timeout)
     try:
         s.connect(("127.0.0.1", port))
-        s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode())
+        s.sendall(f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Stock-Agent-Intent: dashboard\r\nConnection: close\r\n\r\n".encode())   # EX-06: a local tool\'s read
         data = b""
         while True:
             chunk = s.recv(65536)

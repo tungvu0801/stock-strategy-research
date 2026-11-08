@@ -522,7 +522,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_70, FL.BASE_71).split())                # Stage 7.0 itself, between two fixed commits
     assert stage == FL.NEW_70 | FL.EDITED_70, {"unexpected": sorted(stage - FL.NEW_70 - FL.EDITED_70), "missing": sorted((FL.NEW_70 | FL.EDITED_70) - stage)}
-    later = FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C   # Stages 7.1-7.3: pinned by their own F tests
+    later = FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06   # Stages 7.1-7.3: pinned by their own F tests
     assert changed == FL.NEW_70 | FL.EDITED_70 | later, {"unexpected": sorted(changed - FL.NEW_70 - FL.EDITED_70 - later),
                                                          "missing": sorted((FL.NEW_70 | FL.EDITED_70 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_70).split())
@@ -547,7 +547,7 @@ def test_F02_the_frozen_hashes_and_settings_are_unchanged_and_config_declares_no
                                   "d2819342f6c8ccb1cd4a0ce2bfb5d1b0664f2453770c3e6736f7be420a17aed4"], out.stderr[-600:]
     import config
     assert not [n for n in dir(config) if n.startswith(("MARKET_INTEL", "MI_"))] and config.EVIDENCE_REFRESH_MODE == "OFF"
-    assert FL.undo_w1("config.py", now_text("config.py")) == at_base("config.py") and now_text("api/server.py") == at_base("api/server.py")   # Wave 1's declared config.py edit undone first
+    assert FL.undo_w1("config.py", now_text("config.py")) == at_base("config.py") and FL.pre_ex06("api/server.py", now_text("api/server.py")) == at_base("api/server.py")   # Wave 1's declared config.py edit undone first
 
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():

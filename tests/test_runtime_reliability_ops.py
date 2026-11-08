@@ -176,7 +176,7 @@ def test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_tra
     assert FL.BASE_OPS == "1bd7542dd392035e445ae0c93ecb503a934fcf53" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_OPS}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_OPS).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C
+    assert changed == FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06
     changed = set(_git("diff", "--name-only", FL.BASE_OPS, FL.BASE_610D).split())
     assert changed == FL.NEW_OPS | FL.EDITED_OPS, {"unexpected": sorted(changed - FL.NEW_OPS - FL.EDITED_OPS), "missing": sorted((FL.NEW_OPS | FL.EDITED_OPS) - changed)}
     assert FL.SEMANTIC_OPS == {}
@@ -188,7 +188,7 @@ def test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_tra
     assert not changed & {"config.py", "requirements.txt", "README.md", "watchlist.txt", ".github/workflows/tests.yml", "tests/conftest.py"}
     for rel in ("scripts/start_stock_agent.ps1", "scripts/stop_stock_agent.ps1", "scripts/stock_agent_common.ps1", "scripts/install_stock_agent_task.ps1",
                 "scripts/run_aapl_paper_smoke.ps1", "scripts/install_aapl_smoke_task.ps1", "scripts/run_aapl_paper_smoke.py"):
-        assert now(rel) == at_base(rel), rel                                   # start / stop / the shared helpers / the other installers: untouched
+        assert FL.pre_ex06(rel, now(rel)) == at_base(rel), rel                 # start / stop / the shared helpers / the other installers: untouched (EX-06's declared lines: T-X20)
     diff = _git("diff", FL.BASE_OPS, "--", "scripts/run_stock_agent.py").splitlines()
     assert [l for l in diff if l.startswith("-") and not l.startswith("---")] == []          # the runner edit only adds lines
     added = [l[1:] for l in diff if l.startswith("+") and not l.startswith("+++")]

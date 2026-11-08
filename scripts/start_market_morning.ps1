@@ -120,7 +120,7 @@ function Read-State {
     $deadline = (Get-Date).AddSeconds($ReadBackSeconds)
     $act = $null
     while ((Get-Date) -lt $deadline) {
-        try { $act = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/execution/activity" -f $Port) -Method Get -TimeoutSec 60 -UseBasicParsing } catch { $act = $null }
+        try { $act = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/execution/activity" -f $Port) -Method Get -TimeoutSec 60 -UseBasicParsing -Headers @{ "X-Stock-Agent-Intent" = "dashboard" } } catch { $act = $null }   # EX-06: the local request gate
         if ($act -and $act.auto_run -and $act.auto_run.preflight -and $act.worker -and $act.worker.state -ne "STARTING") { break }
         Start-Sleep -Seconds 5
     }

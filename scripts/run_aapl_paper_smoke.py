@@ -621,9 +621,9 @@ def _server_check_http(url: str) -> Callable[[], Dict[str, Any]]:
     def check() -> Dict[str, Any]:
         import urllib.request
         try:
-            with urllib.request.urlopen(url.rstrip("/") + "/api/health", timeout=10) as r:
+            with urllib.request.urlopen(urllib.request.Request(url.rstrip("/") + "/api/health", headers={"X-Stock-Agent-Intent": "dashboard"}), timeout=10) as r:   # EX-06
                 health = json.loads(r.read().decode("utf-8"))
-            with urllib.request.urlopen(url.rstrip("/") + "/api/execution/status", timeout=20) as r:
+            with urllib.request.urlopen(urllib.request.Request(url.rstrip("/") + "/api/execution/status", headers={"X-Stock-Agent-Intent": "dashboard"}), timeout=20) as r:   # EX-06
                 st = json.loads(r.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "detail": f"{url} not reachable ({type(exc).__name__})"}

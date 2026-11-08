@@ -86,5 +86,5 @@ function Write-SARunnerLog([string]$Path, [string]$Message) {
 }
 
 function Invoke-SAGet([int]$Port, [string]$Path, [int]$TimeoutSec = 10) {
-    return Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $Port, $Path) -Method Get -TimeoutSec $TimeoutSec -UseBasicParsing
+    return Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $Port, $Path) -Method Get -TimeoutSec $TimeoutSec -UseBasicParsing -Headers @{ "X-Stock-Agent-Intent" = "dashboard" }   # EX-06: the local request gate
 }

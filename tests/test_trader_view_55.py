@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 from freeze_ledger import undo_w1, view as ledger_view  # noqa: E402 - Stage 6.8 / 6.9: files registered in the post-freeze ledger are read as on main (tests/freeze_ledger.py)
+from freeze_ledger import pre_ex06, undo_ex06  # noqa: E402 - EX-06: its declared app.js / conftest edits are pinned by tests/test_ex06_freeze.py
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
@@ -796,7 +797,7 @@ def test_23_prior_stage_files_identical_to_base_and_wiring_is_additive():
         assert out, rel
         return out.replace(b"\r\n", b"\n")
     for rel in PINNED:
-        assert undo_w1(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").decode("utf-8")).encode("utf-8") == blob(rel), f"{rel} differs from {BASE}"   # Wave 1: its tests/conftest.py edit undone first
+        assert undo_w1(rel, undo_ex06(rel, pre_ex06(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").decode("utf-8")))).encode("utf-8") == blob(rel), f"{rel} differs from {BASE}"   # Wave 1: its tests/conftest.py edit undone first
     base = blob("api/server.py").decode("utf-8").splitlines()
     now = ledger_view("api/server.py", (ROOT / "api" / "server.py").read_text(encoding="utf-8").replace("\r\n", "\n")).splitlines()   # Stage 6.9: its two lines are pinned by test_robinhood_portfolio_69
     assert [l for l in base if l not in now] == []

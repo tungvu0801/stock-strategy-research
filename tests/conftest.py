@@ -22,6 +22,50 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import fastapi.testclient as _ftc  # noqa: E402 - EX-06 (D-20): the default test client is the trusted local dashboard
+from starlette.testclient import TestClient as _RawTestClient  # noqa: E402
+from urllib.parse import urljoin as _urljoin, urlsplit as _urlsplit  # noqa: E402
+
+
+def _headers(base: dict, extra) -> dict:
+    """`base` with `extra` (a dict, a header object or pairs) on top, case-insensitively: a test's own header always wins and is never doubled."""
+    out = dict(base)
+    for k, v in (extra.items() if hasattr(extra, "items") else (extra or ())):
+        for old in [o for o in out if o.lower() == str(k).lower()]:
+            del out[old]
+        out[k] = v
+    return out
+
+
+class _LocalTestClient(_RawTestClient):
+    """EX-06 (D-20): every test's default client is the trusted local dashboard in a browser on this computer, sending exactly what headless
+    Edge sends (recorded in the EX-06 simulation; tests/test_ex06_local_gate.py T-X14 pins the shapes): the loopback client and Host; on an
+    /api request the dashboard intent (frontend/app.js's wrapper), same-origin fetch metadata and the page as Referer, plus an Origin when the
+    method changes state; on a page a typed-URL navigation; on a WebSocket handshake an Origin only. A test's own headers always win. The
+    gate's own tests use starlette's raw client, which presents as nothing (and is refused)."""
+
+    def __init__(self, app, base_url="http://127.0.0.1:8000", *args, headers=None, client=("127.0.0.1", 50000), **kwargs):
+        u = _urlsplit(str(base_url))
+        self._origin, self._given = f"{u.scheme}://{u.netloc}", dict(headers or {})
+        super().__init__(app, base_url, *args, headers=headers, client=client, **kwargs)
+
+    def _browser(self, method, url) -> dict:
+        safe, api = str(method).upper() in ("GET", "HEAD"), ("/" + (_urlsplit(str(url)).path or "/").lstrip("/").lower() + "/").startswith("/api/")
+        if safe and not api:
+            return {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}
+        shape = {"X-Stock-Agent-Intent": "dashboard", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Referer": self._origin + "/"}
+        return shape if safe else {**shape, "Origin": self._origin}
+
+    def request(self, method, url, *args, headers=None, **kwargs):
+        return super().request(method, url, *args, headers=_headers(_headers(self._browser(method, url), self._given), headers), **kwargs)
+
+    def websocket_connect(self, url, *args, headers=None, **kwargs):
+        return super().websocket_connect(_urljoin("ws" + self._origin[4:] + "/", url), *args, headers=_headers({"Origin": self._origin}, headers),
+                                         **kwargs)   # starlette hard-codes ws://testserver
+
+
+_ftc.TestClient = _LocalTestClient
+
 import database.database as dbm  # noqa: E402
 
 # Point the process-wide DB singleton at a COPY of the real database (read via the sqlite backup API,

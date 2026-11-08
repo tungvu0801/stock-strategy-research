@@ -229,7 +229,7 @@ def test_TE13p_pr_a_has_no_run_acknowledgement_path_so_an_element_on_record_stop
     assert not r.fv.store.query("SELECT run_id FROM forward_runs WHERE ended_at IS NULL")   # Wave 2 PR C: its tables exist; no run is active, so no run acknowledgement applies
     rec(r)
     assert tick(r)["stopped"] is True
-    src = FL.pre_w2c("forward_validation/service.py", (ROOT / "forward_validation" / "service.py").read_text(encoding="utf-8")) + (ROOT / "forward_validation" / "attention_signature.py").read_text(encoding="utf-8")   # Wave 2 PR C: PR A's text
+    src = FL.pre_w2c("forward_validation/service.py", FL.pre_ex06("forward_validation/service.py", (ROOT / "forward_validation" / "service.py").read_text(encoding="utf-8"))) + (ROOT / "forward_validation" / "attention_signature.py").read_text(encoding="utf-8")   # Wave 2 PR C: PR A's text
     assert "forward_runs" not in src and "run_ack" not in src
 
 
