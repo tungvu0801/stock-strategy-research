@@ -96,7 +96,7 @@ class Ctx:
 
     def http(self, method, path, body=None):
         req = urllib.request.Request(self.base + path, method=method, data=None if body is None else json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
+                                     headers={"Content-Type": "application/json", "X-Stock-Agent-Intent": "dashboard"})
         with urllib.request.urlopen(req, timeout=60) as r:
             return json.load(r)
 

@@ -4,6 +4,30 @@
 // step, no framework — a stand-in for the React/TypeScript dashboard until
 // Node.js is set up (see project plan). Keep this in sync with
 // config.WEB_UI_REFRESH_SECONDS on the Python side if you change the cadence.
+// EX-06 local intent: begin. Every same-origin request from the dashboard carries X-Stock-Agent-Intent: dashboard, which the local
+// request gate (api/local_gate.py) requires on /api. An existing value (Stage 4.6B's paper-order) is kept; other origins are untouched.
+// This is not authentication: it only marks the dashboard's own requests, which a cross-site page cannot do without CORS (there is none).
+(function (root) {
+  "use strict";
+  const HEADER = "X-Stock-Agent-Intent";
+  function sameOrigin(url, base) {
+    try { return new URL(url, base).origin === new URL(base).origin; } catch (e) { return false; }
+  }
+  function wrap(fetchFn, base) {
+    if (fetchFn && fetchFn.__stockAgentIntent) return fetchFn;
+    const wrapped = function (input, init) {
+      const req = typeof Request !== "undefined" && input instanceof Request ? input : null;
+      if (!sameOrigin(req ? req.url : String(input), base())) return fetchFn(input, init);
+      const headers = new Headers((init && init.headers) || (req && req.headers) || undefined);
+      if (!headers.has(HEADER)) headers.set(HEADER, "dashboard");
+      return fetchFn(input, Object.assign({}, init || {}, { headers }));
+    };
+    wrapped.__stockAgentIntent = true;
+    return wrapped;
+  }
+  if (root && typeof root.fetch === "function" && !root.fetch.__stockAgentIntent) root.fetch = wrap(root.fetch.bind(root), () => root.location.href);
+})(typeof window !== "undefined" ? window : null);
+// EX-06 local intent: end
 const REFRESH_MS = 30000;
 
 const fmt = {

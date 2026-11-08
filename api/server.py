@@ -151,7 +151,10 @@ app = FastAPI(
         "cancels a trade."
     ),
     version="1.0.0",
+    docs_url=None, redoc_url=None, openapi_url=None,                     # EX-06 (D-16): no Swagger / ReDoc page loading CDN scripts into this origin
 )
+from api.local_gate import LocalRequestGate  # noqa: E402 - EX-06
+app.add_middleware(LocalRequestGate)                                    # EX-06 (D-15): the outermost middleware, so it must be added LAST
 
 # Initializes data/stock_agent.db and runs (idempotent) migrations once per
 # process. Deliberately at import time, not a startup event, so the database

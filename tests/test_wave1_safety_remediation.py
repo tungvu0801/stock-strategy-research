@@ -957,7 +957,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market
     stage = set(_git("diff", "--name-only", FL.BASE_W1, FL.BASE_W2A).split())                # Wave 1 itself, between two fixed commits (main before / after PR #50)
     changed = set(_git("diff", "--name-only", FL.BASE_W1).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C                                                         # Wave 2 PR A, pinned by its own F tests
+    later = FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06                                                         # Wave 2 PR A, pinned by its own F tests
     assert stage == FL.NEW_W1 | FL.EDITED_W1, {"unexpected": sorted(stage - FL.NEW_W1 - FL.EDITED_W1), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1) - stage)}
     assert changed == FL.NEW_W1 | FL.EDITED_W1 | later, {"unexpected": sorted(changed - FL.NEW_W1 - FL.EDITED_W1 - later), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W1).split())
@@ -1001,7 +1001,7 @@ def test_F02_the_safety_semantics_changed_exactly_as_declared_and_no_threshold_o
     assert [l for l in at_base("config.py").splitlines() if l not in set(cfg.splitlines())] == list(FL.REMOVED_W1["config.py"])
     stored = lambda t: {n.id for n in ast.walk(ast.parse(t)) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}  # noqa: E731
     assert stored(cfg) == stored(at_base("config.py"))                                         # no new setting
-    assert FL.undo_w1("tests/conftest.py", now_text("tests/conftest.py")) == at_base("tests/conftest.py")
+    assert FL.undo_w1("tests/conftest.py", FL.undo_ex06("tests/conftest.py", now_text("tests/conftest.py"))) == at_base("tests/conftest.py")
     defs = lambda t: sorted(n.name for n in ast.parse(t).body if isinstance(n, (ast.ClassDef, ast.FunctionDef)))  # noqa: E731
     assert defs(now_text("safety/store.py")) == sorted(defs(at_base("safety/store.py")) + ["SafetyStateChanged"])
     assert defs(now_text("safety/service.py")) == defs(at_base("safety/service.py"))

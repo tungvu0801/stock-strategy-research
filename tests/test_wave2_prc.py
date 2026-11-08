@@ -98,6 +98,11 @@ def changed_files(base):
     return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
 
 
+def prc_files(base):
+    """EX-06: the change set between `base` and main after PR #53 (fixed commits). EX-06's delta: tests/test_ex06_freeze.py."""
+    return set(_git("diff", "--name-only", base, FL.BASE_EX06).split())
+
+
 def func(text, qual):
     """The AST node of a top-level function or a method ('Class.name')."""
     cls, name = qual.split(".") if "." in qual else (None, qual)
@@ -151,7 +156,7 @@ def js_blocks(text):
 # ================================================================ T-W04C, T-W05C: the allow-list and the closed function list ================
 
 def test_TW04C_the_production_diff_is_exactly_design_1_3_and_pr_c_adds_no_order_mode_or_broker_token():
-    changed = changed_files(FL.BASE_W2C)
+    changed = prc_files(FL.BASE_W2C)                                                            # EX-06: PR C's own change set (fixed commits)
     prod = {p for p in changed if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json"}
     assert prod == PR_C_FILES, {"unexpected": sorted(prod - PR_C_FILES), "missing": sorted(PR_C_FILES - prod)}
     for rel in sorted(prod):
@@ -217,7 +222,7 @@ def test_TW06C_d5_stays_in_the_current_cumulative_and_health_is_untouched():
 
 def test_F01C_the_change_set_is_exactly_the_declared_files():
     assert FL.BASE_W2C == "875bc06dd08b36ace1d3930877f90cb96ff81b08" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2C}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = changed_files(FL.BASE_W2C)
+    changed = prc_files(FL.BASE_W2C)                                                            # EX-06: PR C's own change set (fixed commits)
     assert changed == FL.NEW_W2C | FL.EDITED_W2C, {"unexpected": sorted(changed - FL.NEW_W2C - FL.EDITED_W2C), "missing": sorted((FL.NEW_W2C | FL.EDITED_W2C) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2C).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_W2C and {p for p in changed if p in in_base} == FL.EDITED_W2C
@@ -230,7 +235,8 @@ def test_F01C_the_change_set_is_exactly_the_declared_files():
     for rel in sorted(changed):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
         assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
-    groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
+    prc_groups = subprocess.run(["git", "show", f"{FL.BASE_EX06}:.github/ci/pytest_groups.json"], cwd=ROOT, capture_output=True).stdout.decode("utf-8")   # EX-06: the manifest as PR #53 left it (EX-06's entries: F01X)
+    groups, base_groups = json.loads(prc_groups)["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g != "execution"} == {g: v for g, v in base_groups.items() if g != "execution"}
     assert groups["execution"] == {**base_groups["execution"], "files": base_groups["execution"]["files"] + list(CI_FILES_C)}
 
@@ -238,7 +244,7 @@ def test_F01C_the_change_set_is_exactly_the_declared_files():
 def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(now_text(rel))
+        b, n = defs(at_base(rel)), defs(FL.undo_ex06(rel, now_text(rel)))                        # EX-06: its own in-place edits undone first (F02X)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2C)
@@ -248,15 +254,16 @@ def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_
     assert out.stdout.split() == ["b5d4a56ef5bba61f8250b3cd25182cc1655738adf0605a77671fd029883f8530"], out.stderr[-600:]
     assert now_text("forward_validation/service.py").count("disable_auto(") == at_base("forward_validation/service.py").count("disable_auto(") == 1
     for rel in FL.SEMANTIC_W2C:
-        assert FL.pre_w2c(rel, now_text(rel)) == at_base(rel) and now_text(rel) != at_base(rel), rel
+        assert FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))) == at_base(rel) and now_text(rel) != at_base(rel), rel
     assert FL.pre_w2c("config.py", "x") == "x" and now_text("forward_validation/__init__.py") == at_base("forward_validation/__init__.py")
 
 
 def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2C) == {p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2C):
-        assert FL.undo_w2c(rel, now_text(rel)) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
-    main_fl, fl = at_base("tests/freeze_ledger.py"), now_text("tests/freeze_ledger.py")
+        assert FL.undo_w2c(rel, FL.undo_ex06(rel, now_text(rel))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
+    main_fl = at_base("tests/freeze_ledger.py")
+    fl = subprocess.run(["git", "show", f"{FL.BASE_EX06}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # EX-06: the ledger as PR #53 left it
     for a in ("LEDGER = {", "BASE_W2A = ", "BASE_W2B = ", "BASE_W2C = ", "\n\ndef unchanged(", "\n\ndef pre_w2b(", "\n\ndef pre_w2c(", "\nWave 2 PR B (the Stage 6.1"):
         assert fl.count(a) == 1, a                                                            # the anchors every older ledger test uses stay unique
     led = lambda t: t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]  # noqa: E731
@@ -274,10 +281,11 @@ def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_w2c("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, two helpers and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_W2C and set(main_ledger) <= set(FL.LEDGER)
-    assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == FL.EDITED_W2C & set(main_ledger)
+    prc_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                                 # EX-06: PR C's ledger; EX-06's re-hashes are its F03X
+    assert set(prc_ledger) - set(main_ledger) == FL.NEW_LEDGER_W2C and set(main_ledger) <= set(prc_ledger)
+    assert {k for k in main_ledger if main_ledger[k] != prc_ledger[k]} == FL.EDITED_W2C & set(main_ledger)
     for rel in sorted(FL.NEW_LEDGER_W2C):
-        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.pre_w2c(rel, now_text(rel))), rel   # unchanged from BASE_68 to main: the view IS main's text
+        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.undo_ex06(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))), rel   # unchanged from BASE_68 to main: the view IS main's text
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
     FL.UNDO_W2C["tests/_probe.py"] = [("y = 2\n", "y = 3\n")]

@@ -18,6 +18,8 @@
         "test_browser_harness_39.py",
         "test_chart_empty_state_611fix.py",
         "test_ci_groups_603.py",
+        "test_ex06_local_gate.py",
+        "test_ex06_freeze.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
         "test_daily_brief_42.py",
