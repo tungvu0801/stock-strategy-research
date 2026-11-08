@@ -39,8 +39,13 @@ users or exposure through a proxy or tunnel are out of scope. They would need re
 8. **Pages and static files:** a GET or HEAD outside `/api` needs nothing more. It has no side effect, and framing is refused by the
    headers below.
 9. **Referer:** with no Origin, a Referer, when present, must have an allowed origin (`REFERER`).
-10. **`/api` reads:** every `/api` GET or HEAD, any of which may persist, needs the intent header or a browser-asserted `Sec-Fetch-Site`
-    of `same-origin` or `none` (`INTENT`). A header-less request with no metadata is refused: curl, scripts, old browsers.
+10. **`/api` reads:** every `/api` GET or HEAD, any of which may persist, needs the intent header, or strict same-origin browser evidence
+    (`INTENT` otherwise): `Sec-Fetch-Site: same-origin` with exactly one `Sec-Fetch-Mode` and one `Sec-Fetch-Dest`, the Host with the
+    bound port, and exactly one Referer (and any Origin) whose origin is exactly `http://<that Host>`. A typed, bookmarked or externally
+    opened `/api` URL (`Sec-Fetch-Site: none`), a header-less request (curl, scripts, old browsers) or incomplete metadata is refused (H-1).
+    Pages still open from a typed URL; the dashboard and every local tool send the header. The strict branch depends on the browser's
+    Referer: a `Referrer-Policy: no-referrer`, a `<meta name="referrer">` on the Forward Validation page or `rel="noreferrer"` on its
+    export links would make that page's reads fail closed (`INTENT`); the dashboard is unaffected. X19 pins that none exists.
 11. **Every other method:** needs exactly one `X-Stock-Agent-Intent` of `dashboard` or `paper-order` (`INTENT`). With a body, it needs
     `Content-Type: application/json` (422 `CONTENT_TYPE`). Stage 4.6B still requires `paper-order` itself, behind the gate.
 
@@ -58,6 +63,10 @@ users or exposure through a proxy or tunnel are out of scope. They would need re
 
 **Other ASGI scope types:** only http, websocket and lifespan scopes exist. Any other type raises and is never handed to the app.
 
+**A mounted or prefixed deployment** (a non-empty ASGI `root_path`, from uvicorn `--root-path` or `FastAPI(root_path=...)`) is not
+supported (D-12): every request and handshake is refused with `LOCAL_GATE_ROOT_PATH`, so the readiness probe fails at once; startup is
+unaffected (H-4). Without this, Starlette would route `/<root>/api/...` to the API while the gate saw a page.
+
 **The port:** the bound port must not be 80; the default is 8000. On port 80, browsers send an Origin without a port, so state changes from the dashboard would be refused. That fails closed.
 
 **A refusal** is 403 `{"status": "FORBIDDEN", "error": "LOCAL_GATE_<CODE>", "message"}`, with `cache-control: no-store` and the
@@ -71,7 +80,10 @@ inside the gate refuses (`ERROR`).
   `window.fetch` so every same-origin request carries `X-Stock-Agent-Intent: dashboard`. It keeps an existing value (4.6B's
   `paper-order`) and never touches another origin. `index.html` is unchanged.
 - **The Forward Validation page** (`forward_validation.html`, which does not load `app.js`) passes on its browser metadata, including its
-  export links.
+  export links. Those links are downloads (`Content-Disposition: attachment`), so the browser never shows an export as a document and
+  there is no export tab to reload. Verified in Edge (hardening Step 1): the clicked link and a page-initiated navigation to an export are
+  allowed on the strict evidence; a reload of the page re-requests the page and its reads, nothing refused; a history navigation back to a
+  typed `/api` URL is refused like the typed URL (`Sec-Fetch-Site: none`).
 - **Local tools send the header:**
   - `scripts/stock_agent_common.ps1` `Invoke-SAGet` (the start and check scripts);
   - `scripts/start_market_morning.ps1` (the activity read-back);
@@ -98,14 +110,16 @@ armed (MANUAL_ARM). Broker-side orders can be cancelled in the Alpaca paper dash
   - proxies;
   - fail-closed behaviour;
   - the refusal contract;
-  - 4.6B unchanged, and its own gate still refusing on its own as a second layer (X18);
+  - 4.6B unchanged, and its own gate still refusing on its own as a second layer, including with no intent header at all (X18, H-2);
   - the test client's browser shapes;
   - the runner probe and local tools;
+  - every local-capable HTTP caller in production code, classified (X19, H-3);
   - the stop script;
   - the wrapper's position.
 - **`tests/frontend/ex06_local_intent.test.cjs`** pins the wrapper.
 - **`tests/test_ex06_freeze.py`** pins the change set and the freeze bookkeeping (`tests/freeze_ledger.py`: BASE_EX06, NEW_EX06,
-  EDITED_EX06, SEMANTIC_EX06, NEW_LEDGER_EX06, UNDO_EX06, SEMANTIC_TESTS_EX06).
+  EDITED_EX06, SEMANTIC_EX06, NEW_LEDGER_EX06, UNDO_EX06, SEMANTIC_TESTS_EX06), and (T-X21) the hardening's own change set since main
+  `9c9e9f5c` with the gate's exact diff.
 
 ## Not in EX-06
 - a server-side confirmation for Arm / Clear / Resume (D-6: designed separately, pending UX and safety review);
