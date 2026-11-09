@@ -9,6 +9,8 @@
   const root = document.getElementById("evr-body");
   if (!tabEl || !root || !window.StrategyFit || !window.StrategyFit.addWorkspace) return;
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const safeHref = (u) => { try { const p = new URL(String(u)); return p.protocol === "http:" || p.protocol === "https:" ? esc(p.href) : null; } catch (e) { return null; } };   // XSS-01: only an absolute http(s) URL may become a link
+  const extLink = (u, text) => { const h = safeHref(u); return h ? `<a href="${h}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : esc(text); };   // XSS-01: a link, or the escaped text alone
   const tag = (t, k) => `<span class="cc-tag cc-${esc(k)}">${esc(t)}</span>`;
   const BASE = "/api/evidence";
   const BANNER = "EVIDENCE RESEARCH — RESEARCH ONLY — EVIDENCE STRENGTH IS NOT A PRICE PROBABILITY";
@@ -114,7 +116,7 @@
     const p = d.packet, items = d.items || [], byId = {};
     items.forEach((i) => { byId[i.item_id] = i; });
     const item = (i) => `<li>${tag(i.epistemic, SK[i.epistemic])} ${tag(i.direction, SK[i.direction])} <span class="evr-dim">tier ${esc(i.source_tier)} · ${esc(i.evidence_date)} · ${esc(i.source_name)}${i.contradiction ? " · CONTRADICTION" : ""}</span>
-      ${i.source_url ? `<a href="${esc(i.source_url)}" target="_blank" rel="noopener">source</a>` : ""}<div class="evr-text">${esc(i.text)}</div>${i.rule_match ? `<div class="evr-dim">rule: ${esc(i.rule_match)}</div>` : ""}</li>`;
+      ${i.source_url ? extLink(i.source_url, "source") : ""}<div class="evr-text">${esc(i.text)}</div>${i.rule_match ? `<div class="evr-dim">rule: ${esc(i.rule_match)}</div>` : ""}</li>`;
     const rungs = (p.ladder || []).map((r) => `<div class="evr-rung"><b>${esc(r.rung)}. ${esc(r.name)}</b> ${tag(r.status, SK[r.status])}<div class="evr-dim">${esc(r.reason)}</div>
       <ul>${(r.item_ids || []).map((id) => byId[id]).filter(Boolean).map(item).join("")}</ul></div>`).join("");
     const used = new Set((p.ladder || []).flatMap((r) => r.item_ids || []));

@@ -74,6 +74,11 @@ def changed_files(base):
     return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
 
 
+def ex06_files(base):
+    """XSS-01: EX-06's change set between fixed commits (`base`..main after PR #55, FL.BASE_XSS01); XSS-01's own delta is pinned by tests/test_xss01_freeze.py."""
+    return set(_git("diff", "--name-only", base, FL.BASE_XSS01).split())
+
+
 def defs(text):
     out = {}
     for n in ast.parse(text).body:
@@ -87,7 +92,7 @@ def defs(text):
 
 
 def test_TX20_the_production_diff_is_exactly_the_declared_lines_and_no_trading_file_changed():
-    changed = changed_files(FL.BASE_EX06)
+    changed = ex06_files(FL.BASE_EX06)                                                          # XSS-01: EX-06's own change set (fixed commits)
     prod = {p for p in changed if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in NEW_FILES_EX06}
     assert prod == PROD_EX06, {"unexpected": sorted(prod - PROD_EX06), "missing": sorted(PROD_EX06 - prod)}
     for rel, (removed, added) in PROD_EDITS_EX06.items():
@@ -95,7 +100,7 @@ def test_TX20_the_production_diff_is_exactly_the_declared_lines_and_no_trading_f
         ops = [(base[i1:i2], now[j1:j2]) for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base, now, autojunk=False).get_opcodes() if tag != "equal"]
         assert [l for b, _ in ops for l in b] == removed and [l for _, n in ops for l in n] == added, (rel, ops)   # the exact edit, in order:
         assert len(now) == len(base) + len(added) - len(removed), rel                        # a moved or reordered line is a removal + an addition
-    js, base_js = now_text(APP_JS), at_base(APP_JS)
+    js, base_js = FL.pre_xss01(APP_JS, now_text(APP_JS)), at_base(APP_JS)                     # XSS-01: app.js as main left it after PR #55 (XSS-01's escaping: tests/test_xss01_freeze.py)
     a, b = js.index(BLOCK_BEGIN), js.index("\n", js.index(BLOCK_END)) + 1
     assert js[:a] + js[b:] == base_js and js[b:].startswith(BLOCK_BEFORE) and js.count(BLOCK_BEGIN) == js.count(BLOCK_END) == 1
     server = now_text("api/server.py")
@@ -107,7 +112,7 @@ def test_TX20_the_production_diff_is_exactly_the_declared_lines_and_no_trading_f
 
 def test_F01X_the_change_set_is_exactly_the_declared_files():
     assert FL.BASE_EX06 == "46ebc65671435a02a0c90f6cd40f7d277ab15da2" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_EX06}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = changed_files(FL.BASE_EX06)
+    changed = ex06_files(FL.BASE_EX06)                                                          # XSS-01: EX-06's own change set (fixed commits)
     assert changed == FL.NEW_EX06 | FL.EDITED_EX06, {"unexpected": sorted(changed - FL.NEW_EX06 - FL.EDITED_EX06), "missing": sorted((FL.NEW_EX06 | FL.EDITED_EX06) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_EX06).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_EX06 == NEW_FILES_EX06 and {p for p in changed if p in in_base} == FL.EDITED_EX06
@@ -119,7 +124,8 @@ def test_F01X_the_change_set_is_exactly_the_declared_files():
     for rel in sorted(changed):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
         assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
-    groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
+    ex06_groups = subprocess.run(["git", "show", f"{FL.BASE_XSS01}:.github/ci/pytest_groups.json"], cwd=ROOT, capture_output=True).stdout.decode("utf-8")   # XSS-01: the manifest as PR #55 left it (XSS-01's entries: tests/test_xss01_freeze.py)
+    groups, base_groups = json.loads(ex06_groups)["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g != "core"} == {g: v for g, v in base_groups.items() if g != "core"}
     i = base_groups["core"]["files"].index("test_ci_groups_603.py") + 1
     assert groups["core"] == {**base_groups["core"], "files": base_groups["core"]["files"][:i] + list(CI_FILES_EX06) + base_groups["core"]["files"][i:]}
@@ -128,7 +134,7 @@ def test_F01X_the_change_set_is_exactly_the_declared_files():
 def test_F02X_every_changed_older_test_function_is_declared():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(now_text(rel))
+        b, n = defs(at_base(rel)), defs(FL.undo_xss01(rel, now_text(rel)))                     # XSS-01: its own in-place edits undone first (tests/test_xss01_freeze.py)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_EX06)
@@ -142,8 +148,9 @@ def test_F02X_every_changed_older_test_function_is_declared():
 def test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_EX06) == {p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_EX06):
-        assert FL.undo_ex06(rel, now_text(rel)) == at_base(rel), rel                          # now -> 46ebc656, byte for byte
-    main_fl, fl = at_base("tests/freeze_ledger.py"), now_text("tests/freeze_ledger.py")
+        assert FL.undo_ex06(rel, FL.undo_xss01(rel, now_text(rel))) == at_base(rel), rel       # now -> (XSS-01 undone) 9df1717a -> 46ebc656, byte for byte
+    fl = subprocess.run(["git", "show", f"{FL.BASE_XSS01}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # XSS-01: the ledger as PR #55 left it
+    main_fl = at_base("tests/freeze_ledger.py")
     for a in ("LEDGER = {", "BASE_W2C = ", "BASE_EX06 = ", "\n\ndef unchanged(", "\n\ndef pre_w2c(", "\n\ndef pre_ex06(", "\nWave 2 PR C (design", "\nEX-06 ("):
         assert fl.count(a) == 1, a
     led = lambda t: t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]  # noqa: E731
@@ -161,7 +168,7 @@ def test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_ex06("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, two helpers and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_EX06 and set(main_ledger) <= set(FL.LEDGER)
+    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_EX06 | FL.NEW_LEDGER_XSS01 and set(main_ledger) <= set(FL.LEDGER)   # XSS-01: its registrations are its own pin (F05Y)
     assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == FL.EDITED_EX06 & set(main_ledger)
     for rel in sorted(FL.NEW_LEDGER_EX06):
         assert FL.base_text(rel) == at_base(rel) == FL.undo_ex06(rel, FL.pre_ex06(rel, now_text(rel))), rel   # unchanged from BASE_68 to main
@@ -218,12 +225,12 @@ def test_TX21_the_hardening_changes_exactly_its_declared_files_and_the_gates_exa
     exactly the declared lines, in order, with the line count checked (a moved or reordered line is a removal plus an addition); no other
     production file changed; the helper is defined once and called once, and the root_path check comes before every other rule."""
     assert subprocess.run(["git", "cat-file", "-e", f"{BASE_EX06H}^{{commit}}"], cwd=ROOT).returncode == 0, "fetch-depth 0 is required"
-    changed = changed_files(BASE_EX06H)
+    changed = ex06_files(BASE_EX06H)                                                            # XSS-01: the hardening's own change set (fixed commits)
     assert changed == FILES_EX06H, {"unexpected": sorted(changed - FILES_EX06H), "missing": sorted(FILES_EX06H - changed)}
     assert FILES_EX06H <= FL.NEW_EX06 and not _git("diff", "--name-only", "--diff-filter=D", BASE_EX06H).split()
     run = subprocess.run(["git", "show", f"{BASE_EX06H}:api/local_gate.py"], cwd=ROOT, capture_output=True)
     assert run.returncode == 0
-    base, now = run.stdout.decode("utf-8").replace("\r\n", "\n").split("\n"), now_text("api/local_gate.py").split("\n")
+    base, now = run.stdout.decode("utf-8").replace("\r\n", "\n").split("\n"), FL.pre_xss01("api/local_gate.py", now_text("api/local_gate.py")).split("\n")   # XSS-01: the gate as PR #55 left it (its CSP line: tests/test_xss01_freeze.py)
     ops = [(base[i1:i2], now[j1:j2]) for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base, now, autojunk=False).get_opcodes() if tag != "equal"]
     assert [l for b, _ in ops for l in b] == GATE_REMOVED_EX06H and [l for _, n in ops for l in n] == GATE_ADDED_EX06H, ops
     assert len(now) == len(base) + len(GATE_ADDED_EX06H) - len(GATE_REMOVED_EX06H)
