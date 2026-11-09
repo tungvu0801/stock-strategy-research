@@ -550,8 +550,8 @@ test("N14 market.js, command_center.js and evidence_research.js: identical safeH
 
 // ---- N15-N16: the other 39 modules. N11 walks app.js alone. Here every value this walk can see reaching markup without esc() is a line in xss01_raw_interpolations.json, by exact text and exact
 // count, per module. A new raw field fails, and so does one raw field replacing another, which a count alone would miss. A listed call or variable is pinned where it is used, not where it is
-// built, so what a local helper returns, what a local variable is given and what a local function that assigns a parameter to innerHTML is passed are walked too, until nothing new appears. A line means "present when this list was generated", not "reviewed"
-// or "proven safe". Not seen: a helper from another module, unless its own module reaches it; a value that arrives by destructuring, as a callback's parameter, or through an object's field;
+// built, so what a local helper returns, what a local variable is given (by assignment, an indexed write, push, unshift, splice or fill) and what a local function that assigns a parameter to innerHTML is passed are walked too, until nothing new appears. A line means "present when this list was generated", not "reviewed"
+// or "proven safe". Not seen, and this list is not exhaustive: a helper from another module, unless its own module reaches it; a value that arrives by destructuring, as a callback's parameter, or through a field set by name, as in o.x = v;
 // a variable named only inside a call's argument expression, such as f(a + b), rather than as the argument itself; and sinks outside markup strings and innerHTML, which test C4 covers by name. Regex literals are blanked in a line's text, so a change inside one alone is not seen.
 const RAW_FILE = path.join(__dirname, "xss01_raw_interpolations.json");
 const OTHER_MODULES = fs.readdirSync(FRONT).filter((n) => n.endsWith(".js") && n !== "app.js").sort();
@@ -665,10 +665,19 @@ function rawBuilt(name, code, masked, out) {
     const s = m.index + m[0].length;
     rawIn(code.slice(s, exprEnd(code, s)), out, true);
   }
-  for (const m of masked.matchAll(new RegExp(`(?<![.\\w$])${id}\\.(?:push|unshift)\\(`, "g"))) {
+  for (const m of masked.matchAll(new RegExp(`(?<![.\\w$])${id}\\.(push|unshift|splice|fill)\\(`, "g"))) {
     const open = m.index + m[0].length - 1, close = balancedAt(code, open);
-    if (close < 0) out.push(`unreadable push: ${name}`);
-    else rawIn(code.slice(open + 1, close), out, true);
+    if (close < 0) { out.push(`unreadable ${m[1]}: ${name}`); continue; }
+    const inner = code.slice(open + 1, close), args = topLevelSplit(inner, [","]) || [inner];
+    if (m[1] === "push" || m[1] === "unshift") rawIn(inner, out, true);
+    else for (const a of m[1] === "splice" ? args.slice(2) : args.slice(0, 1)) rawIn(a, out, true);   // splice(start, count, ...values), fill(value, ...): a removal adds no value
+  }
+  for (const m of masked.matchAll(new RegExp(`(?<![.\\w$])${id}\\s*(?=\\[)`, "g"))) {                  // name[i] = v, name[i][j] = v, name[i] += v
+    let k = m.index + m[0].length;
+    while (k >= 0 && code[k] === "[") { const c = balancedAt(code, k); k = c < 0 ? -1 : c + 1; while (k > 0 && /\s/.test(code[k])) k++; }
+    if (k < 0) { out.push(`unreadable index: ${name}`); continue; }
+    const write = code.slice(k, k + 40).match(/^\s*(?:\+=|\|\|=|\?\?=|&&=|=(?![=>]))\s*/);
+    if (write) rawIn(code.slice(k + write[0].length, exprEnd(code, k + write[0].length)), out, true);
   }
 }
 function rawLeaves(src) {
@@ -787,6 +796,12 @@ test("N16 the N15 guard catches a newly introduced unsafe sink in another module
     ["what a function that sets innerHTML is passed", "forward_journal.js", add("forward_journal.js", 'part("status", r.headline_raw);'), "r.headline_raw"],
     ["a variable inside a template's callback", "market.js", add("market.js", "function yy(el, xs) { el.innerHTML = `<ul>${xs.map((x) => { const t9 = x.inner_raw; return `<li>${t9}</li>`; }).join(\"\")}</ul>`; }"), "x.inner_raw"],
     ["a variable printed by index", "market.js", add("market.js", "function yy(el, x) { const s8 = [x.indexed_raw]; el.innerHTML = `<p>${s8[0]}</p>`; }"), "x.indexed_raw"],
+    ["a value spliced into an array printed raw", "daily_review.js", edit("daily_review.js", /bits\.push\(`Volume \$\{esc\(w\.volume\)\}`\);/, (x) => `${x}\n    bits.splice(1, 0, w.note_raw);`), "w.note_raw"],
+    ["a value written by index into an array printed raw", "daily_review.js", edit("daily_review.js", /bits\.push\(`Volume \$\{esc\(w\.volume\)\}`\);/, (x) => `${x}\n    bits[0] = w.note_raw;`), "w.note_raw"],
+    ["a value given by fill to an array printed raw", "daily_review.js", edit("daily_review.js", /bits\.push\(`Volume \$\{esc\(w\.volume\)\}`\);/, (x) => `${x}\n    bits.fill(w.note_raw);`), "w.note_raw"],
+    ["a real indexed write printed raw takes a text field", "strategy_scanner.js", edit("strategy_scanner.js", /counts\[g\.group\] = g\.count;/, () => "counts[g.group] = g.label_raw;"), "g.label_raw"],
+    ["an indexed write through two levels", "market.js", add("market.js", "function yy(el, r) { const t7 = [[]]; t7[0][1] = r.deep_raw; el.innerHTML = `<p>${t7[0][1]}</p>`; }"), "r.deep_raw"],
+    ["an indexed append", "market.js", add("market.js", 'function yy(el, r) { const t6 = [""]; t6[0] += r.appended_raw; el.innerHTML = `<p>${t6[0]}</p>`; }'), "r.appended_raw"],
     ["a pushed value loses esc, then mapped into markup", "daily_review.js", edit("daily_review.js", /bits\.push\(`Volume \$\{esc\(w\.volume\)\}`\);/, () => "bits.push(`Volume ${w.volume}`);"), "w.volume"],
     ["a variable passed to a helper loses esc", "backtest_lab.js", edit("backtest_lab.js", /const pfv = m\.profit_factor\.text \? esc\(m\.profit_factor\.text\)/, () => "const pfv = m.profit_factor.text ? (m.profit_factor.text)"), "m.profit_factor.text"],
   ];
@@ -797,6 +812,8 @@ test("N16 the N15 guard catches a newly introduced unsafe sink in another module
   }
   assert.ok(rawChanges("strategy_lab.js", swap, frozen).length >= 2, "a swap shows both the removed and the added line");
   assert.deepEqual(rawChanges("market.js", add("market.js", "function zz(el, r) { el.innerHTML = `<p>${esc(r.headline)}</p>`; }"), frozen), [], "an escaped addition must not need a new line");
+  assert.deepEqual(rawChanges("market.js", add("market.js", "function zz(r) { const q7 = []; q7[0] = r.a_raw; q7.splice(0, 0, r.b_raw); q7.fill(r.c_raw); return q7.length; }"), frozen), [], "an array that never reaches markup needs no line: this guard follows printed names only");
+  assert.deepEqual(rawChanges("daily_review.js", edit("daily_review.js", /bits\.push\(`Volume \$\{esc\(w\.volume\)\}`\);/, (x) => `${x}\n    bits.splice(0, 1);`), frozen), [], "a removal adds no value, so it needs no line");
   const weak = [["identity", (s) => s.replace(/const esc = \(v\) =>[\s\S]*?\[c\]\)\);/, "const esc = (v) => v;")], ["ampersand kept", (s) => s.replace('"&": "&amp;"', '"&": "&"')],
                 ["redefined", (s) => `${s}\nconst esc = (v) => v;`], ["reassigned", (s) => `${s}\nesc = (v) => v;`], ["a function", (s) => `${s}\nfunction esc(v) { return v; }`]];
   for (const [title, fn] of weak) { const s = fn(readModule("market.js")); assert.notEqual(s, readModule("market.js"), title); assert.notDeepEqual(escProblems(s), [], title); }
