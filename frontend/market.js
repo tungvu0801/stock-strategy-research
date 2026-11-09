@@ -6,6 +6,8 @@
 (function () {
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const safeHref = (u) => { try { const p = new URL(String(u)); return p.protocol === "http:" || p.protocol === "https:" ? esc(p.href) : null; } catch (e) { return null; } };   // XSS-01: only an absolute http(s) URL may become a link
+  const extLink = (u, text) => { const h = safeHref(u); return h ? `<a href="${h}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : esc(text); };   // XSS-01: a link, or the escaped text alone
   const n = (v) => (v == null || v === "" ? null : Number(v));
   const pct = (v) => (n(v) == null ? "N/A" : `${n(v) >= 0 ? "+" : ""}${n(v).toFixed(2)}%`);
   const money = (v) => (n(v) == null ? "N/A" : n(v).toLocaleString("en-US", { style: "currency", currency: "USD" }));
@@ -65,7 +67,7 @@
     const areas = (list) => list.map((s) => `${esc(s.sector)} (${esc(s.etf)} ${pct(s.pct_change)})`).join(", ") || "none identified";
     const b = m.breadth;
     const breadth = b.available ? `<p class="pf-small"><strong>Breadth: ${esc(b.label)}</strong> — ${esc(b.advancing_pct)}% rising, ${esc(b.declining_pct)}% falling, ${esc(b.above_ema20_pct)}% above their 20-day average, ${esc(b.above_ema50_pct)}% above their 50-day average (${esc(b.sample_size)} stocks: ${esc(b.scope)}).${b.scanner ? ` Scanner (${esc(b.scanner.scope)}): ${esc(b.scanner.possible_breakouts)} possible breakouts, ${esc(b.scanner.large_drops)} large drops.` : ""}</p>` : `<p class="pf-small">Breadth unavailable.</p>`;
-    const news = (m.news || []).length ? `<h3>News <span class="pf-muted pf-small">(sourced headlines — price moves alone don't prove why the market moved)</span></h3><ul>${m.news.map((x, i) => `<li>[${i + 1}] <a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.headline)}</a> <span class="pf-muted pf-small">— ${esc(x.source)}, ${esc(when(x.created_at))}, via ${esc(x.queried_symbol)} news</span>${x.summary ? `<div class="pf-small">${esc(String(x.summary).slice(0, 220))}</div>` : ""}</li>`).join("")}</ul>` : `<p class="pf-small pf-muted">No sourced news items were returned.</p>`;
+    const news = (m.news || []).length ? `<h3>News <span class="pf-muted pf-small">(sourced headlines — price moves alone don't prove why the market moved)</span></h3><ul>${m.news.map((x, i) => `<li>[${i + 1}] ${extLink(x.url, x.headline)} <span class="pf-muted pf-small">— ${esc(x.source)}, ${esc(when(x.created_at))}, via ${esc(x.queried_symbol)} news</span>${x.summary ? `<div class="pf-small">${esc(String(x.summary).slice(0, 220))}</div>` : ""}</li>`).join("")}</ul>` : `<p class="pf-small pf-muted">No sourced news items were returned.</p>`;
     return `<div class="section"><h2>What's driving it? <span class="pf-muted pf-small">(observed market data)</span></h2>
       <ul class="mk-list">${pos}${neg}</ul>${breadth}
       <p class="pf-small"><strong>Strong areas:</strong> ${areas(m.strong_areas)} · <strong>Weak areas:</strong> ${areas(m.weak_areas)}</p>

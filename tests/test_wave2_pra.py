@@ -235,7 +235,7 @@ NEW_LEDGER_W2A = {"execution/__init__.py", "execution/store.py"}                
 def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2A == "5d6f7dd1e1beb90fc5b2909a7dafabfd8e932a6a" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2A}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files()
-    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A) | (FL.EDITED_W2C - FL.NEW_W2A - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C)   # Wave 2 PR B / PR C / EX-06: their own sets (their edits of earlier new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py / test_wave2_prc.py
+    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A) | (FL.EDITED_W2C - FL.NEW_W2A - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06)   # Wave 2 PR B / PR C / EX-06: their own sets (their edits of earlier new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py / test_wave2_prc.py
     assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2A).split())
     assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
@@ -267,7 +267,7 @@ def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_thre
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_W2A.items():
-        text = FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, now_text(rel))))                               # Wave 2 PR B / PR C: their own in-place edits undone first (F03B / F03C)
+        text = FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, now_text(rel)))))                               # Wave 2 PR B / PR C: their own in-place edits undone first (F03B / F03C)
         for old, new in reversed(edits):
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)

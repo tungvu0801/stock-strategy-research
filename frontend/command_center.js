@@ -8,6 +8,8 @@
 (function () {
   const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const safeHref = (u) => { try { const p = new URL(String(u)); return p.protocol === "http:" || p.protocol === "https:" ? esc(p.href) : null; } catch (e) { return null; } };   // XSS-01: only an absolute http(s) URL may become a link
+  const extLink = (u, text) => { const h = safeHref(u); return h ? `<a href="${h}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : esc(text); };   // XSS-01: a link, or the escaped text alone
   const n = (v) => (v == null || v === "" ? null : Number(v));
   const money = (v) => (n(v) == null ? "N/A" : n(v).toLocaleString("en-US", { style: "currency", currency: "USD" }));
   const signed = (v) => (n(v) == null ? "N/A" : `${n(v) >= 0 ? "+" : "−"}${money(Math.abs(n(v)))}`);
@@ -115,7 +117,7 @@
         <p class="cc-small cc-dimtext">Breadth: ${esc(b.advancing_pct)}% rising · ${esc(b.above_ema20_pct)}% above their 20-day average — ${esc(b.scope || "")}</p>
         <div class="cc-more-body" data-lazy="market">Loading…</div></div>
       <div class="cc-panel" id="cc-news-panel" hidden>
-        ${m.news.length ? m.news.map((x) => `<div class="cc-news"><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.headline)}</a>
+        ${m.news.length ? m.news.map((x) => `<div class="cc-news">${extLink(x.url, x.headline)}
           <div class="cc-small">${esc(x.source)} · ${esc(when(x.time))} · Affects: ${esc(x.affected)}</div><div class="cc-small cc-dimtext">${esc(x.why_it_may_matter)}</div></div>`).join("")
           : `<p class="cc-small">No sourced headlines were returned.</p>`}
         <p class="cc-note">${esc(m.causation_note)}</p></div>

@@ -31,6 +31,7 @@ EDGE_WEBSOCKET = {"origin": O}
 GET_H = {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Referer": O + "/", "X-Stock-Agent-Intent": "dashboard"}
 POST_H = {**GET_H, "Origin": O, "Content-Type": "application/json"}
 CROSS = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "empty"}
+CSP_XSS01 = "frame-ancestors 'none'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'"   # XSS-01 (R3): the policy on every response; pinned by tests/test_xss01_csp.py
 
 
 def G():
@@ -398,7 +399,7 @@ def test_X12_refusal_contract_log_line_framing_and_json_body(caplog):
     with caplog.at_level(logging.WARNING, logger="api.local_gate"):
         r = c.post("/api/execution/auto/enable", headers={"Origin": "http://evil.example", "Content-Type": "text/plain", "Cookie": "secret=1"}, content=b"x")
     assert r.status_code == 403 and r.json() == {"status": "FORBIDDEN", "error": "LOCAL_GATE_ORIGIN", "message": G().MESSAGE}
-    assert r.headers["x-frame-options"] == "DENY" and r.headers["content-security-policy"] == "frame-ancestors 'none'" and r.headers["cache-control"] == "no-store"
+    assert r.headers["x-frame-options"] == "DENY" and r.headers["content-security-policy"] == CSP_XSS01 and r.headers["x-content-type-options"] == "nosniff" and r.headers["cache-control"] == "no-store"   # XSS-01 (R3): the CSP / nosniff value is pinned by tests/test_xss01_csp.py
     lines = [x for x in caplog.records if x.name == "api.local_gate"]
     assert len(lines) == 1 and "POST" in lines[0].getMessage() and "/api/execution/auto/enable" in lines[0].getMessage() and "LOCAL_GATE_ORIGIN" in lines[0].getMessage()
     assert "evil.example" not in caplog.text and "secret" not in caplog.text                # never a header value
@@ -413,7 +414,7 @@ def test_X12_refusal_contract_log_line_framing_and_json_body(caplog):
     assert c.post("/api/x", headers={k: v for k, v in POST_H.items() if k != "Content-Type"}).status_code == 200     # no body, no type: allowed
     assert c.delete("/api/x", headers={k: v for k, v in POST_H.items() if k != "Content-Type"}).status_code == 200   # the watchlist DELETE (app.js:260)
     ok = c.get("/")
-    assert ok.status_code == 200 and ok.headers["x-frame-options"] == "DENY" and ok.headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert ok.status_code == 200 and ok.headers["x-frame-options"] == "DENY" and ok.headers["content-security-policy"] == CSP_XSS01 and ok.headers["x-content-type-options"] == "nosniff"   # XSS-01 (R3)
     assert G().CODES == ("CLIENT", "HOST", "PROXY", "ORIGIN", "REFERER", "FETCH_SITE", "INTENT", "CONTENT_TYPE", "ERROR", "ROOT_PATH")
 
 

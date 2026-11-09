@@ -20,8 +20,10 @@ Agent dashboard (or a local tool) on this computer, BEFORE routing, body parsing
      header-less request (curl, scripts, old browsers) or incomplete metadata is refused;
  10. every other method needs exactly one X-Stock-Agent-Intent in {dashboard, paper-order} (D-4 a) and, with a body, a JSON content type.
 
-Every allowed HTTP response the app sends through the gate (every route, static file, 404 / 405) carries X-Frame-Options: DENY and CSP
-frame-ancestors 'none' (D-17); the one exception is the 500 of an unhandled error, which Starlette's ServerErrorMiddleware (outside every
+Every allowed HTTP response the app sends through the gate (every route, static file, 404 / 405) carries X-Frame-Options: DENY, a CSP of
+frame-ancestors 'none' (D-17) plus script-src 'self', object-src 'none', base-uri 'none', form-action 'self' and frame-src 'none' (XSS-01 R3:
+the browser refuses inline or foreign script, a javascript: URL, a plugin, an injected <base>, form or frame even if a page ever rendered
+hostile text), and X-Content-Type-Options: nosniff; the one exception is the 500 of an unhandled error, which Starlette's ServerErrorMiddleware (outside every
 added middleware) sends itself, a JSON body. A refusal is 403 {"status": "FORBIDDEN", "error": "LOCAL_GATE_<CODE>", "message"} (422
 INVALID_REQUEST / LOCAL_GATE_CONTENT_TYPE for a non-JSON body), a WebSocket close 1008, and one WARNING log line (method, escaped path, code;
 never a header value). Any error inside the gate refuses (LOCAL_GATE_ERROR); an ASGI scope type other than http, websocket or lifespan is
@@ -49,7 +51,9 @@ FORWARDING = frozenset({b"forwarded", b"x-forwarded-for", b"x-forwarded-host", b
                         b"x-real-ip", b"via"})                                            # D-5 (a)
 SAME_ORIGIN_SITES = frozenset({"same-origin", "none"})                                   # browser-asserted: this origin, or typed / bookmarked
 OTHER_SITES = frozenset({"cross-site", "same-site"})
-FRAME_HEADERS = ((b"x-frame-options", b"DENY"), (b"content-security-policy", b"frame-ancestors 'none'"))   # D-17 (a)
+FRAME_HEADERS = ((b"x-frame-options", b"DENY"),                                                                                           # D-17 (a)
+                 (b"content-security-policy", b"frame-ancestors 'none'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'"),   # D-17 (a) + XSS-01 (R3)
+                 (b"x-content-type-options", b"nosniff"))                                                                                 # XSS-01 (R3)
 MESSAGE = "Refused: this action must come from the Stock Agent dashboard on this computer."
 CODES = ("CLIENT", "HOST", "PROXY", "ORIGIN", "REFERER", "FETCH_SITE", "INTENT", "CONTENT_TYPE", "ERROR", "ROOT_PATH")
 
