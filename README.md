@@ -840,8 +840,9 @@ Monitor only. A task trigger (logon, weekdays) also starts the server again late
 Emergency Stop first:** a restart reads the saved latch, so a stop saved earlier still holds; a stop that was never saved does not.
 
 **What Emergency Stop and Pause do.** Both block **new automatic entries** once saved. Neither cancels an order at Alpaca or closes a
-position. The bot's exit rules keep running while a position is monitored; a position marked Needs attention gets no automatic exit. Pause
-and the daily-loss halt do not block manual paper orders. The page reports a stop as active only after a server read shows it.
+position. The bot's exit rules keep running while a position is monitored; a position marked Needs attention gets no automatic exit.
+**Emergency Stop does not yet block manual paper orders**, and neither do Pause or the daily-loss halt: that needs the later
+Emergency Stop order gate. The page reports a stop as active only after a server read shows it.
 
 ## Running without VS Code (Windows background runner)
 

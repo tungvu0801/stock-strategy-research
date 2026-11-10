@@ -2072,7 +2072,7 @@ LEDGER = {
     ".github/ci/pytest_groups.json": "1e710a0c21c291a052ff749d43565ceae446f7147ee27744b2f3962f3d43b209",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "DESIGN_591_EXECUTION_SAFETY.md": "a2592a1f0fae0174a4b9fe4e5ed6bfb62badb58b0c2e47d0d25af0d6c5731425",
-    "README.md": "ee347d93a6c41cf8c58063d6ab0b087c6cf49006415f1f581eb8c7e74721b400",
+    "README.md": "085d300378640c1f572fcf739deea05c8281c3374e32dc98f19668b9ea0e79a3",
     "api/routes/account_refresh.py": "26f4ebfa3059e2d7f24fe608a8d4f0a6c582daaa237828920e561bbcc4891319",
     "api/routes/execution.py": "9255e19d7b846a2500a865077e02703db305275b6cf90dcbb980de6ac644f2e6",
     "api/routes/forward_validation.py": "efc8a89dd8275f5461c35492fc192d7a538e9f16921727af8edda25717a549f2",
