@@ -3717,11 +3717,11 @@ def strategy_validation_results(c: Ctx):
 
 
 # risk controls panel: its three flows run before risk_controls, while the gate is Trading allowed (risk_controls latches a forced daily loss for its date)
-from browser_tests.risk_controls_panel_flows import risk_controls_presses, risk_controls_races, risk_controls_scripts  # noqa: E402 - risk controls panel (design section 6)
+from browser_tests.risk_controls_panel_flows import risk_controls_presses, risk_controls_priority, risk_controls_races, risk_controls_scripts  # noqa: E402 - risk controls panel (design section 6); J-04 Stop reliability
 
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
          ai_evidence, history, scanner, strategy_validation, strategy_validation_results, small_screens, trader_view, market_demand, setup_state, trade_review,
-         risk_controls_scripts, risk_controls_races, risk_controls_presses, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         risk_controls_scripts, risk_controls_races, risk_controls_presses, risk_controls_priority, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows; Stage 6.1.2: the product flows follow product_ui
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)
 

@@ -101,13 +101,45 @@ def at_base(rel):
     return at(FL.BASE_PANEL, rel)
 
 
+# J-04 Stop reliability (design 7a, as XSS-01's freeze test did when the panel changed XSS-01's files): the files J-04 edits are read at BASE_J04,
+# the panel's side as merged, a commit that cannot change; every other file still reads the working tree. tests/test_j04_freeze.py F06J pins that
+# this list is exactly J-04's edited files and that BASE_J04 is an ancestor of HEAD with the reviewed tree.
+J04_MOVED = ('.github/ci/pytest_groups.json', 'DESIGN_591_EXECUTION_SAFETY.md', 'README.md', 'api/routes/execution_safety.py',
+             'browser_tests/flows.py', 'browser_tests/risk_controls_panel_flows.py', 'frontend/forward_validation.html',
+             'frontend/index.html', 'frontend/product_ui.js', 'frontend/risk_controls.js', 'frontend/trader_render.js',
+             'tests/freeze_ledger.py', 'tests/frontend/risk_controls_order.test.cjs', 'tests/frontend/risk_controls_view.test.cjs',
+             'tests/frontend/xss01_raw_interpolations.json', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py',
+             'tests/test_decision_flow_610c.py', 'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py',
+             'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py',
+             'tests/test_ex06_local_gate.py', 'tests/test_execution_safety_591.py', 'tests/test_forward_paper_610a.py',
+             'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py',
+             'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py',
+             'tests/test_market_scan_75.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py',
+             'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py',
+             'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py',
+             'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py')
+
+
+def at_j04(rel):
+    return at(FL.BASE_J04, rel)
+
+
 def now_text(rel):
+    if rel in J04_MOVED:
+        return at_j04(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # J-04 (design 7a): the panel's side is the fixed diff from `base` to BASE_J04; the working tree's change set belongs to tests/test_j04_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_J04).split())
+
+
+def ledger_j04():
+    """The ledger as J-04 found it (BASE_J04): the hashes the panel's bookkeeping is checked against."""
+    t = at_j04("tests/freeze_ledger.py")
+    led = t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]
+    return ast.literal_eval(led[len("LEDGER = "):])
 
 
 def line_ops(rel):
@@ -147,7 +179,7 @@ def test_F01P_the_change_set_is_exactly_the_declared_files_and_no_route_gate_mig
     assert {g: v for g, v in groups.items() if g != "core"} == {g: v for g, v in base_groups.items() if g != "core"}
     i = base_groups["core"]["files"].index("test_xss01_freeze.py") + 1
     assert groups["core"] == {**base_groups["core"], "files": base_groups["core"]["files"][:i] + list(CI_FILES_PANEL) + base_groups["core"]["files"][i:]}
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_j04()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # J-04: the manifest and its hash, both at BASE_J04
 
 
 def test_F02P_the_server_files_change_exactly_the_declared_lines():
@@ -235,7 +267,9 @@ def test_F05P_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_PANEL}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_PANEL})
     for rel in rehashed | FL.NEW_LEDGER_PANEL:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)), rel                                       # J-04: the panel's hashes against the panel's texts, both at BASE_J04
+        if rel not in J04_MOVED:
+            assert FL.LEDGER[rel] == ledger[rel], rel                                           # a file J-04 did not touch still carries the panel's hash today
     start = fl.index("\n\nRisk controls panel (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_PANEL = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)

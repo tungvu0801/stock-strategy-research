@@ -549,8 +549,12 @@ def risk_controls_races(c):
             s.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
             s.wait(f"{rc}.status().outcomes.stop && {rc}.status().outcomes.stop.result === 'CONFIRMED'", 40, "B17 confirmed")
             s.pump(2.5)
-            c.r.check("B17 200 UNKNOWN with the kill active: confirmed with no re-send; the server UNKNOWN reads 'Risk status unknown · Emergency Stop active'",
-                      len(s.posts("/api/execution-safety/emergency-stop")) - n0 == 1 and _kill(c) and "Risk status unknown" in s.text("#tv-safety"))
+            # J-04: the latch read confirms the saved stop and its overlay drives the display (HALTED, "Emergency stop active") while the server's own
+            # evaluation still answers UNKNOWN with the kill active
+            panel = s.text("#tv-safety")
+            c.r.check("B17 200 UNKNOWN with the kill active: confirmed by the latch read with no re-send; the panel shows the saved stop over the server's UNKNOWN",
+                      len(s.posts("/api/execution-safety/emergency-stop")) - n0 == 1 and _kill(c) and "New automatic entries stopped" in panel and "Emergency stop active" in panel
+                      and _state(c).get("state") == "UNKNOWN" and s.js(f"!!{rc}.status().latchKill") is True, panel[:300])
         _reset(c, "B17")
         s.js(f"{rc}.refresh()"); s.pump(1.0)
 
@@ -572,12 +576,18 @@ def risk_controls_races(c):
         c.r.check("B30 network lost: the Risk card's headline and the bar say uncertain, never allowed; the card's Stop is offered and enabled",
                   "RISK STATUS UNCERTAIN" in _bar(s) and UNCERTAIN in _card(s) and head.startswith("Status uncertain")
                   and s.js("!!document.querySelector('#pui-cards [data-pui=\"stop\"]:not([disabled])')") is True, [_bar(s)[:200], head, _card(s)[:200]])
+        t_press = time.time()
         s.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
-        s.wait(f"{rc}.status().outcomes.stop && {rc}.status().outcomes.stop.result === 'NOT_CONFIRMED'", 30, "B9 not confirmed")
+        # J-04: with the POST and every latch read failing there is no counted answer, so the decision comes at the 60 s deadline, never earlier and never success
+        s.pump(12.0)
+        checking = "Checking whether the Emergency Stop was saved" in _bar(s)
+        s.wait(f"{rc}.status().outcomes.stop && {rc}.status().outcomes.stop.result === 'NOT_CONFIRMED'", 70, "B9 not confirmed")
+        t_dec = time.time() - t_press
         g0 = len([e for e in s.b.events if e.get("method") == "Fetch.requestPaused" and e["params"]["request"]["url"].split("?")[0].endswith("/api/execution-safety")])
         s.pump(6.0)
         g1 = len([e for e in s.b.events if e.get("method") == "Fetch.requestPaused" and e["params"]["request"]["url"].split("?")[0].endswith("/api/execution-safety")])
-        c.r.check("B9 the Stop POST and the reads all fail: NOT confirmed is visible, and a read is retried within about 5 s", NOT_CONFIRMED in _bar(s) and g1 > g0, [g0, g1])
+        c.r.check(f"B9 the Stop POST and the reads all fail: 'checking' at 12 s, NOT confirmed at the 60 s deadline ({t_dec:.1f} s) with the fallback commands, and a read is retried within about 5 s",
+                  NOT_CONFIRMED in _bar(s) and checking and 59.0 <= t_dec <= 68.0 and g1 > g0 and s.js("!!document.querySelector('#pui-status [data-pui-bar-fallback]')") is True, [g0, g1, t_dec, checking])
         s.rules = []
         s.js(f"{rc}.refresh()"); s.pump(1.0)
         _reset(c, "B9")
@@ -833,3 +843,348 @@ def risk_controls_presses(c):
     finally:
         s.close()
         _reset(c, "risk_controls_presses")
+
+
+# =========================================================================================================================================
+# J-04 Emergency Stop reliability (TASK_P_STOP_RELIABILITY_ORDER_GATE_PLAN_2026-11-10.md, design 2.1; checks J1 to J10)
+class _Tab:
+    """Another tab of the side browser: a page target driven on the same CDP connection through its flattened session (messages carry the
+    sessionId; its events land in the connection's event list tagged with it). Nothing inside the page is mocked; `before` runs before the
+    page's own scripts (the one use: a tab without BroadcastChannel)."""
+
+    def __init__(self, s, path, before=None):
+        self.s, self.b = s, s.b
+        self.tid = self.b.send("Target.createTarget", {"url": "about:blank", "newWindow": True})["targetId"]   # its own window: no background-tab throttling
+        self.sid = self.b.send("Target.attachToTarget", {"targetId": self.tid, "flatten": True})["sessionId"]
+        for d in ("Page", "Runtime", "Network"):
+            self.send(f"{d}.enable")
+        if before:
+            self.send("Page.addScriptToEvaluateOnNewDocument", {"source": before})
+        self.send("Page.navigate", {"url": s.c.base + path})
+        self.wait("document.readyState === 'complete' && !!window.StopPriority", 60, f"load {path}")
+
+    def send(self, method, params=None, timeout=60.0):
+        b = self.b
+        b.n += 1
+        mid = b.n
+        b.ws.send(json.dumps({"id": mid, "sessionId": self.sid, "method": method, "params": params or {}}))
+        end = time.time() + timeout
+        while True:
+            msg = json.loads(b.ws.recv(timeout=max(0.1, end - time.time())))
+            if msg.get("id") == mid:
+                if "error" in msg:
+                    raise RuntimeError(f"{method}: {msg['error']}")
+                return msg.get("result", {})
+            if "method" in msg:
+                b.events.append(msg)
+
+    def js(self, expr):
+        r = self.send("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": False})
+        return None if r.get("exceptionDetails") else r["result"].get("value")
+
+    def wait(self, expr, timeout=30, what=""):
+        end = time.time() + timeout
+        while time.time() < end:
+            self.s.pump()
+            if self.js(expr):
+                return True
+            time.sleep(0.05)
+        raise TimeoutError(f"side tab: timed out waiting for {what or expr}")
+
+    def sent(self, needle, after=0.0):
+        """The requests this tab sent whose URL contains `needle` (Network.requestWillBeSent), at or after the wall-clock time `after`."""
+        return [e for e in self.b.events if e.get("sessionId") == self.sid and e.get("method") == "Network.requestWillBeSent"
+                and needle in e["params"]["request"]["url"] and e["params"].get("wallTime", 0) >= after]
+
+    def close(self):
+        try:
+            self.b.send("Target.closeTarget", {"targetId": self.tid})
+        except Exception:  # noqa: BLE001 - closing regardless
+            pass
+
+
+class _Stamp:
+    """The real service's emergency_stop, wrapped: records the wall-clock time the server's handler ran; `after` seconds of delay AFTER the
+    latch is saved (a saved-but-delayed answer). The latch itself is never touched."""
+
+    def __init__(self, svc, after=0.0):
+        self.orig, self.after, self.at = svc.emergency_stop, after, []
+
+    def __call__(self, *a, **k):
+        self.at.append(time.time())
+        r = self.orig(*a, **k)
+        if self.after:
+            time.sleep(self.after)
+        return r
+
+
+class _Block:
+    """A store read held at the server until released (the reads that occupy the browser's connections); counts the calls that entered."""
+
+    def __init__(self, orig):
+        self.orig, self.n, self.ev = orig, 0, threading.Event()
+
+    def __call__(self, *a, **k):
+        self.n += 1
+        self.ev.wait(40)
+        return self.orig(*a, **k)
+
+
+def _press_stop(s):
+    """The bar's Stop and its confirmation with a real pointer; returns the wall-clock time of the confirming press."""
+    s.wait("!!document.querySelector('#pui-status [data-pui=\"stop-bar\"]')", 20, "the status bar's Emergency Stop")
+    if not s.press('#pui-status [data-pui="stop-bar"]'):
+        raise RuntimeError("the bar's Emergency Stop could not be pressed")
+    s.wait("!!document.querySelector('#pui-status [data-pui=\"stop-bar-confirm\"]')", 10, "the bar's confirmation")
+    t = time.time()
+    if not s.press('#pui-status [data-pui="stop-bar-confirm"]'):
+        raise RuntimeError("the bar's confirmation could not be pressed")
+    return t
+
+
+def _main_sent(s, needle, after=0.0, method=None):
+    return [e for e in s.b.events if "sessionId" not in e and e.get("method") == "Network.requestWillBeSent" and needle in e["params"]["request"]["url"]
+            and e["params"].get("wallTime", 0) >= after and (method is None or e["params"]["request"].get("method") == method)]
+
+
+def _outcome(s):
+    return s.js("RiskControls.status().outcomes.stop ? RiskControls.status().outcomes.stop.result : null")
+
+
+def _decided(s, result, timeout, what):
+    s.wait(f"RiskControls.status().outcomes.stop && RiskControls.status().outcomes.stop.result === {json.dumps(result)}", timeout, what)
+
+
+def _fresh(s, c, what):
+    _reset(c, what)
+    s.js("RiskControls.refresh()")
+    s.pump(2.0)
+
+
+def risk_controls_priority(c):
+    """J-04 (design 2.1): the Stop goes through occupied connections, is confirmed by the fast latch read while the evaluation waits, is
+    never claimed from a sent request alone, holds the other tabs and the forward-validation page cooperatively, leaves writes alone, works
+    without its module, and a reload claims nothing. Measurements are in the check names (wall clock, this machine)."""
+    s = Side(c)
+    svc = _svc()
+    port = c.base.rsplit(":", 1)[1]
+    try:
+        s.intercept()
+        s.open("/")
+        s.wait("!!window.RiskControls && !!RiskControls.state.data && !!window.StopPriority && StopPriority.state.installed", 30, "loaded")
+        c.r.check("J0 the pages load stop_priority.js after app.js's wrapper, without claiming the wrapper's flag",
+                  s.js("window.fetch.__stopPriority === true && window.fetch.__stockAgentIntent === undefined && StopPriority.VERSION === 'stop_priority_v1'"))
+        # ---- J1 (B42): six server-held reads occupy the connections; the Stop still reaches the server at once; then the reads resume (J10)
+        blk, stamp = _Block(svc.store.controls), _Stamp(svc)
+        with _Patch(svc.store, controls=blk), _Patch(svc, emergency_stop=stamp):
+            s.js("for (let i = 0; i < 6; i++) fetch('/api/execution-safety/controls?hold=' + i).catch(() => null)")
+            end = time.time() + 15
+            while blk.n < 6 and time.time() < end:
+                s.pump(0.1)
+            held = blk.n
+            t0 = _press_stop(s)
+            paused = False
+            for _ in range(10):
+                paused = paused or bool(s.js("!!document.querySelector('#pui-status [data-pui-bar-paused]')"))
+                s.pump(0.1)
+            s.wait("RiskControls.status().outcomes.stop && RiskControls.status().outcomes.stop.result !== 'PENDING'", 40, "J1 decided")
+            dt = (stamp.at[0] - t0) if stamp.at else None
+            aborted = s.js("StopPriority.state.counts.aborted")
+            blk.ev.set()
+        c.r.eq("J1 six server-held reads were in flight before the press", held, 6)
+        c.r.check(f"J1 the Stop reached the server {int((dt if dt is not None else 99) * 1000)} ms after the press, through six occupied connections (reads aborted: {aborted})",
+                  dt is not None and dt < 3.0, {"seconds": dt, "aborted": aborted, "paused_line_seen": paused})
+        c.r.check("J1 the six held reads were aborted by the preemption, not left to finish", isinstance(aborted, int) and aborted >= 6, aborted)
+        c.r.check("J1 the outcome is CONFIRMED by the latch read and the stop is saved", _outcome(s) == "CONFIRMED" and _kill(c), _outcome(s))
+        t_rel = time.time()
+        s.wait("!StopPriority.holding() && !StopPriority.preempting()", 10, "J10 released")
+        s.js("fetch('/api/health').catch(() => null)")                                   # a new read right after the release: sent at once, never held
+        s.pump(0.5)
+        probe = len(_main_sent(s, "/api/health", t_rel, "GET"))
+        s.pump(12.0)                                                                       # the pollers' own periods are 2 s to 30 s (paper_bot 10 s)
+        resumed = len(_main_sent(s, "/api/", t_rel, "GET"))
+        c.r.check(f"J10 after the release a new read goes at once ({probe} within 0.5 s) and the pollers read again ({resumed} GET requests within 12.5 s)", probe >= 1 and resumed >= 2,
+                  {"probe": probe, "resumed": resumed})
+        _fresh(s, c, "J1")
+        # ---- J1c (control, information only): the same six held reads with the page's original fetch (no abort, no hold): how long the Stop waits
+        s.open("/")
+        s.wait("!!window.StopPriority && !!RiskControls.state.data", 30, "J1c loaded")
+        s.js("window.fetch = StopPriority.state.orig")
+        blk, stamp = _Block(svc.store.controls), _Stamp(svc)
+        with _Patch(svc.store, controls=blk), _Patch(svc, emergency_stop=stamp):
+            s.js("for (let i = 0; i < 6; i++) fetch('/api/execution-safety/controls?hold=' + i).catch(() => null)")
+            end = time.time() + 15
+            while blk.n < 6 and time.time() < end:
+                s.pump(0.1)
+            t0 = _press_stop(s)
+            s.pump(6.0)
+            before_release = (stamp.at[0] - t0) if stamp.at else None
+            blk.ev.set()
+            s.wait("RiskControls.status().outcomes.stop && RiskControls.status().outcomes.stop.result !== 'PENDING'", 70, "J1c decided")
+            dt = (stamp.at[0] - t0) if stamp.at else None
+        c.r.check(f"J1c control without the preemption: the Stop reached the server after {int((dt if dt is not None else 99) * 1000)} ms "
+                  f"({'before' if before_release is not None else 'only after'} the six held reads were released at 6 s)", dt is not None, {"seconds": dt, "before_release": before_release})
+        _fresh(s, c, "J1c")
+        s.open("/")
+        s.wait("!!window.StopPriority && StopPriority.state.installed && !!RiskControls.state.data", 30, "reloaded")
+        # ---- J2 (B43): the evaluation waits on the account read; the latch read confirms the stop meanwhile
+        gate = threading.Event()
+        orig_account = svc.account
+
+        def slow_account(ts, ov=None):
+            gate.wait(25)
+            return orig_account(ts, ov)
+        with _Patch(svc, account=slow_account):
+            t0 = _press_stop(s)
+            _decided(s, "CONFIRMED", 20, "J2 confirmed while the evaluation waits")
+            dt = time.time() - t0
+            latch = s.js("JSON.stringify(RiskControls.status().latchKill)")
+            pending = s.js("RiskControls.status().pending.stop")
+            s.wait("document.querySelector('#pui-status').innerText.includes('Emergency Stop active')", 8, "J2 the bar's re-render")   # the shell re-renders on its 2 s tick
+            bar = _bar(s)
+            gate.set()
+        c.r.check(f"J2 the evaluation blocked on the account read: CONFIRMED by the latch read in {int(dt * 1000)} ms, the POST still unanswered (pending: {pending})",
+                  dt < 8.0 and bool(latch), {"seconds": dt, "latchKill": latch})
+        c.r.check("J2 the bar shows the stop active from the latch overlay while the evaluation waits", "Emergency Stop active" in bar, bar[:300])
+        s.pump(1.0)
+        _fresh(s, c, "J2")
+        # ---- J3 (B44): the POST fails before reaching the server: NOT confirmed after one re-send, with the fallback commands
+        s.rules.append(lambda method, url, stage, p: "fail" if method == "POST" and url.endswith("/emergency-stop") and stage == "request" else None)
+        s.intercept(api=True)
+        n0 = len(s.posts("/api/execution-safety/emergency-stop"))
+        t0 = _press_stop(s)
+        _decided(s, "NOT_CONFIRMED", 30, "J3 not confirmed")
+        dt = time.time() - t0
+        posts = len(s.posts("/api/execution-safety/emergency-stop")) - n0
+        s.wait("document.querySelector('#pui-status').innerText.includes('NOT confirmed')", 8, "J3 the bar's re-render")
+        bar = _bar(s)
+        fallback = s.js("!!document.querySelector('#pui-status [data-pui-bar-fallback]')")
+        s.rules.clear()
+        s.intercept()
+        c.r.check(f"J3 the POST never reaches the server: NOT confirmed in {int(dt * 1000)} ms after one re-send ({posts} POSTs), nothing saved", posts == 2 and not _kill(c), {"posts": posts})
+        c.r.check("J3 the bar's NOT confirmed line carries both fallback commands with this page's port", fallback and f"127.0.0.1:{port}/api/execution-safety/latch" in bar
+                  and f"127.0.0.1:{port}/api/execution-safety/emergency-stop" in bar and "NOT confirmed" in bar, bar[:400])
+        s.open("/")
+        s.wait("!!window.StopPriority && !!RiskControls.state.data", 30, "reloaded")
+        # ---- J4 (B44b): the latch cannot be read (503): no answer counts, never success; confirmed once readable
+        with _Patch(svc.store, has_state_row=_raise):
+            t0 = _press_stop(s)
+            s.pump(10.2)
+            s.wait("document.querySelector('#pui-status').innerText.includes('Checking whether the Emergency Stop was saved')", 8, "J4 the bar's slow-Stop text")
+            t_check = time.time() - t0
+            state = s.js("JSON.stringify([RiskControls.status().outcomes.stop.result, RiskControls.status().latchLast, RiskControls.status().stopActive])")
+            card = s.js("(() => { const e = document.getElementById('tv-safety'); return e ? e.innerText : ''; })()")
+        _decided(s, "CONFIRMED", 10, "J4 confirmed once the latch is readable")
+        c.r.eq(f"J4 the latch unreadable for {t_check:.1f} s: still PENDING, no latch answer counted, never success", state, '["PENDING",null,true]')
+        c.r.check(f"J4 the bar and the panel say they are still checking the saved state (seen at {t_check:.1f} s)", "Checking whether the Emergency Stop was saved" in card, card[:300])
+        _fresh(s, c, "J4")
+        # ---- J5 (B45): saved at once, answered after 8 s; pressed again while pending: one outcome
+        stamp = _Stamp(svc, after=8.0)
+        answered = lambda: [e for e in s.b.events if "sessionId" not in e and e.get("method") == "Network.responseReceived" and e["params"]["response"]["url"].endswith("/emergency-stop")]  # noqa: E731
+        with _Patch(svc, emergency_stop=stamp):
+            n0, a0 = len(s.posts("/api/execution-safety/emergency-stop")), len(answered())
+            t0 = _press_stop(s)
+            s.pump(0.3)
+            s.press('#pui-status [data-pui="stop-bar"]')
+            s.pump(0.2)
+            s.press('#pui-status [data-pui="stop-bar-confirm"]')
+            _decided(s, "CONFIRMED", 15, "J5 confirmed")
+            dt = time.time() - t0
+            posts, late = len(s.posts("/api/execution-safety/emergency-stop")) - n0, len(answered()) - a0
+        c.r.check(f"J5 saved at once, answered after 8 s: CONFIRMED by the latch read in {int(dt * 1000)} ms ({posts} POSTs from two presses, {late} answered yet)",
+                  dt < 6.0 and posts >= 2 and late == 0, {"seconds": dt, "posts": posts})
+        s.pump(9.0)
+        _fresh(s, c, "J5")
+        # ---- J6 (B46): other tabs and the forward-validation page hold while the Stop is sent; a tab without BroadcastChannel does not
+        # a second listener in B and C stamps the wall-clock arrival of the messages (the page's own module is untouched)
+        STAMP = ("window.__sp = {}; try { const ch = new BroadcastChannel('stock-agent-stop'); ch.onmessage = (e) => { const m = e.data || {}; "
+                 "if (m.type === 'stop-preempt' && !window.__sp.preempt) window.__sp.preempt = Date.now(); if (m.type === 'stop-release') window.__sp.release = Date.now(); }; } catch (e) {}")
+        tabs = {"B": _Tab(s, "/", before=STAMP), "C": _Tab(s, "/forward_validation.html", before=STAMP), "D": _Tab(s, "/", before="delete window.BroadcastChannel;")}
+        try:
+            blk, stamp = _Block(svc.store.controls), _Stamp(svc, after=3.0)
+            with _Patch(svc.store, controls=blk), _Patch(svc, emergency_stop=stamp):
+                for t in tabs.values():
+                    t.js("fetch('/api/execution-safety/controls?tab=1').catch(() => null)")
+                end = time.time() + 15
+                while blk.n < 3 and time.time() < end:
+                    s.pump(0.1)
+                t0 = _press_stop(s)
+                seen = {}
+                end = time.time() + 3
+                while time.time() < end and len(seen) < 2:
+                    for k in ("B", "C"):
+                        if k not in seen and tabs[k].js("StopPriority.holding()"):
+                            seen[k] = round(time.time() - t0, 3)
+                    time.sleep(0.03)
+                d_holding = tabs["D"].js("StopPriority.holding()")
+                _decided(s, "CONFIRMED", 20, "J6 confirmed")
+                t_rel = time.time()
+                for k in ("B", "C"):
+                    tabs[k].wait("!StopPriority.holding()", 10, f"J6 tab {k} released")
+                counts = {k: t.js("JSON.stringify(StopPriority.state.counts)") for k, t in tabs.items()}
+                stamps = {k: json.loads(tabs[k].js("JSON.stringify(window.__sp || {})") or "{}") for k in ("B", "C")}
+                delay = {k: (round(stamps[k]["preempt"] / 1000 - t0, 3) if stamps[k].get("preempt") else None) for k in ("B", "C")}
+                released = {k: (round(stamps[k]["release"] / 1000 - t0, 3) if stamps[k].get("release") else None) for k in ("B", "C")}
+                no_channel = tabs["D"].js("StopPriority.state.channel === null")
+                blk.ev.set()
+            tabs["C"].js("fetch('/api/forward-validation').catch(() => null)")
+            s.pump(0.5)
+            resumed ={"B": len(tabs["B"].sent("/api/", t_rel)), "C": len(tabs["C"].sent("/api/forward-validation", t_rel))}
+            end = time.time() + 10
+            while resumed["B"] < 1 and time.time() < end:
+                s.pump(0.2)
+                resumed["B"] = len(tabs["B"].sent("/api/", t_rel))
+            ms = lambda x: "none" if x is None else f"{int(x * 1000)} ms"  # noqa: E731
+            c.r.check(f"J6 the Stop in tab A reached tab B in {ms(delay['B'])} and the forward-validation page in {ms(delay['C'])} (BroadcastChannel), released at {ms(released['B'])} / {ms(released['C'])}",
+                      all(delay[k] is not None and delay[k] < 2.0 and released[k] is not None and released[k] > delay[k] for k in ("B", "C")),
+                      {"delay": delay, "released": released, "holding_seen_by_cdp": seen})
+            c.r.check("J6 their in-flight reads were aborted and they held until A's release", all(json.loads(counts[k])["aborted"] >= 1 and json.loads(counts[k])["remote"] >= 1 for k in ("B", "C")), counts)
+            c.r.check("J6 a tab without BroadcastChannel never holds: cooperative coordination, not a guarantee", no_channel is True and d_holding is False
+                      and json.loads(counts["D"])["remote"] == 0, {"counts": counts["D"], "holding": d_holding})
+            c.r.check(f"J6 tab B and the forward-validation page read again after the release ({resumed})", resumed["B"] >= 1 and resumed["C"] >= 1, resumed)
+        finally:
+            for t in tabs.values():
+                t.close()
+        _fresh(s, c, "J6")
+        # ---- J7 (B47): a write sent while the Stop is pending goes at once
+        stamp = _Stamp(svc, after=4.0)
+        with _Patch(svc, emergency_stop=stamp):
+            t0 = _press_stop(s)
+            s.pump(0.3)
+            t1 = time.time()
+            s.js("fetch('/api/execution-safety/pause-new-entries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stock-Agent-Intent': 'dashboard' }, body: '{}' }).catch(() => null)")
+            s.pump(0.5)
+            sent = _main_sent(s, "/pause-new-entries", t1, "POST")
+            _decided(s, "CONFIRMED", 20, "J7 confirmed")
+        s.pump(4.5)
+        v = _state(c)
+        c.r.check("J7 a write during the pending Stop was sent at once and reached the server (never held or aborted)", len(sent) == 1 and bool((v.get("no_new_entries") or {}).get("active")) and _kill(c),
+                  {"sent": len(sent), "state": v.get("state")})
+        _fresh(s, c, "J7")
+        # ---- J8 (B49): the module's load aborted: the Stop still works, confirmed by the latch reads, nothing preempted
+        s.intercept(abort=("stop_priority.js",))
+        s.open("/")
+        s.wait("!!window.RiskControls && !!RiskControls.state.data", 30, "J8 loaded")
+        absent = s.js("window.StopPriority === undefined && window.fetch.__stopPriority === undefined")
+        t0 = _press_stop(s)
+        _decided(s, "CONFIRMED", 20, "J8 confirmed without the module")
+        dt = time.time() - t0
+        c.r.check(f"J8 stop_priority.js blocked: the Stop is confirmed by the latch reads in {int(dt * 1000)} ms, with nothing to preempt", absent is True and _kill(c)
+                  and s.js("RiskControls.status().preempting === false"), {"seconds": dt})
+        _fresh(s, c, "J8")
+        s.intercept()
+        # ---- J9 (B50): a reload while the Stop is pending claims nothing; the display follows the server's read
+        stamp = _Stamp(svc, after=6.0)
+        with _Patch(svc, emergency_stop=stamp):
+            _press_stop(s)
+            s.pump(1.0)
+            s.open("/")
+            s.wait("!!window.RiskControls && !!RiskControls.state.data", 30, "J9 reloaded")
+            claim = s.js("JSON.stringify([RiskControls.status().outcomes.stop, RiskControls.status().pending.stop, RiskControls.status().latchKill])")
+            shown = s.js("!!(RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active)")
+        s.pump(6.0)
+        c.r.check("J9 after the reload no outcome, no pending Stop and no overlay is claimed; the state shown is the server's read", claim == "[null,false,null]" and shown is True and _kill(c), claim)
+        _fresh(s, c, "J9")
+    finally:
+        s.close()
+        _reset(c, "risk_controls_priority")

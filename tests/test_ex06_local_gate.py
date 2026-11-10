@@ -569,7 +569,7 @@ def test_X19_every_local_capable_http_caller_in_production_code_is_classified():
         assert not re.search(r"(fetch|WebSocket|EventSource)\(\s*[\"'`]wss?://", text[p]), p
     assert sorted(p for p in front if p.endswith(".html")) == ["frontend/forward_validation.html", "frontend/index.html"]
     fv = text["frontend/forward_validation.html"]
-    assert "<form" not in fv and re.findall(r'<script[^>]*src="([^"]+)"', fv) == ["forward_validation.js"]
+    assert "<form" not in fv and re.findall(r'<script[^>]*src="([^"]+)"', fv) == ["stop_priority.js", "forward_validation.js"]   # J-04: the priority module first, then the page's own script
     assert not re.search(r"method\s*:\s*[\"'](POST|PUT|PATCH|DELETE)", text["frontend/forward_validation.js"], re.I)   # the FV page only reads
     assert "referrer" not in fv.lower() and not re.search(r"noreferrer|referrerpolicy", text["frontend/forward_validation.js"], re.I)   # H-1's strict branch needs the Referer
 
@@ -589,9 +589,12 @@ def test_X17_the_wrapper_is_the_first_code_the_dashboard_runs_and_index_html_is_
     # risk controls panel: the page's only change is its static notice (design 3.6; pinned line by line by tests/test_panel_freeze.py F03P), removed here exactly once
     page = (ROOT / "frontend" / "index.html").read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
     page, notices = re.subn(r'(?m)^<div id="pui-boot-notice" class="pui-boot-notice" role="alert">[^\n<]*\n<code>curl\.exe [^\n<]*</code>\nMore in README\.md, "Emergency Stop fallback"\.</div>\n', "", page)
-    assert notices == 1 and page.encode("utf-8") == base.replace(b"\r\n", b"\n")
+    # J-04: the one script line the page adds, directly after app.js (pinned line by line by tests/test_j04_freeze.py F03J), removed here exactly once
+    page, priority = re.subn(r'(?m)^<script src="stop_priority\.js"></script>\n', "", page)
+    assert notices == 1 and priority == 1 and page.encode("utf-8") == base.replace(b"\r\n", b"\n")
     html = base.decode("utf-8")
     assert re.findall(r'<script src="([^"]+)"', html)[0] == "app.js"
+    assert re.findall(r'<script src="([^"]+)"', (ROOT / "frontend" / "index.html").read_text(encoding="utf-8"))[:2] == ["app.js", "stop_priority.js"]   # J-04: the wrapper still runs first
     js = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
     a, b = js.index("// EX-06 local intent: begin"), js.index("// EX-06 local intent: end")
     assert a < b < js.index("const REFRESH_MS = 30000;") < js.index("async function api(")

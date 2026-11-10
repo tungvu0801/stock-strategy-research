@@ -592,7 +592,8 @@ def test_X04_no_execution_adapter_and_exact_routes(stack):
     from api.server import app
     mine = {p: set(o) for p, o in app.openapi()["paths"].items() if p.startswith("/api/execution-safety")}
     assert mine == {"/api/execution-safety": {"get"}, "/api/execution-safety/events": {"get"}, "/api/execution-safety/controls": {"get"}, "/api/execution-safety/pause-new-entries": {"post"},
-                    "/api/execution-safety/resume-new-entries": {"post"}, "/api/execution-safety/emergency-stop": {"post"}, "/api/execution-safety/clear-emergency-stop": {"post"}}
+                    "/api/execution-safety/resume-new-entries": {"post"}, "/api/execution-safety/emergency-stop": {"post"}, "/api/execution-safety/clear-emergency-stop": {"post"},
+                    "/api/execution-safety/latch": {"get"}}                                  # J-04: the fast read of the persisted latch alone (tests/test_stop_latch_read.py)
     for p in mine:
         assert not re.search(r"(?i)order|execute\b|broker|place|cancel|submit|buy|sell|preview|trade|confirm|liquidat", p), p
     assert not re.search(r"ExecutionPreviewAdapter|NullExecutionPreviewAdapter|\.preview\(", source_of(SAFETY_FILES))
@@ -685,8 +686,8 @@ def test_U04_harness_flow_registered_after_trade_review():
     names = [f.__name__ for f in F.FLOWS]
     # risk controls panel (design section 6): its three flows run between trade_review and risk_controls, while the gate is Trading allowed
     # (risk_controls latches a forced daily loss for its date); nothing else moved
-    panel = ["risk_controls_scripts", "risk_controls_races", "risk_controls_presses"]
-    assert names[names.index("trade_review") + 1:names.index("trade_review") + 4] == panel
+    panel = ["risk_controls_scripts", "risk_controls_races", "risk_controls_presses", "risk_controls_priority"]   # J-04: the Stop reliability flow joins them
+    assert names[names.index("trade_review") + 1:names.index("trade_review") + 5] == panel
     assert "risk_controls" in names and names.index("risk_controls") == names.index("trade_review") + 1 + len(panel) and names.index("risk_controls") < names.index("automation")
     assert names[-8:] == ["automation", "saved_scans", "daily_brief", "brief_delivery", "notification_click", "paper_portfolio", "alpaca_paper", "alpaca_orders"]
 

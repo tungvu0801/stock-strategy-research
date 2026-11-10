@@ -215,7 +215,8 @@ test("the Risk card shows the outcome lines, the not-sent line and the open-orde
   const ctx = { exec: EXEC, safety: KILLED, card: null, position: null, dom: {}, symbol: "SNDK", limits: null, avail: {}, confirm: null,
                 rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } }, openOrders: { status: "FRESH", count: 3, at: "2026-11-09T14:00:00+00:00" } }), notSent: "pause" };
   const html = PUI.cardsHtml(ctx);
-  assert.match(html, /<div class="pui-outcome pui-bad" data-pui-outcome="stop">Emergency Stop NOT confirmed\. Press it again\.<\/div>/);
+  // J-04 (design 2.1 Part D): the card's NOT confirmed line names the fallback command
+  assert.match(html, /<div class="pui-outcome pui-bad" data-pui-outcome="stop">Emergency Stop NOT confirmed\. Press it again\. If it stays NOT confirmed, run the fallback command \(status bar, or README › Emergency Stop fallback\)\.<\/div>/);
   assert.match(html, /data-pui-outcome="not-sent">Pause was not sent\./);
   assert.match(html, /data-pui-outcome="orders">Open orders at Alpaca: 3, as of 14:00 UTC/);
   const css = read("product_ui.css");
@@ -257,15 +258,56 @@ test("the status bar: a Stop in every state; the banner wins over the outcome an
     assert.ok(t.includes("Emergency Stop unavailable on this page. Page scripts did not load. Use the fallback command."), t);
     assert.ok(!t.includes("Part of this page") && !t.includes("Sending Emergency Stop") && !/data-pui="stop-bar"/.test(html) && !/data-pui-confirm/.test(html));
     assert.ok(t.includes('curl.exe -sS --max-time 60 -X POST http://127.0.0.1:8123/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"'), t);
-    assert.ok(t.includes('(curl.exe -sS --max-time 60 http://127.0.0.1:8123/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active'), t);
+    // J-04: the second command reads the persisted latch alone (GET /api/execution-safety/latch, 15 s), never the full evaluation
+    assert.ok(t.includes('(curl.exe -sS --max-time 15 http://127.0.0.1:8123/api/execution-safety/latch -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_active'), t);
   }
   const conf = bar({ confirm: true });
   assert.match(conf, /data-pui-confirm="stop-bar"/); assert.match(conf, /data-pui="stop-bar-confirm"/); assert.match(conf, /data-pui="stop-bar-cancel"/);
   assert.equal(PUI.barModel({ rc: RC({ outcomes: { stop: { result: "CONFIRMED" } } }) }).outcome, "Emergency Stop active");
-  assert.equal(PUI.barModel({ rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } } }) }).outcome, "Emergency Stop NOT confirmed. Press it again.");
+  const nc = PUI.barModel({ rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } } }) });                                  // J-04: the bar's NOT confirmed carries the F2 commands
+  assert.deepEqual([nc.outcome, nc.fallback], ["Emergency Stop NOT confirmed. Press it again. If it stays NOT confirmed, run the fallback command:", true]);
   // one message at a time: the model itself never carries the "part of this page" line beside the banner (3.4), not only the markup
   for (const f of [{ scriptsMissing: true }, { noLegacyStop: true }, { confirmHidden: true }]) assert.equal(PUI.barModel({ ...f, tabsDead: true }).partial, false);
   assert.equal(PUI.barModel({ tabsDead: true }).partial, true);
+});
+
+// ---- J-04 (design 2.1 Part D): the overlay, the slow-Stop texts, the fallback line and the paused line ---------------------------------------
+test("J-04 the latch overlay wins over any server view in the effective model; the bar's NOT confirmed line prints both commands; the paused line shows only while this tab preempts and never beside the banner", () => {
+  const over = RC({ latchKill: { active: true, at: T0, activated_at: "2026-11-10T15:00:00+00:00" } });
+  for (const v of [ALLOWED, PAUSED, UNKNOWN, null]) {
+    const e = PUI.effectiveSafety(v, over);
+    assert.deepEqual([e.state, e.kill_switch.active, e.uncertain, e.latch], ["HALTED", true, false, true], JSON.stringify(v && v.state));
+  }
+  assert.equal(PUI.effectiveSafety(ALLOWED, RC({ latchKill: null })).state, "TRADING_ALLOWED");
+  const aged = PUI.effectiveSafety(ALLOWED, RC({ latchKill: { active: true, at: T0 }, uncertain: true }));                     // the overlay aged out (65 s): last known, not a claim
+  assert.deepEqual([aged.state, aged.uncertain, aged.lastKnown && aged.lastKnown.state], ["UNKNOWN", true, "TRADING_ALLOWED"]);
+  assert.equal(PUI.automationTrading(PUI.effectiveSafety(ALLOWED, over)), "STOPPED · Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.");
+  const nc = PUI.barModel({ rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } } }), port: "8123" });
+  const html = PUI.statusHtml(EXEC, ALLOWED, { bar: nc });
+  assert.match(html, /data-pui-bar-fallback/);
+  assert.ok(text(html).includes('(curl.exe -sS --max-time 15 http://127.0.0.1:8123/api/execution-safety/latch -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_active'));
+  assert.ok(text(html).includes("Success is True from the second command; False means not saved"));
+  const paused = PUI.barModel({ rc: RC({ preempting: true, outcomes: { stop: { result: "PENDING", at: T0 } }, now: T0 + 500 }) });
+  assert.equal(paused.paused, true);
+  assert.ok(text(PUI.statusHtml(EXEC, ALLOWED, { bar: paused })).includes(PUI.PANELS_PAUSED_TEXT));
+  assert.equal(PUI.barModel({ scriptsMissing: true, tabsDead: true, rc: RC({ preempting: true }) }).paused, false);     // one message at a time: the banner wins
+  assert.equal(PUI.barModel({ rc: RC({ preempting: false }) }).paused, false);
+});
+
+test("J-04 the pending Stop's texts: 'Sending' for 10 s, then 'checking the saved state' or 'not saved yet' from the latch answers; NOT confirmed names the fallback, in the bar and on the card", () => {
+  const at = T0;
+  const pend = (now, latchLast) => RC({ outcomes: { stop: { result: "PENDING", at } }, pending: { stop: true }, now, latchLast });
+  assert.equal(PUI.barModel({ rc: pend(at + 9000, null) }).outcome, "Sending Emergency Stop…");
+  assert.equal(PUI.barModel({ rc: pend(at + 10001, null) }).outcome, PUI.STOP_CHECKING_SAVED_TEXT);
+  assert.equal(PUI.barModel({ rc: pend(at + 10001, { active: false, at: at + 9000 }) }).outcome, PUI.STOP_NOT_SAVED_TEXT);
+  assert.equal(PUI.STOP_NOT_SAVED_TEXT, "Emergency Stop not saved yet. Checking the saved state every 2 s.");
+  const card = (rc) => PUI.riskOutcomeLines(rc, null, false).map((x) => x.text);
+  assert.deepEqual(card(RC({ outcomes: { stop: { result: "PENDING", at } }, now: at + 12000, latchLast: null })), [PUI.STOP_CHECKING_SAVED_TEXT]);
+  assert.deepEqual(card(RC({ outcomes: { stop: { result: "NOT_CONFIRMED", at } } })), [PUI.STOP_NOT_CONFIRMED_TEXT]);
+  assert.ok(PUI.STOP_NOT_CONFIRMED_TEXT.startsWith("Emergency Stop NOT confirmed. Press it again.") && /fallback command/.test(PUI.STOP_NOT_CONFIRMED_TEXT));
+  assert.equal(PUI.barModel({ rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } } }) }).fallback, true);
+  assert.equal(PUI.barModel({ rc: RC({ outcomes: { pause: { result: "NOT_CONFIRMED" } } }) }).fallback, false);   // only the Stop names the fallback
+  assert.equal(PUI.STOP_SLOW_MS, 10000);
 });
 
 test("the bar's 'Emergency Stop active' is present tense only while a fresh view shows the kill; a server UNKNOWN's default kill switch reads 'last known' (3.1, B-3)", () => {

@@ -135,6 +135,8 @@ re-persist an evaluation row at most every `EXECUTION_SAFETY_EVALUATION_HEARTBEA
 ## 11. API (safety state only; no order path)
 
 `GET /api/execution-safety` (evaluates with trigger `API`), `GET /api/execution-safety/events`, `GET /api/execution-safety/controls`,
+`GET /api/execution-safety/latch` (J-04: the persisted Emergency Stop latch alone — `kill_active` true / false, `NO_ROW` when no state row exists,
+503 `UNREADABLE` when the row cannot be read; it never evaluates, never reads the account and writes nothing),
 `POST /api/execution-safety/pause-new-entries`, `POST /api/execution-safety/resume-new-entries`,
 `POST /api/execution-safety/emergency-stop`, `POST /api/execution-safety/clear-emergency-stop` (optional `{reason}`; actor `user`).
 
