@@ -333,6 +333,11 @@
   const SAFETY_UNKNOWN_EXPLAIN = "Automatic entries are blocked. This state does not by itself block manual paper orders.";
   const SAFETY_UNCERTAIN_TEXT = "Could not confirm the current state.";
   const SAFETY_ACTION_NAMES = { stop: "Emergency Stop", pause: "Pause", resume: "Resume", clear: "Clear Emergency Stop" };
+  // J-04 (design 2.1 Part D): a Stop pending for more than 10 s says what the saved-state reads found so far; NOT confirmed points to the fallback
+  const STOP_SLOW_MS = 10000;
+  const STOP_NOT_SAVED_TEXT = "Emergency Stop not saved yet. Checking the saved state every 2 s.";
+  const STOP_CHECKING_SAVED_TEXT = "Checking whether the Emergency Stop was saved…";
+  const STOP_NOT_CONFIRMED_TEXT = "Emergency Stop NOT confirmed. Press it again. If it stays NOT confirmed, run the fallback command (status bar, or README › Emergency Stop fallback).";
   const stampOf = (iso, n) => (iso ? `${String(iso).slice(11, n || 19)} UTC` : "—");
   const clockOf = (ms) => { const d = ms == null ? null : new Date(ms); return d && !isNaN(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : "—"; };
   function safetyModel(v) {
@@ -363,11 +368,16 @@
     const oc = o.outcomes || {};
     const out = [];
     if (o.announce) out.push({ key: "announce", cls: "bad", text: String(o.announce) });
+    const t = o.now != null ? Number(o.now) : null;
     for (const k of ["stop", "pause", "resume", "clear"]) {
       const x = oc[k];
       if (!x) continue;
-      if (x.result === "PENDING") out.push({ key: k, cls: "warn", text: `Sending ${SAFETY_ACTION_NAMES[k]}…` });
-      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: `${SAFETY_ACTION_NAMES[k]} NOT confirmed. Press it again.` });
+      if (x.result === "PENDING") {
+        // J-04: a Stop pending for more than 10 s reports the latch reads: "not saved yet" after a counted read that found it unsaved, else "checking"
+        const slow = k === "stop" && t != null && x.at != null && t - Number(x.at) > STOP_SLOW_MS;
+        out.push({ key: k, cls: "warn", text: !slow ? `Sending ${SAFETY_ACTION_NAMES[k]}…` : o.latchLast && o.latchLast.active === false ? STOP_NOT_SAVED_TEXT : STOP_CHECKING_SAVED_TEXT });
+      }
+      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: k === "stop" ? STOP_NOT_CONFIRMED_TEXT : `${SAFETY_ACTION_NAMES[k]} NOT confirmed. Press it again.` });
       else if (k === "stop" && x.note === "posted-unread") out.push({ key: k, cls: "warn", text: "The server confirmed Emergency Stop, but the state could not be re-read." });
       else if (k === "stop" && x.note === "error-but-active") out.push({ key: k, cls: "warn", text: "The request reported an error, but the server shows Emergency Stop active." });
     }
@@ -432,6 +442,6 @@
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
            ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
            proposalModel, proposalHtml, proposalDetailsHtml, safetyModel, safetyHtml, safetyEventLine, safetyButtons, safetyMessages, openOrdersLine,
-           SAFETY_UNKNOWN_EXPLAIN, SAFETY_UNCERTAIN_TEXT,
+           SAFETY_UNKNOWN_EXPLAIN, SAFETY_UNCERTAIN_TEXT, STOP_SLOW_MS, STOP_NOT_SAVED_TEXT, STOP_CHECKING_SAVED_TEXT, STOP_NOT_CONFIRMED_TEXT,
            EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS, SAFETY_LABELS };
 });

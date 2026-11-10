@@ -823,11 +823,13 @@ None of these commands is needed in normal use.
 
 ```
 curl.exe -sS --max-time 60 -X POST http://127.0.0.1:8000/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"
-(curl.exe -sS --max-time 60 http://127.0.0.1:8000/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active
+(curl.exe -sS --max-time 15 http://127.0.0.1:8000/api/execution-safety/latch -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_active
 ```
 
 **Success is `True` from the second command.** The first can take up to about 45 s while a refresh cycle runs. If it times out, run the
-second: the stop may still have been saved. A connection error means the server is not answering: go to F3.
+second: the stop may still have been saved. The second command reads only the saved stop state, so it answers at once even while a cycle
+runs: `True` means the stop is saved; `False` means it is not, so run the first command again; a blank means no answer, no state row yet
+or an unreadable state (a running deployment always has the row), so go to F3. A connection error means the server is not answering: go to F3.
 
 **F4 in detail.** `.\scripts\stop_stock_agent.ps1` writes the stop file, waits up to `-TimeoutSeconds` (60 by default) on a hung server, then
 force-stops that one verified process; lower the timeout if you cannot wait. It prints "NOT RUNNING" if there is no PID file, for example

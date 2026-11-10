@@ -4,6 +4,7 @@ api/routes/execution_safety.py — Stage 5.9.1 EXECUTION SAFETY GATE (state read
 GET  /api/execution-safety                      evaluate the gate now (persisted) + recent events, control liveness, baselines
 GET  /api/execution-safety/events               append-only event history (user actions, baseline creation, daily-loss trigger, day reset, errors)
 GET  /api/execution-safety/controls             control liveness rows + recent persisted evaluations
+GET  /api/execution-safety/latch                J-04: the persisted Emergency Stop latch alone (no evaluation, no account read, no write)
 POST /api/execution-safety/pause-new-entries    NO_NEW_ENTRIES on
 POST /api/execution-safety/resume-new-entries   NO_NEW_ENTRIES off (never clears an emergency stop)
 POST /api/execution-safety/emergency-stop       manual kill switch on
@@ -50,6 +51,29 @@ def list_events(kind: Optional[str] = Query(default=None, max_length=32), limit:
 def list_controls(limit: int = Query(default=50, ge=1, le=500)) -> JSONResponse:
     st = _service().store
     return JSONResponse({"controls": st.controls(), "evaluations": st.evaluations(limit), "known_controls": list(CONTROLS), "version": VERSION, "disclaimer": DISCLAIMER})
+
+
+@router.get("/latch")
+def read_latch() -> JSONResponse:
+    """J-04 (TASK_P plan, design 2.1 Part B): the persisted Emergency Stop latch, read strictly from its row and nothing else, so a page can confirm
+    a saved stop in milliseconds while the full evaluation (GET /api/execution-safety) waits for the cash-flow cycle. Never evaluates, never
+    reads the account, writes nothing and records no event. The mapping is pinned by tests/test_stop_latch_read.py:
+      row with kill_active 1 -> 200 {"status": "OK", "kill_active": true, "kill_activated_at": ...}
+      row with kill_active 0 -> 200 {"status": "OK", "kill_active": false}
+      no database, table or row -> 200 {"status": "NO_ROW", "kill_active": null}      (only kill_active true is information to a page)
+      anything unreadable      -> 503 {"status": "UNREADABLE", "kill_active": null}   (never a guess, never a 500 outside the local gate)
+    """
+    st = _service().store
+    try:
+        rec = st.state()                                                           # strict: raises SafetyStoreError when the row cannot be read
+        present = st.has_state_row()
+    except Exception as exc:  # noqa: BLE001 - unreadable is reported, never guessed
+        return JSONResponse({"version": VERSION, "status": "UNREADABLE", "kill_active": None, "error": type(exc).__name__}, status_code=503)
+    if not present:
+        if rec.kill_active:                                                        # a saved stop whose row check found nothing: the check failed, never "no row"
+            return JSONResponse({"version": VERSION, "status": "UNREADABLE", "kill_active": None, "error": "RowCheckFailed"}, status_code=503)
+        return JSONResponse({"version": VERSION, "status": "NO_ROW", "kill_active": None, "kill_activated_at": None})
+    return JSONResponse({"version": VERSION, "status": "OK", "kill_active": bool(rec.kill_active), "kill_activated_at": rec.kill_activated_at if rec.kill_active else None})
 
 
 def _act(fn_name: str, body: Optional[ActionBody]) -> JSONResponse:

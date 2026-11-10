@@ -62,8 +62,15 @@
   const BANNER_TEXT = "Emergency Stop unavailable on this page. Page scripts did not load. Use the fallback command.";
   const PARTIAL_TEXT = "Part of this page did not load. Emergency Stop still works from this bar.";
   const ACTION_NAMES = { stop: "Emergency Stop", pause: "Pause", resume: "Resume", clear: "Clear Emergency Stop" };
+  // J-04 (design 2.1 Part D): the Stop's slow and failed outcomes name what the saved-state reads found, and NOT confirmed carries the fallback
+  const STOP_SLOW_MS = 10000;
+  const STOP_NOT_SAVED_TEXT = "Emergency Stop not saved yet. Checking the saved state every 2 s.";
+  const STOP_CHECKING_SAVED_TEXT = "Checking whether the Emergency Stop was saved…";
+  const STOP_NOT_CONFIRMED_TEXT = "Emergency Stop NOT confirmed. Press it again. If it stays NOT confirmed, run the fallback command (status bar, or README › Emergency Stop fallback).";
+  const STOP_NOT_CONFIRMED_BAR_TEXT = "Emergency Stop NOT confirmed. Press it again. If it stays NOT confirmed, run the fallback command:";
+  const PANELS_PAUSED_TEXT = "Other dashboard panels are paused while the Emergency Stop is sent.";
   const f2Post = (port) => `curl.exe -sS --max-time 60 -X POST http://127.0.0.1:${port}/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"`;
-  const f2Read = (port) => `(curl.exe -sS --max-time 60 http://127.0.0.1:${port}/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active`;
+  const f2Read = (port) => `(curl.exe -sS --max-time 15 http://127.0.0.1:${port}/api/execution-safety/latch -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_active`;
   const clockOf = (ms) => { const d = ms == null ? null : new Date(ms); return d && !isNaN(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : "—"; };
   const AUTO_PENDING_TEXT = "Checking Paper Auto status…";
   const AUTO_UNKNOWN_TEXT = "Paper Auto status unavailable";
@@ -629,6 +636,17 @@
   function checkingSafety(sv) { return !!(sv && sv.uncertain && sv.loading && !sv.lastKnown && !sv.error); }
   function uncText(sv) { return checkingSafety(sv) ? CHECKING_TEXT : UNCERTAIN_TEXT; }
   function effectiveSafety(sv, rc) {
+    // J-04 (design 2.1, review H-1): the latch overlay. A counted latch read showed the Emergency Stop saved and no later server view replaced it:
+    // the kill switch is shown as a fresh read (HALTED, its label, Clear offered) over the last server view's other fields; never the reverse.
+    // Like any read it ages (65 s), and a server view that itself shows the kill, UNKNOWN included, is shown as the server sent it: the panel
+    // decides (latchShown, PR #59 review MED-1) and this falls through to the server's own view or to "last known"
+    if (rc && rc.latchShown === true && rc.latchKill && rc.latchKill.active === true && !rc.uncertain) {
+      const v = sv || {};
+      const k = v.kill_switch && typeof v.kill_switch === "object" ? v.kill_switch : {};
+      return Object.assign({ daily_loss: {}, no_new_entries: { active: false } }, v,
+                           { state: "HALTED", state_label: SAFETY_TEXT.HALTED, allowed_new_entry: false, halted: true, reason_text: "Emergency stop active",
+                             kill_switch: Object.assign({}, k, { active: true, activated_at: rc.latchKill.activated_at || k.activated_at || null }), uncertain: false, lastKnown: null, latch: true });
+    }
     const uncertain = !sv || !rc || !!rc.uncertain;
     if (!uncertain) return Object.assign({}, sv, { uncertain: false, lastKnown: null });
     return { state: "UNKNOWN", state_label: SAFETY_TEXT.UNKNOWN, uncertain: true, loading: !!(rc && rc.loading), error: (rc && rc.error) || null, allowed_new_entry: false, reason_text: "",
@@ -650,11 +668,15 @@
     const oc = r.outcomes || {};
     const out = [];
     if (r.announce) out.push({ key: "announce", cls: "bad", text: String(r.announce) });
+    const t = r.now != null ? Number(r.now) : Date.now();
     for (const k of ["stop", "pause", "resume", "clear"]) {
       const x = oc[k];
       if (!x) continue;
-      if (x.result === "PENDING") out.push({ key: k, cls: "warn", text: `Sending ${ACTION_NAMES[k]}…` });
-      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: `${ACTION_NAMES[k]} NOT confirmed. Press it again.` });
+      if (x.result === "PENDING") {
+        const slow = k === "stop" && x.at != null && t - Number(x.at) > STOP_SLOW_MS;   // J-04: the same words as trader_render.js safetyMessages
+        out.push({ key: k, cls: "warn", text: !slow ? `Sending ${ACTION_NAMES[k]}…` : r.latchLast && r.latchLast.active === false ? STOP_NOT_SAVED_TEXT : STOP_CHECKING_SAVED_TEXT });
+      }
+      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: k === "stop" ? STOP_NOT_CONFIRMED_TEXT : `${ACTION_NAMES[k]} NOT confirmed. Press it again.` });
       else if (k === "stop" && x.note === "posted-unread") out.push({ key: k, cls: "warn", text: "The server confirmed Emergency Stop, but the state could not be re-read." });
       else if (k === "stop" && x.note === "error-but-active") out.push({ key: k, cls: "warn", text: "The request reported an error, but the server shows Emergency Stop active." });
     }
@@ -680,19 +702,32 @@
     const sx = rc && rc.outcomes ? rc.outcomes.stop : null;
     let outcome = "", cls = "";
     const unc = !!(rc && rc.uncertain) || o.killShown === false;                  // uncertain, or a fresh view that does not show the kill (a server UNKNOWN's default)
+    const t = o.now != null ? Number(o.now) : (rc && rc.now != null ? Number(rc.now) : Date.now());
+    let fallback = false;
     if (!banner && sx) {
-      if (sx.result === "PENDING") { outcome = "Sending Emergency Stop…"; cls = "warn"; }
-      else if (sx.result === "NOT_CONFIRMED") { outcome = "Emergency Stop NOT confirmed. Press it again."; cls = "bad"; }
+      if (sx.result === "PENDING") {                                                // J-04: after 10 s, what the saved-state reads found so far
+        const slow = sx.at != null && t - Number(sx.at) > STOP_SLOW_MS;
+        outcome = !slow ? "Sending Emergency Stop…" : rc.latchLast && rc.latchLast.active === false ? STOP_NOT_SAVED_TEXT : STOP_CHECKING_SAVED_TEXT; cls = "warn";
+      }
+      else if (sx.result === "NOT_CONFIRMED") { outcome = STOP_NOT_CONFIRMED_BAR_TEXT; cls = "bad"; fallback = true; }   // J-04: the F2 commands follow, with this page's port
       else if (sx.note === "posted-unread") { outcome = "The server confirmed Emergency Stop, but the state could not be re-read."; cls = "warn"; }
       else if (unc) { outcome = "Last known: Emergency Stop active. Could not confirm the current state."; cls = "warn"; }   // only a fresh read is shown as the present
       else if (sx.note === "error-but-active") { outcome = "The request reported an error, but the server shows Emergency Stop active."; cls = "bad"; }
       else { outcome = "Emergency Stop active"; cls = "bad"; }
     }
     if (!banner && !outcome && rc && rc.announce) { outcome = String(rc.announce); cls = "bad"; }
-    return { banner, outcome, cls, partial: !banner && !!o.tabsDead, confirm: !banner && !!o.confirm, port: String(o.port || "8000") };
+    // J-04: while this tab preempts its background reads for the Stop, the bar says so (an aborted health read may show "Backend unreachable" meanwhile)
+    const paused = !banner && !!(rc && rc.preempting);
+    return { banner, outcome, cls, fallback, paused, partial: !banner && !!o.tabsDead, confirm: !banner && !!o.confirm, port: String(o.port || "8000") };
+  }
+  const commandsHtml = (port) => `<code>${esc(f2Post(port))}</code><code>${esc(f2Read(port))}</code>`;   // the F2 commands (README › Emergency Stop fallback), this page's port: displayed text, never fetched
+  function fallbackHtml(text, port) {
+    // J-04: the NOT confirmed line with the same two commands as the banner
+    return `<div class="pui-banner" data-pui-bar-fallback role="alert"><b>${esc(text)}</b>${commandsHtml(port)}` +
+      `<span>Success is True from the second command; False means not saved (run the first again); a blank means no answer, no state row or unreadable: see README.md, "Emergency Stop fallback" (F3).</span></div>`;
   }
   function bannerHtml(port) {
-    return `<div class="pui-banner" data-pui-banner role="alert"><b>${esc(BANNER_TEXT)}</b><code>${esc(f2Post(port))}</code><code>${esc(f2Read(port))}</code>` +
+    return `<div class="pui-banner" data-pui-banner role="alert"><b>${esc(BANNER_TEXT)}</b>${commandsHtml(port)}` +
       `<span>Success is True from the second command. More in README.md, "Emergency Stop fallback".</span></div>`;
   }
 
@@ -707,7 +742,8 @@
     const auto = `<span class="pui-auto" data-pui-auto="${esc(segs[3].state)}" title="Paper Auto: the controls are on the Risk card"><span class="pui-seg ${esc(segs[3].cls)}" data-pui-seg="auto">${esc(segs[3].text)}</span></span>`;
     // B-2: Emergency Stop in the bar, in every section, outside every tab; its confirmation lives in the bar too (design 3.4, review HIGH-1)
     const stop = bar.banner ? "" : `<button type="button" class="pui-seg bad pui-bar-stop" data-pui="stop-bar" title="Emergency Stop: saved on the server, then confirmed by a read">Emergency Stop</button>`;
-    const msg = bar.banner ? bannerHtml(bar.port) : (bar.outcome ? `<span class="pui-bar-msg ${lvl(bar.cls)}" data-pui-bar-outcome>${esc(bar.outcome)}</span>` : "") +
+    const msg = bar.banner ? bannerHtml(bar.port) : (bar.outcome && bar.fallback ? fallbackHtml(bar.outcome, bar.port) : bar.outcome ? `<span class="pui-bar-msg ${lvl(bar.cls)}" data-pui-bar-outcome>${esc(bar.outcome)}</span>` : "") +
+      (bar.paused ? `<span class="pui-bar-msg pui-warn" data-pui-bar-paused>${esc(PANELS_PAUSED_TEXT)}</span>` : "") +   // J-04
       (bar.partial ? `<span class="pui-bar-msg pui-warn" data-pui-bar-partial>${esc(PARTIAL_TEXT)}</span>` : "");
     const details = o.sysOpen ? `<div class="pui-system-details" data-pui-system-details>` + (sys.items.length ? sys.items.map((i) => `<div class="${lvl(i.level)}">${i.level === "ok" ? "✓" : "⚠"} ${esc(i.text)}${i.reason ? ` <span class="pui-sub">· ${esc(i.reason)}</span>` : ""}</div>`).join("")
       : `<div class="pui-dim">System status not loaded yet.</div>`) + `</div>` : "";
@@ -1866,12 +1902,14 @@
       const err = legacyBotError();
       if (err) p.error = err;
       if (pb.state.busy && Date.now() - p.since < AUTO_TIMEOUT_MS) return;             // the legacy POST is still in flight
+      const sp = G.StopPriority;                                                       // J-04 (review M-4): while this tab preempts its reads for an Emergency Stop, wait; the status read would be aborted
+      if (sp && typeof sp.preempting === "function" && sp.preempting() && Date.now() - p.since < AUTO_TIMEOUT_MS + 30000) return;
       clearInterval(state.autoWatch); state.autoWatch = null;
       let data = null;
       try { data = await pb.refresh(); } catch (e) { data = null; }                    // the one authoritative read: GET /api/execution/status
       if (state.autoPending !== p) return;
       state.autoPending = null;
-      const mode = data && data.mode;
+      const mode = !pb.state.error && data && data.mode;                               // J-04: a failed read returns the old data; that is no evidence about the mode
       if (!mode) state.autoError = pb.state.error || `Paper bot status unavailable (no status after ${kind})`;
       else if (kind === "enable" && mode !== "PAPER_AUTO") state.autoError = p.error || "Enable Paper Auto failed (the mode did not change)";
       else if (kind === "disable" && mode !== "MONITOR_ONLY") state.autoError = p.error || "Stop New Trades failed (the mode did not change)";
@@ -2434,6 +2472,8 @@
            // risk controls panel (design 3.4)
            STOP_ROW_TEXT, UNKNOWN_EXPLAIN, UNCERTAIN_TEXT, CHECKING_TEXT, BANNER_TEXT, PARTIAL_TEXT, ACTION_NAMES, f2Post, f2Read, safetyLabel, effectiveSafety, checkingSafety, setHtml, openOrdersLine, riskOutcomeLines,
            automationTrading, barModel, bannerHtml,
+           // J-04 (design 2.1 Part D)
+           STOP_SLOW_MS, STOP_NOT_SAVED_TEXT, STOP_CHECKING_SAVED_TEXT, STOP_NOT_CONFIRMED_TEXT, STOP_NOT_CONFIRMED_BAR_TEXT, PANELS_PAUSED_TEXT, fallbackHtml,
            agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,
            activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart, renderDiag, renderPositions, renderActivity, renderMore, state,

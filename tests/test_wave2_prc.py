@@ -161,7 +161,7 @@ def test_TW04C_the_production_diff_is_exactly_design_1_3_and_pr_c_adds_no_order_
     assert prod == PR_C_FILES, {"unexpected": sorted(prod - PR_C_FILES), "missing": sorted(PR_C_FILES - prod)}
     for rel in sorted(prod):
         base = set() if rel in NEW_MODULES_C else set(at_base(rel).splitlines())
-        added = "\n".join(l for l in FL.pre_panel(rel, now_text(rel)).splitlines() if l not in base)   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
+        added = "\n".join(l for l in FL.pre_panel(rel, FL.pre_j04(rel, now_text(rel))).splitlines() if l not in base)   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
         assert added and not [t for t in TOKENS_C if t in added], (rel, [t for t in TOKENS_C if t in added])
         assert not ORDER_RE_C.search(added), (rel, ORDER_RE_C.findall(added))
     assert not FORBIDDEN_C & changed and not {p for p in changed if p.startswith(FORBIDDEN_PREFIX_C)}
@@ -170,7 +170,7 @@ def test_TW04C_the_production_diff_is_exactly_design_1_3_and_pr_c_adds_no_order_
 
 def test_TW05C_only_the_listed_functions_changed_and_only_the_listed_names_are_new():
     for rel, (may_change, may_add) in CLOSED_LIST_C.items():
-        now = named_nodes(FL.pre_panel(rel, now_text(rel)))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
+        now = named_nodes(FL.pre_panel(rel, FL.pre_j04(rel, now_text(rel))))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
         base = {} if rel in NEW_MODULES_C else named_nodes(at_base(rel))
         assert set(base) <= set(now), (rel, sorted(set(base) - set(now)))                          # nothing of 875bc06d disappears
         assert set(now) - set(base) == may_add, (rel, sorted((set(now) - set(base)) ^ may_add))     # exactly the listed names are new
@@ -193,7 +193,7 @@ def test_TW05C_only_the_listed_functions_changed_and_only_the_listed_names_are_n
     svc = named_nodes(FL.pre_panel("execution/service.py", now_text("execution/service.py")))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
     assert {k for k in named_nodes(at_base("execution/service.py")) if digest(named_nodes(at_base("execution/service.py"))[k]) != digest(svc[k])} <= {"ExecutionService._reconcile"}
     for rel, (may_change, may_add) in JS_CLOSED_LIST_C.items():
-        (bn, rn), (bb, rb) = js_blocks(FL.pre_panel(rel, now_text(rel))), js_blocks(at_base(rel))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
+        (bn, rn), (bb, rb) = js_blocks(FL.pre_panel(rel, FL.pre_j04(rel, now_text(rel)))), js_blocks(at_base(rel))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
         assert set(bb) <= set(bn) and set(bn) - set(bb) == may_add, (rel, sorted((set(bn) - set(bb)) ^ may_add))
         assert {k for k in bb if bb[k] != bn[k]} <= may_change, (rel, sorted({k for k in bb if bb[k] != bn[k]} - may_change))
         exports = [l for l in rb if l.startswith("  return { ")]
@@ -244,7 +244,7 @@ def test_F01C_the_change_set_is_exactly_the_declared_files():
 def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, now_text(rel)))))                        # EX-06: its own in-place edits undone first (F02X)
+        b, n = defs(at_base(rel)), defs(FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel))))))                        # EX-06: its own in-place edits undone first (F02X)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2C)
@@ -261,7 +261,7 @@ def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_
 def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2C) == {p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2C):
-        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, now_text(rel))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
+        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel)))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
     main_fl = at_base("tests/freeze_ledger.py")
     fl = subprocess.run(["git", "show", f"{FL.BASE_EX06}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # EX-06: the ledger as PR #53 left it
     for a in ("LEDGER = {", "BASE_W2A = ", "BASE_W2B = ", "BASE_W2C = ", "\n\ndef unchanged(", "\n\ndef pre_w2b(", "\n\ndef pre_w2c(", "\nWave 2 PR B (the Stage 6.1"):
@@ -285,7 +285,7 @@ def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     assert set(prc_ledger) - set(main_ledger) == FL.NEW_LEDGER_W2C and set(main_ledger) <= set(prc_ledger)
     assert {k for k in main_ledger if main_ledger[k] != prc_ledger[k]} == FL.EDITED_W2C & set(main_ledger)
     for rel in sorted(FL.NEW_LEDGER_W2C):
-        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))))), rel   # unchanged from BASE_68 to main: the view IS main's text
+        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel)))))))), rel   # unchanged from BASE_68 to main: the view IS main's text
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
     FL.UNDO_W2C["tests/_probe.py"] = [("y = 2\n", "y = 3\n")]
