@@ -118,7 +118,8 @@ def sections(facts: Optional[Dict[str, Any]] = None) -> List[Section]:
         f"DEMAND_FAILURE: Market Demand below {c['demand_exit']} on {c['demand_exit_evals']} consecutive post-entry evaluations. TIME_EXIT: after {c['max_hold_sessions']} regular sessions. "
         f"DISLOCATION_NORMALIZED: PPE Stretch above {_f(c['stretch_exit'])}.",
         'No profit target, no predicted price: "No profit target, no predicted price."',
-        "Pause, the daily-loss halt and the Emergency Stop block new entries only; exits continue and the stop never liquidates. Monitor only keeps the exit rules running.",
+        "Pause, the daily-loss halt and the Emergency Stop block new automatic entries only; exit rules keep running while a position is monitored, a position marked "
+        "Needs attention gets no automatic exit, and the stop never liquidates. Monitor only keeps the exit rules running.",
         f"Exit orders are {c['order_type']} / {c['time_in_force']} in the regular session only, not in the final {c['near_close_minutes']} minutes; a rejected or cancelled exit opens the next exit cycle; "
         f"after {c['max_exit_cycles']} cycles the position needs attention (EXIT_ATTEMPTS_EXHAUSTED); a quantity mismatch never sells blindly.",
         "WEAKENING is informational only (Demand < 45 or Stretch > -30).",

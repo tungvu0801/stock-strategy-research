@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, List, Optional, Tuple
 
 from safety import (R_ADJUSTMENT_NA, R_BASELINE_MISSING, R_DAILY, R_EQUITY_INVALID, R_EQUITY_NA, R_KILL, R_PAUSE, R_SNAPSHOT_STALE, R_THRESHOLD_INVALID,
-                    REASON_TEXT, STATE_ICONS, STATE_LABELS)
+                    REASON_TEXT, STATE_ICONS, STATE_LABEL_DAILY_UNAVAILABLE, STATE_LABELS)
 from safety.models import AccountEquity, Baseline, ControlEvaluation, DailyLoss, KillSwitch, Pause
 
 MONEY = Decimal("0.01")
@@ -179,5 +179,11 @@ def controls(kill: KillSwitch, pause: Pause, daily: DailyLoss, baseline: Optiona
     return out
 
 
-def icon_label(state: str) -> Tuple[str, str]:
-    return STATE_ICONS.get(state, STATE_ICONS["UNKNOWN"]), STATE_LABELS.get(state, STATE_LABELS["UNKNOWN"])
+def icon_label(state: str, kill_active: bool = False, pause_active: bool = False) -> Tuple[str, str]:
+    """(icon, label). NO_NEW_ENTRIES has two meanings (a Pause, or a daily-loss control that cannot be verified), so the label follows the
+    pause flag (risk controls panel design 3.1, section 4). Every HALTED label says "automatic" while manual paper orders are not gated;
+    `kill_active` is for the Emergency Stop order gate, which makes "New entries stopped" true for the kill and changes that one label."""
+    icon = STATE_ICONS.get(state, STATE_ICONS["UNKNOWN"])
+    if state == "NO_NEW_ENTRIES" and not pause_active:
+        return icon, STATE_LABEL_DAILY_UNAVAILABLE
+    return icon, STATE_LABELS.get(state, STATE_LABELS["UNKNOWN"])

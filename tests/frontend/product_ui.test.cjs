@@ -23,10 +23,11 @@ const EXEC = { mode: "MONITOR_ONLY", attention: false, attention_reasons: [], op
                scheduler: { market: { regular_session: true, session_date: "2026-10-21" } }, account_data: { status: "FRESH", cash_flow: { status: "FRESH" } }, cards: [], recent: [] };
 const AUTO = { ...EXEC, mode: "PAPER_AUTO" };
 const SAFE = { state: "TRADING_ALLOWED", state_label: "Trading allowed", reason_text: "", kill_switch: { active: false }, no_new_entries: { active: false }, daily_loss: { status: "OK" } };
-const PAUSED = { ...SAFE, state: "NO_NEW_ENTRIES", state_label: "New trades paused", reason_text: "New trades paused by you.", no_new_entries: { active: true, activated_by: "user" } };
-const BLOCKED = { ...SAFE, state: "NO_NEW_ENTRIES", reason_text: "Daily loss control degraded: account data stale." };
-const KILLED = { ...SAFE, state: "HALTED", state_label: "Trading stopped", reason_text: "Emergency stop active.", kill_switch: { active: true, activated_by: "user", activated_at: "2026-10-21T15:00:00Z" } };
-const DAILY = { ...SAFE, state: "HALTED", reason_text: "Daily loss limit reached.", daily_loss: { status: "TRIGGERED", daily_loss_pct: "3.2" } };
+// risk controls panel: the labels the server sends since design 3.1 (safety.engine.icon_label); the page shows the server's state_label
+const PAUSED = { ...SAFE, state: "NO_NEW_ENTRIES", state_label: "New automatic entries paused", reason_text: "New automatic entries paused by you.", no_new_entries: { active: true, activated_by: "user" } };
+const BLOCKED = { ...SAFE, state: "NO_NEW_ENTRIES", state_label: "New automatic entries blocked: daily-loss data unavailable", reason_text: "Daily loss control degraded: account data stale." };
+const KILLED = { ...SAFE, state: "HALTED", state_label: "New automatic entries stopped", reason_text: "Emergency stop active.", kill_switch: { active: true, activated_by: "user", activated_at: "2026-10-21T15:00:00Z" } };
+const DAILY = { ...SAFE, state: "HALTED", state_label: "New automatic entries stopped", reason_text: "Daily loss limit reached.", daily_loss: { status: "TRIGGERED", daily_loss_pct: "3.2" } };
 const IN_TRADE = { key: "IN_TRADE", symbol: "SNDK", label: "In trade", line: "3 shares · entry 61.20 · now 62.10 · +2.70", shares: 3, entry: "61.20", current: "62.10", pnl: "+2.70", pnl_pct: "1.47", position_id: "p1", pnl_status: "VERIFIED", pnl_display: "2.70", pnl_kind: "unrealized",   // Wave 2 PR C: a verified (route-decorated) card
                    state: "POSITION_OPEN", details: { sessions_held: 2 } };
 const MU = { key: "IN_TRADE", symbol: "MU", label: "In trade", line: "4 shares · entry 830.00 · now 835.50 · +22.00", shares: 4, entry: "830.00", current: "835.50", pnl: "+22.00", pnl_pct: "0.66", position_id: "p2", pnl_status: "VERIFIED", pnl_display: "22.00", pnl_kind: "unrealized",   // Wave 2 PR C: a verified (route-decorated) card
@@ -93,9 +94,9 @@ test("3 Agent state: the backend card keys and setup states are mapped for displ
   assert.deepEqual(lab({ key: "CLOSED" }, "NONE", "TRADING_ALLOWED", EXEC), ["CLOSED", "Trade completed."]);
   assert.deepEqual(lab({ key: "ATTENTION", line: "3 shares · qty mismatch", shares: 3 }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "3 shares · qty mismatch"]);
   assert.deepEqual(lab(FAILED, "NONE", "TRADING_ALLOWED", EXEC), ["ENTRY FAILED", "No position opened. No automatic replacement order."]);
-  assert.deepEqual(lab({ key: "STOPPED" }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
-  assert.deepEqual(lab(null, "WATCH", "HALTED", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
-  assert.deepEqual(lab(null, "WATCH", "UNKNOWN", EXEC), ["NEEDS ATTENTION", "Trading stopped by risk controls"]);
+  assert.deepEqual(lab({ key: "STOPPED" }, "NONE", "TRADING_ALLOWED", EXEC), ["NEEDS ATTENTION", "New automatic entries stopped by risk controls"]);
+  assert.deepEqual(lab(null, "WATCH", "HALTED", EXEC), ["NEEDS ATTENTION", "New automatic entries stopped by risk controls"]);
+  assert.deepEqual(lab(null, "WATCH", "UNKNOWN", EXEC), ["NEEDS ATTENTION", "Risk status unknown"]);                  // risk controls panel, section 4: the agent line is split
   assert.deepEqual(lab(IN_TRADE, "NONE", "HALTED", EXEC), ["IN TRADE", "Existing trade continues. Exit conditions monitored."]);   // an open paper position is still monitored
   assert.deepEqual(lab(FAILED, "NONE", "HALTED", EXEC), ["ENTRY FAILED", "No position opened. No automatic replacement order."]);
   assert.deepEqual(lab({ key: "WATCHING" }, "WATCH", "TRADING_ALLOWED", { ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }), ["NEEDS ATTENTION", "RECONCILIATION_REQUIRED"]);
@@ -123,21 +124,21 @@ test("5 SYSTEM HEALTHY / DEGRADED / STOPPED is derived from the existing gate, a
   const sys = (e, s) => { const m = PUI.systemModel(e, s); return [m.level, m.text, m.cls, m.primary]; };
   assert.deepEqual(sys(EXEC, SAFE), ["HEALTHY", "SYSTEM HEALTHY", "ok", ""]);
   assert.deepEqual(sys({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Account data stale"]);
-  assert.deepEqual(sys({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { state: "NO_NEW_ENTRIES", reason_text: "" }), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Safety gate: New trades paused"]);
-  assert.deepEqual(sys(EXEC, PAUSED), ["DEGRADED", "SYSTEM DEGRADED", "warn", "New trades paused by you."]);
+  assert.deepEqual(sys({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { state: "NO_NEW_ENTRIES", reason_text: "" }), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Safety gate: New automatic entries paused"]);
+  assert.deepEqual(sys(EXEC, PAUSED), ["DEGRADED", "SYSTEM DEGRADED", "warn", "New automatic entries paused by you."]);
   assert.deepEqual(sys({ ...EXEC, account_data: { status: "FRESH", cash_flow: { status: "AMBIGUOUS" } } }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Cash-flow data unclear"]);
   assert.deepEqual(sys({ ...EXEC, reconciliation_healthy: false }, SAFE), ["DEGRADED", "SYSTEM DEGRADED", "warn", "Reconciliation needs a look"]);
-  assert.deepEqual(sys(EXEC, KILLED), ["STOPPED", "SYSTEM STOPPED", "bad", "Emergency stop active."]);
+  assert.deepEqual(sys(EXEC, KILLED), ["STOPPED", "NEW AUTOMATIC ENTRIES STOPPED", "bad", "Emergency stop active."]);                 // risk controls panel, section 4: says what is stopped
   assert.deepEqual(sys({ ...EXEC, safety_state: "UNKNOWN" }, null)[0], "STOPPED");
-  assert.deepEqual(sys({ ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, SAFE), ["STOPPED", "SYSTEM STOPPED", "bad", "Needs attention: reconciliation required"]);
+  assert.deepEqual(sys({ ...EXEC, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, SAFE), ["STOPPED", "NEW AUTOMATIC ENTRIES STOPPED", "bad", "Needs attention: reconciliation required"]);
   assert.deepEqual(sys(null, null), ["UNKNOWN", "SYSTEM —", "", ""]);                                             // nothing loaded: a dash, never a guess
   const items = PUI.systemModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, BLOCKED).items;
-  assert.deepEqual(items.map((i) => [i.text, i.level]), [["Safety gate: New trades paused", "warn"], ["Account data unavailable", "warn"], ["Cash-flow data unavailable", "warn"], ["Reconciliation healthy", "ok"]]);
+  assert.deepEqual(items.map((i) => [i.text, i.level]), [["Safety gate: New automatic entries blocked: daily-loss data unavailable", "warn"], ["Account data unavailable", "warn"], ["Cash-flow data unavailable", "warn"], ["Reconciliation healthy", "ok"]]);
   assert.equal(items[0].reason, "Daily loss control degraded: account data stale.");
   assert.ok(!JS.includes("fetch(\"/api/system"));                                                                   // a display summary: no backend health state exists or is called
 });
 
-test("6 header status bar: PAPER · MARKET · SYSTEM · AUTO as statuses, the detail reasons behind the SYSTEM expander, no action button in the bar", () => {
+test("6 header status bar: PAPER · MARKET · SYSTEM · AUTO as statuses, the detail reasons behind the SYSTEM expander, Emergency Stop the only action button in the bar", () => {
   const segs = (e, s) => PUI.statusModel(e, s).map((x) => [x.key, x.text, x.cls]);
   assert.deepEqual(segs(EXEC, SAFE), [["paper", "PAPER", "ok"], ["market", "MARKET OPEN", "ok"], ["system", "SYSTEM HEALTHY", "ok"], ["auto", "AUTO OFF", ""]]);
   const degraded = { ...AUTO, environment: { simulated: true }, scheduler: { market: { regular_session: false } }, account_data: { status: "UNAVAILABLE" } };
@@ -147,11 +148,11 @@ test("6 header status bar: PAPER · MARKET · SYSTEM · AUTO as statuses, the de
   assert.ok(h.includes('data-pui-seg="paper"') && h.includes('data-pui-seg="market"') && h.includes('data-pui-seg="system"') && h.includes('data-pui-seg="auto"') && h.includes('data-pui-auto="OFF"'));
   assert.ok(!h.includes('data-pui-seg="account"') && !h.includes('data-pui-seg="trading"') && !text(h).includes("ACCOUNT FRESH") && !text(h).includes("TRADING ALLOWED"));   // not repeated in the header
   assert.ok(h.includes('<button type="button" class="pui-seg ok" data-pui-seg="system" data-pui="system" aria-expanded="false"') && !h.includes("data-pui-system-details"));
-  assert.deepEqual(buttons(h).map((b) => b[0]), ["system"]);                                                       // the only button: the SYSTEM expander (the controls live on the Risk card)
+  assert.deepEqual(buttons(h).map((b) => b[0]), ["system", "stop-bar"]);                                           // the SYSTEM expander and, since the risk controls panel (design 3.4), the bar's Emergency Stop; the other controls live on the Risk card
   assert.ok(h.includes(PUI.TAGLINE));
   const open = PUI.statusHtml({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "UNAVAILABLE" } } }, BLOCKED, { sysOpen: true });
   const d = text(open.slice(open.indexOf("data-pui-system-details")));
-  assert.ok(open.includes("SYSTEM DEGRADED") && d.includes("Safety gate: New trades paused · Daily loss control degraded: account data stale.") && d.includes("Account data unavailable") && d.includes("Reconciliation healthy"), d);
+  assert.ok(open.includes("SYSTEM DEGRADED") && d.includes("Safety gate: New automatic entries blocked: daily-loss data unavailable · Daily loss control degraded: account data stale.") && d.includes("Account data unavailable") && d.includes("Reconciliation healthy"), d);
   assert.ok(PUI.statusHtml(AUTO, SAFE, {}).includes('data-pui-auto="ON"') && PUI.statusHtml(AUTO, SAFE, {}).includes("AUTO ON"));
 });
 
@@ -161,15 +162,15 @@ test("7 Risk: one headline and one primary reason in front; every dependency, re
   assert.deepEqual(r.lines.map((l) => l.text), ["Trading allowed", "Account data fresh", "Cash-flow data fresh", "Reconciliation healthy"]);
   assert.deepEqual([PUI.riskModel({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE).level, PUI.riskModel({ ...EXEC, account_data: { status: "STALE", cash_flow: { status: "FRESH" } } }, SAFE).primary], ["warn", "Account data stale"]);
   const paused = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE", cash_flow: { status: "AMBIGUOUS" } } }, PAUSED);
-  assert.deepEqual([paused.headline, paused.level, paused.paused, paused.primary], ["New trades paused", "warn", true, "Existing positions continue normally."]);
-  assert.deepEqual(paused.lines.map((l) => l.text), ["New trades paused", "New trades paused by you.", "Account data unavailable", "Cash-flow data unclear", "Reconciliation healthy"]);
+  assert.deepEqual([paused.headline, paused.level, paused.paused, paused.primary], ["New automatic entries paused", "warn", true, "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit."]);   // risk controls panel, section 4: PAUSED_NOTE
+  assert.deepEqual(paused.lines.map((l) => l.text), ["New automatic entries paused", "New automatic entries paused by you.", "Account data unavailable", "Cash-flow data unclear", "Reconciliation healthy"]);
   const blocked = PUI.riskModel({ ...EXEC, account_data: { status: "UNAVAILABLE" } }, { ...BLOCKED, reason_text: "" });
-  assert.deepEqual([blocked.headline, blocked.paused, blocked.primary], ["New trades paused", false, "Account data unavailable"]);                 // one root cause, not four warnings
+  assert.deepEqual([blocked.headline, blocked.paused, blocked.primary], ["New automatic entries blocked: daily-loss data unavailable", false, "Account data unavailable"]);                 // one root cause, not four warnings
   const killed = PUI.riskModel({ ...EXEC, reconciliation_healthy: false, attention: true, attention_reasons: ["RECONCILIATION_REQUIRED"] }, KILLED);
-  assert.deepEqual([killed.headline, killed.level, killed.stopped, killed.killActive, killed.critical, killed.primary], ["EMERGENCY STOP ACTIVE", "bad", true, true, true, "New entries blocked. Existing positions remain protected."]);
-  assert.deepEqual(killed.lines.filter((l) => l.level === "bad").map((l) => l.text), ["Trading stopped", "Emergency stop active.", "Reconciliation needs a look", "RECONCILIATION_REQUIRED"]);   // critical details stay exposed
+  assert.deepEqual([killed.headline, killed.level, killed.stopped, killed.killActive, killed.critical, killed.primary], ["EMERGENCY STOP ACTIVE", "bad", true, true, true, "New automatic entries blocked. Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit."]);
+  assert.deepEqual(killed.lines.filter((l) => l.level === "bad").map((l) => l.text), ["New automatic entries stopped", "Emergency stop active.", "Reconciliation needs a look", "RECONCILIATION_REQUIRED"]);   // critical details stay exposed
   const daily = PUI.riskModel(EXEC, DAILY);
-  assert.deepEqual([daily.headline, daily.killActive, daily.primary], ["Trading stopped", false, "Daily loss limit reached."]);
+  assert.deepEqual([daily.headline, daily.killActive, daily.primary], ["New automatic entries stopped", false, "Daily loss limit reached."]);
   assert.deepEqual([PUI.riskModel(null, null).headline, PUI.riskModel(null, null).level, PUI.riskModel(null, null).primary], ["Risk status unknown", "bad", "Critical issue requires attention"]);
 });
 
@@ -212,27 +213,27 @@ test("10 controls: statuses from the payloads and exactly one relevant action pe
   assert.deepEqual(cm(EXEC, SAFE), { auto: ["OFF", "auto-on", "Enable Paper Auto"], trading: ["ALLOWED", "pause", "Pause New Trades", "New entries allowed when every check passes."], stop: ["INACTIVE", "stop", "Emergency Stop"] });
   assert.deepEqual(cm(AUTO, SAFE).auto, ["ON", "auto-off", "Disable Auto"]);
   assert.equal(PUI.controlsModel(AUTO, SAFE).auto.text, "Automatic paper entries enabled.");
-  assert.equal(PUI.controlsModel(EXEC, SAFE).auto.text, "Monitoring only. No new automatic entries. Existing positions continue to be monitored.");
-  assert.deepEqual(cm(EXEC, PAUSED).trading, ["PAUSED", "resume", "Resume New Trades", "Existing positions continue normally."]);
+  assert.equal(PUI.controlsModel(EXEC, SAFE).auto.text, "Monitoring only. No new automatic entries. Positions the bot manages keep their exit rules unless they need attention.");   // risk controls panel, section 4: AUTO_OFF_NOTE
+  assert.deepEqual(cm(EXEC, PAUSED).trading, ["PAUSED", "resume", "Resume New Trades", "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit."]);
   assert.deepEqual(cm(EXEC, PAUSED).stop, ["INACTIVE", "stop", "Emergency Stop"]);                                   // pausing is not stopping
-  assert.deepEqual(cm(EXEC, BLOCKED).trading, ["PAUSED", "pause", "Pause New Trades", "Daily loss control degraded: account data stale."]);   // paused by a check: the real reason, the user may still pause
-  assert.deepEqual(cm(EXEC, KILLED).trading, ["STOPPED", null, "Pause New Trades", "Blocked by the emergency stop."]);                          // no pause / resume while the stop is active
+  assert.deepEqual(cm(EXEC, BLOCKED).trading, ["BLOCKED", "pause", "Pause New Trades", "Daily loss control degraded: account data stale."]);  // blocked by a check, not a Pause (section 4): the real reason, the user may still pause
+  assert.deepEqual(cm(EXEC, KILLED).trading, ["STOPPED", null, "Pause New Trades", "New automatic entries blocked by the Emergency Stop."]);   // no pause / resume while the stop is active; the row says what is stopped (section 4)
   assert.deepEqual(cm(EXEC, KILLED).stop, ["ACTIVE", "clear", "Clear Emergency Stop"]);
   const both = cm(EXEC, { ...KILLED, no_new_entries: { active: true } });
   assert.deepEqual([both.trading[1], both.stop], ["resume", ["ACTIVE", "clear", "Clear Emergency Stop"]]);          // resume lifts the pause only; the stop stays ACTIVE with its own Clear
-  assert.deepEqual(cm(EXEC, DAILY).trading, ["STOPPED", null, "Pause New Trades", "Daily loss limit reached. Resets on the next trading day."]);
+  assert.deepEqual(cm(EXEC, DAILY).trading, ["STOPPED", "pause", "Pause New Trades", "Daily loss limit reached: new automatic entries stopped until the next trading day."]);   // risk controls panel, section 5: Pause only tightens, so it stays offered
   assert.deepEqual(cm(EXEC, DAILY).stop, ["INACTIVE", "stop", "Emergency Stop"]);                                    // a daily halt is not an emergency stop: nothing to clear
-  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).trading.slice(0, 2), ["UNKNOWN", null]);
-  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).stop.slice(0, 2), ["INACTIVE", "stop"]);                           // the stop stays reachable while the gate is unknown
+  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).trading.slice(0, 2), ["UNKNOWN", "pause"]);                       // risk controls panel, design 3.4: Pause stays offered while unknown
+  assert.deepEqual(cm(EXEC, { state: "UNKNOWN" }).stop.slice(0, 2), ["UNKNOWN", "stop"]);                            // the stop stays reachable while the gate is unknown; its status is UNKNOWN, never INACTIVE (design 3.4)
   assert.deepEqual(cm(null, null).auto.slice(0, 2), ["—", null]);
   const m = PUI.controlsModel(EXEC, SAFE, { stop: false, pause: false, auto: false });
-  assert.deepEqual([m.stop.enabled, m.trading.enabled, m.auto.enabled], [false, false, false]);                    // availability mirrors the legacy buttons
-  assert.ok(PUI.controlsModel(EXEC, SAFE).stop.text.includes("existing positions stay protected"));
+  assert.deepEqual([m.stop.enabled, m.trading.enabled, m.auto.enabled], [true, false, false]);                     // availability mirrors the legacy buttons, except Emergency Stop: never disabled (risk controls panel, section 5)
+  assert.equal(PUI.controlsModel(EXEC, SAFE).stop.text, "Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.");   // risk controls panel, section 4: the Stop row
 });
 
 test("11 confirmations: Enable Paper Auto, Emergency Stop and Clear Emergency Stop open an explanation first; Confirm / Cancel; one panel at a time; exact wording", () => {
   assert.equal(PUI.CONFIRM["auto-on"].text, "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.");
-  assert.equal(PUI.CONFIRM.stop.text, "This immediately blocks all new entries. Existing positions remain monitored and protective exits remain allowed. The emergency stop stays active until cleared manually.");
+  assert.equal(PUI.CONFIRM.stop.text, "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.");   // risk controls panel, section 4
   assert.equal(PUI.CONFIRM.clear.text, "This removes the emergency-stop latch. Trading resumes only if all safety checks pass.");
   const none = PUI.cardsHtml(CTX);
   assert.ok(!none.includes("data-pui-confirm"));
@@ -252,13 +253,13 @@ test("11 confirmations: Enable Paper Auto, Emergency Stop and Clear Emergency St
 
 test("12 Risk card states: paused, emergency stop active (Clear exposed), after a clear the backend truth is shown, never a forced Trading allowed", () => {
   const paused = cardOf(PUI.cardsHtml({ ...CTX, safety: PAUSED }), "risk");
-  assert.ok(text(primaryPart(paused)).startsWith("Risk New trades paused Existing positions continue normally.") && buttons(paused).some((b) => b[0] === "resume" && b[1] === "Resume New Trades") && !buttons(paused).some((b) => b[0] === "pause"));
+  assert.ok(text(primaryPart(paused)).startsWith("Risk New automatic entries paused Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.") && buttons(paused).some((b) => b[0] === "resume" && b[1] === "Resume New Trades") && !buttons(paused).some((b) => b[0] === "pause"));
   const killed = cardOf(PUI.cardsHtml({ ...CTX, safety: KILLED }), "risk");
-  assert.ok(killed.includes('data-kill="1"') && text(primaryPart(killed)).startsWith("Risk EMERGENCY STOP ACTIVE New entries blocked. Existing positions remain protected."), text(primaryPart(killed)));
+  assert.ok(killed.includes('data-kill="1"') && text(primaryPart(killed)).startsWith("Risk EMERGENCY STOP ACTIVE New automatic entries blocked. Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit."), text(primaryPart(killed)));
   assert.deepEqual(buttons(primaryPart(killed)), [["auto-on", "Enable Paper Auto"], ["clear", "Clear Emergency Stop"]]);                     // no Emergency Stop, no Pause / Resume while active
   assert.ok(rows(killed).stop === "ACTIVE" && rows(killed).trading === "STOPPED");
   const cleared = cardOf(PUI.cardsHtml({ ...CTX, exec: { ...EXEC, account_data: { status: "UNAVAILABLE" } }, safety: { ...BLOCKED, reason_text: "" } }), "risk");
-  assert.ok(text(primaryPart(cleared)).startsWith("Risk New trades paused Account data unavailable") && rows(cleared).stop === "INACTIVE" && rows(cleared).trading === "PAUSED");   // another blocker: the real reason
+  assert.ok(text(primaryPart(cleared)).startsWith("Risk New automatic entries blocked: daily-loss data unavailable Account data unavailable") && rows(cleared).stop === "INACTIVE" && rows(cleared).trading === "BLOCKED");   // another blocker: the real reason, never read as a Pause
   const healthy = cardOf(PUI.cardsHtml(CTX), "risk");
   assert.ok(rows(healthy).trading === "ALLOWED" && rows(healthy).stop === "INACTIVE" && rows(healthy).auto === "OFF");
   assert.ok(!/exits? (are |remain )?(blocked|disabled|stopped)/i.test(JS) && !/reset trade/i.test(JS) && !/data-pui="reset/.test(JS));       // never implies exits are blocked; no Reset Trade
@@ -273,9 +274,9 @@ test("13 existing position with Paper Auto OFF or the emergency stop active; ent
   assert.ok(!text(cardOf(on, "agent")).includes("automatic entries are disabled") && cardOf(on, "position") === cardOf(off, "position"));   // the position card is identical ON vs OFF
   assert.ok(text(cardOf(off, "position")).startsWith("Position MU · 4 shares Entry 830.00 Current 835.50 P/L +22.00 (+0.66%) Day 1 / 5 · Monitoring"));
   const stopped = live(EXEC, KILLED, MU);
-  assert.ok(cardOf(stopped, "agent").includes('data-agent="IN TRADE"') && text(cardOf(stopped, "agent")).includes("No new entries. Existing position remains protected.") && cardOf(stopped, "position") === cardOf(off, "position"));
+  assert.ok(cardOf(stopped, "agent").includes('data-agent="IN TRADE"') && text(cardOf(stopped, "agent")).includes("No new automatic entries. Bot exit rules keep running for this position unless it needs attention.") && cardOf(stopped, "position") === cardOf(off, "position"));
   assert.ok(!/reset|abandon|delete/i.test(text(cardOf(stopped, "agent")) + text(cardOf(stopped, "position"))));
-  assert.equal(PUI.positionNote(MU, EXEC, KILLED), "No new entries. Existing position remains protected.");
+  assert.equal(PUI.positionNote(MU, EXEC, KILLED), "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.");                // risk controls panel, section 4: STOP_POSITION
   assert.equal(PUI.positionNote(MU, AUTO, SAFE), "");
   assert.equal(PUI.positionNote(null, EXEC, KILLED), "");
   const entering = PUI.cardsHtml({ ...CTX, card: ENTERING });
@@ -336,7 +337,7 @@ test("16 ACTIVITY timeline: persisted rows only (setups, proposals, orders, fill
   assert.deepEqual(tl.map((e) => e.at), tl.map((e) => e.at).slice().sort().reverse());
   for (const want of ["AAPL → READY", "AAPL → invalidated · bounce failed", "AAPL · Proposal created · 2 shares", "AAPL · Risk checks passed", "MSFT · Blocked: demand na",
                       "AAPL · BUY submitted · 2 shares", "AAPL · BUY filled @ 227.10", "MSFT · BUY rejected · broker rejected", "AAPL · Position opened · 2 of 2 filled at 227.10",
-                      "AAPL · Exit required · time exit", "AAPL · Trade closed · P/L +4.20", "Trading stopped (emergency stop)", "Emergency stop cleared", "Risk controls started",
+                      "AAPL · Exit required · time exit", "AAPL · Trade closed · P/L +4.20", "Emergency Stop on", "Emergency stop cleared", "Risk controls started",   // KILL_ON: risk controls panel, section 4
                       "AAPL · Reconciliation: qty mismatch", "Validation session started", "Validation early stop · Paper Auto turned off · duplicate broker order"]) assert.ok(texts.includes(want), want);
   assert.ok(!texts.some((x) => /FILL_UPDATED|SAMPLE|ORDER_ADOPTED|adopted/i.test(x)));
   assert.deepEqual(new Set(tl.map((e) => e.kind)), new Set(["setup", "proposal", "order", "fill", "position", "exit", "safety", "reconciliation", "validation"]));
@@ -368,8 +369,8 @@ test("18 wording: standard empty / error messages, no stale sentences, the polic
   for (const stale of ["never places a trade", "This tool never places", "no order path", "Not available in this version", "read-only Trader View", "never places, prepares", "STOP TRADING"])
     assert.ok(!JS.includes(stale) && !CSS.includes(stale), stale);
   for (const msg of ["No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Waiting for broker fill", "Monitoring only. No new automatic entries.",
-                     "Automatic paper entries enabled.", "Existing positions continue to be monitored.", "Existing positions continue normally.", "EMERGENCY STOP ACTIVE", "New entries blocked.",
-                     "Existing positions remain protected.", "Disable Auto", "Pause New Trades", "Resume New Trades", "Clear Emergency Stop", "Emergency Stop",
+                     "Automatic paper entries enabled.", "Positions the bot manages keep their exit rules unless they need attention.", "Bot exit rules keep running while a position is monitored.", "EMERGENCY STOP ACTIVE", "New automatic entries blocked.",
+                     "A position marked Needs attention gets no automatic exit.", "Disable Auto", "Pause New Trades", "Resume New Trades", "Clear Emergency Stop", "Emergency Stop",   // risk controls panel, section 4
                      "Checking Paper Auto status…", "Paper Auto status unavailable", "Could not enable Paper Auto. "]) assert.ok(JS.includes(msg), msg);
   assert.ok(JS.includes(PUI.TAGLINE) && JS.includes("Robinhood holdings are read only") && JS.includes("Paper orders go to the Alpaca PAPER account only"));
   assert.match(CSS, /body\.pui #tab-portfolio \.pf-readonly-note \{ display: none; \}/);
@@ -378,7 +379,11 @@ test("18 wording: standard empty / error messages, no stale sentences, the polic
 });
 
 test("19 read-only wiring: GET routes only, every action delegates to a legacy button, no broker / Robinhood / model call, index.html carries two marked blocks", () => {
-  assert.ok(!JS.includes('method: "POST"') && !JS.includes("/api/execution/auto") && !/\/api\/execution-safety\/(pause|resume|emergency|clear)/.test(JS) && !JS.includes("pause-new-entries") && !JS.includes("resume-new-entries") && !JS.includes("clear-emergency-stop"));   // the safety action routes are never called by the shell (the words "emergency-stop latch" are wording, not a route)
+  // risk controls panel (design 3.4, section 8): the banner prints the F2 fallback commands for the operator to run; they are displayed text, never fetched
+  const F2 = JS.match(/\n  const f2Post = \(port\) => `curl\.exe [^`\n]*`;\n  const f2Read = \(port\) => `\(curl\.exe [^`\n]*`;\n/)[0];
+  const SHELL = JS.replace(F2, "\n");
+  assert.ok(!SHELL.includes("curl.exe") && (JS.match(/f2Post\(port\)/g) || []).length === 1 && (JS.match(/f2Read\(port\)/g) || []).length === 1 && JS.includes("<code>${esc(f2Post(port))}</code><code>${esc(f2Read(port))}</code>"));
+  assert.ok(!SHELL.includes('method: "POST"') && !SHELL.includes("/api/execution/auto") && !/\/api\/execution-safety\/(pause|resume|emergency|clear)/.test(SHELL) && !SHELL.includes("pause-new-entries") && !SHELL.includes("resume-new-entries") && !SHELL.includes("clear-emergency-stop"));   // the safety action routes are never called by the shell (the words "emergency-stop latch" are wording, not a route)
   assert.ok(!JS.includes("/api/portfolio") && !JS.includes("/api/agent"));
   const routes = [...JS.matchAll(/["`](\/api\/[a-z0-9_\-\/]+)/g)].map((m) => m[1]);
   const allowed = ["/api/execution", "/api/execution/positions", "/api/execution/intents", "/api/execution/findings", "/api/execution-safety/events", "/api/setups/events", "/api/proposals/history",
@@ -399,7 +404,7 @@ test("19 read-only wiring: GET routes only, every action delegates to a legacy b
 
 test("20 Paper Auto state sync: ON only from the authoritative mode, pending while a confirmed action is re-read, the backend failure text, header and row from one model", () => {
   const am = (e, s, p, err) => { const m = PUI.autoModel(e, s, p, err); return [m.key, m.label, m.header, m.action, m.actionLabel, m.text, m.failure]; };
-  assert.deepEqual(am(EXEC, SAFE), ["OFF", "OFF", "AUTO OFF", "auto-on", "Enable Paper Auto", "Monitoring only. No new automatic entries. Existing positions continue to be monitored.", ""]);
+  assert.deepEqual(am(EXEC, SAFE), ["OFF", "OFF", "AUTO OFF", "auto-on", "Enable Paper Auto", "Monitoring only. No new automatic entries. Positions the bot manages keep their exit rules unless they need attention.", ""]);   // AUTO_OFF_NOTE: risk controls panel, section 4
   assert.deepEqual(am(AUTO, SAFE), ["ON", "ON", "AUTO ON", "auto-off", "Disable Auto", "Automatic paper entries enabled.", ""]);
   assert.deepEqual(am(AUTO, PAUSED).slice(0, 3), ["ON", "ON", "AUTO ON"]);
   assert.ok(am(AUTO, PAUSED)[5] === "Automatic paper entries enabled. Auto is armed, but safety currently blocks new entries.");     // safety PAUSED coexists with AUTO ON
@@ -429,6 +434,6 @@ test("20 Paper Auto state sync: ON only from the authoritative mode, pending whi
   assert.ok(PUI.statusHtml(AUTO, SAFE, {}).includes('data-pui-auto="ON"') && PUI.statusHtml(EXEC, SAFE, {}).includes('data-pui-auto="OFF"') && PUI.statusHtml(null, null, {}).includes('data-pui-auto="UNKNOWN"'));
   // the re-read is the legacy Paper Bot refresh (GET /api/execution/status), awaited after the legacy POST settles; no second poll, no retry of the mutation
   assert.ok(JS.includes("await pb.refresh()") && !JS.includes('fetch("/api/execution/status"') && !/set(Timeout|Interval)\([^;]*clickLegacy/.test(JS));
-  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 5);                                                                     // the definition + runAutoAction + stop / clear / pause-resume, nothing else
+  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 6);                                                                     // the definition + runAutoAction + stop / clear / pause-resume + the status bar's Emergency Stop (risk controls panel, design 3.4), nothing else
   assert.equal((JS.match(/runAutoAction\(/g) || []).length, 3);                                                                   // the definition + the enable confirm + the disable
 });

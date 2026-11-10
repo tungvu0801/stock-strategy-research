@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 MANAGEMENT = {
-    "BOT": ("Bot-managed", "Opened by the bot from a broker-confirmed fill; the bot monitors it and decides its exit."),
+    "BOT": ("Bot-managed", "Opened by the bot from a broker-confirmed fill; the bot runs its exit rules while it is monitored; a position marked Needs attention gets no automatic exit."),
     "BOT_ENTRY": ("Bot entry in progress", "The bot has an open entry order in this symbol."),
     "NEEDS_REVIEW": ("Not managed · needs a look", "The bot's own trade in this symbol is closed, yet the account still holds shares. The bot will not act on it."),
     "EXTERNAL": ("External · not managed by the bot", "Not opened by the bot. The bot never trades or exits it; it counts toward the open-positions limit "

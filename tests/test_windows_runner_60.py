@@ -279,7 +279,7 @@ def test_F01_health_check_reports_running_with_mode_safety_and_reconciliation(ri
     assert code == 0, out
     for line in ("Stock Agent: RUNNING", "Server: reachable", "Mode: Monitor only", "Reconciliation: Healthy", "Executor loop: running", "Account data", "Account refresh loop: running"):
         assert line in out, (line, out)
-    assert re.search(r"Safety: (Trading allowed|New trades paused|Trading stopped)", out), out
+    assert re.search(r"Safety: (Trading allowed|New automatic entries paused|New automatic entries blocked: daily-loss data unavailable|New automatic entries stopped|Risk status unknown)", out), out   # risk controls panel: the server's labels
 
 
 def test_H01_starting_the_bot_sends_nothing_and_only_reads_the_paper_account(rig):

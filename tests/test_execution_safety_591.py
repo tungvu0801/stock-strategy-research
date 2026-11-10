@@ -121,7 +121,7 @@ def test_E01_default_state_is_trading_allowed():
 
 def test_E02_manual_pause_is_no_new_entries():
     state, allowed, codes, headline = E.decide(KillSwitch(), Pause(active=True, activated_by="user"), dl(baseline(), acct()))
-    assert (state, allowed, codes, headline) == ("NO_NEW_ENTRIES", False, [SF.R_PAUSE], "New trades paused by you")
+    assert (state, allowed, codes, headline) == ("NO_NEW_ENTRIES", False, [SF.R_PAUSE], "New automatic entries paused by you")   # risk controls panel, section 4
 
 
 def test_E03_manual_kill_is_halted():
@@ -387,7 +387,7 @@ def test_S11_daily_loss_blocks_through_the_service_and_the_proposal(stack):
 def test_S12_api_reads_and_actions(stack):
     s, svc, psvc, safety, clock, api = stack
     j = api.get("/api/execution-safety").json()
-    assert j["state"] == "TRADING_ALLOWED" and j["allowed_new_entry"] is True and j["labels"]["HALTED"] == "Trading stopped" and j["threshold_pct"] == "5.0" and j["baselines"][0]["trading_date"] == TODAY
+    assert j["state"] == "TRADING_ALLOWED" and j["allowed_new_entry"] is True and j["labels"]["HALTED"] == "New automatic entries stopped" and j["threshold_pct"] == "5.0" and j["baselines"][0]["trading_date"] == TODAY
     assert set(j["controls"][0]) >= {"control_id", "last_evaluated_at", "last_fired_at", "evaluation_count", "fire_count", "last_result", "last_reason", "last_input", "last_error"}
     assert api.get("/api/execution-safety/controls").json()["known_controls"] == ALL and api.get("/api/execution-safety/events").json()["count"] == 1
     assert api.post("/api/execution-safety/pause-new-entries", json={"reason": "x"}).json()["state"] == "NO_NEW_ENTRIES"
@@ -664,13 +664,16 @@ def test_U02_risk_controls_panel_wiring():
 
 def test_U03_beginner_wording_and_no_trade_wording():
     section = RENDER.split("Risk controls (Stage 5.9.1")[1].split("status strip")[0]
-    for label in ("Trading allowed", "New trades paused", "Trading stopped", "Pause New Trades", "Resume", "Emergency Stop", "Clear Emergency Stop", "View details"):
+    for label in ("Trading allowed", "New automatic entries paused", "New automatic entries stopped", "Risk status unknown", "Pause New Trades", "Resume", "Emergency Stop",   # risk controls panel, section 4
+                  "Clear Emergency Stop", "View details"):
         assert label in section, label
     code = re.sub(r"//.*", "", section)
     assert not TRADE_WORDS.search(code) and not re.search(r"(?i)probabilit|expected return|target price", code)
     risk = re.sub(r"//.*", "", RISK_JS)
     assert not TRADE_WORDS.search(risk) and re.findall(r"method: \"(POST|PUT|PATCH|DELETE)\"", RISK_JS) == ["POST"]
-    assert sorted(re.findall(r"act\(\"(/api/execution-safety/[a-z-]+)\"", RISK_JS)) == ["/api/execution-safety/clear-emergency-stop", "/api/execution-safety/emergency-stop",
+    paths = RISK_JS[RISK_JS.index("const PATHS = {"):RISK_JS.index("};", RISK_JS.index("const PATHS = {"))]   # risk controls panel (design 3.2): the four routes live in PATHS, sent by post(PATHS[kind])
+    assert RISK_JS.count("post(PATHS[kind])") == 1 and RISK_JS.count("function post(") == 1
+    assert sorted(re.findall(r"\"(/api/execution-safety/[a-z-]+)\"", paths)) == ["/api/execution-safety/clear-emergency-stop", "/api/execution-safety/emergency-stop",
                                                                                             "/api/execution-safety/pause-new-entries", "/api/execution-safety/resume-new-entries"]
     assert not re.search(r"(?i)method:\s*[\"'](POST|PUT|PATCH|DELETE)", JS)
     for text in list(SF.REASON_TEXT.values()) + list(SF.STATE_LABELS.values()) + [SF.DISCLAIMER]:
@@ -680,7 +683,11 @@ def test_U03_beginner_wording_and_no_trade_wording():
 def test_U04_harness_flow_registered_after_trade_review():
     import browser_tests.flows as F
     names = [f.__name__ for f in F.FLOWS]
-    assert "risk_controls" in names and names.index("risk_controls") == names.index("trade_review") + 1 and names.index("risk_controls") < names.index("automation")
+    # risk controls panel (design section 6): its three flows run between trade_review and risk_controls, while the gate is Trading allowed
+    # (risk_controls latches a forced daily loss for its date); nothing else moved
+    panel = ["risk_controls_scripts", "risk_controls_races", "risk_controls_presses"]
+    assert names[names.index("trade_review") + 1:names.index("trade_review") + 4] == panel
+    assert "risk_controls" in names and names.index("risk_controls") == names.index("trade_review") + 1 + len(panel) and names.index("risk_controls") < names.index("automation")
     assert names[-8:] == ["automation", "saved_scans", "daily_brief", "brief_delivery", "notification_click", "paper_portfolio", "alpaca_paper", "alpaca_orders"]
 
 
@@ -688,7 +695,7 @@ def test_U05_safety_view_field_names_name_no_side():
     for model in (SafetyView, DailyLoss, KillSwitch, Pause, AccountEquity, Baseline, SafetyStateRecord, ControlEvaluation):
         for k in model.model_fields:
             assert not re.search(r"(?i)\b(buy|sell|recommend\w*|probab\w*|expected|target|signal|execute|liquidate)\b", k.replace("_", " ")), (model.__name__, k)
-    assert set(SF.STATES) == {"TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN"} and SF.STATE_LABELS["NO_NEW_ENTRIES"] == "New trades paused"
+    assert set(SF.STATES) == {"TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN"} and SF.STATE_LABELS["NO_NEW_ENTRIES"] == "New automatic entries paused"   # risk controls panel, section 4
 
 
 # ================================================================ B base pins =========================================================================

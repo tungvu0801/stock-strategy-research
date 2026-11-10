@@ -184,7 +184,7 @@ def test_09_backend_ppe_evidence_and_prior_tests_identical_to_base():
     for rel in UNCHANGED:
         assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob(rel), f"{rel} differs from {BASE} (Stage 5.6.1 is UI only)"
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
-    now_html = HTML.splitlines()
+    now_html = ledger_bytes("frontend/index.html", HTML.encode("utf-8")).decode("utf-8").splitlines()   # risk controls panel: a registered file, read as on main
     # >>> Stage 6.1: index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); they are stripped before
     # the Stage 5.6.1 line rule below, so the allowed added lines stay exactly the Stage 5.8 / 5.9 / 5.9.1 / 6.0 ones
     import re as _re61

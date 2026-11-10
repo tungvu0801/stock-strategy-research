@@ -39,6 +39,9 @@
 <!-- <<< Product UI 6.1.1 -->
 </head>
 <body>
+<div id="pui-boot-notice" class="pui-boot-notice" role="alert">If this message stays visible, the dashboard's scripts did not start and the Emergency Stop button may not be available. To save an Emergency Stop, run this in PowerShell on this computer, changing 8000 if this page uses another port:
+<code>curl.exe -sS --max-time 60 -X POST http://127.0.0.1:8000/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"</code>
+More in README.md, "Emergency Stop fallback".</div>
 <header class="topbar">
   <h1>Stock Agent Dashboard</h1>
   <div id="ai-usage-pill" class="status-pill" title="AI usage today">AI usage: —</div>

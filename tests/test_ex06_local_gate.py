@@ -525,6 +525,7 @@ CALLERS_X19 = {   # every production file outside frontend/ that both constructs
     "notifications/windows.py": "PAGE",            # webbrowser.open of the Daily Brief PAGE (a navigation the gate allows); no /api call
     "portfolio/provider.py": "OTHER_LOCAL",        # the Robinhood gateway (RH_GATEWAY_URL, loopback), not this app
     "browser_tests/cdp.py": "OTHER_LOCAL",         # the browser's DevTools port, not this app
+    "browser_tests/risk_controls_panel_flows.py": "INTENT",   # risk controls panel B37: runs the F2 fallback command (curl.exe, X-Stock-Agent-Intent) against the harness server
     "browser_tests/app_server.py": "GUARD",        # the harness network guard wraps socket.create_connection; its fetch( is the bar replay
     "scripts/run_stock_agent.py": "NAMES_ONLY",    # names requests / httpx only to silence their loggers; constructs no client
 }
@@ -585,7 +586,10 @@ def test_X16_the_emergency_shutdown_never_goes_through_http_and_the_safety_route
 # ---------------------------------------------------------------- the dashboard wrapper (D-7 B)
 def test_X17_the_wrapper_is_the_first_code_the_dashboard_runs_and_index_html_is_unchanged():
     base = subprocess.run(["git", "show", f"{BASE}:frontend/index.html"], cwd=ROOT, capture_output=True).stdout
-    assert (ROOT / "frontend" / "index.html").read_bytes().replace(b"\r\n", b"\n") == base.replace(b"\r\n", b"\n")
+    # risk controls panel: the page's only change is its static notice (design 3.6; pinned line by line by tests/test_panel_freeze.py F03P), removed here exactly once
+    page = (ROOT / "frontend" / "index.html").read_bytes().replace(b"\r\n", b"\n").decode("utf-8")
+    page, notices = re.subn(r'(?m)^<div id="pui-boot-notice" class="pui-boot-notice" role="alert">[^\n<]*\n<code>curl\.exe [^\n<]*</code>\nMore in README\.md, "Emergency Stop fallback"\.</div>\n', "", page)
+    assert notices == 1 and page.encode("utf-8") == base.replace(b"\r\n", b"\n")
     html = base.decode("utf-8")
     assert re.findall(r'<script src="([^"]+)"', html)[0] == "app.js"
     js = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")

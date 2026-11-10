@@ -957,14 +957,14 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market
     stage = set(_git("diff", "--name-only", FL.BASE_W1, FL.BASE_W2A).split())                # Wave 1 itself, between two fixed commits (main before / after PR #50)
     changed = set(_git("diff", "--name-only", FL.BASE_W1).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01                                                         # Wave 2 PR A, pinned by its own F tests
+    later = FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL                                                         # Wave 2 PR A, pinned by its own F tests
     assert stage == FL.NEW_W1 | FL.EDITED_W1, {"unexpected": sorted(stage - FL.NEW_W1 - FL.EDITED_W1), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1) - stage)}
     assert changed == FL.NEW_W1 | FL.EDITED_W1 | later, {"unexpected": sorted(changed - FL.NEW_W1 - FL.EDITED_W1 - later), "missing": sorted((FL.NEW_W1 | FL.EDITED_W1 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W1).split())
     assert {p for p in stage if p not in in_base} == FL.NEW_W1 and {p for p in stage if p in in_base} == FL.EDITED_W1   # so every other file of main is untouched
     assert {p for p in FL.EDITED_W1 if not p.startswith("tests/")} == APP_EDITS_W1             # no strategy, setup, proposal, market-data, broker, SIP or UI file
     assert set(FL.SEMANTIC_W1) == APP_EDITS_W1 - {".github/ci/pytest_groups.json"} | {"tests/conftest.py"} and FL.INSTRUMENTATION_W1 == {}
-    assert {"execution/engine.py", "execution/broker.py", "safety/engine.py", "proposals/engine.py", "proposals/__init__.py"}.isdisjoint(changed)   # the rules and limits
+    assert {"execution/engine.py", "execution/broker.py", "safety/engine.py", "proposals/engine.py", "proposals/__init__.py"}.isdisjoint(changed - ({"safety/engine.py"} & set(FL.SEMANTIC_PANEL)))   # risk controls panel: its label-only icon_label edit of safety/engine.py, pinned line by line by tests/test_panel_freeze.py F02P   # the rules and limits
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")                                       # a marked block an older freeze test would strip unseen
     for rel in sorted(FL.NEW_W1 | APP_EDITS_W1 | {"tests/conftest.py"}):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()

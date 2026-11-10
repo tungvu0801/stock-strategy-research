@@ -791,7 +791,7 @@ def risk_controls(c: Ctx):
     # pause
     c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').click()")
     _wait_safety(c, "NO_NEW_ENTRIES")
-    c.r.eq("Pause New Trades -> New trades paused with its reason", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')")], ["🟡 New trades paused", "Reason: New trades paused by you"])
+    c.r.eq("Pause New Trades -> New automatic entries paused with its reason", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')")], ["🟡 New automatic entries paused", "Reason: New automatic entries paused by you"])
     c.r.eq("API: the pause is persisted as NO_NEW_ENTRIES with a PAUSE_ON event", [c.http("GET", "/api/execution-safety")["state"], c.http("GET", "/api/execution-safety/events?kind=PAUSE_ON")["count"] >= 1], ["NO_NEW_ENTRIES", True])
     time.sleep(1.1)
     psvc.evaluate("SNDK", trigger="TEST")
@@ -805,9 +805,9 @@ def risk_controls(c: Ctx):
     # emergency stop
     c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
     _wait_safety(c, "HALTED")
-    c.r.eq("Emergency Stop -> Trading stopped with its reason; Pause / Stop disabled; Clear control shown", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
+    c.r.eq("Emergency Stop -> New automatic entries stopped with its reason; Pause disabled, Emergency Stop never disabled (risk controls panel); Clear control shown", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
            c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').disabled"), c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').disabled"), c.js("!!document.querySelector('#tv-safety [data-safety=\"clear\"]')")],
-           ["🔴 Trading stopped", "Reason: Emergency stop active", True, True, True])
+           ["🔴 New automatic entries stopped", "Reason: Emergency stop active", False, True, True])
     c.r.eq("Resume is disabled while stopped and the stop persists", [c.js("document.querySelector('#tv-safety [data-safety=\"resume\"]').disabled"), c.http("POST", "/api/execution-safety/resume-new-entries", {})["state"]], [True, "HALTED"])
     time.sleep(1.1)
     psvc.evaluate("SNDK", trigger="TEST")
@@ -827,8 +827,8 @@ def risk_controls(c: Ctx):
     v = safety.evaluate("TEST")
     c.js("RiskControls.refresh()")
     _wait_safety(c, "HALTED")
-    c.r.eq("forced 6% daily loss -> Trading stopped with the daily-loss reason; latched and persisted", [v.state, v.daily_loss.daily_loss_pct, _safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
-           c.http("GET", "/api/execution-safety/events?kind=DAILY_HALT_TRIGGERED")["count"]], ["HALTED", "6.00", "🔴 Trading stopped", "Reason: Daily loss limit reached", 1])
+    c.r.eq("forced 6% daily loss -> New automatic entries stopped with the daily-loss reason; latched and persisted", [v.state, v.daily_loss.daily_loss_pct, _safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
+           c.http("GET", "/api/execution-safety/events?kind=DAILY_HALT_TRIGGERED")["count"]], ["HALTED", "6.00", "🔴 New automatic entries stopped", "Reason: Daily loss limit reached", 1])
     c.js("document.querySelector('#tv-safety [data-safety=\"details\"]').click()")
     c.wait("!document.querySelector('#tv-safety [data-safety-details]').classList.contains('tv-hidden')", 10, "details open")
     det = c.js("__tvText('#tv-safety [data-safety-details]')") or ""
@@ -985,7 +985,7 @@ def _bot_account(c: Ctx):
 
 def account_refresh(c: Ctx):
     """Stage 6.0.1: the Paper Bot panel's account-data line against the REAL refresher on the simulated paper broker - Fresh, then three
-    failed refreshes -> Stale and Risk Controls New trades paused, then one successful refresh -> Fresh and Trading allowed again. Read only:
+    failed refreshes -> Stale and Risk Controls New automatic entries blocked, then one successful refresh -> Fresh and Trading allowed again. Read only:
     no order intent, no broker write, no Robinhood, no model call."""
     from api.routes.trader_view import stream
     st = stream()
@@ -1019,7 +1019,7 @@ def account_refresh(c: Ctx):
         c.wait("(__tvText('#tv-bot [data-bot-account]') || '') === 'Account data: Stale'", 15, "account data stale")
         c.js("RiskControls.refresh()")
         _wait_safety(c, "NO_NEW_ENTRIES")
-        c.r.eq("stale account data -> Risk Controls: New trades paused", [_bot_account(c), _safety_chip(c)], ["Account data: Stale", "\U0001f7e1 New trades paused"])
+        c.r.eq("stale account data -> Risk Controls: New automatic entries blocked: daily-loss data unavailable", [_bot_account(c), _safety_chip(c)], ["Account data: Stale", "\U0001f7e1 New automatic entries blocked: daily-loss data unavailable"])
         c.js("if (document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')) document.querySelector('#tv-bot [data-bot=\"details\"]').click()")
         c.wait("!document.querySelector('#tv-bot [data-bot-details]').classList.contains('tv-hidden')", 10, "details open")
         det = c.js("__tvText('#tv-bot [data-bot-details]')") or ""
@@ -2588,12 +2588,12 @@ def forward_validation(c: Ctx):
 
 PUI_AGENT = {"NONE": "WATCHING", "WATCHING": "WATCHING", "READY": "READY", "ENTERING": "ENTERING", "IN_TRADE": "IN TRADE", "EXITING": "EXITING", "CLOSED": "CLOSED",
              "STOPPED": "NEEDS ATTENTION", "ATTENTION": "NEEDS ATTENTION"}
-PUI_SAFETY = {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New trades paused", "HALTED": "Trading stopped", "UNKNOWN": "Risk status unknown"}
+PUI_SAFETY = {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New automatic entries paused", "HALTED": "New automatic entries stopped", "UNKNOWN": "Risk status unknown"}   # the risk controls panel: the server's labels
 PUI_STALE = ("never places a trade", "Not available in this version", "no order path", "read-only Trader View", "never places, prepares", "STOP TRADING", "Reset Trade")
 PUI_TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."
 PUI_TECH = ("PPE", "Demand", "Evidence", "Proposal", "Confidence")
 PUI_CONFIRM = {"auto-on": "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
-               "stop": "This immediately blocks all new entries. Existing positions remain monitored and protective exits remain allowed. The emergency stop stays active until cleared manually.",
+               "stop": "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.",
                "clear": "This removes the emergency-stop latch. Trading resumes only if all safety checks pass."}
 PUI_POSTS = {"POST /api/execution/auto/enable", "POST /api/execution/auto/disable", "POST /api/execution-safety/pause-new-entries", "POST /api/execution-safety/resume-new-entries",
              "POST /api/execution-safety/emergency-stop", "POST /api/execution-safety/clear-emergency-stop"}                       # the only writes: the legacy buttons' own routes
@@ -2605,7 +2605,7 @@ def _pui_system(exec_, safety):
     acct = exec_.get("account_data") or {}
     cash = acct.get("cash_flow") or {}
     if st in ("HALTED", "UNKNOWN") or exec_.get("attention"):
-        return "SYSTEM STOPPED"
+        return "RISK STATUS UNKNOWN" if st == "UNKNOWN" and not exec_.get("attention") else "NEW AUTOMATIC ENTRIES STOPPED"   # risk controls panel, section 4
     degraded = st == "NO_NEW_ENTRIES" or bool(acct.get("status") and acct["status"] != "FRESH") or bool(cash.get("status") and cash["status"] != "FRESH") or exec_.get("reconciliation_healthy") is False
     return "SYSTEM DEGRADED" if degraded else "SYSTEM HEALTHY"
 
@@ -2870,11 +2870,12 @@ def product_ui(c: Ctx):
     segs = _pui_segs(c)
     market = (exec_.get("scheduler") or {}).get("market") or {}
     bar = c.js("__tvText('#pui-status')") or ""
-    c.r.eq("header: PAPER · MARKET · SYSTEM · AUTO follow the payloads; account / gate words are not repeated in the bar; the policy line is the current one; no action button in the bar",
+    c.r.eq("header: PAPER · MARKET · SYSTEM · AUTO follow the payloads; account / gate words are not repeated in the bar; the policy line is the current one; Emergency Stop the only action button in the bar",
            [list(segs), segs.get("paper") in ("PAPER", "SIMULATED PAPER"), segs.get("market"), segs.get("system"), segs.get("auto"), PUI_TAGLINE in bar,
-            "ACCOUNT" in bar or "TRADING ALLOWED" in bar or "NEW TRADES PAUSED" in bar, c.js("document.querySelectorAll('#pui-status button[data-pui]:not([data-pui=\"system\"])').length")],
+            "ACCOUNT" in bar or "TRADING ALLOWED" in bar or "NEW TRADES PAUSED" in bar or "NEW AUTOMATIC ENTRIES PAUSED" in bar,
+            c.js("[...document.querySelectorAll('#pui-status button[data-pui]:not([data-pui=\"system\"])')].map((b) => [b.dataset.pui, b.disabled])")],
            [["paper", "market", "system", "auto"], True, "MARKET OPEN" if market.get("regular_session") else ("MARKET CLOSED" if market.get("regular_session") is False else "MARKET —"),
-            _pui_system(exec_, safety), "AUTO ON" if exec_["mode"] == "PAPER_AUTO" else "AUTO OFF", True, False, 0])
+            _pui_system(exec_, safety), "AUTO ON" if exec_["mode"] == "PAPER_AUTO" else "AUTO OFF", True, False, [["stop-bar", False]]])
     c.step("__click('#pui-status [data-pui-seg=\"system\"]')", "!!document.querySelector('#pui-status [data-pui-system-details]')", 10)
     det = c.js("__tvText('#pui-status [data-pui-system-details]')") or ""
     c.r.check("SYSTEM expander: the detailed reasons (safety gate, account, cash flow, reconciliation) are one click away", "Safety gate" in det and "Account" in det and "Reconciliation" in det, det[:300])
@@ -2920,7 +2921,8 @@ def product_ui(c: Ctx):
     rows0, btns0 = _pui_rows(c), _pui_buttons(c)
     kill0 = bool((safety.get("kill_switch") or {}).get("active"))
     pause0 = bool((safety.get("no_new_entries") or {}).get("active"))
-    want_trading = {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED", "HALTED": "STOPPED"}.get(safety["state"], "UNKNOWN")
+    want_trading = {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED" if (safety.get("no_new_entries") or {}).get("active") else "BLOCKED",   # risk controls panel: no Pause reads BLOCKED
+                    "HALTED": "STOPPED"}.get(safety["state"], "UNKNOWN")
     c.r.eq("controls: Paper Auto / Trading / Emergency Stop rows read the payloads; the Emergency Stop button reads 'Emergency Stop' and is not implied active; no Reset Trade anywhere",
            [rows0, [b for b in btns0 if b[0] in ("stop", "clear")], c.js("[...document.querySelectorAll('button')].some((b) => /reset trade/i.test(b.innerText))"), c.js("__tvVisible('#pui-cards [data-pui=\"stop\"], #pui-cards [data-pui=\"clear\"]')")],
            [{"auto": "ON" if exec_["mode"] == "PAPER_AUTO" else "OFF", "trading": want_trading, "stop": "ACTIVE" if kill0 else "INACTIVE"}, [["clear", "Clear Emergency Stop"] if kill0 else ["stop", "Emergency Stop"]], False, True])
@@ -2975,24 +2977,24 @@ def product_ui(c: Ctx):
         posts += _pui_posts(reqs)
         time.sleep(2.3)
         after = c.js("[__tvText('#pui-cards [data-pui-card=\"agent\"]'), __tvText('#pui-cards [data-pui-card=\"position\"]')]")
-        c.r.eq("Disable Auto -> exactly the legacy POST, AUTO OFF, 'Existing positions continue to be monitored.'; the Agent / Position cards and the stored positions are unchanged (nothing reset)",
-               [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], "Existing positions continue to be monitored." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or ""), after == before,
+        c.r.eq("Disable Auto -> exactly the legacy POST, AUTO OFF, 'Positions the bot manages keep their exit rules unless they need attention.'; the Agent / Position cards and the stored positions are unchanged (nothing reset)",
+               [_pui_posts(reqs), _pui_segs(c).get("auto"), _pui_rows(c)["auto"], "Positions the bot manages keep their exit rules unless they need attention." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or ""), after == before,
                 [(p.position_id, p.state, p.quantity) for p in xsvc.store.positions(open_only=False)] == positions0],
                [["POST /api/execution/auto/disable"], "AUTO OFF", "OFF", True, True, True])
         c.r.eq("authoritative GET says MONITOR_ONLY after Disable; the header reads OFF from it",
                [c.http("GET", "/api/execution/status")["mode"], c.js("document.querySelector('#pui-status [data-pui-auto]').dataset.puiAuto")], ["MONITOR_ONLY", "OFF"])
         _pui_reload(c)
-        c.r.eq("reload after Disable: AUTO OFF from the persisted mode, Enable Paper Auto offered again, 'Existing positions continue to be monitored.' intact",
+        c.r.eq("reload after Disable: AUTO OFF from the persisted mode, Enable Paper Auto offered again, 'Positions the bot manages keep their exit rules unless they need attention.' intact",
                [_pui_segs(c).get("auto"), _pui_rows(c)["auto"], [b for b in _pui_buttons(c) if b[0].startswith("auto")], c.http("GET", "/api/execution/status")["mode"],
-                "Existing positions continue to be monitored." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
+                "Positions the bot manages keep their exit rules unless they need attention." in (c.js("__tvText('#pui-cards [data-pui-row=\"auto\"]')") or "")],
                ["AUTO OFF", "OFF", [["auto-on", "Enable Paper Auto"]], "MONITOR_ONLY", True])
         # Pause / Resume: distinct from the stop; Resume lifts the pause only
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"pause\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'NO_NEW_ENTRIES'", 30)
         posts += _pui_posts(reqs)
         time.sleep(2.3)
         risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
-        c.r.eq("Pause New Trades -> the legacy POST; 'New trades paused' + 'Existing positions continue normally.', Resume offered, Pause gone, the stop row still INACTIVE with Emergency Stop, SYSTEM DEGRADED",
-               [_pui_posts(reqs), "New trades paused" in risk_text and "Existing positions continue normally." in risk_text, _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system")],
+        c.r.eq("Pause New Trades -> the legacy POST; 'New automatic entries paused' + 'Bot exit rules keep running while a position is monitored.', Resume offered, Pause gone, the stop row still INACTIVE with Emergency Stop, SYSTEM DEGRADED",
+               [_pui_posts(reqs), "New automatic entries paused" in risk_text and "Bot exit rules keep running while a position is monitored." in risk_text, _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system")],
                [["POST /api/execution-safety/pause-new-entries"], True, {"auto": "OFF", "trading": "PAUSED", "stop": "INACTIVE"}, [["resume", "Resume New Trades"], ["stop", "Emergency Stop"]], "SYSTEM DEGRADED"])
         c.shot("product_ui_paused")
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"resume\"]')", "RiskControls.state.data && RiskControls.state.data.state === 'TRADING_ALLOWED'", 30)
@@ -3003,7 +3005,7 @@ def product_ui(c: Ctx):
                [["POST /api/execution-safety/resume-new-entries"], {"auto": "OFF", "trading": "ALLOWED", "stop": "INACTIVE"}, False, [["pause", "Pause New Trades"]]])
         # Emergency Stop: explanation first (Cancel sends nothing), then Confirm -> the legacy one-click button
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"stop\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"stop\"]')", 10)
-        c.r.eq("Emergency Stop: first click shows the confirmation (protective exits remain allowed; stays active until cleared) and sends nothing",
+        c.r.eq("Emergency Stop: first click shows the confirmation (blocks new automatic entries once saved; nothing at Alpaca is cancelled; stays active until cleared) and sends nothing",
                [_pui_posts(reqs), PUI_CONFIRM["stop"] in (c.js("__tvText('#pui-cards [data-pui-confirm=\"stop\"]')") or ""), c.js("RiskControls.state.data.state")], [[], True, "TRADING_ALLOWED"])
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"cancel\"]')", "!document.querySelector('#pui-cards [data-pui-confirm]')", 10)
         c.r.eq("Cancel: no stop was sent", [_pui_posts(reqs), c.js("RiskControls.state.data.state")], [[], "TRADING_ALLOWED"])
@@ -3012,11 +3014,11 @@ def product_ui(c: Ctx):
         posts += _pui_posts(reqs)
         time.sleep(2.3)
         risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
-        c.r.eq("Confirm Emergency Stop -> the legacy POST; EMERGENCY STOP ACTIVE / New entries blocked. / Existing positions remain protected.; Clear Emergency Stop offered, no Pause / Resume / Stop, SYSTEM STOPPED",
-               [_pui_posts(reqs), risk_text.startswith("Risk\nEMERGENCY STOP ACTIVE") or "EMERGENCY STOP ACTIVE" in risk_text, "New entries blocked." in risk_text and "Existing positions remain protected." in risk_text,
+        c.r.eq("Confirm Emergency Stop -> the legacy POST; EMERGENCY STOP ACTIVE / New automatic entries blocked. / Bot exit rules keep running while a position is monitored.; Clear Emergency Stop offered, no Pause / Resume / Stop, NEW AUTOMATIC ENTRIES STOPPED",
+               [_pui_posts(reqs), risk_text.startswith("Risk\nEMERGENCY STOP ACTIVE") or "EMERGENCY STOP ACTIVE" in risk_text, "New automatic entries blocked." in risk_text and "Bot exit rules keep running while a position is monitored." in risk_text,
                 c.js("document.querySelector('#pui-cards [data-pui-card=\"risk\"]').dataset.kill"), _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system"),
                 c.js("__tvVisible('#pui-cards [data-pui=\"clear\"]')")],
-               [["POST /api/execution-safety/emergency-stop"], True, True, "1", {"auto": "OFF", "trading": "STOPPED", "stop": "ACTIVE"}, [["clear", "Clear Emergency Stop"]], "SYSTEM STOPPED", True])
+               [["POST /api/execution-safety/emergency-stop"], True, True, "1", {"auto": "OFF", "trading": "STOPPED", "stop": "ACTIVE"}, [["clear", "Clear Emergency Stop"]], "NEW AUTOMATIC ENTRIES STOPPED", True])
         c.shot("product_ui_emergency_stop")
         # an existing position under the active stop and under Paper Auto OFF: the shell's own card renderer with the live payloads and a synthetic MU position
         mu = ("{ key: 'IN_TRADE', symbol: 'MU', label: 'In trade', line: '4 shares · entry 830.00 · now 835.50 · +22.00', shares: 4, entry: '830.00', current: '835.50', pnl: '+22.00', pnl_pct: '0.66', "
@@ -3025,9 +3027,9 @@ def product_ui(c: Ctx):
                   "dom: { setupState: 'NONE', blockers: [] }, symbol: 'MU', limits: { max_hold_sessions: 5 }, avail: {}, confirm: null }); const d = document.createElement('div'); d.innerHTML = h; "
                   "return [d.querySelector('[data-pui-card=\"agent\"]').dataset.agent, (d.querySelector('[data-pui-position-note]') || {}).textContent || '', d.querySelector('[data-pui-card=\"position\"]').textContent]; })()")
         shown = c.js(render)
-        c.r.eq("existing position + Emergency Stop ACTIVE (MU, IN TRADE, live gate payload): 'No new entries. Existing position remains protected.' and the position card intact",
+        c.r.eq("existing position + Emergency Stop ACTIVE (MU, IN TRADE, live gate payload): 'No new automatic entries. Bot exit rules keep running for this position unless it needs attention.' and the position card intact",
                [shown[0], shown[1], "MU · 4 shares" in shown[2] and "830.00" in shown[2], any(w in (shown[1] + shown[2]).lower() for w in ("reset", "abandon", "delete"))],
-               ["IN TRADE", "No new entries. Existing position remains protected.", True, False])
+               ["IN TRADE", "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.", True, False])
         # Clear Emergency Stop: explanation first, Confirm -> the legacy two-click button; the display then follows the backend (never a forced Trading allowed)
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
         c.r.eq("Clear Emergency Stop: first click shows the confirmation (trading resumes only if all safety checks pass) and sends nothing; the legacy clear is not armed",
@@ -3039,8 +3041,9 @@ def product_ui(c: Ctx):
         risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
         c.r.eq("Confirm clear -> the legacy POST (two legacy clicks); the Risk headline and the header follow the backend state after the clear, not a forced 'Trading allowed'",
                [_pui_posts(reqs), risk_text.split("\n")[1] if "\n" in risk_text else risk_text, _pui_segs(c).get("system"), _pui_rows(c)["stop"], _pui_rows(c)["trading"]],
-               [["POST /api/execution-safety/clear-emergency-stop"], PUI_SAFETY[safety_now["state"]], _pui_system(exec_now, safety_now), "INACTIVE",
-                {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED", "HALTED": "STOPPED"}.get(safety_now["state"], "UNKNOWN")])
+               [["POST /api/execution-safety/clear-emergency-stop"], safety_now["state_label"], _pui_system(exec_now, safety_now), "INACTIVE",   # the server's own label (risk controls panel, design 3.1)
+                {"TRADING_ALLOWED": "ALLOWED", "NO_NEW_ENTRIES": "PAUSED" if (safety_now.get("no_new_entries") or {}).get("active") else "BLOCKED",
+                 "HALTED": "STOPPED"}.get(safety_now["state"], "UNKNOWN")])
         c.r.eq("every write of the controls round trip is a legacy route, nothing else was posted", [sorted(set(posts)) <= sorted(PUI_POSTS), set(posts) == PUI_POSTS], [True, True])
         off = c.js(render.replace("safety: RiskControls.state.data", "safety: RiskControls.state.data"))
         c.r.eq("existing position + Paper Auto OFF (MU, IN TRADE): 'New automatic entries are disabled. Existing position monitoring continues.' and the position card intact",
@@ -3337,8 +3340,8 @@ def product_flow_degraded(c: Ctx):
     posts += _pui_posts(reqs)
     time.sleep(2.3)
     focus = _pf_focus(c)
-    c.r.eq("emergency stop: the focus strip reads NEEDS ATTENTION (SYSTEM STOPPED) first; the Risk card headline EMERGENCY STOP ACTIVE", [focus[0] if focus else None, _pui_segs(c).get("system"), "EMERGENCY STOP ACTIVE" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or "")],
-           ["ATTENTION", "SYSTEM STOPPED", True])
+    c.r.eq("emergency stop: the focus strip reads NEEDS ATTENTION (NEW AUTOMATIC ENTRIES STOPPED) first; the Risk card headline EMERGENCY STOP ACTIVE", [focus[0] if focus else None, _pui_segs(c).get("system"), "EMERGENCY STOP ACTIVE" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or "")],
+           ["ATTENTION", "NEW AUTOMATIC ENTRIES STOPPED", True])
     c.shot("product_flow_stopped")
     c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
     reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === false", 30)
@@ -3713,7 +3716,11 @@ def strategy_validation_results(c: Ctx):
 # <<< Strategy Validation 6.2
 
 
+# risk controls panel: its three flows run before risk_controls, while the gate is Trading allowed (risk_controls latches a forced daily loss for its date)
+from browser_tests.risk_controls_panel_flows import risk_controls_presses, risk_controls_races, risk_controls_scripts  # noqa: E402 - risk controls panel (design section 6)
+
 FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, strategy_fit, evidence, ai_strategy_fit,
-         ai_evidence, history, scanner, strategy_validation, strategy_validation_results, small_screens, trader_view, market_demand, setup_state, trade_review, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
+         ai_evidence, history, scanner, strategy_validation, strategy_validation_results, small_screens, trader_view, market_demand, setup_state, trade_review,
+         risk_controls_scripts, risk_controls_races, risk_controls_presses, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows; Stage 6.1.2: the product flows follow product_ui
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)

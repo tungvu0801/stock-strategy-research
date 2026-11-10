@@ -1054,15 +1054,15 @@ def test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_co
     def fn_src(text, name):
         tree = ast.parse(text)
         return ast.dump(next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith(name)))
-    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", FL.undo_w2c("tests/test_forward_validation_61.py", FL.undo_ex06("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8"))))   # Wave 2 PR B (D-1) / PR C (T-WC06): PR A's delta; their own edits: F02B / F03B, F02C / F03C
+    now61 = FL.undo_w2b("tests/test_forward_validation_61.py", FL.undo_w2c("tests/test_forward_validation_61.py", FL.undo_ex06("tests/test_forward_validation_61.py", FL.undo_panel("tests/test_forward_validation_61.py", (ROOT / "tests" / "test_forward_validation_61.py").read_text(encoding="utf-8")))))   # Wave 2 PR B (D-1) / PR C (T-WC06): PR A's delta; their own edits: F02B / F03B, F02C / F03C
     base61 = at_base("tests/test_forward_validation_61.py")
     for name in ("test_T01_", "test_T02_", "test_R01_", "test_R02_", "test_S01_", "test_X01_"):         # (ii) they run in this suite, unchanged
         assert fn_src(now61, name) == fn_src(base61, name), name
-    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", FL.undo_w2c("tests/test_forward_paper_610a.py", FL.undo_ex06("tests/test_forward_paper_610a.py", FL.undo_xss01("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))))), at_base("tests/test_forward_paper_610a.py")
+    now610a, base610a = FL.undo_w2b("tests/test_forward_paper_610a.py", FL.undo_w2c("tests/test_forward_paper_610a.py", FL.undo_ex06("tests/test_forward_paper_610a.py", FL.undo_xss01("tests/test_forward_paper_610a.py", FL.undo_panel("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")))))), at_base("tests/test_forward_paper_610a.py")
     tests610a = [n.name for n in ast.parse(base610a).body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_") and not n.name.startswith("test_F")]
     assert len(tests610a) > 20 and all(fn_src(now610a, n) == fn_src(base610a, n) for n in tests610a)   # only its F (freeze bookkeeping) tests carry the PR A union
     for rel in ("tests/frontend/forward_validation.test.cjs", "frontend/forward_validation.js"):
-        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, (ROOT / rel).read_text(encoding="utf-8")))))) == at_base(rel), rel   # Wave 2 PR C (T-WC06): its W2-7 edits are its own pins
+        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, (ROOT / rel).read_text(encoding="utf-8"))))))) == at_base(rel), rel   # Wave 2 PR C (T-WC06): its W2-7 edits are its own pins
     flows = (ROOT / "browser_tests" / "flows.py").read_text(encoding="utf-8").replace("\r\n", "\n").splitlines()
     assert flows[2569:2590] == at_base("browser_tests/flows.py").splitlines()[2569:2590]
 

@@ -8,7 +8,9 @@ liquidates or calls a broker.
 """
 VERSION = "safety_v1"
 STATES = ("TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN")
-STATE_LABELS = {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New trades paused", "HALTED": "Trading stopped", "UNKNOWN": "Trading stopped"}
+STATE_LABELS = {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New automatic entries paused", "HALTED": "New automatic entries stopped",
+                "UNKNOWN": "Risk status unknown"}             # risk controls panel (design 3.1): the state-only defaults; safety.engine.icon_label picks per flag
+STATE_LABEL_DAILY_UNAVAILABLE = "New automatic entries blocked: daily-loss data unavailable"   # NO_NEW_ENTRIES with no Pause (safety.engine.decide)
 STATE_ICONS = {"TRADING_ALLOWED": "🟢", "NO_NEW_ENTRIES": "🟡", "HALTED": "🔴", "UNKNOWN": "🔴"}
 CONTROLS = ("GLOBAL_KILL_SWITCH", "DAILY_LOSS_HALT", "NO_NEW_ENTRIES", "DAILY_BASELINE")
 CONTROL_RESULTS = ("PASS", "BLOCK", "WARN", "UNKNOWN")
@@ -36,7 +38,7 @@ R_STARTUP_POLICY = "STARTUP_POLICY"
 REASON_TEXT = {
     R_KILL: "Emergency stop active",
     R_DAILY: "Daily loss limit reached",
-    R_PAUSE: "New trades paused by you",
+    R_PAUSE: "New automatic entries paused by you",
     R_BASELINE_MISSING: "No daily equity baseline yet",
     R_EQUITY_NA: "Account equity not available",
     R_EQUITY_INVALID: "Account equity invalid",

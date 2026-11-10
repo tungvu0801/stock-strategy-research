@@ -193,7 +193,7 @@ def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the
 def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2B == "50cb2d7bc0384f1a020c01c9ba22c52c1283f339" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2B}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files(FL.BASE_W2B)
-    both_new, both_edited = FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01, FL.EDITED_W2B | (FL.EDITED_W2C - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06)   # Wave 2 PR C / EX-06: its own sets (its edits of PR B's new files stay new since BASE_W2B), pinned by tests/test_wave2_prc.py
+    both_new, both_edited = FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01 | FL.NEW_PANEL, FL.EDITED_W2B | (FL.EDITED_W2C - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06) | (FL.EDITED_PANEL - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01)   # Wave 2 PR C / EX-06: its own sets (its edits of PR B's new files stay new since BASE_W2B), pinned by tests/test_wave2_prc.py
     assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2B).split())
     assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
@@ -227,7 +227,7 @@ def defs(text):
 def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):   # the ledger: F03B
-        b, n = defs(at_base(rel)), defs(FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, now_text(rel)))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)
+        b, n = defs(at_base(rel)), defs(FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, now_text(rel))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))                                   # no merged test removed
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2B)
@@ -244,7 +244,7 @@ def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_
 def test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2B) == {p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py")} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2B):
-        assert FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, now_text(rel))))) == at_base(rel), rel           # now -> (F03C) 875bc06d -> 50cb2d7b, byte for byte
+        assert FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, now_text(rel)))))) == at_base(rel), rel           # now -> (F03C) 875bc06d -> 50cb2d7b, byte for byte
     main_fl = at_base("tests/freeze_ledger.py")
     fl = subprocess.run(["git", "show", f"{FL.BASE_W2C}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # Wave 2 PR C: the ledger as PR #52 left it
     assert fl.count("LEDGER = {") == 1 and fl.count("BASE_W2B = ") == 1                       # the anchors every older ledger test uses stay unique

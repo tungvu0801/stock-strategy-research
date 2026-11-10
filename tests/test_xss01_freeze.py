@@ -287,6 +287,19 @@ def now_text(rel):
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+def at_panel(rel):
+    """Risk controls panel (design 7a): XSS-01's side as merged, main at FL.BASE_PANEL, a commit that cannot change."""
+    run = subprocess.run(["git", "show", f"{FL.BASE_PANEL}:{rel}"], cwd=ROOT, capture_output=True)
+    assert run.returncode == 0, f"{rel} is not in {FL.BASE_PANEL} (fetch-depth 0 is required)"
+    return run.stdout.decode("utf-8").replace("\r\n", "\n")
+
+
+def xss01_files():
+    """Risk controls panel (design 7a): XSS-01's change set between fixed commits (BASE_XSS01 .. BASE_PANEL); the panel's own delta is pinned by
+    tests/test_panel_freeze.py, and the two sets together are pinned to BASE_XSS01 .. HEAD there."""
+    return set(_git("diff", "--name-only", FL.BASE_XSS01, FL.BASE_PANEL).split())
+
+
 def changed_files(base):
     c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
@@ -312,7 +325,11 @@ def line_ops(rel):
 
 def test_F01Y_the_change_set_is_exactly_the_declared_files_and_no_trading_server_page_or_conftest_file_changed():
     assert FL.BASE_XSS01 == "9df1717a0eb20e666a2e641fbcabac466b30ad2d" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_XSS01}^{{commit}}"], cwd=ROOT).returncode == 0
-    changed = changed_files(FL.BASE_XSS01)
+    # risk controls panel (design 7a): XSS-01's side is read at BASE_PANEL, the XSS-01 merge; the view cannot drift: it is an ancestor of HEAD and
+    # its tree is the tree every XSS-01 check, CI run and review used
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", FL.BASE_PANEL, "HEAD"], cwd=ROOT).returncode == 0
+    assert _git("rev-parse", f"{FL.BASE_PANEL}^{{tree}}").strip() == "4ee7f2808da88571a6886b4e69a210faf3fee175"
+    changed = xss01_files()
     assert changed == FL.NEW_XSS01 | FL.EDITED_XSS01, {"unexpected": sorted(changed - FL.NEW_XSS01 - FL.EDITED_XSS01), "missing": sorted((FL.NEW_XSS01 | FL.EDITED_XSS01) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_XSS01).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_XSS01 == NEW_FILES_XSS01 and {p for p in changed if p in in_base} == FL.EDITED_XSS01
@@ -322,13 +339,13 @@ def test_F01Y_the_change_set_is_exactly_the_declared_files_and_no_trading_server
     assert all(p.endswith((".py", ".cjs")) for p in FL.EDITED_XSS01 if p.startswith("tests/"))
     assert not {p for p in changed if p.startswith(FORBIDDEN_PREFIX_XSS01)} - {"api/local_gate.py"} and not {p for p in changed if p.startswith("api/routes/")}
     for rel in UNTOUCHED:
-        assert rel not in changed and now_text(rel) == at_base(rel), rel
+        assert rel not in changed and at_panel(rel) == at_base(rel), rel
     assert subprocess.run(["git", "diff", "--quiet", FL.BASE_XSS01, "--", "api/routes/alpaca_paper_orders.py"], cwd=ROOT).returncode == 0   # Stage 4.6B byte-identical
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")
     for rel in sorted(changed):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        assert not [l for l in now_text(rel).splitlines() if l not in base and marker.match(l)], rel
-    groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
+        assert not [l for l in at_panel(rel).splitlines() if l not in base and marker.match(l)], rel
+    groups, base_groups = json.loads(at_panel(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g != "core"} == {g: v for g, v in base_groups.items() if g != "core"}
     i = base_groups["core"]["files"].index("test_ex06_freeze.py") + 1
     assert groups["core"] == {**base_groups["core"], "files": base_groups["core"]["files"][:i] + list(CI_FILES_XSS01) + base_groups["core"]["files"][i:]}
@@ -390,7 +407,7 @@ def test_F03Y_app_js_changes_exactly_the_wrapped_lines_keeps_the_ex06_block_the_
 def test_F04Y_every_changed_older_test_function_is_declared_and_every_bookkeeping_edit_is_undone_exactly():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_XSS01 if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(now_text(rel))
+        b, n = defs(at_base(rel)), defs(at_panel(rel))
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_XSS01)
@@ -398,11 +415,11 @@ def test_F04Y_every_changed_older_test_function_is_declared_and_every_bookkeepin
     assert all(re.match(r"^XSS01-[A-Z]\d\d ", v) and len(v) > 60 for v in FL.SEMANTIC_TESTS_XSS01.values())
     assert set(FL.UNDO_XSS01) == {p for p in FL.EDITED_XSS01 if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_XSS01):
-        assert FL.undo_xss01(rel, now_text(rel)) == at_base(rel), rel                          # now -> 9df1717a, byte for byte
+        assert FL.undo_xss01(rel, at_panel(rel)) == at_base(rel), rel                          # XSS-01 as merged -> 9df1717a, byte for byte
         for old, new in FL.UNDO_XSS01[rel]:
-            assert now_text(rel).count(new) == 1 and at_base(rel).count(old) >= 1, (rel, new[:80])
+            assert at_panel(rel).count(new) == 1 and at_base(rel).count(old) >= 1, (rel, new[:80])
     for rel in FL.SEMANTIC_XSS01:
-        assert FL.pre_xss01(rel, now_text(rel)) == at_base(rel) and now_text(rel) != at_base(rel), rel
+        assert FL.pre_xss01(rel, at_panel(rel)) == at_base(rel) and at_panel(rel) != at_base(rel), rel
     FL.UNDO_XSS01["tests/_probe.py"] = [("y = 2\n", "y = 3\n")]
     try:
         assert FL.undo_xss01("tests/_probe.py", "x = 1\ny = 3\n") == "x = 1\ny = 2\n" and FL.undo_xss01("tests/other.py", "z\r\n") == "z\n"
@@ -411,7 +428,7 @@ def test_F04Y_every_changed_older_test_function_is_declared_and_every_bookkeepin
 
 
 def test_F05Y_the_ledger_changes_only_its_declarations_its_two_helpers_the_four_rehashed_entries_and_the_three_registered_modules():
-    main_fl, fl = at_base("tests/freeze_ledger.py"), now_text("tests/freeze_ledger.py")
+    main_fl, fl = at_base("tests/freeze_ledger.py"), at_panel("tests/freeze_ledger.py")
     for a in ("LEDGER = {", "BASE_EX06 = ", "BASE_XSS01 = ", "\n\ndef unchanged(", "\n\ndef pre_ex06(", "\n\ndef pre_xss01(", "\nEX-06 (", "\nXSS-01 ("):
         assert fl.count(a) == 1, a
     led = lambda t: t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]  # noqa: E731
@@ -429,12 +446,13 @@ def test_F05Y_the_ledger_changes_only_its_declarations_its_two_helpers_the_four_
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_xss01("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, two helpers and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_XSS01 and set(main_ledger) <= set(FL.LEDGER)   # the only new registrations are the X-1 modules
+    xss01_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                              # the ledger as XSS-01 left it (design 7a)
+    assert set(xss01_ledger) - set(main_ledger) == FL.NEW_LEDGER_XSS01 and set(main_ledger) <= set(xss01_ledger)   # the only new registrations are the X-1 modules
     rehashed = {"frontend/app.js", ".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py", "tests/test_trader_view_55.py"}   # the registered files XSS-01 edits
-    assert {k for k in main_ledger if main_ledger[k] != FL.LEDGER[k]} == rehashed == {k for k in main_ledger if k in FL.EDITED_XSS01}
+    assert {k for k in main_ledger if main_ledger[k] != xss01_ledger[k]} == rehashed == {k for k in main_ledger if k in FL.EDITED_XSS01}
     for rel in rehashed | FL.NEW_LEDGER_XSS01:
-        assert FL.LEDGER[rel] == FL.sha(now_text(rel)), rel
+        assert xss01_ledger[rel] == FL.sha(at_panel(rel)), rel
     for rel in sorted(FL.NEW_LEDGER_XSS01):
-        assert FL.base_text(rel) == at_base(rel) == FL.pre_xss01(rel, now_text(rel)), rel     # unchanged from BASE_68 to main, as EX-06's registrations were
+        assert FL.base_text(rel) == at_base(rel) == FL.pre_xss01(rel, at_panel(rel)), rel     # unchanged from BASE_68 to main, as EX-06's registrations were
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel                      # every registered file still reads as main (BASE_68) to the older freeze tests

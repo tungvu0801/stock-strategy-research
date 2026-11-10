@@ -1,6 +1,7 @@
 // Node tests for the RISK CONTROLS panel (Stage 5.9.1) in frontend/trader_render.js, the page wiring in trader_view.js and the controls in
-// risk_controls.js. Beginner wording only: 🟢 Trading allowed · 🟡 New trades paused · 🔴 Trading stopped, one reason line, Pause / Resume /
-// Emergency Stop, a separate two-step Clear Emergency Stop, details hidden by default, no BUY / SELL wording. The POSTs change safety state only.
+// risk_controls.js. Beginner wording only: 🟢 Trading allowed · 🟡 New automatic entries paused · 🔴 New automatic entries stopped (the server's
+// state_label since the risk controls panel, design 3.1), one reason line, Pause / Resume / Emergency Stop, a separate two-step Clear Emergency Stop,
+// details hidden by default, no BUY / SELL wording. The POSTs change safety state only.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -29,30 +30,30 @@ function view(over) {
     error: null, disclaimer: DISCLAIMER, events: [{ at: "2026-10-21T14:30:00+00:00", kind: "BASELINE_CREATED", actor: "system", reason: "HYPOTHETICAL_REVIEW" }],
   }, over || {});
 }
-const PAUSED = view({ state: "NO_NEW_ENTRIES", state_label: "New trades paused", icon: "🟡", allowed_new_entry: false, reason_codes: ["NO_NEW_ENTRIES_ACTIVE"], reason_text: "New trades paused by you",
+const PAUSED = view({ state: "NO_NEW_ENTRIES", state_label: "New automatic entries paused", icon: "🟡", allowed_new_entry: false, reason_codes: ["NO_NEW_ENTRIES_ACTIVE"], reason_text: "New automatic entries paused by you",
                       no_new_entries: { active: true, activated_at: "2026-10-21T15:00:00+00:00", activated_by: "user", reason: null } });
-const DAILY = view({ state: "HALTED", state_label: "Trading stopped", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["DAILY_LOSS_LIMIT_REACHED"], reason_text: "Daily loss limit reached",
+const DAILY = view({ state: "HALTED", state_label: "New automatic entries stopped", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["DAILY_LOSS_LIMIT_REACHED"], reason_text: "Daily loss limit reached",
                      daily_loss: Object.assign({}, view().daily_loss, { status: "TRIGGERED", code: "DAILY_LOSS_LIMIT_REACHED", current_equity: "94000.00", daily_pnl: "-6000.00", daily_loss_pct: "6.00", latched: true, triggered_at: "2026-10-21T15:01:00+00:00", triggered_loss_pct: "6.00" }) });
-const KILLED = view({ state: "HALTED", state_label: "Trading stopped", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["KILL_SWITCH_ACTIVE"], reason_text: "Emergency stop active",
+const KILLED = view({ state: "HALTED", state_label: "New automatic entries stopped", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["KILL_SWITCH_ACTIVE"], reason_text: "Emergency stop active",
                       kill_switch: { active: true, activated_at: "2026-10-21T15:02:00+00:00", activated_by: "user", reason: "testing" } });
-const UNKNOWN = view({ state: "UNKNOWN", state_label: "Trading stopped", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["PERSISTENCE_FAILED"], reason_text: "Safety status could not be saved", persisted: false, error: "OperationalError: disk" });
+const UNKNOWN = view({ state: "UNKNOWN", state_label: "Risk status unknown", icon: "🔴", allowed_new_entry: false, halted: true, reason_codes: ["PERSISTENCE_FAILED"], reason_text: "Safety status could not be saved", persisted: false, error: "OperationalError: disk" });
 
 test("1 TRADING_ALLOWED renders as 🟢 Trading allowed with no reason line", () => {
   const html = R.safetyHtml(view());
-  assert.match(html, /<span class="tv-safe-state ok" data-safety-state="TRADING_ALLOWED">🟢 Trading allowed<\/span>/);
+  assert.match(html, /<span class="tv-safe-state ok" data-safety-state="TRADING_ALLOWED" data-safety-uncertain="0">🟢 Trading allowed<\/span>/);
   assert.doesNotMatch(html, /Reason:/);
   assert.equal(R.safetyModel(view()).allowed, true);
 });
 
-test("2 NO_NEW_ENTRIES renders as 🟡 New trades paused with its reason", () => {
+test("2 NO_NEW_ENTRIES renders as 🟡 New automatic entries paused with its reason", () => {
   const html = R.safetyHtml(PAUSED);
-  assert.match(html, /<span class="tv-safe-state paused" data-safety-state="NO_NEW_ENTRIES">🟡 New trades paused<\/span>/);
-  assert.match(html, /<div class="tv-safe-reason">Reason: New trades paused by you<\/div>/);
+  assert.match(html, /<span class="tv-safe-state paused" data-safety-state="NO_NEW_ENTRIES" data-safety-uncertain="0">🟡 New automatic entries paused<\/span>/);
+  assert.match(html, /<div class="tv-safe-reason">Reason: New automatic entries paused by you<\/div>/);
 });
 
-test("3 HALTED renders as 🔴 Trading stopped with the daily-loss reason", () => {
+test("3 HALTED renders as 🔴 New automatic entries stopped with the daily-loss reason", () => {
   const html = R.safetyHtml(DAILY);
-  assert.match(html, /<span class="tv-safe-state stopped" data-safety-state="HALTED">🔴 Trading stopped<\/span>/);
+  assert.match(html, /<span class="tv-safe-state stopped" data-safety-state="HALTED" data-safety-uncertain="0">🔴 New automatic entries stopped<\/span>/);
   assert.match(html, /Reason: Daily loss limit reached/);
 });
 
@@ -71,7 +72,8 @@ test("5 Pause New Trades / Resume / Emergency Stop buttons follow the state", ()
   assert.match(paused, /data-safety="resume">Resume/);
   const killed = R.safetyHtml(KILLED);
   assert.match(killed, /data-safety="pause" disabled>Pause New Trades/);
-  assert.match(killed, /data-safety="stop" disabled>Emergency Stop/);
+  assert.match(killed, /data-safety="stop">Emergency Stop/);                                                 // Emergency Stop is never disabled (risk controls panel, section 5)
+  assert.doesNotMatch(killed, /data-safety="stop" disabled/);
 });
 
 test("6 clearing an emergency stop is a separate, explicit, two-step control", () => {
@@ -79,8 +81,11 @@ test("6 clearing an emergency stop is a separate, explicit, two-step control", (
   assert.doesNotMatch(R.safetyHtml(PAUSED), /data-safety="clear"/);
   assert.match(R.safetyHtml(KILLED), /<button type="button" class="tv-safe-btn danger" data-safety="clear">Clear Emergency Stop<\/button>/);
   assert.match(R.safetyHtml(KILLED, { confirmClear: true }), /data-safety="clear">Confirm: clear emergency stop<\/button>/);
-  assert.match(RISK_JS, /if \(!state\.confirmClear\) \{[\s\S]*?state\.confirmClear = true;[\s\S]*?return;[\s\S]*?\}\s*clearTimeout\(state\.confirmTimer\); state\.confirmClear = false;\s*return act\("\/api\/execution-safety\/clear-emergency-stop"/);
-  assert.match(RISK_JS, /if \(kind === "resume"\) return act\("\/api\/execution-safety\/resume-new-entries"/);
+  // risk controls panel (design 3.2): every action goes through simpleAction / stopFlow, which POST PATHS[kind]
+  assert.match(RISK_JS, /if \(!state\.confirmClear\) \{[\s\S]*?state\.confirmClear = true;[\s\S]*?return;[\s\S]*?\}\s*clearTimeout\(state\.confirmTimer\); state\.confirmClear = false;\s*return simpleAction\("clear"\);/);
+  assert.match(RISK_JS, /if \(kind === "pause" \|\| kind === "resume"\) return simpleAction\(kind\);/);
+  assert.match(RISK_JS, /clear: "\/api\/execution-safety\/clear-emergency-stop"/);
+  assert.match(RISK_JS, /resume: "\/api\/execution-safety\/resume-new-entries"/);
 });
 
 test("7 advanced details are hidden by default and hold the numbers when opened", () => {
@@ -97,9 +102,9 @@ test("7 advanced details are hidden by default and hold the numbers when opened"
   assert.match(open, /Control history<\/div><ul class="tv-safe-hist" data-safety-history><\/ul>/);
 });
 
-test("8 an unavailable gate renders as stopped, never as allowed", () => {
+test("8 an unavailable gate renders as Risk status unknown, never as allowed", () => {
   const html = R.safetyHtml(UNKNOWN);
-  assert.match(html, /data-safety-state="UNKNOWN">🔴 Trading stopped<\/span>/);
+  assert.match(html, /data-safety-state="UNKNOWN" data-safety-uncertain="0">🔴 Risk status unknown<\/span>/);   // risk controls panel, section 4
   assert.match(html, /Reason: Safety status could not be saved/);
   assert.equal(R.safetyModel(UNKNOWN).allowed, false);
   assert.match(R.safetyHtml(null), /⚪ Checking risk controls…/);
@@ -128,14 +133,16 @@ test("11 Trader View stays the primary workspace: the panel sits first in the ri
   assert.ok(VIEW_JS.indexOf("<h3>Risk Controls</h3>") < VIEW_JS.indexOf("<h3>Position</h3>"));
   assert.match(VIEW_JS, /window\.RiskControls\.mount\("tv-safety"\)/);
   assert.ok(HTML.includes('<script src="risk_controls.js"></script>') && HTML.indexOf("trade_review.js") < HTML.indexOf("risk_controls.js"));
-  assert.match(RISK_JS, /window\.RiskControls = \{ mount, refresh, state \};/);
+  assert.match(RISK_JS, /window\.RiskControls = \{ mount, refresh, state, status \};/);                    // status(): the one effective view's input (risk controls panel, design 3.2)
   assert.ok(CSS.includes(".tv-safe-state.stopped") && CSS.includes(".tv-safe-details") && CSS.includes(".tv-safe-btn.danger"));
 });
 
 test("12 the control script POSTs exactly the four action routes; the page itself never writes", () => {
-  const posts = [...RISK_JS.matchAll(/act\("(\/api\/execution-safety\/[a-z-]+)"/g)].map((m) => m[1]).sort();
+  // risk controls panel (design 3.2): the four routes live in PATHS, and the one POST call site sends PATHS[kind]
+  const posts = [...RISK_JS.match(/const PATHS = \{([\s\S]*?)\};/)[1].matchAll(/"(\/api\/execution-safety\/[a-z-]+)"/g)].map((m) => m[1]).sort();
   assert.deepEqual(posts, ["/api/execution-safety/clear-emergency-stop", "/api/execution-safety/emergency-stop", "/api/execution-safety/pause-new-entries", "/api/execution-safety/resume-new-entries"]);
   assert.equal((RISK_JS.match(/method: "POST"/g) || []).length, 1);
+  assert.deepEqual((RISK_JS.match(/\bpost\([^)]*\)/g) || []), ["post(path)", "post(PATHS[kind])"]);
   assert.doesNotMatch(codeOnly(RISK_JS), /alpaca|robinhood|\/v2\/orders|\/orders|preview|confirm\(|submit\(/i);
   assert.doesNotMatch(codeOnly(VIEW_JS), /method:\s*["'](POST|PUT|PATCH|DELETE)/);
 });

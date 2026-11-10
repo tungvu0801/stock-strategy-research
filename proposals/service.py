@@ -88,7 +88,7 @@ class ProposalService:
     def execution_eligibility(self, status: str, now: datetime) -> Dict[str, Any]:
         """Stage 5.9.1: may a future execution layer act on this proposal NOW? Derived from the live gate; never stored and never acted upon here."""
         if self.safety is None:
-            return {"allowed": False, "state": "UNKNOWN", "state_label": "Trading stopped", "reason_codes": ["SAFETY_GATE_NOT_CONNECTED"], "reason_text": "Safety gate not connected", "evaluated_at": None}
+            return {"allowed": False, "state": "UNKNOWN", "state_label": "Risk status unknown", "reason_codes": ["SAFETY_GATE_NOT_CONNECTED"], "reason_text": "Safety gate not connected", "evaluated_at": None}
         sv = self.safety.current(now=now)
         codes = list(sv.reason_codes) + ([] if status == "REVIEWABLE" else [f"PROPOSAL_{status}"])
         return {"allowed": bool(sv.allowed_new_entry and status == "REVIEWABLE"), "state": sv.state, "state_label": sv.state_label, "reason_codes": codes,

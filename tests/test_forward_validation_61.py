@@ -688,7 +688,7 @@ def test_U01_node_tests_of_the_forward_validation_panel_and_page():
 
 
 def test_U02_wiring_the_compact_panel_and_the_separate_page_are_read_only():
-    html = now_text("frontend/index.html")
+    html = ledger_view("frontend/index.html", now_text("frontend/index.html"))                 # risk controls panel: a registered file, read as on main
     js = now_text("frontend/forward_validation.js")
     page = now_text("frontend/forward_validation.html")
     assert html.count("<!-- >>> Stage 6.1") == 2 == html.count("<!-- <<< Stage 6.1 -->") and '<script src="forward_validation.js"></script>' in html and 'href="forward_validation.css"' in html

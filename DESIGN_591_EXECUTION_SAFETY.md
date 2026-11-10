@@ -12,9 +12,9 @@ submits nothing: no Alpaca order, no Robinhood write, no auto trading. It is the
 | state | meaning | beginner wording |
 |---|---|---|
 | `TRADING_ALLOWED` | proposal generation allowed; a future execution layer may proceed if every other control passes | 🟢 Trading allowed |
-| `NO_NEW_ENTRIES` | monitoring continues (PPE / Demand / Setup / proposals stay visible); no new entry may proceed; exits stay possible in Stage 6.0 | 🟡 New trades paused |
-| `HALTED` | no new entry; the future execution layer must treat this as a hard stop; cleared only by the documented policy | 🔴 Trading stopped |
-| `UNKNOWN` | the evaluator or its persistence failed (§10); treated exactly like HALTED by any caller | 🔴 Trading stopped (safety status unavailable) |
+| `NO_NEW_ENTRIES` | monitoring continues (PPE / Demand / Setup / proposals stay visible); no new entry may proceed; exits stay possible in Stage 6.0 | 🟡 New automatic entries paused (by a Pause) or New automatic entries blocked: daily-loss data unavailable |
+| `HALTED` | no new entry; the future execution layer must treat this as a hard stop; cleared only by the documented policy | 🔴 New automatic entries stopped |
+| `UNKNOWN` | the evaluator or its persistence failed (§10); treated exactly like HALTED by any caller | 🔴 Risk status unknown |
 
 No state is named after a side. `allowed_new_entry` is a separate boolean: it is true only when the state is `TRADING_ALLOWED` **and**
 the daily-loss control is actually verifiable (§5, §8). A proposal may be REVIEWABLE while `allowed_new_entry` is false.
@@ -38,6 +38,12 @@ Actions: **ACTIVATE** (`POST /api/execution-safety/emergency-stop`, optional rea
 clearing survive restarts (the store is the state). Config never activates it; `EXECUTION_SAFETY_STARTUP_POLICY` (default `KEEP`) only
 says what happens at startup: `KEEP` leaves the persisted state untouched, `HALT_ON_START` activates the kill switch once at startup
 with reason `STARTUP_POLICY` (never clears one). No environment variable is a source of truth at runtime.
+
+**Saved first (risk controls panel, RISK_CONTROLS_PANEL_DESIGN.md 3.1).** An Emergency Stop is latched before the evaluation reads the
+account, because that read can wait up to `CASH_FLOW_CYCLE_WAIT_SECONDS` behind the cash-flow cycle. `SafetyStore.latch` changes only the
+kill columns and only while the kill is off, and writes one `KILL_ON` event (`to_state` HALTED, `input.saved_before_evaluation`). Once
+it ran, the action is not applied again, so a Clear committed during the account read stands. If the latch itself fails, the evaluation
+applies the action and the fallback tries once more. A Pause, a Resume and a Clear keep the evaluated order.
 
 ## 4. No-new-entries mode (manual pause)
 
@@ -121,6 +127,8 @@ re-persist an evaluation row at most every `EXECUTION_SAFETY_EVALUATION_HEARTBEA
   the error text is in `error` and in the kill-switch / daily-loss liveness `last_error` when they can still be written.
 * Evaluator exception → `UNKNOWN` with `SAFETY_EVALUATOR_ERROR` (same flags); the error is recorded as an `EVALUATOR_ERROR` event
   when the store is reachable.
+* Either failure still reports a saved Emergency Stop: the `UNKNOWN` view carries the kill switch read on its own (best effort; only
+  `active = true` is information, an unreadable row stays the inactive default). No new route (risk controls panel, decision B-3).
 * Stale account snapshot, missing baseline, invalid equity, invalid threshold, unadjustable P&L → daily-loss status UNAVAILABLE with the
   specific code; the state follows the other controls, `allowed_new_entry` is false.
 
@@ -151,8 +159,9 @@ Restart (Phase 21) and day boundary (Phase 22) run on a fake clock against the s
 
 ## 14. UI wording (beginner first)
 
-Trader View, right column, first panel **RISK CONTROLS**: 🟢 Trading allowed · 🟡 New trades paused · 🔴 Trading stopped; one
-reason line ("Daily loss limit reached", "Emergency stop active", "New trades paused by you", "Safety status unavailable"); buttons
+Trader View, right column, first panel **RISK CONTROLS**: 🟢 Trading allowed · 🟡 New automatic entries paused · 🔴 New automatic entries
+stopped · 🔴 Risk status unknown (the labels come from the server's `state_label`, `safety.engine.icon_label`); one
+reason line ("Daily loss limit reached", "Emergency stop active", "New automatic entries paused by you", "Safety status unavailable"); buttons
 **Pause New Trades**, **Resume**, **Emergency Stop**, and — only while an emergency stop is active — **Clear Emergency Stop**, which
 needs a second click to confirm. **View details** reveals: daily loss, threshold, starting equity, current equity, kill switch state,
 last evaluated, control history. Internal enums are never the headline. No BUY / SELL wording.

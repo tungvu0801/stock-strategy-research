@@ -307,8 +307,8 @@ class TerminalStream:
                           "market_hours_only": bool(config.SETUP_MARKET_HOURS_ONLY)},
                 "proposal": {"version": "proposals_v1", "statuses": ["NOT_ELIGIBLE", "BLOCKED", "REVIEWABLE", "STALE", "EXPIRED"], "reviewable_label": "REVIEWABLE PROPOSAL",
                              "submission_status": "NOT SUBMITTED", "cadence": "generated after each setup evaluation of the active ticker; review only, never an order"},
-                "safety": {"version": "safety_v1", "states": ["TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN"], "labels": {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New trades paused",
-                           "HALTED": "Trading stopped"}, "cadence": "on every proposal evaluation, on the in-session cadence, on each API read and user action; persisted"},
+                "safety": {"version": "safety_v1", "states": ["TRADING_ALLOWED", "NO_NEW_ENTRIES", "HALTED", "UNKNOWN"], "labels": {"TRADING_ALLOWED": "Trading allowed", "NO_NEW_ENTRIES": "New automatic entries paused",
+                           "HALTED": "New automatic entries stopped"}, "cadence": "on every proposal evaluation, on the in-session cadence, on each API read and user action; persisted"},
                 "chart": dict(CHART_ASSET),
                 "client_commands": list(CLIENT_COMMANDS), "execution_preview": "NOT_CONNECTED"}
 
