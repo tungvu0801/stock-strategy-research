@@ -720,8 +720,9 @@ Stage 5.9 found that the project had **no operational kill switch and no daily-l
 **persisted** safety gate (`safety/`, design: `DESIGN_591_EXECUTION_SAFETY.md`) that a future execution layer must consult before any
 entry. It still submits nothing: no Alpaca order, no Robinhood write, no auto trading. These controls are prerequisites for Stage 6.0.
 
-* **States** (plain words first): 🟢 Trading allowed (`TRADING_ALLOWED`), 🟡 New trades paused (`NO_NEW_ENTRIES`), 🔴 Trading stopped
-  (`HALTED`, or `UNKNOWN` when the gate itself failed). Precedence: manual kill switch > daily-loss halt > no-new-entries > allowed.
+* **States** (plain words first): 🟢 Trading allowed (`TRADING_ALLOWED`), 🟡 New automatic entries paused (`NO_NEW_ENTRIES` by a Pause;
+  "New automatic entries blocked: daily-loss data unavailable" without one), 🔴 New automatic entries stopped (`HALTED`), 🔴 Risk status
+  unknown (`UNKNOWN`, when the gate itself failed). Precedence: manual kill switch > daily-loss halt > no-new-entries > allowed.
   `allowed_new_entry` is true only for `TRADING_ALLOWED` with a verifiable daily-loss control.
 * **Kill switch** — now operational and persisted (`execution_safety_state`): **Emergency Stop** activates it, **Clear Emergency Stop**
   (a distinct two-click action) clears it; Resume never does. It survives restarts and day boundaries.
@@ -802,7 +803,45 @@ No real money, no Robinhood call, no model call anywhere in the path. It proves 
   🟠 Exiting · ⚪ Closed · 🔴 Needs attention). Internal states live under View Details.
 * **Known limitations** — no holiday calendar (the broker clock is the backstop); in real-data mode the safety gate's equity still comes
   from the Stage 4.6A snapshot (≤ 15 min old, `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL` for an Alpaca source), so a stale snapshot reads
-  New trades paused and the bot blocks entries — fail closed; the proposal's equity source in real mode is unchanged from Stage 5.9.
+  New automatic entries blocked: daily-loss data unavailable, and the bot blocks entries — fail closed; the proposal's equity source in real mode is unchanged from Stage 5.9.
+
+## Emergency Stop fallback
+
+Use this only when the dashboard cannot save an Emergency Stop. Nothing here cancels an order or closes a position: this app never does.
+None of these commands is needed in normal use.
+
+| # | When | Do | What it does and does not do |
+|---|---|---|---|
+| F1 | The page works, and the Emergency Stop line says "NOT confirmed" | Press Emergency Stop again. Repeating it is harmless | The same request |
+| F2 | The status bar shows "Emergency Stop unavailable on this page", or the notice "If this message stays visible" stays, and the server is up | Run the two commands below in PowerShell on this computer, changing 8000 if the page uses another port | Saves the stop on the server. Cancels nothing at Alpaca |
+| F3 | The server does not answer | **No stop can be saved.** Use Alpaca's website to cancel orders or close positions. Then decide about the process | The bot keeps running while the process lives |
+| F4 | F3, and automatic activity must end now | Run `.\scripts\stop_stock_agent.ps1` from the app folder (see below) | Stopping ends the bot's exit rules and reconciliation too; orders at Alpaca keep working |
+| F5 | The dashboard reads "Risk status unknown" with the line "Automatic entries are blocked. This state does not by itself block manual paper orders.": the server cannot read its safety state | Automatic entries are blocked. Use Alpaca's website if you must act. `scripts\check_stock_agent.ps1` and the order list stay available. If the page instead shows "Risk controls unavailable" or "Could not confirm the current state.", its last read failed or is old and nothing is known: press Emergency Stop (F1), use F2 if the bar says it is unavailable or Emergency Stop stays NOT confirmed after a second press, and F3 only if the F2 commands get no answer | Manual paper orders are not blocked by this state |
+| F6 | You closed or reduced a bot position on Alpaca's website | Expect **Needs attention**. Any remainder has no automatic exit. New entries and Paper Auto stay refused, even after a Clear, until a recovery command ships. Editing the database by hand is not a route | Nothing in the app resolves it yet |
+
+**F2 commands** (PowerShell, `curl.exe`):
+
+```
+curl.exe -sS --max-time 60 -X POST http://127.0.0.1:8000/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"
+(curl.exe -sS --max-time 60 http://127.0.0.1:8000/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active
+```
+
+**Success is `True` from the second command.** The first can take up to about 45 s while a refresh cycle runs. If it times out, run the
+second: the stop may still have been saved. A connection error means the server is not answering: go to F3.
+
+**F4 in detail.** `.\scripts\stop_stock_agent.ps1` writes the stop file, waits up to `-TimeoutSeconds` (60 by default) on a hung server, then
+force-stops that one verified process; lower the timeout if you cannot wait. It prints "NOT RUNNING" if there is no PID file, for example
+for a server started by `uvicorn` or with a custom `-RuntimeDir`, while that server keeps running: check Task Manager afterwards. **Do not use
+Task Manager to end the server under the scheduled task:** its runner restarts a killed process after about 60 s, up to 3 times, and the
+task's own `-RestartCount 3` may add more. A restart comes up Monitor only, because Paper Auto is never kept armed across a restart, but the
+bot's exit rules and reconciliation resume. If `PAPER_AUTO_RUN_POLICY=SCHEDULED_ARM` and `PAPER_AUTO_SCHEDULED_ARM_ENABLED=true` are both set
+(both are off by default), the scheduled arm can arm Paper Auto once per session after that restart: check the policy before relying on
+Monitor only. A task trigger (logon, weekdays) also starts the server again later, after a deliberate stop. **After any restart, press
+Emergency Stop first:** a restart reads the saved latch, so a stop saved earlier still holds; a stop that was never saved does not.
+
+**What Emergency Stop and Pause do.** Both block **new automatic entries** once saved. Neither cancels an order at Alpaca or closes a
+position. The bot's exit rules keep running while a position is monitored; a position marked Needs attention gets no automatic exit. Pause
+and the daily-loss halt do not block manual paper orders. The page reports a stop as active only after a server read shows it.
 
 ## Running without VS Code (Windows background runner)
 
@@ -913,10 +952,10 @@ minutes on an unattended bot.
   3 failed refreshes in a row. After a restart it reads Checking until the first refresh, so a cached snapshot never makes entries
   eligible on startup. The next successful refresh recovers automatically, with no restart and no manual step.
 * **Safety.** The Stage 5.9.1 risk controls and the Stage 5.9 proposals read the refreshed snapshot through their existing account
-  seams; neither package changed. Stale or failing account data means **New trades paused** and never Trading allowed. Open paper
+  seams; neither package changed. Stale or failing account data means **New automatic entries blocked: daily-loss data unavailable** and never Trading allowed. Open paper
   positions keep being monitored, and deterministic exits stay allowed.
 * **Limitation that remains.** The Alpaca snapshot still cannot separate deposits and withdrawals from trading P&L. With fresh data
-  the real-account risk controls therefore read "New trades paused - Deposits and withdrawals cannot be separated from trading P&L"
+  the real-account risk controls therefore read "New automatic entries blocked: daily-loss data unavailable - Deposits and withdrawals cannot be separated from trading P&L"
   (`DAILY_PNL_ADJUSTMENT_UNAVAILABLE`), unless an operator explicitly sets `EXECUTION_SAFETY_ACCEPT_UNADJUSTED_PNL`. This stage never sets
   that flag, and real-data safety is not production-complete.
 * **Evidence:** `account_refresh_snapshot` (one row), `account_refresh_attempts` (append-only) and `account_refresh_liveness` (one row:
@@ -950,12 +989,12 @@ real-account risk controls read **Trading allowed** while `EXECUTION_SAFETY_ACCE
   waits one refresh (`CASH_FLOW_PENDING`) until the account snapshot reflects it. A late-posted event is placed by its own time and the
   risk controls re-evaluate at once. A new New York trading date starts a new baseline and a new window.
 * **Safety.** Healthy needs a fresh snapshot, today's baseline, a fresh activity read taken after that snapshot, and no pending,
-  ambiguous or unclassified activity. Anything else means **New trades paused**; exits continue. A halt fires from the adjusted loss and
+  ambiguous or unclassified activity. Anything else means **New automatic entries blocked: daily-loss data unavailable**; the bot's exit rules keep running while a position is monitored. A halt fires from the adjusted loss and
   stays latched for the day: a later deposit never clears it, and a withdrawal never fakes a loss.
 * **API:** `GET /api/cash-flow-status`, `/events` and `/attempts`, read only, with no broker ids or credentials.
 * **UI and health check:** the Paper Bot panel adds one line, for example **Cash-flow data: Fresh (12s ago)**, with today's trading P/L,
   the deposits / withdrawals adjustment, the daily loss and its limit under View details. `scripts\check_stock_agent.ps1` prints the
-  same line. Risk Controls still show only Trading allowed, New trades paused or Trading stopped.
+  same line. Risk Controls show Trading allowed, New automatic entries paused or blocked, New automatic entries stopped, or Risk status unknown.
 * **Unchanged:** execution, order submission, exits, strategy, PPE, Demand, Evidence, setups, proposals and thresholds. No Robinhood, no
   model call, no real money.
 

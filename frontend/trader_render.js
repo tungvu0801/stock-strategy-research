@@ -323,34 +323,86 @@
   }
 
   // ---------------------------------------------------------------- Risk controls (Stage 5.9.1; the persisted execution safety gate) ---
-  const SAFETY_LABELS = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New trades paused", HALTED: "Trading stopped", UNKNOWN: "Trading stopped" };
+  // Risk controls panel (RISK_CONTROLS_PANEL_DESIGN.md 3.3, section 5): the words come from the server's state_label (SAFETY_LABELS is the
+  // fallback and safetyModel's loaded test). Emergency Stop is always rendered and never disabled. A page that could not read the server says so
+  // ("Status uncertain") and never claims a state; the server's own UNKNOWN says what it blocks. Each action's pending and outcome line stays
+  // until a read settles it.
+  const SAFETY_LABELS = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New automatic entries paused", HALTED: "New automatic entries stopped", UNKNOWN: "Risk status unknown" };
   const SAFETY_ICONS = { TRADING_ALLOWED: "🟢", NO_NEW_ENTRIES: "🟡", HALTED: "🔴", UNKNOWN: "🔴" };
   const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "paused", HALTED: "stopped", UNKNOWN: "stopped" };
+  const SAFETY_UNKNOWN_EXPLAIN = "Automatic entries are blocked. This state does not by itself block manual paper orders.";
+  const SAFETY_UNCERTAIN_TEXT = "Could not confirm the current state.";
+  const SAFETY_ACTION_NAMES = { stop: "Emergency Stop", pause: "Pause", resume: "Resume", clear: "Clear Emergency Stop" };
   const stampOf = (iso, n) => (iso ? `${String(iso).slice(11, n || 19)} UTC` : "—");
+  const clockOf = (ms) => { const d = ms == null ? null : new Date(ms); return d && !isNaN(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : "—"; };
   function safetyModel(v) {
     const loaded = !!v && !!v.state && !!SAFETY_LABELS[v.state];
     const st = loaded ? v.state : "UNKNOWN";
     const d = (v && v.daily_loss) || {};
     const k = (v && v.kill_switch) || {};
     const p = (v && v.no_new_entries) || {};
-    return { loaded, state: st, label: loaded ? SAFETY_LABELS[st] : "Checking risk controls…", icon: loaded ? SAFETY_ICONS[st] : "⚪", cls: loaded ? SAFETY_CLS[st] : "",
+    return { loaded, state: st, label: loaded ? (v.state_label || SAFETY_LABELS[st]) : "Checking risk controls…", icon: loaded ? SAFETY_ICONS[st] : "⚪", cls: loaded ? SAFETY_CLS[st] : "",
              reason: (v && v.reason_text) || (st === "UNKNOWN" && loaded ? "Safety status unavailable" : ""), allowed: !!(v && v.allowed_new_entry),
-             killActive: !!k.active, killSince: stampOf(k.activated_at, 16), killBy: k.activated_by || "", killReason: k.reason || "",
-             pauseActive: !!p.active, pauseSince: stampOf(p.activated_at, 16), pauseBy: p.activated_by || "",
+             killActive: k.active === true, killSince: stampOf(k.activated_at, 16), killBy: k.activated_by || "", killReason: k.reason || "",
+             pauseActive: p.active === true, pauseSince: stampOf(p.activated_at, 16), pauseBy: p.activated_by || "",
              dailyStatus: d.status || "UNAVAILABLE", dailyLoss: d.daily_loss_pct == null ? "—" : `${Number(d.daily_loss_pct).toFixed(2)}%`, threshold: d.threshold_pct == null ? "—" : `${Number(d.threshold_pct).toFixed(2)}%`,
              starting: money(d.starting_equity), current: money(d.current_equity), dailyDate: d.trading_date || "—", dailyCode: d.code ? words(d.code) : "", equitySource: d.equity_source ? words(d.equity_source) : "",
              evaluated: stampOf(v && v.evaluated_at), error: (v && v.error) || null, disclaimer: (v && v.disclaimer) || "", raw: v || null };
   }
+  // C-4: the read-only open-order count from the stored account snapshot (0 broker calls), shown only while the Emergency Stop is active
+  function openOrdersLine(oo) {
+    if (!oo) return "";
+    const st = String(oo.status || "UNAVAILABLE").toUpperCase();
+    if (oo.count == null || st === "DISABLED" || st === "UNAVAILABLE") return "Open orders at Alpaca: unavailable. Check Alpaca's website.";
+    const n = Number(oo.count) >= 500 ? "at least 500" : String(oo.count);   // the snapshot reads at most 500 orders (account_refresh/service.py)
+    return `Open orders at Alpaca: ${n}, as of ${stampOf(oo.at, 16)}${st === "STALE" || st === "STARTING" ? " (stale)" : ""}. This app does not cancel orders. Use Alpaca's website to cancel.`;
+  }
+  // the pending and outcome lines, Emergency Stop first (design 3.2 item 6, section 5); a later confirmed Pause never hides Stop's line
+  function safetyMessages(opts) {
+    const o = opts || {};
+    const oc = o.outcomes || {};
+    const out = [];
+    if (o.announce) out.push({ key: "announce", cls: "bad", text: String(o.announce) });
+    for (const k of ["stop", "pause", "resume", "clear"]) {
+      const x = oc[k];
+      if (!x) continue;
+      if (x.result === "PENDING") out.push({ key: k, cls: "warn", text: `Sending ${SAFETY_ACTION_NAMES[k]}…` });
+      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: `${SAFETY_ACTION_NAMES[k]} NOT confirmed. Press it again.` });
+      else if (k === "stop" && x.note === "posted-unread") out.push({ key: k, cls: "warn", text: "The server confirmed Emergency Stop, but the state could not be re-read." });
+      else if (k === "stop" && x.note === "error-but-active") out.push({ key: k, cls: "warn", text: "The request reported an error, but the server shows Emergency Stop active." });
+    }
+    return out;
+  }
+  // which controls a state offers (section 5): "on", "off" (shown, disabled) or null (hidden). Emergency Stop is not here: it is always on
+  function safetyButtons(m, o) {
+    const pend = o.pending || {};
+    const busy = !!(pend.stop || pend.pause || pend.resume || pend.clear);
+    const first = !m.loaded, unc = m.loaded && !!o.uncertain, unknown = m.loaded && !unc && m.state === "UNKNOWN";
+    const pause = first && o.loading !== false ? null : busy ? "off" : first || unc || unknown ? "on" : m.killActive || m.pauseActive ? "off" : "on";
+    const resume = first ? null : busy || unc || unknown ? "off" : m.pauseActive ? "on" : "off";
+    const clear = first ? null : unc ? (m.killActive ? "off" : null) : m.killActive ? (busy || unknown ? "off" : "on") : null;
+    return { pause, resume, clear };
+  }
   function safetyHtml(v, opts) {
     const o = opts || {};
     const m = safetyModel(v);
-    const head = `<div class="tv-safe-head"><span class="tv-safe-state ${m.cls}" data-safety-state="${esc(m.state)}">${esc(m.icon)} ${esc(m.label)}</span></div>`;
-    if (!m.loaded) return head + (o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "");
-    const reason = m.reason ? `<div class="tv-safe-reason">Reason: ${esc(m.reason)}</div>` : "";
-    const err = o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "";
+    const unc = m.loaded && !!o.uncertain, unknown = m.loaded && !unc && m.state === "UNKNOWN";
+    let icon = m.icon, label = m.label, cls = m.cls;
+    if (!m.loaded) { icon = "⚪"; label = o.loading === false ? "Risk status unknown" : "Checking risk controls…"; cls = ""; }
+    else if (unc) { icon = "⚪"; label = `Status uncertain · last known ${m.label} at ${clockOf(o.lastGoodAt)}`; cls = ""; }
+    else if (unknown && m.killActive) label = `${m.label} · Emergency Stop active`;
+    const head = `<div class="tv-safe-head"><span class="tv-safe-state ${cls}" data-safety-state="${esc(m.state)}" data-safety-uncertain="${unc ? "1" : "0"}">${esc(icon)} ${esc(label)}</span></div>`;
     const btn = (kind, text, disabled, danger) => `<button type="button" class="tv-safe-btn${danger ? " danger" : ""}" data-safety="${kind}"${disabled ? " disabled" : ""}>${esc(text)}</button>`;
-    const actions = `<div class="tv-safe-actions">` + btn("pause", "Pause New Trades", m.pauseActive || m.killActive) + btn("resume", "Resume", !m.pauseActive) + btn("stop", "Emergency Stop", m.killActive, true) +
-      (m.killActive ? btn("clear", o.confirmClear ? "Confirm: clear emergency stop" : "Clear Emergency Stop", false, true) : "") + `</div>`;
+    const b = safetyButtons(m, o);
+    const actions = `<div class="tv-safe-actions">` + (b.pause ? btn("pause", "Pause New Trades", b.pause === "off") : "") + (b.resume ? btn("resume", "Resume", b.resume === "off") : "") +
+      btn("stop", "Emergency Stop", false, true) + (b.clear ? btn("clear", o.confirmClear ? "Confirm: clear emergency stop" : "Clear Emergency Stop", b.clear === "off", true) : "") + `</div>`;
+    const msgs = safetyMessages(o).map((x) => `<div class="tv-safe-outcome ${x.cls}" data-safety-outcome="${esc(x.key)}">${esc(x.text)}</div>`).join("");
+    const err = o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "";
+    if (!m.loaded) return head + msgs + err + actions;
+    const reason = !unc && m.reason ? `<div class="tv-safe-reason">Reason: ${esc(m.reason)}</div>` : "";
+    const explain = unknown ? `<div class="tv-safe-reason" data-safety-explain>${esc(SAFETY_UNKNOWN_EXPLAIN)}</div>` : "";
+    const uncLine = unc ? `<div class="tv-safe-reason" data-safety-uncertain-line>${esc(SAFETY_UNCERTAIN_TEXT)}</div>` : "";
+    const orders = m.killActive && !unc && o.openOrders ? `<div class="tv-safe-reason" data-safety-orders>${esc(openOrdersLine(o.openOrders))}</div>` : "";
     const row = (k, val) => `<div class="tv-safe-row"><span>${esc(k)}</span><b>${esc(val)}</b></div>`;
     const details = `<button type="button" class="tv-safe-link" data-safety="details" aria-expanded="${o.detailsOpen ? "true" : "false"}">${o.detailsOpen ? "Hide details" : "View details"}</button>` +
       `<div class="tv-safe-details${o.detailsOpen ? "" : " tv-hidden"}" data-safety-details>` +
@@ -358,7 +410,7 @@
       row("Current equity", `${m.current}${m.equitySource ? ` · ${m.equitySource}` : ""}`) + row("Kill switch", m.killActive ? `Active since ${m.killSince}${m.killBy ? ` by ${m.killBy}` : ""}${m.killReason ? ` · ${m.killReason}` : ""}` : "Off") +
       row("New trades", m.pauseActive ? `Paused since ${m.pauseSince}${m.pauseBy ? ` by ${m.pauseBy}` : ""}` : "Allowed by you") + row("Last evaluated", m.evaluated) +
       `<div class="tv-ppe-sub">Control history</div><ul class="tv-safe-hist" data-safety-history></ul></div>`;
-    return head + reason + err + actions + details + (m.disclaimer ? `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>` : "");
+    return head + msgs + reason + explain + uncLine + err + orders + actions + details + (m.disclaimer ? `<p class="tv-disclaimer">${esc(m.disclaimer)}</p>` : "");
   }
   function safetyEventLine(e) {
     const kind = words(e && e.kind).toLowerCase();
@@ -379,6 +431,7 @@
 
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
            ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
-           proposalModel, proposalHtml, proposalDetailsHtml, safetyModel, safetyHtml, safetyEventLine,
+           proposalModel, proposalHtml, proposalDetailsHtml, safetyModel, safetyHtml, safetyEventLine, safetyButtons, safetyMessages, openOrdersLine,
+           SAFETY_UNKNOWN_EXPLAIN, SAFETY_UNCERTAIN_TEXT,
            EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS, SAFETY_LABELS };
 });

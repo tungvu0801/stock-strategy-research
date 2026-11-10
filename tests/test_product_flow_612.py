@@ -200,10 +200,11 @@ def signal(**over) -> dict:
 # ================================================================ W wiring / wording ============================================================
 
 def test_W01_four_sections_legacy_links_three_more_groups_get_routes_only_and_the_page_untouched():
-    js, css = now_text("frontend/product_ui.js"), now_text("frontend/product_ui.css")
+    from freeze_ledger import pre_panel  # noqa: E402 - risk controls panel
+    js, css = pre_panel("frontend/product_ui.js", now_text("frontend/product_ui.js")), pre_panel("frontend/product_ui.css", now_text("frontend/product_ui.css"))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
     nav = re.search(r"const NAV = \[(.*?)\];", js, re.S).group(1)
     assert re.findall(r'label: "([A-Z]+)"', nav) == ["TRADE", "POSITIONS", "ACTIVITY", "MORE"] and 'const DEFAULT = "trade";' in js
-    html = now_text("frontend/index.html")
+    html = ledger_view("frontend/index.html", now_text("frontend/index.html"))                 # risk controls panel: a registered file, read as on main
     assert html == blob("frontend/index.html")                                                   # the shell evolves in place: the page carries no new block
     for t in LEGACY_TABS:
         assert f'data-tab="{t}"' in html, t                                                      # every legacy tab is still in the markup (hidden by the shell, never a peer)

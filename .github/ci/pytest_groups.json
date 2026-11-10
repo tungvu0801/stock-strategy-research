@@ -22,6 +22,8 @@
         "test_ex06_freeze.py",
         "test_xss01_csp.py",
         "test_xss01_freeze.py",
+        "test_risk_controls_panel.py",
+        "test_panel_freeze.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
         "test_daily_brief_42.py",

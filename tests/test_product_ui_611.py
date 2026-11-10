@@ -92,7 +92,7 @@ def tracked() -> set:
 # ================================================================ W wiring ========================================================================
 
 def test_W01_index_html_carries_exactly_two_marked_product_ui_blocks_and_is_otherwise_the_stage_61_page():
-    html = now_text("frontend/index.html")
+    html = ledger_view("frontend/index.html", now_text("frontend/index.html"))                 # risk controls panel: a registered file, read as on main
     assert html.count(HTML_OPEN) == 2 == html.count("<!-- <<< " + "Product UI 6.1.1 -->")
     assert "<!-- >>> Stage 6.1.1" not in html                                                   # the HTML markers never start like the Stage 6.1 ones (their strip would swallow the page)
     assert '<link rel="stylesheet" href="product_ui.css" />' in html and '<script src="product_ui.js"></script>' in html
@@ -105,7 +105,8 @@ def test_W01_index_html_carries_exactly_two_marked_product_ui_blocks_and_is_othe
 
 
 def test_W02_the_shell_reads_get_routes_only_and_delegates_its_two_actions_to_the_legacy_buttons():
-    js = now_text("frontend/product_ui.js")
+    from freeze_ledger import pre_panel  # noqa: E402 - risk controls panel
+    js = pre_panel("frontend/product_ui.js", now_text("frontend/product_ui.js"))               # risk controls panel: main's shell (the bar's Stop and its printed fallback command: tests/test_panel_freeze.py)
     assert 'method: "POST"' not in js and "/api/execution/auto" not in js and not re.search(r"/api/execution-safety/(pause|resume|emergency|clear)", js) and "pause-new-entries" not in js and "resume-new-entries" not in js
     assert "clear-emergency-stop" not in js and "/api/portfolio" not in js and "/api/agent" not in js and "/api/rh" not in js   # no Robinhood route: Robinhood is only named under MORE
     routes = re.findall(r'["`](/api/[a-z0-9_\-/]+)', js)
@@ -138,7 +139,8 @@ def test_W03_wording_current_and_the_legacy_notes_hidden_not_deleted():
     assert "Robinhood holdings are read only" in js and "Alpaca PAPER account only" in js
     assert "NEEDS ATTENTION" in js and "Risk status unknown" in js and "Validation status unavailable." in js   # problems and gaps are shown, never hidden
     for msg in ("No position", "No active setup", "Waiting for market data", "Account data unavailable", "Market closed", "No activity yet", "Critical issue requires attention", "Waiting for broker fill",
-                "EMERGENCY STOP ACTIVE", "Existing positions remain protected.", "Existing positions continue normally.", "Existing positions continue to be monitored.", "Pause New Trades", "Resume New Trades",
+                "EMERGENCY STOP ACTIVE", "A position marked Needs attention gets no automatic exit.", "Bot exit rules keep running while a position is monitored.",   # risk controls panel, section 4
+                "Positions the bot manages keep their exit rules unless they need attention.", "Pause New Trades", "Resume New Trades",
                 "Clear Emergency Stop", "Disable Auto", "No automatic replacement order.", "Checking Paper Auto status…", "Paper Auto status unavailable", "Could not enable Paper Auto. "):
         assert msg in js, msg                                                                           # standard messages; critical states stay in plain words
     assert "body.pui.pui-collapsed #tv-status-line { display: none; }" in css and "body.pui:not(.pui-collapsed) #pui-diag { display: none; }" in css   # one diagnostics line in the simple view; the chips return with View details
@@ -224,7 +226,7 @@ def test_F02_strategy_execution_risk_and_broker_constants_and_the_validation_cal
     import execution as X
     assert X.MODES == ("MONITOR_ONLY", "PAPER_AUTO") and X.SIDE == "LONG" and X.ORDER_TYPE == "market"
     assert ledger_view("forward_validation/metrics.py", now_text("forward_validation/metrics.py")) == blob("forward_validation/metrics.py") and now_text("forward_validation/__init__.py") == blob("forward_validation/__init__.py")
-    assert ledger_view("execution/__init__.py", now_text("execution/__init__.py")) == blob("execution/__init__.py") and now_text("safety/__init__.py") == blob("safety/__init__.py") and now_text("setups/__init__.py") == blob("setups/__init__.py")
+    assert ledger_view("execution/__init__.py", now_text("execution/__init__.py")) == blob("execution/__init__.py") and ledger_view("safety/__init__.py", now_text("safety/__init__.py")) == blob("safety/__init__.py") and now_text("setups/__init__.py") == blob("setups/__init__.py")
 
 
 def test_F03_reconciled_prior_stage_tests_differ_from_the_base_only_by_one_marked_block_or_the_listed_exact_edits_and_nothing_else_carries_the_markers():

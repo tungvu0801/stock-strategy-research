@@ -282,7 +282,7 @@ test("13 wiring: GET routes only (registry, frozen controls added), no new poll,
   assert.ok(routes.every((r) => allowed.includes(r)), routes);
   assert.ok(routes.includes("/api/strategy-registry") && routes.includes("/api/strategy-registry/") && routes.includes("/api/forward-validation/frozen-controls"));
   assert.ok(!JS.includes('method: "POST"') && !/fetch\([^)]*\{[^}]*method/.test(JS) && !JS.includes("/api/portfolio") && !JS.includes("/api/rh") && !JS.includes("/api/alpaca") && !JS.includes("/api/execution/auto"));
-  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 5);
+  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 6);                                   // + the status bar's Emergency Stop (risk controls panel, design 3.4)
   assert.equal((JS.match(/runAutoAction\(/g) || []).length, 3);
   assert.ok(!/setInterval\([^)]*(loadRegistry|loadFrozen|loadTerminal|renderLab)/.test(JS));                              // the new reads are on demand, never a new timer poll
   assert.ok(JS.includes("if (state.whyOpen) loadTerminal(sym)") && JS.includes("Date.now() - t.at < 10000"));

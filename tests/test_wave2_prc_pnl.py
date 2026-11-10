@@ -336,7 +336,8 @@ def test_TP16_only_reconcile_changes_in_the_executor(tmp_path):
             elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 out[n.name] = ast.dump(n)
         return out
-    now, base = nodes((ROOT / "execution" / "service.py").read_text(encoding="utf-8")), nodes(at_base("execution/service.py"))
+    import freeze_ledger as FL
+    now, base = nodes(FL.pre_panel("execution/service.py", (ROOT / "execution" / "service.py").read_text(encoding="utf-8"))), nodes(at_base("execution/service.py"))   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
     assert set(now) == set(base) and [k for k in now if now[k] != base[k]] == ["ExecutionService._reconcile"]
     assert (ROOT / "execution" / "models.py").read_text(encoding="utf-8").replace("\r\n", "\n") == at_base("execution/models.py").replace("\r\n", "\n")
 

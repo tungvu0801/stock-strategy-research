@@ -1028,7 +1028,7 @@ class ExecutionService:
             card.line = f"Last paper order {last_intent.state.lower().replace('_', ' ')}" + (f" ({last_intent.failure_code.lower().replace('_', ' ')})" if last_intent.failure_code else "")
             card.details = {"intent": last_intent.model_dump()}
         elif key == "STOPPED":
-            card.line = "Risk controls stopped new paper trades"
+            card.line = "Risk controls stopped new automatic paper trades"
         elif key == "READY":
             card.line = "Setup ready; waiting for all entry checks"
         elif key == "WATCHING":

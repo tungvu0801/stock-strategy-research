@@ -1371,7 +1371,7 @@ def test_Z01_prior_stage_files_identical_to_base_and_config_append_only():
     now_cfg = undo_w1("config.py", (ROOT / "config.py").read_text(encoding="utf-8").replace("\r\n", "\n"))   # Wave 1: its declared config.py edit undone first
     assert now_cfg.startswith(base_cfg.rstrip("\n")) and "EXECUTION_SCHEDULER_ENABLED" in now_cfg and config.MAX_OPEN_POSITIONS == 10
     base_html = blob("frontend/index.html").decode("utf-8").splitlines()
-    now_html = HTML.splitlines()
+    now_html = ledger_view("frontend/index.html", HTML).splitlines()                             # risk controls panel: a registered file, read as on main
     # >>> Stage 6.1: index.html carries two marked, additive Stage 6.1 blocks (the Forward Paper Validation stylesheet and script); they are stripped before
     # the Stage 6.0 line rule below, so every other added line is still exactly the Stage 6.0 script
     import re as _re61

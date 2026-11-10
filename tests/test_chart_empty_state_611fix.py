@@ -53,7 +53,7 @@ def test_C01_the_overlay_rules_are_scoped_and_no_bare_rule_remains():
 
 
 def test_C02_the_diff_to_main_is_exactly_the_four_selectors():
-    css, base = now_text(CSS), at_base(CSS)
+    css, base = FL.pre_panel(CSS, now_text(CSS)), at_base(CSS)   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
     note = "   /* the overlay only: body carries the same class name as a state flag */"
     assert css != base and css.count(SCOPED) == 4 and SCOPED not in base and css.count(note) == 1 and note not in base
     assert css.replace(SCOPED, ".pui-chart-empty").replace(note, "") == base                     # undoing the scoping (and its note) restores main byte for byte
@@ -63,7 +63,7 @@ def test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file():
     assert FL.BASE_611FIX == "2fe29f3a48359a365a1506c9f70093129be72602" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_611FIX}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = set(_git("diff", "--name-only", FL.BASE_611FIX).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01
+    assert changed == FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL
     changed = set(_git("diff", "--name-only", FL.BASE_611FIX, FL.BASE_OPS).split())
     assert changed == FL.NEW_611FIX | FL.EDITED_611FIX, {"unexpected": sorted(changed - FL.NEW_611FIX - FL.EDITED_611FIX), "missing": sorted((FL.NEW_611FIX | FL.EDITED_611FIX) - changed)}
     assert FL.SEMANTIC_611FIX == {} and {p for p in changed if not p.startswith((".github/", "tests/"))} == {CSS}   # one production file, CSS only

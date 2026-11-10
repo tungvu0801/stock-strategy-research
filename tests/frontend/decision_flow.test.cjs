@@ -219,7 +219,7 @@ test("history: the day counts and details, the cycles newest first (a time recon
   const t = text(h);
   for (const s of ["Trading date 2026-10-27 (America/New_York)", "Off-cycle evaluations 251", "READY evaluations 3", "Skipped (Paper Auto OFF) basis READY evaluations while Paper Auto was OFF",
                    "Blocked by control Risk gate 2 · Market session 1", "Paper Auto armed 90 min · 09:35:00 ET → 11:05:00 ET", "Executor runs 533 · 4 with candidates",
-                   "Risk gate (rows by state) Trading allowed 380 · New trades paused 10", "Closest to READY SNDK · 2 unmet · stretch -45.2 · 13:31:03 ET",
+                   "Risk gate (rows by state) Trading allowed 380 · New automatic entries paused 10", "Closest to READY SNDK · 2 unmet · stretch -45.2 · 13:31:03 ET",
                    "Recent cycles (2+, newest first)", "The newest 2 cycles are shown; the day has more."]) assert.ok(t.includes(s), s);
   assert.deepEqual([...h.matchAll(/data-pui-dh-cycle="([^"]+)"/g)].map((x) => x[1]), [CYCLE.at, EARLIER.at]);   // the backend's order (newest first)
   assert.match(h, /data-pui-dh-cycle-row="2026-10-27T19:58:03\+00:00" class="pui-df-open"/);
@@ -281,7 +281,7 @@ test("the backend's real shapes: labels over codes, small gaps, attention items,
                                                 reconciliation: { healthy: false, attention: ["MU: order needs reconciliation"] } },
                                executor: { ...CYCLE.executor, results: { RUN: 1, ERROR: 1 }, error_types: ["TimeoutError"] } });
   const it = Object.fromEntries(cyc.items.map((x) => [x.key, x]));
-  assert.equal(it.risk.text, "New trades paused · Account equity not available");
+  assert.equal(it.risk.text, "New automatic entries paused · Account equity not available");   // risk controls panel, section 4
   assert.ok(it.risk.sub.includes("reconciliation needs a look · 1 attention item: MU: order needs reconciliation"), it.risk.sub);
   assert.ok(it.executor.text.startsWith("2 runs (RUN 1 · ERROR 1) · errors: TimeoutError"), it.executor.text);
   // no cycle (none recorded, or none at or before a requested time): the empty state, never ten "Not available" items under a time
@@ -391,7 +391,7 @@ test("wiring: one fetch( call site (getJson), the four GET routes as literals, e
   assert.ok(JS.includes('act.insertAdjacentElement("afterend", el);'));                       // ACTIVITY: a sibling after the Activity panel, never inside its rebuilt HTML
   assert.ok(JS.includes('state.dfOpen[d.dataset.puiDfFold] = d.open; }, true);') && JS.includes('state.dhOpen[d.dataset.puiDhFold] = d.open; }, true);'));   // capture-phase toggle listeners
   assert.ok(CSS.includes("body.pui:not(.pui-collapsed) #pui-decision { display: none; }"));
-  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 5);
+  assert.equal((JS.match(/clickLegacy\(/g) || []).length, 6);                                   // + the status bar's Emergency Stop (risk controls panel, design 3.4)
   assert.equal((JS.match(/runAutoAction\(/g) || []).length, 3);
   assert.equal((JS.match(/setInterval\(/g) || []).length, 3);
 });

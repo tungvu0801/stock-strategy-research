@@ -442,12 +442,17 @@
   // ---------------------------------------------------------------- tab lifecycle ------------------------------------------
   async function boot() {
     st.booted = true;
-    shell(); setupChart(); setMode(); renderPPE(null); renderDemand(null); renderSetup(null); renderProposal(null); renderActions(DEFAULT_ACTIONS);
+    shell();
+    // risk controls panel (design 3.5): mounted directly after the shell, before anything that can throw, so Emergency Stop exists even if the
+    // chart or a later step fails; everything after the mount is guarded and logged
     if (window.RiskControls && typeof window.RiskControls.mount === "function") window.RiskControls.mount("tv-safety");   // Stage 5.9.1: the risk-controls panel owns its own reads
-    try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
-    try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
-    renderWatchlist(null);
-    switchTo(st.symbols.default || (st.symbols.watchlist || [])[0] || "AAPL", true);
+    try {
+      setupChart(); setMode(); renderPPE(null); renderDemand(null); renderSetup(null); renderProposal(null); renderActions(DEFAULT_ACTIONS);
+      try { const cfg = await (await fetch("/api/terminal/config")).json(); st.mode = cfg.mode; st.source = cfg.source; setMode(); renderActions(cfg.actions); } catch (e) { /* defaults stay */ }
+      try { const sy = await (await fetch("/api/terminal/symbols")).json(); if (sy && sy.watchlist) st.symbols = sy; } catch (e) { /* demo symbols stay */ }
+      renderWatchlist(null);
+      switchTo(st.symbols.default || (st.symbols.watchlist || [])[0] || "AAPL", true);
+    } catch (e) { if (window.console) window.console.error("Trader View: boot failed after the risk controls mounted", e); }
   }
   function activate() {
     st.visible = true;

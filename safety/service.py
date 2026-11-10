@@ -10,6 +10,9 @@ commit is refused and the evaluation decides again on the new state, at most MAX
 applied to the state as read inside that loop, never to an older copy, so a Resume cannot clear an Emergency Stop and a Clear cannot drop a
 Pause. An unreadable state row is UNKNOWN. `current()` serves its cached view only while the persisted latches still match it. If the
 evaluation of an Emergency Stop or a Pause fails, that latch is still saved on its own (SafetyStore.latch); a Resume or a Clear never is.
+Risk controls panel (design 3.1): an Emergency Stop is saved FIRST, before the account read, which can wait up to
+CASH_FLOW_CYCLE_WAIT_SECONDS behind the cash-flow cycle; a Pause, a Resume and a Clear keep the order above. A failed evaluation still
+reports a saved stop: its UNKNOWN view carries the kill switch read on its own (only active=True is information).
 """
 from __future__ import annotations
 
@@ -98,8 +101,14 @@ class ExecutionSafetyService:
         except Exception as exc:  # noqa: BLE001 - a failing evaluator never reports TRADING_ALLOWED
             log.error("execution safety evaluation failed (%s: %s)", type(exc).__name__, exc)
             code = R_PERSISTENCE if isinstance(exc, _PersistError) else R_EVALUATOR
+            kill = KillSwitch()
+            try:                                                                                   # risk controls panel (B-3): no new route
+                st = self.store.state()
+                kill = KillSwitch(active=st.kill_active, activated_at=st.kill_activated_at, activated_by=st.kill_activated_by, reason=st.kill_reason)
+            except Exception:  # noqa: BLE001 - stays the default; an inactive kill switch in UNKNOWN is no information
+                pass
             view = SafetyView(state="UNKNOWN", allowed_new_entry=False, halted=True, reason_codes=[code], reason_text=REASON_TEXT[code], evaluated_at=_iso(now), trigger=trigger,
-                              persisted=False, error=f"{type(exc).__name__}: {exc}"[:500], daily_loss=DailyLoss(trading_date=today))
+                              persisted=False, error=f"{type(exc).__name__}: {exc}"[:500], daily_loss=DailyLoss(trading_date=today), kill_switch=kill)
             try:
                 self.store.record_error(now, trigger, view.error or "", list(CONTROLS))
             except Exception as exc2:  # noqa: BLE001 - the database itself failed: say so, never pretend
@@ -114,6 +123,18 @@ class ExecutionSafetyService:
 
     def _evaluate(self, trigger: str, now: datetime, today: str, persist: bool, overrides: Optional[Dict[str, Any]], actor: str,
                   action: Optional[Dict[str, Any]] = None) -> SafetyView:
+        if persist and action is not None and action["kind"] == "KILL_ON":
+            # risk controls panel (design 3.1): the Emergency Stop is durable before the account read below, which may wait for the cash-flow
+            # cycle. latch() changes only the kill columns and only while the kill is off; once it ran (set now, or already set) the action is
+            # never applied again, so a Clear committed during the account read stands. If it raised, the action stays: _decide applies it
+            # and _latch_fallback tries once more.
+            try:
+                self.store.latch(now, action["update"], {"kind": "KILL_ON", "actor": actor, "reason": action["reason"], "trading_date": today,
+                                                         "from_state": self._last.state if self._last is not None else None, "to_state": "HALTED",
+                                                         "input": {**action["update"], "saved_before_evaluation": True}})
+                action = None
+            except Exception as exc:  # noqa: BLE001
+                log.error("execution safety: KILL_ON could not be saved before the evaluation (%s: %s)", type(exc).__name__, exc)
         try:
             acct = self.account(now.timestamp(), overrides)                                        # once, before the state is read: it may be slow
             for _ in range(MAX_STATE_ATTEMPTS):
@@ -176,7 +197,7 @@ class ExecutionSafetyService:
         for e in events:
             e["to_state"] = e.get("to_state") or state
         ctl = control_rows(kill, pause, daily, baseline)
-        icon, label = icon_label(state)
+        icon, label = icon_label(state, kill_active=bool(kill.active), pause_active=bool(pause.active))
         last_at = _parse(prev["evaluated_at"]) if prev else None
         within = (now - last_at).total_seconds() if last_at else None
         fresh_acct = None if acct.age_s is None and acct.source == "ALPACA_PAPER_VIEW" else (acct.source != "ALPACA_PAPER_VIEW" or acct.age_s <= self.max_age_s)

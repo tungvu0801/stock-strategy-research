@@ -34,24 +34,37 @@
   // the user-facing state model: the Stage 6.0 card keys / Stage 5.8 setup states mapped for display only (the backend state machines are untouched)
   const AGENT = { WATCHING: ["WATCHING", "Waiting for setup conditions"], READY: ["READY", "Eligible for entry review"], ENTERING: ["ENTERING", "Order submitted. Waiting for broker reconciliation."],
                   IN_TRADE: ["IN TRADE", "Existing trade continues. Exit conditions monitored."], EXITING: ["EXITING", "Exit required / order submitted"], CLOSED: ["CLOSED", "Trade completed."],
-                  ATTENTION: ["NEEDS ATTENTION", "Manual review required"], STOPPED: ["NEEDS ATTENTION", "Trading stopped by risk controls"], NONE: ["WATCHING", "Waiting for setup conditions"],
+                  ATTENTION: ["NEEDS ATTENTION", "Manual review required"], STOPPED: ["NEEDS ATTENTION", "New automatic entries stopped by risk controls"], NONE: ["WATCHING", "Waiting for setup conditions"],
                   ENTRY_FAILED: ["ENTRY FAILED", "No position opened. No automatic replacement order."] };
   const SETUP_TO_AGENT = { WATCH: "WATCHING", READY: "READY", INVALIDATED: "WATCHING", NONE: "WATCHING" };
-  const SAFETY_TEXT = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New trades paused", HALTED: "Trading stopped", UNKNOWN: "Risk status unknown" };
+  const SAFETY_TEXT = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New automatic entries paused", HALTED: "New automatic entries stopped", UNKNOWN: "Risk status unknown" };   // the fallback: the words come from the server's state_label (risk controls panel design 3.1)
   const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "warn", HALTED: "bad", UNKNOWN: "bad" };
   const ACCOUNT_TEXT = { FRESH: "Account data fresh", STALE: "Account data stale", STARTING: "Account data checking", UNAVAILABLE: "Account data unavailable", DISABLED: "Account refresh disabled" };
   const CASH_TEXT = { FRESH: "fresh", STALE: "stale", UNAVAILABLE: "unavailable", AMBIGUOUS: "unclear" };
-  const SYSTEM_CLS = { HEALTHY: "ok", DEGRADED: "warn", STOPPED: "bad", UNKNOWN: "" };
+  const SYSTEM_CLS = { HEALTHY: "ok", DEGRADED: "warn", STOPPED: "bad", UNCERTAIN: "warn", UNKNOWN: "" };
   // the control vocabulary (display) and the explanations shown before an action is delegated to the legacy button
   const AUTO_ON_TEXT = "Automatic paper entries enabled.";
   const AUTO_OFF_TEXT = "Monitoring only. No new automatic entries.";
-  const AUTO_OFF_NOTE = "Existing positions continue to be monitored.";
+  const AUTO_OFF_NOTE = "Positions the bot manages keep their exit rules unless they need attention.";
   const AUTO_OFF_POSITION = "New automatic entries are disabled. Existing position monitoring continues.";
   const STOP_ACTIVE_HEAD = "EMERGENCY STOP ACTIVE";
-  const STOP_ACTIVE_TEXT = "New entries blocked.";
-  const STOP_ACTIVE_NOTE = "Existing positions remain protected.";
-  const STOP_POSITION = "No new entries. Existing position remains protected.";
-  const PAUSED_NOTE = "Existing positions continue normally.";
+  const STOP_ACTIVE_TEXT = "New automatic entries blocked.";
+  const STOP_ACTIVE_NOTE = "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.";
+  const STOP_POSITION = "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.";
+  const PAUSED_NOTE = "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.";
+  // risk controls panel (RISK_CONTROLS_PANEL_DESIGN.md 3.4, section 4, section 5): a page that could not read the gate never claims a state; the
+  // server's own UNKNOWN says what it blocks; the status bar keeps an Emergency Stop and says when part of the page did not load
+  const STOP_ROW_TEXT = "Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.";
+  const UNKNOWN_EXPLAIN = "Automatic entries are blocked. This state does not by itself block manual paper orders.";
+  const UNCERTAIN_TEXT = "Could not confirm the current state.";
+  const CHECKING_TEXT = "Checking risk controls…";                                // section 5 row 1: the first read is still on its way; no message
+  const AUTO_UNCERTAIN_NOTE = "Auto is armed; the risk status could not be confirmed.";
+  const BANNER_TEXT = "Emergency Stop unavailable on this page. Page scripts did not load. Use the fallback command.";
+  const PARTIAL_TEXT = "Part of this page did not load. Emergency Stop still works from this bar.";
+  const ACTION_NAMES = { stop: "Emergency Stop", pause: "Pause", resume: "Resume", clear: "Clear Emergency Stop" };
+  const f2Post = (port) => `curl.exe -sS --max-time 60 -X POST http://127.0.0.1:${port}/api/execution-safety/emergency-stop -H "X-Stock-Agent-Intent: dashboard" -H "Content-Type: application/json" -d "{}"`;
+  const f2Read = (port) => `(curl.exe -sS --max-time 60 http://127.0.0.1:${port}/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active`;
+  const clockOf = (ms) => { const d = ms == null ? null : new Date(ms); return d && !isNaN(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : "—"; };
   const AUTO_PENDING_TEXT = "Checking Paper Auto status…";
   const AUTO_UNKNOWN_TEXT = "Paper Auto status unavailable";
   const AUTO_ARMED_NOTE = "Auto is armed, but safety currently blocks new entries.";
@@ -59,7 +72,7 @@
   const CONFIRM = {
     "auto-on": { title: "Enable Paper Auto?", text: "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
                  ok: "Confirm: enable Paper Auto", cls: "go" },
-    stop: { title: "Emergency Stop?", text: "This immediately blocks all new entries. Existing positions remain monitored and protective exits remain allowed. The emergency stop stays active until cleared manually.",
+    stop: { title: "Emergency Stop?", text: "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.",
             ok: "Confirm Emergency Stop", cls: "stop" },
     clear: { title: "Clear Emergency Stop?", text: "This removes the emergency-stop latch. Trading resumes only if all safety checks pass.", ok: "Confirm: clear Emergency Stop", cls: "danger" },
   };
@@ -112,15 +125,15 @@
                   dxForm: null, dxAnswer: null, dxSeq: 0, dxHtml: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
-  function agentModel(card, setupState, safetyState, exec) {
+  function agentModel(card, setupState, safetyState, exec, uncertain) {
     const failed = !!(card && card.key === "ATTENTION" && card.state === "FAILED" && card.shares == null);   // a rejected / cancelled / unsent entry today, no position
     const key = failed ? "ENTRY_FAILED" : card && card.key && card.key !== "NONE" ? card.key : (SETUP_TO_AGENT[setupState] || "WATCHING");
     const [label, text] = AGENT[key] || AGENT.WATCHING;
-    const stopped = safetyState === "HALTED" || safetyState === "UNKNOWN";
+    const stopped = !uncertain && (safetyState === "HALTED" || safetyState === "UNKNOWN");                // an uncertain page never claims a stop (design 3.4)
     const attention = !!(exec && exec.attention);
     let out = { key, label, text, cls: label.toLowerCase().replace(/ /g, "-") };
     if (attention && key !== "ATTENTION" && key !== "ENTRY_FAILED") out = { key: "ATTENTION", label: "NEEDS ATTENTION", text: (exec.attention_reasons && exec.attention_reasons[0]) || "Manual review required", cls: "needs-attention" };
-    else if (stopped && !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION", "ENTRY_FAILED"].includes(key)) out = { key: "STOPPED", label: "NEEDS ATTENTION", text: AGENT.STOPPED[1], cls: "needs-attention" };
+    else if (stopped && !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION", "ENTRY_FAILED"].includes(key)) out = { key: "STOPPED", label: "NEEDS ATTENTION", text: safetyState === "UNKNOWN" ? SAFETY_TEXT.UNKNOWN : AGENT.STOPPED[1], cls: "needs-attention" };
     if (card && card.line && ["EXITING", "CLOSED", "ATTENTION"].includes(key) && out.key === key) out.text = card.line;
     return out;
   }
@@ -174,26 +187,31 @@
     const failure = autoFailureText(error);
     if (pending) return { key: "PENDING", label: "…", header: "AUTO …", cls: "", text: AUTO_PENDING_TEXT, action: null, actionLabel: "", failure: "" };
     if (!mode) return { key: "UNKNOWN", label: "—", header: "AUTO —", cls: "", text: failure || AUTO_UNKNOWN_TEXT, action: null, actionLabel: "", failure: "" };
-    if (mode === "PAPER_AUTO") return { key: "ON", label: "ON", header: "AUTO ON", cls: "ok", text: `${AUTO_ON_TEXT}${st && st !== "TRADING_ALLOWED" ? ` ${AUTO_ARMED_NOTE}` : ""}`, action: "auto-off", actionLabel: "Disable Auto", failure };
+    if (mode === "PAPER_AUTO") return { key: "ON", label: "ON", header: "AUTO ON", cls: "ok", text: `${AUTO_ON_TEXT}${checkingSafety(safety) ? "" : safety && safety.uncertain ? ` ${AUTO_UNCERTAIN_NOTE}` : st && st !== "TRADING_ALLOWED" ? ` ${AUTO_ARMED_NOTE}` : ""}`, action: "auto-off", actionLabel: "Disable Auto", failure };
     return { key: "OFF", label: "OFF", header: "AUTO OFF", cls: "", text: `${AUTO_OFF_TEXT} ${AUTO_OFF_NOTE}`, action: "auto-on", actionLabel: "Enable Paper Auto", failure };
   }
 
   // SYSTEM HEALTHY / DEGRADED / STOPPED: a display summary of the existing dependencies, in precedence order; every item stays listed in the detail
   function systemModel(exec, safety) {
     const st = (safety && safety.state) || (exec && exec.safety_state) || null;
+    const unc = !!(safety && safety.uncertain);                                   // risk controls panel (design 3.4): the page could not read the gate
     const acct = (exec && exec.account_data) || {};
     const cash = acct.cash_flow || null;
     const items = [];
-    if (st) items.push({ key: "gate", level: SAFETY_CLS[st] || "bad", text: `Safety gate: ${SAFETY_TEXT[st] || words(st)}`, reason: (safety && safety.reason_text) || "" });
+    if (unc) items.push({ key: "gate", level: "warn", text: `Safety gate: ${uncText(safety)}`, reason: safety.lastKnown ? `last known: ${safety.lastKnown.label}` : "" });
+    else if (st) items.push({ key: "gate", level: SAFETY_CLS[st] || "bad", text: `Safety gate: ${safetyLabel(safety, st)}`, reason: (safety && safety.reason_text) || "" });
     for (const r of (exec && exec.attention_reasons) || []) items.push({ key: "attention", level: "bad", text: `Needs attention: ${words(r)}` });
     if (acct.status) items.push({ key: "account", level: acct.status === "FRESH" ? "ok" : "warn", text: ACCOUNT_TEXT[acct.status] || `Account data ${words(acct.status)}` });
     if (cash && cash.status) items.push({ key: "cash", level: cash.status === "FRESH" ? "ok" : "warn", text: `Cash-flow data ${CASH_TEXT[cash.status] || words(cash.status)}` });
     if (exec && exec.reconciliation_healthy != null) items.push({ key: "recon", level: exec.reconciliation_healthy ? "ok" : "bad", text: exec.reconciliation_healthy ? "Reconciliation healthy" : "Reconciliation needs a look" });
-    const loaded = !!exec && !!st;
-    const stopped = st === "HALTED" || st === "UNKNOWN" || !!(exec && exec.attention);
-    const level = !loaded ? "UNKNOWN" : stopped ? "STOPPED" : items.some((i) => i.level !== "ok") ? "DEGRADED" : "HEALTHY";
+    const execStop = !!(exec && exec.attention), gateStop = !unc && (st === "HALTED" || st === "UNKNOWN");
+    const loaded = !!exec && !!st && (!checkingSafety(safety) || execStop);         // the first read still on its way: "SYSTEM —", never a guess (an executor stop still shows)
+    const level = !loaded ? "UNKNOWN" : execStop || gateStop ? "STOPPED" : unc ? "UNCERTAIN" : items.some((i) => i.level !== "ok") ? "DEGRADED" : "HEALTHY";
     const primary = items.find((i) => i.level === "bad") || items.find((i) => i.level === "warn") || null;
-    return { level, loaded, text: loaded ? `SYSTEM ${level}` : "SYSTEM —", cls: SYSTEM_CLS[level], items, primary: primary ? (primary.reason || primary.text) : "" };
+    // section 4: "SYSTEM STOPPED" overclaimed; the bar names what is stopped, and an unknown or uncertain gate says so
+    const text = !loaded ? "SYSTEM —" : level === "STOPPED" ? (gateStop && st === "UNKNOWN" && !execStop ? "RISK STATUS UNKNOWN" : "NEW AUTOMATIC ENTRIES STOPPED")
+      : level === "UNCERTAIN" ? "RISK STATUS UNCERTAIN" : `SYSTEM ${level}`;
+    return { level, loaded, text, cls: SYSTEM_CLS[level], items, primary: primary ? (primary.reason || primary.text) : "" };
   }
 
   function statusModel(exec, safety, opts) {
@@ -211,14 +229,17 @@
   }
 
   function riskModel(exec, safety) {
+    const unc = !!(safety && safety.uncertain);                                   // risk controls panel (design 3.4): an uncertain page never claims a state
     const st = (safety && safety.state) || (exec && exec.safety_state) || "UNKNOWN";
     const acct = (exec && exec.account_data) || {};
     const cash = acct.cash_flow || null;
-    const k = (safety && safety.kill_switch) || {};
+    const k = (!unc && safety && safety.kill_switch) || {};
+    const lk = unc ? safety.lastKnown || null : null;
+    const label = !unc ? safetyLabel(safety, st) : lk ? `Status uncertain · last known ${lk.label} at ${clockOf(lk.at)}` : safety.loading ? "Checking risk controls…" : SAFETY_TEXT.UNKNOWN;
     const lines = [];
-    const head = k.active ? STOP_ACTIVE_HEAD : (SAFETY_TEXT[st] || SAFETY_TEXT.UNKNOWN);
-    lines.push({ ok: st === "TRADING_ALLOWED", level: SAFETY_CLS[st] || "bad", text: SAFETY_TEXT[st] || SAFETY_TEXT.UNKNOWN });
-    if (safety && safety.reason_text && st !== "TRADING_ALLOWED") lines.push({ ok: false, level: SAFETY_CLS[st] || "warn", text: safety.reason_text, sub: true });
+    const head = k.active ? (st === "UNKNOWN" ? `${SAFETY_TEXT.UNKNOWN} · Emergency Stop active` : STOP_ACTIVE_HEAD) : label;
+    lines.push({ ok: !unc && st === "TRADING_ALLOWED", level: unc ? "warn" : SAFETY_CLS[st] || "bad", text: label });
+    if (!unc && safety && safety.reason_text && st !== "TRADING_ALLOWED") lines.push({ ok: false, level: SAFETY_CLS[st] || "warn", text: safety.reason_text, sub: true });
     if (acct.status) lines.push({ ok: acct.status === "FRESH", level: acct.status === "FRESH" ? "ok" : "warn", text: ACCOUNT_TEXT[acct.status] || `Account data ${words(acct.status)}` });
     if (cash && cash.status) lines.push({ ok: cash.status === "FRESH", level: cash.status === "FRESH" ? "ok" : "warn", text: `Cash-flow data ${CASH_TEXT[cash.status] || words(cash.status)}` });
     if (exec && exec.reconciliation_healthy != null) lines.push({ ok: !!exec.reconciliation_healthy, level: exec.reconciliation_healthy ? "ok" : "bad", text: exec.reconciliation_healthy ? "Reconciliation healthy" : "Reconciliation needs a look" });
@@ -226,10 +247,11 @@
     const level = lines.some((l) => l.level === "bad") ? "bad" : lines.some((l) => l.level === "warn") ? "warn" : "ok";
     // one primary reason: the gate's own sentence, else the first dependency that is not healthy; stopped states say so plainly
     const dep = lines.slice(1).find((l) => l.level === "bad") || lines.slice(1).find((l) => l.level === "warn") || null;
-    const paused = st === "NO_NEW_ENTRIES" && !!((safety && safety.no_new_entries) || {}).active;
-    const primary = k.active ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : paused ? PAUSED_NOTE
+    const paused = !unc && st === "NO_NEW_ENTRIES" && !!((safety && safety.no_new_entries) || {}).active;
+    const primary = unc ? (!lk && safety.error ? safety.error : safety.loading && !lk ? "" : UNCERTAIN_TEXT) : k.active ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : paused ? PAUSED_NOTE
       : st === "TRADING_ALLOWED" ? (dep ? dep.text : "") : (safety && safety.reason_text) || (st === "HALTED" || st === "UNKNOWN" ? "Critical issue requires attention" : (dep ? dep.text : ""));
-    return { state: st, headline: head, level, lines, stopped: st === "HALTED", killActive: !!k.active, paused, primary, critical: st === "HALTED" || st === "UNKNOWN" || !!(exec && exec.attention) };
+    return { state: st, headline: head, level, lines, stopped: !unc && st === "HALTED", killActive: !!k.active, paused, primary, uncertain: unc,
+             explain: !unc && st === "UNKNOWN" ? UNKNOWN_EXPLAIN : "", critical: (!unc && (st === "HALTED" || st === "UNKNOWN")) || !!(exec && exec.attention) };
   }
 
   // the Automation / Trading Controls rows: statuses from the payloads, exactly one relevant action per row, mirroring the legacy buttons' availability
@@ -244,15 +266,18 @@
     const d = (safety && safety.daily_loss) || {};
     const am = autoModel(exec, safety, o.autoPending, o.autoError);
     const auto = { label: am.label, key: am.key, text: am.text, action: am.action, actionLabel: am.actionLabel, enabled: a.auto !== false && !o.autoPending, failure: am.failure };
-    let tLabel = "UNKNOWN", tText = "Risk status unknown";
-    if (st === "TRADING_ALLOWED") { tLabel = "ALLOWED"; tText = "New entries allowed when every check passes."; }
-    else if (st === "NO_NEW_ENTRIES") { tLabel = "PAUSED"; tText = p.active ? PAUSED_NOTE : ((safety && safety.reason_text) || "Paused by a safety check."); }
-    else if (st === "HALTED") { tLabel = "STOPPED"; tText = k.active ? "Blocked by the emergency stop." : d.status === "TRIGGERED" ? "Daily loss limit reached. Resets on the next trading day." : ((safety && safety.reason_text) || "Blocked by a safety check."); }
-    const tradingAction = p.active ? "resume" : (st && st !== "HALTED" && st !== "UNKNOWN" && !k.active ? "pause" : null);
+    const unc = !!(safety && safety.uncertain);                                   // risk controls panel (design 3.4, section 5)
+    let tLabel = "UNKNOWN", tText = unc ? uncText(safety) : "Risk status unknown";
+    if (!unc && st === "TRADING_ALLOWED") { tLabel = "ALLOWED"; tText = "New entries allowed when every check passes."; }
+    else if (!unc && st === "NO_NEW_ENTRIES") { tLabel = p.active ? "PAUSED" : "BLOCKED"; tText = p.active ? PAUSED_NOTE : ((safety && safety.reason_text) || "New automatic entries blocked by a safety check."); }
+    else if (!unc && st === "HALTED") { tLabel = "STOPPED"; tText = k.active ? "New automatic entries blocked by the Emergency Stop." : d.status === "TRIGGERED" ? "Daily loss limit reached: new automatic entries stopped until the next trading day." : ((safety && safety.reason_text) || "New automatic entries blocked by a safety check."); }
+    // Pause only tightens, so it stays offered when the state is unknown or uncertain; Resume and Clear relax, so they need a fresh read
+    const tradingAction = !unc && p.active ? "resume" : !k.active || st === "UNKNOWN" ? "pause" : null;   // section 5: Pause stays offered in a server UNKNOWN, kill or not
     const trading = { label: tLabel, text: tText, action: tradingAction, actionLabel: tradingAction === "resume" ? "Resume New Trades" : "Pause New Trades",
                       enabled: tradingAction === "resume" ? a.resume !== false : a.pause !== false };
-    const stop = { label: !st ? "—" : k.active ? "ACTIVE" : "INACTIVE", text: !st ? "" : k.active ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : "Blocks all new entries at once; existing positions stay protected.",
-                   action: !st ? null : k.active ? "clear" : "stop", actionLabel: k.active ? "Clear Emergency Stop" : "Emergency Stop", enabled: k.active ? a.clear !== false : a.stop !== false };
+    const killed = !unc && k.active === true;
+    const stop = { label: killed ? "ACTIVE" : unc || !st || st === "UNKNOWN" ? "UNKNOWN" : "INACTIVE", text: killed ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : STOP_ROW_TEXT,
+                   action: killed ? "clear" : "stop", actionLabel: killed ? "Clear Emergency Stop" : "Emergency Stop", enabled: killed ? a.clear !== false : true };   // Emergency Stop is never disabled
     return { auto, trading, stop, killActive: !!k.active, paused: !!p.active, pending: !!o.autoPending };
   }
 
@@ -361,8 +386,8 @@
       else if (e.kind === "ATTENTION") push(e.at, `${s} · Needs attention · ${words(e.reason)}`, "bad", "attention", s);
       else if (e.kind === "ATTENTION_CLEARED") push(e.at, `${s} · Attention cleared`, "", "attention", s);
     }
-    const SAFETY_EVENT = { PAUSE_ON: ["New trades paused", "warn"], PAUSE_OFF: ["New trades resumed", ""], KILL_ON: ["Trading stopped (emergency stop)", "bad"], KILL_OFF: ["Emergency stop cleared", ""],
-                           DAILY_HALT_TRIGGERED: ["Daily loss limit reached · trading halted", "bad"], DAILY_RESET: ["New trading day · daily halt reset", ""], BASELINE_CREATED: ["Daily risk baseline set", ""],
+    const SAFETY_EVENT = { PAUSE_ON: ["New automatic entries paused", "warn"], PAUSE_OFF: ["New trades resumed", ""], KILL_ON: ["Emergency Stop on", "bad"], KILL_OFF: ["Emergency stop cleared", ""],
+                           DAILY_HALT_TRIGGERED: ["Daily loss limit reached · New automatic entries stopped", "bad"], DAILY_RESET: ["New trading day · daily halt reset", ""], BASELINE_CREATED: ["Daily risk baseline set", ""],
                            EVALUATOR_ERROR: ["Risk evaluator error", "bad"], STARTUP: ["Risk controls started", ""] };
     for (const e of (src.safety_events || [])) { const m = SAFETY_EVENT[e.kind]; if (m) push(e.at, m[0], m[1], "safety"); }
     for (const f of (src.findings || [])) if (f.blocking) push(f.at, `${f.symbol ? f.symbol + " · " : ""}Reconciliation: ${words(f.kind)}`, "bad", "reconciliation", f.symbol);
@@ -427,6 +452,7 @@
     const market = (exec && exec.scheduler && exec.scheduler.market) || {};
     const prop = (terminal && terminal.proposal) || null;
     const blocked = (reason, code) => ({ level: "blocked", title: "Cannot enter", reason, code });
+    if (safety && safety.uncertain) return { level: "unknown", title: "Execution status unknown", reason: checkingSafety(safety) ? CHECKING_TEXT : "Could not confirm the risk status.", code: "SAFETY_UNCERTAIN" };   // design 3.4
     if (!st) return { level: "unknown", title: "Execution status unknown", reason: "Risk status unknown.", code: "SAFETY_UNKNOWN" };
     if (st === "HALTED" || st === "UNKNOWN") return blocked(k.active ? "Trading safety is stopped (emergency stop)." : safety && safety.reason_text ? `Trading safety is stopped: ${safety.reason_text}` : "Trading safety is stopped.", k.active ? "KILL_SWITCH_ACTIVE" : "SAFETY_HALTED");
     if (st === "NO_NEW_ENTRIES") return blocked(safety && safety.reason_text ? `Trading safety is paused: ${safety.reason_text}` : "Trading safety is paused.", "NO_NEW_ENTRIES");
@@ -455,6 +481,7 @@
     const items = [];
     const push = (kind, title, text, action) => items.push({ kind, rank: PRIORITY.indexOf(kind) + 1, title, text, action: action || null });
     if (sys.level === "STOPPED") push("ATTENTION", "NEEDS ATTENTION", sys.primary || "Critical issue requires attention", { go: "trade", label: "Risk details" });
+    else if (sys.level === "UNCERTAIN") push("DEGRADED", "RISK STATUS UNCERTAIN", UNCERTAIN_TEXT, { go: "trade", label: "Risk details" });   // never a claimed stop (design 3.4)
     else if (exec && exec.reconciliation_healthy === false) push("ATTENTION", "NEEDS ATTENTION", "Reconciliation needs a look", { go: "positions", label: "Open POSITIONS" });
     for (const c of cards.filter((x) => x.key === "EXITING")) push("EXIT", `${c.symbol} · EXIT REQUIRED`, c.line || "Exit in progress", { go: "positions", label: "Open POSITIONS" });
     for (const c of cards.filter((x) => x.key === "ATTENTION" && x.shares != null)) push("POSITION_ATTENTION", `${c.symbol} · NEEDS ATTENTION`, c.line || "Manual review required", { go: "positions", label: "Open POSITIONS" });
@@ -475,7 +502,8 @@
     const am = autoModel(exec, safety, (opts || {}).autoPending, (opts || {}).autoError);
     const cm = controlsModel(exec, safety, {}, opts);
     const trading = cm.trading.label;
-    const text = am.key === "ON" && trading === "ALLOWED" ? "Automatic paper entries may be submitted when every check passes."
+    const text = safety && safety.uncertain ? (checkingSafety(safety) ? CHECKING_TEXT : am.key === "ON" ? AUTO_UNCERTAIN_NOTE : "Monitoring only: no automatic entry. The risk status could not be confirmed.")
+      : am.key === "ON" && trading === "ALLOWED" ? "Automatic paper entries may be submitted when every check passes."
       : am.key === "ON" ? "Auto is armed, but safety currently blocks new entries. Existing positions stay monitored."
       : trading === "ALLOWED" ? "Monitoring only: no automatic entry. The gate would allow entries." : "Monitoring only; the gate also blocks new entries.";
     return { auto: am.header, trading: `TRADING ${trading}`, headline: `${am.header} · TRADING ${trading}`, text, autoKey: am.key, tradingKey: trading,
@@ -504,7 +532,7 @@
   // Against / risks · Portfolio · Safety · Decision, with the raw values under Technical details. Nothing is inferred and no model is consulted.
   function whyModel(ctx) {
     const exec = ctx.exec, safety = ctx.safety, card = ctx.card, dom = ctx.dom || {}, t = ctx.terminal || {}, limits = ctx.limits, pos = ctx.position || null, fz = ctx.frozen || {};
-    const a = agentModel(card, dom.setupState, safety && safety.state, exec);
+    const a = agentModel(card, dom.setupState, safety && safety.state, exec, !!(safety && safety.uncertain));
     const m = marketModel(dom);
     const sm = strategyModel(card, dom, ctx.registry, dom.proposalState);
     const setup = t.setup || {}, prop = t.proposal || {};
@@ -512,7 +540,7 @@
     const vs = (v, op, k, label) => (fz[k] == null ? `${label} ${v}` : `${label} ${v} (needs ${op} ${fz[k]})`);
     const blockers = setup.blockers && setup.blockers.length ? setup.blockers.map(words) : (dom.blockers || []);
     const question = { WATCHING: "Why is this stock WATCHING?", READY: "Why is it READY?", ENTERING: "Why is the order pending?", IN_TRADE: "Why is the position still held?", EXITING: "Why is the position exiting?",
-                       CLOSED: "Why did the position exit?", ATTENTION: "Why does it need attention?", STOPPED: "Why is trading stopped?", ENTRY_FAILED: "Why did the entry fail?" }[a.key] || "Why?";
+                       CLOSED: "Why did the position exit?", ATTENTION: "Why does it need attention?", STOPPED: "Why are new automatic entries stopped?", ENTRY_FAILED: "Why did the entry fail?" }[a.key] || "Why?";
     const signal = [`Setup ${m.setupLabel}${setup.since ? ` since ${hm(setup.since)}` : ""}${setup.reason_text ? ` · ${setup.reason_text}` : dom.setupReason ? ` · ${dom.setupReason}` : ""}`];
     if (blockers.length && (a.key === "WATCHING" || a.key === "STOPPED")) signal.push(`Not ready: ${blockers.join(" · ")}`);
     const strategy = [sm.best ? `${sm.best} (${sm.bestId}${sm.bestStatus ? ` · ${sm.bestStatus}` : ""})` : "Strategy registry not loaded", `${sm.evaluated} strateg${sm.evaluated === 1 ? "y" : "ies"} evaluated · ${sm.supportingText}`, sm.scoreText];
@@ -592,29 +620,111 @@
 
   // ---------------------------------------------------------------- rendering ------------------------------------------------------
   const lvl = (l) => (l === "ok" ? "pui-ok" : l === "warn" ? "pui-warn" : l === "bad" ? "pui-bad" : "pui-dim");
+  // ---------------------------------------------------------------- risk controls panel (RISK_CONTROLS_PANEL_DESIGN.md 3.4) ---------
+  // the label of a server view: its own state_label, else the fallback table
+  function safetyLabel(sv, st) { const s = st || (sv && sv.state); return (sv && sv.state === s && sv.state_label) || SAFETY_TEXT[s] || cap(words(s)) || SAFETY_TEXT.UNKNOWN; }
+  // ONE effective view for every model (M1): the server's view when the page read it recently; otherwise UNKNOWN with a default kill switch and pause,
+  // the last known values kept apart as "last known". No Risk Controls status at all is uncertain too.
+  // section 5 row 1: no read has finished yet (no last state, no error): "Checking risk controls…" and no message, never "could not confirm"
+  function checkingSafety(sv) { return !!(sv && sv.uncertain && sv.loading && !sv.lastKnown && !sv.error); }
+  function uncText(sv) { return checkingSafety(sv) ? CHECKING_TEXT : UNCERTAIN_TEXT; }
+  function effectiveSafety(sv, rc) {
+    const uncertain = !sv || !rc || !!rc.uncertain;
+    if (!uncertain) return Object.assign({}, sv, { uncertain: false, lastKnown: null });
+    return { state: "UNKNOWN", state_label: SAFETY_TEXT.UNKNOWN, uncertain: true, loading: !!(rc && rc.loading), error: (rc && rc.error) || null, allowed_new_entry: false, reason_text: "",
+             kill_switch: { active: false }, no_new_entries: { active: false }, daily_loss: {},
+             lastKnown: sv && sv.state ? { state: sv.state, label: safetyLabel(sv), kill: !!(sv.kill_switch && sv.kill_switch.active === true),
+                                           pause: !!(sv.no_new_entries && sv.no_new_entries.active === true), at: rc ? rc.lastGoodAt : null } : null };
+  }
+  // C-4: the read-only open-order count (the same words as trader_render.js openOrdersLine)
+  function openOrdersLine(oo) {
+    if (!oo) return "";
+    const s = String(oo.status || "UNAVAILABLE").toUpperCase();
+    if (oo.count == null || s === "DISABLED" || s === "UNAVAILABLE") return "Open orders at Alpaca: unavailable. Check Alpaca's website.";
+    const n = Number(oo.count) >= 500 ? "at least 500" : String(oo.count);
+    return `Open orders at Alpaca: ${n}, as of ${oo.at ? `${String(oo.at).slice(11, 16)} UTC` : "—"}${s === "STALE" || s === "STARTING" ? " (stale)" : ""}. This app does not cancel orders. Use Alpaca's website to cancel.`;
+  }
+  // the Risk card's pending and outcome lines (the same words as trader_render.js safetyMessages), the not-sent line and the open-order line
+  function riskOutcomeLines(rc, notSent, killActive) {
+    const r = rc || {};
+    const oc = r.outcomes || {};
+    const out = [];
+    if (r.announce) out.push({ key: "announce", cls: "bad", text: String(r.announce) });
+    for (const k of ["stop", "pause", "resume", "clear"]) {
+      const x = oc[k];
+      if (!x) continue;
+      if (x.result === "PENDING") out.push({ key: k, cls: "warn", text: `Sending ${ACTION_NAMES[k]}…` });
+      else if (x.result === "NOT_CONFIRMED") out.push({ key: k, cls: "bad", text: `${ACTION_NAMES[k]} NOT confirmed. Press it again.` });
+      else if (k === "stop" && x.note === "posted-unread") out.push({ key: k, cls: "warn", text: "The server confirmed Emergency Stop, but the state could not be re-read." });
+      else if (k === "stop" && x.note === "error-but-active") out.push({ key: k, cls: "warn", text: "The request reported an error, but the server shows Emergency Stop active." });
+    }
+    // the shell's click reached no legacy button; "Emergency Stop was not sent" only when no Stop is in flight and none is active
+    if (notSent && ACTION_NAMES[notSent] && !(notSent === "stop" && ((r.pending && r.pending.stop) || killActive))) out.push({ key: "not-sent", cls: "bad", text: `${ACTION_NAMES[notSent]} was not sent.` });
+    if (killActive && r.openOrders) out.push({ key: "orders", cls: "", text: openOrdersLine(r.openOrders) });
+    return out;
+  }
+  // MORE › Automation "Trading": one word and one sentence per case (section 4, review SD-LOW-4 and P-LOW-1); never a manual-order sentence on the kill
+  function automationTrading(sv) {
+    if (!sv || sv.uncertain) return `UNKNOWN · ${uncText(sv)}${sv && sv.lastKnown ? ` Last known: ${sv.lastKnown.label}.` : ""}`;
+    const k = sv.kill_switch || {}, p = sv.no_new_entries || {};
+    if (sv.state === "TRADING_ALLOWED") return "ALLOWED";
+    if (sv.state === "NO_NEW_ENTRIES") return p.active === true ? "PAUSED · New automatic entries paused." : "BLOCKED · New automatic entries blocked: daily-loss data unavailable.";
+    if (sv.state === "HALTED") return k.active === true ? `STOPPED · ${STOP_ROW_TEXT}` : "STOPPED · New automatic entries stopped.";
+    return `UNKNOWN · Risk status unknown. ${UNKNOWN_EXPLAIN}`;
+  }
+  // the status bar's own messages: the banner wins over everything; otherwise the Emergency Stop outcome and the "part of this page" line
+  function barModel(f) {
+    const o = f || {};
+    const banner = !!(o.scriptsMissing || o.noLegacyStop || o.confirmHidden);
+    const rc = o.rc || null;
+    const sx = rc && rc.outcomes ? rc.outcomes.stop : null;
+    let outcome = "", cls = "";
+    const unc = !!(rc && rc.uncertain) || o.killShown === false;                  // uncertain, or a fresh view that does not show the kill (a server UNKNOWN's default)
+    if (!banner && sx) {
+      if (sx.result === "PENDING") { outcome = "Sending Emergency Stop…"; cls = "warn"; }
+      else if (sx.result === "NOT_CONFIRMED") { outcome = "Emergency Stop NOT confirmed. Press it again."; cls = "bad"; }
+      else if (sx.note === "posted-unread") { outcome = "The server confirmed Emergency Stop, but the state could not be re-read."; cls = "warn"; }
+      else if (unc) { outcome = "Last known: Emergency Stop active. Could not confirm the current state."; cls = "warn"; }   // only a fresh read is shown as the present
+      else if (sx.note === "error-but-active") { outcome = "The request reported an error, but the server shows Emergency Stop active."; cls = "bad"; }
+      else { outcome = "Emergency Stop active"; cls = "bad"; }
+    }
+    if (!banner && !outcome && rc && rc.announce) { outcome = String(rc.announce); cls = "bad"; }
+    return { banner, outcome, cls, partial: !banner && !!o.tabsDead, confirm: !banner && !!o.confirm, port: String(o.port || "8000") };
+  }
+  function bannerHtml(port) {
+    return `<div class="pui-banner" data-pui-banner role="alert"><b>${esc(BANNER_TEXT)}</b><code>${esc(f2Post(port))}</code><code>${esc(f2Read(port))}</code>` +
+      `<span>Success is True from the second command. More in README.md, "Emergency Stop fallback".</span></div>`;
+  }
+
   function statusHtml(exec, safety, opts) {
     const o = opts || {};
     const segs = statusModel(exec, safety, o);
     const sys = systemModel(exec, safety);
+    const bar = o.bar || barModel({});
     const seg = (s) => s.key === "system"
       ? `<button type="button" class="pui-seg ${esc(s.cls)}" data-pui-seg="system" data-pui="system" aria-expanded="${o.sysOpen ? "true" : "false"}" title="System status: click for the details">${esc(s.text)} <span class="pui-caret">${o.sysOpen ? "▾" : "▸"}</span></button>`
       : `<span class="pui-seg ${esc(s.cls)}" data-pui-seg="${esc(s.key)}">${esc(s.text)}</span>`;
     const auto = `<span class="pui-auto" data-pui-auto="${esc(segs[3].state)}" title="Paper Auto: the controls are on the Risk card"><span class="pui-seg ${esc(segs[3].cls)}" data-pui-seg="auto">${esc(segs[3].text)}</span></span>`;
+    // B-2: Emergency Stop in the bar, in every section, outside every tab; its confirmation lives in the bar too (design 3.4, review HIGH-1)
+    const stop = bar.banner ? "" : `<button type="button" class="pui-seg bad pui-bar-stop" data-pui="stop-bar" title="Emergency Stop: saved on the server, then confirmed by a read">Emergency Stop</button>`;
+    const msg = bar.banner ? bannerHtml(bar.port) : (bar.outcome ? `<span class="pui-bar-msg ${lvl(bar.cls)}" data-pui-bar-outcome>${esc(bar.outcome)}</span>` : "") +
+      (bar.partial ? `<span class="pui-bar-msg pui-warn" data-pui-bar-partial>${esc(PARTIAL_TEXT)}</span>` : "");
     const details = o.sysOpen ? `<div class="pui-system-details" data-pui-system-details>` + (sys.items.length ? sys.items.map((i) => `<div class="${lvl(i.level)}">${i.level === "ok" ? "✓" : "⚠"} ${esc(i.text)}${i.reason ? ` <span class="pui-sub">· ${esc(i.reason)}</span>` : ""}</div>`).join("")
       : `<div class="pui-dim">System status not loaded yet.</div>`) + `</div>` : "";
-    return segs.slice(0, 3).map(seg).join("") + auto + `<span class="pui-tagline" data-pui-tagline>${esc(TAGLINE)}</span>` + details;
+    return segs.slice(0, 3).map(seg).join("") + auto + stop + `<span class="pui-tagline" data-pui-tagline>${esc(TAGLINE)}</span>` + msg + (bar.confirm ? confirmHtml("stop", "stop-bar") : "") + details;
   }
 
-  function confirmHtml(kind) {
+  function confirmHtml(kind, id) {
     const c = CONFIRM[kind];
     if (!c) return "";
-    return `<div class="pui-confirm ${esc(c.cls)}" data-pui-confirm="${esc(kind)}" role="alertdialog" aria-live="assertive"><b>${esc(c.title)}</b><p>${esc(c.text)}</p>` +
-      `<div class="pui-row"><button type="button" class="pui-btn ${esc(c.cls)}" data-pui="${esc(kind)}-confirm">${esc(c.ok)}</button><button type="button" class="pui-btn" data-pui="cancel">Cancel</button></div></div>`;
+    const key = id || kind;                                                        // the status bar's own confirmation is "stop-bar" (design 3.4)
+    return `<div class="pui-confirm ${esc(c.cls)}" data-pui-confirm="${esc(key)}" role="alertdialog" aria-live="assertive"><b>${esc(c.title)}</b><p>${esc(c.text)}</p>` +
+      `<div class="pui-row"><button type="button" class="pui-btn ${esc(c.cls)}" data-pui="${esc(key)}-confirm">${esc(c.ok)}</button><button type="button" class="pui-btn" data-pui="${id ? `${esc(id)}-cancel` : "cancel"}">Cancel</button></div></div>`;
   }
 
   function controlsHtml(exec, safety, avail, confirm, opts) {
     const m = controlsModel(exec, safety, avail, opts);
-    const row = (key, title, r) => `<div class="pui-ctl-row" data-pui-row="${key}" data-pui-status="${esc(r.label)}"><span class="pui-ctl-name">${esc(title)}</span><b class="pui-ctl-status ${key === "stop" ? (r.label === "ACTIVE" ? "pui-bad" : "pui-dim") : r.label === "ON" || r.label === "ALLOWED" ? "pui-ok" : r.label === "PAUSED" ? "pui-warn" : r.label === "STOPPED" || r.label === "UNKNOWN" ? "pui-bad" : "pui-dim"}">${esc(r.label)}</b>` +
+    const row = (key, title, r) => `<div class="pui-ctl-row" data-pui-row="${key}" data-pui-status="${esc(r.label)}"><span class="pui-ctl-name">${esc(title)}</span><b class="pui-ctl-status ${key === "stop" ? (r.label === "ACTIVE" || r.label === "UNKNOWN" ? "pui-bad" : "pui-dim") : r.label === "ON" || r.label === "ALLOWED" ? "pui-ok" : r.label === "PAUSED" || r.label === "BLOCKED" ? "pui-warn" : r.label === "STOPPED" || r.label === "UNKNOWN" ? "pui-bad" : "pui-dim"}">${esc(r.label)}</b>` +
       `<span class="pui-ctl-action">${r.action ? `<button type="button" class="pui-btn ${r.action === "auto-on" ? "go" : r.action === "stop" ? "stop" : r.action === "clear" || r.action === "auto-off" ? "danger" : ""}" data-pui="${esc(r.action)}"${r.enabled ? "" : " disabled"}>${esc(r.actionLabel)}</button>` : ""}</span>` +
       `<span class="pui-ctl-text">${esc(r.text)}</span></div>` + (r.failure ? `<div class="pui-ctl-fail pui-bad" data-pui-auto-error>${esc(r.failure)}</div>` : "") +
       (confirm && ((confirm === "auto-on" && key === "auto") || ((confirm === "stop" || confirm === "clear") && key === "stop")) ? confirmHtml(confirm) : "");
@@ -624,7 +734,7 @@
   }
 
   function cardsHtml(ctx) {
-    const a = agentModel(ctx.card, ctx.dom.setupState, ctx.safety && ctx.safety.state, ctx.exec);
+    const a = agentModel(ctx.card, ctx.dom.setupState, ctx.safety && ctx.safety.state, ctx.exec, !!(ctx.safety && ctx.safety.uncertain));
     const m = marketModel(ctx.dom);
     const r = riskModel(ctx.exec, ctx.safety);
     const p = positionModel(ctx.card, ctx.position, ctx.limits);
@@ -652,6 +762,8 @@
     const riskDetails = fold("risk", !!ctx.riskOpen, "Details", r.lines.slice(1).map((l) => `<div class="${lvl(l.level)}">${l.ok ? "✓" : "⚠"} ${esc(l.text)}</div>`).join("") || `<div class="pui-dim">No further detail.</div>`);
     const risk = `<div class="pui-card risk" data-pui-card="risk" data-risk="${esc(r.level)}" data-kill="${r.killActive ? "1" : "0"}"><h4>Risk</h4><div class="pui-big">${esc(r.headline)}</div>` +
       (r.primary ? `<div class="pui-sub ${r.critical ? "pui-bad" : ""}" data-pui-risk-reason>${esc(r.primary)}</div>` : "") +
+      (r.explain ? `<div class="pui-sub" data-pui-risk-explain>${esc(r.explain)}</div>` : "") +
+      riskOutcomeLines(ctx.rc, ctx.notSent, r.killActive).map((x) => `<div class="pui-outcome ${lvl(x.cls)}" data-pui-outcome="${esc(x.key)}">${esc(x.text)}</div>`).join("") +
       controlsHtml(ctx.exec, ctx.safety, ctx.avail, ctx.confirm, { autoPending: ctx.autoPending, autoError: ctx.autoError }) + riskDetails + `</div>`;
     return focusHtml(priorityModel(ctx)) + agent + pos + risk;
   }
@@ -1601,6 +1713,15 @@
   function activeLegacyTab() { const b = q(".tab-btn.active"); return b ? b.dataset.tab : null; }
   function exec() { return (window.PaperBot && window.PaperBot.state && window.PaperBot.state.data) || null; }
   function safety() { return (window.RiskControls && window.RiskControls.state && window.RiskControls.state.data) || null; }
+  // risk controls panel (design 3.4): the Risk Controls status is the single source; no status at all reads as uncertain
+  function rcStatus() { const rc = window.RiskControls; try { return rc && typeof rc.status === "function" ? rc.status() : null; } catch (e) { return null; } }
+  function effView() { return effectiveSafety(safety(), rcStatus()); }
+  function scriptsMissing() { return !window.TraderView || !window.RiskControls; }
+  function pagePort() { return location.port || (location.protocol === "https:" ? "443" : "80"); }
+  function visibleEl(el) { if (!el || !el.getClientRects || !el.getClientRects().length) return false; const cs = getComputedStyle(el); return cs.visibility !== "hidden" && cs.display !== "none"; }
+  // presses are not lost (M8, review M-2): no re-render from pointerdown until pointerup, pointercancel, lostpointercapture or 1 s
+  function holding() { return !!state.pressAt && Date.now() - state.pressAt < 1000; }
+  function setHtml(el, html) { if (el.puiHtml !== html) { el.innerHTML = html; el.puiHtml = html; } }   // compared with what was generated, never with innerHTML
   function tvState() { const tv = window.TraderView; return (tv && tv.state) || null; }
   function activeSymbol() { const s = tvState(); return (s && s.active) || null; }
   function cardFor(sym) { const e = exec(); return sym && e && e.cards ? e.cards.find((c) => c.symbol === sym) || null : null; }
@@ -1628,7 +1749,19 @@
   const collapsed = () => { try { return localStorage.getItem("pui.details") !== "open"; } catch (e) { return true; } };
   function setCollapsed(v) { try { localStorage.setItem("pui.details", v ? "closed" : "open"); } catch (e) { /* per-browser convenience only */ } document.body.classList.toggle("pui-collapsed", v); const b = $("pui-details-btn"); if (b) { b.textContent = v ? "View details ▸" : "Hide details ▾"; b.setAttribute("aria-expanded", v ? "false" : "true"); } placeBotActivity(); }
 
-  function renderStatus() { const el = $("pui-status"); if (el) el.innerHTML = statusHtml(exec(), safety(), { sysOpen: state.sysOpen, autoPending: state.autoPending, autoError: state.autoError }); }
+  function renderStatus() {
+    const el = $("pui-status");
+    if (!el || holding()) return;
+    if (state.barConfirm && !state.barNoLegacy && Date.now() - state.barPressAt >= 2000 && !q(LEGACY.stop)) state.barNoLegacy = true;   // 2 s after a press: no legacy Stop
+    const ev = effView();
+    const bar = barModel({ scriptsMissing: scriptsMissing(), noLegacyStop: state.barNoLegacy, confirmHidden: state.barConfirmHidden, confirm: state.barConfirm, tabsDead: state.tabsDead,
+                           rc: rcStatus(), port: pagePort(), killShown: !!(ev.kill_switch && ev.kill_switch.active === true) });
+    setHtml(el, statusHtml(exec(), ev, { sysOpen: state.sysOpen, autoPending: state.autoPending, autoError: state.autoError, bar }));
+    if (bar.confirm && !state.barConfirmChecked) {                                  // once, right after the confirmation renders: visibility, not only presence
+      state.barConfirmChecked = true;
+      if (!visibleEl(el.querySelector('[data-pui-confirm="stop-bar"]'))) { state.barConfirmHidden = true; renderStatus(); }
+    }
+  }
   function renderCards() {
     const host = $("pui-cards");
     if (!host) return;
@@ -1638,11 +1771,12 @@
     if (card && card.position_id && state.posData) position = (state.posData.positions || []).find((p) => p.position_id === card.position_id) || null;
     loadRegistry(); loadFrozen();
     if (state.whyOpen) loadTerminal(sym);                                        // the proposal's own blocker and the stored setup detail: on demand (Why? open), 10 s cache
-    host.innerHTML = cardsHtml({ exec: exec(), safety: safety(), card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
+    if (holding()) return;
+    setHtml(host, cardsHtml({ exec: exec(), safety: effView(), rc: rcStatus(), notSent: state.notSent, card, position, dom: readDom(), symbol: sym, limits: state.limits, avail: avail(), confirm: state.confirm,
                                  whyOpen: state.whyOpen, riskOpen: state.riskOpen, posOpen: state.posOpen, autoPending: state.autoPending, autoError: state.autoError,
                                  registry: state.registry, terminal: (state.terminal[sym] || {}).data || null, frozen: state.frozen, techOpen: state.techOpen,
                                  account: (state.botAct && state.botAct.positions && state.botAct.positions.account) || state.acctPos || null,   // Stage 6.8
-                                 unified: state.unified });                                                                                    // Stage 6.9
+                                 unified: state.unified }));                                                                                   // Stage 6.9
   }
   // Stage 6.1.2 read-only loaders: the registry and the frozen controls once per page, the terminal state of the active ticker only while Why? is open
   // a failed read is read again at most once a minute (never a 2 s poll)
@@ -1760,10 +1894,15 @@
     if (k === "cancel") { closeConfirm(); renderCards(); return; }
     // the confirmed actions delegate to the existing Risk Controls / Paper Bot buttons: identical POSTs, identical persisted semantics
     if (k === "auto-on-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY["auto-on"]) || {}).textContent || "").trim()); runAutoAction("enable", armed ? 1 : 2); return; }
-    if (k === "stop-confirm") { closeConfirm(); clickLegacy("stop", 1); refreshSoon(); return; }
-    if (k === "clear-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY.clear) || {}).textContent || "").trim()); clickLegacy("clear", armed ? 1 : 2); refreshSoon(); return; }
+    // design 3.4: the click's own result is read; nothing claims an action that was never sent
+    if (k === "stop-confirm") { closeConfirm(); state.notSent = clickLegacy("stop", 1) ? null : "stop"; refreshSoon(); return; }
+    if (k === "clear-confirm") { closeConfirm(); const armed = /^confirm/i.test(((q(LEGACY.clear) || {}).textContent || "").trim()); state.notSent = clickLegacy("clear", armed ? 1 : 2) ? null : "clear"; refreshSoon(); return; }
     if (k === "auto-off") { closeConfirm(); runAutoAction("disable", 1); return; }
-    if (k === "pause" || k === "resume") { closeConfirm(); clickLegacy(k, 1); refreshSoon(); }
+    if (k === "pause" || k === "resume") { closeConfirm(); state.notSent = clickLegacy(k, 1) ? null : k; refreshSoon(); return; }
+    // the status bar's Emergency Stop (B-2): open the Trader View (its listener boots the panel), confirm in the bar, then click the legacy Stop
+    if (k === "stop-bar") { openBarConfirm(); return; }
+    if (k === "stop-bar-cancel") { closeBarConfirm(); renderStatus(); return; }
+    if (k === "stop-bar-confirm") { closeBarConfirm(); const sent = clickLegacy("stop", 1); state.notSent = sent ? null : "stop"; if (!sent) state.barNoLegacy = true; refreshSoon(); renderStatus(); }
   }
 
   async function getJson(path) { const r = await fetch(path); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.message || `HTTP ${r.status}`); return j; }
@@ -1794,9 +1933,9 @@
     let setup = null, demand = null, evidence = null, intents = [];
     try { const st = await getJson(`/api/terminal/state/${encodeURIComponent(symbol)}?candles=0`); setup = st.setup && st.setup.state_label; demand = st.demand && st.demand.score != null ? String(st.demand.score) : "—"; evidence = st.evidence && st.evidence.status === "LOADED" ? (st.evidence.strength || "stored") : "none stored"; } catch (err) { /* summary stays partial */ }
     try { intents = (await getJson(`/api/execution/intents?symbol=${encodeURIComponent(symbol)}&limit=20`)).intents || []; } catch (err) { /* summary stays partial */ }
-    const sv = safety();
+    const sv = effView();
     state.posDetails = { symbol, agent: agentModel(card, null, null, null).label, setup: setup || "—", demand, evidence, exit: p ? (p.exit_reason ? `${words(p.exit_reason)} · cycle ${p.exit_cycle}` : `monitored · ${words(p.state)}`) : "—",
-                         risk: sv ? SAFETY_TEXT[sv.state] || sv.state : "—", state: p ? p.state : (card && card.state) || "—", invalidation: p ? p.invalidation_price : (card && card.details && card.details.invalidation_price) || null,
+                         risk: sv.uncertain ? "Status uncertain" : safetyLabel(sv), state: p ? p.state : (card && card.state) || "—", invalidation: p ? p.invalidation_price : (card && card.details && card.details.invalidation_price) || null,
                          events: (card && card.details && card.details.events) || (state.posData && (state.posData.events || []).filter((ev) => ev.position_id === positionId)) || [], intents };
     renderPositionDetails(state.posDetails);
     if (e) renderPositions();
@@ -1818,7 +1957,7 @@
     if (!host || !state.actData) return;
     const today = (exec() && exec().scheduler && exec().scheduler.market && exec().scheduler.market.session_date) || new Date().toISOString().slice(0, 10);
     const legacy = $("pui-legacy-alerts");                                       // held before the rebuild: on a re-render it sits in the old fold, which the rebuild detaches
-    host.innerHTML = activityHtml(state.actData.src, exec(), state.actData.fv, today, { safety: safety(), filter: state.filter });
+    host.innerHTML = activityHtml(state.actData.src, exec(), state.actData.fv, today, { safety: effView(), filter: state.filter });
     const fold = host.querySelector("[data-pui-alerts-fold]");
     if (fold && legacy) fold.appendChild(legacy);
   }
@@ -1881,18 +2020,18 @@
       return;
     }
     if (name === "risk") {                                                                          // Risk: the frozen risk constants (read only) and the gate's current state
-      getJson("/api/forward-validation/frozen-controls").then((f) => { const c = f.controls || {}; const sv = safety(); const lim = state.limits || {};
+      getJson("/api/forward-validation/frozen-controls").then((f) => { const c = f.controls || {}; const sv = effView(); const lim = state.limits || {};
         body.innerHTML = `<h3>Risk</h3><p class="pui-sub">Frozen Stage 6.1 controls (hash ${esc(String(f.hash || "").slice(0, 12))}…). Configured server-side (config.py / .env); the controls live on TRADE › Risk card.</p>` +
           kv([["Risk per entry", c.risk_fraction != null ? `${c.risk_fraction} of equity` : null], ["Max position", c.max_position_pct != null ? `${c.max_position_pct} % of equity` : null], ["Max daily loss", c.max_daily_loss_pct != null ? `${c.max_daily_loss_pct} %` : null],
               ["Max open positions", c.max_open_positions != null ? c.max_open_positions : lim.max_open_positions], ["Max hold", c.max_hold_sessions != null ? `${c.max_hold_sessions} sessions` : null], ["Near-close cutoff", c.near_close_minutes != null ? `${c.near_close_minutes} min` : null],
               ["Order", c.order_type && c.time_in_force ? `${c.order_type} / ${c.time_in_force} · ${c.side}` : null], ["Leverage / shorts", c.leverage ? `${c.leverage} / ${c.shorts}` : null],
-              ["Gate now", sv ? `${SAFETY_TEXT[sv.state] || sv.state}${sv.reason_text ? ` · ${sv.reason_text}` : ""}` : "unavailable"]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Risk settings", err));
+              ["Gate now", sv.uncertain ? uncText(sv) : `${safetyLabel(sv)}${sv.reason_text ? ` · ${sv.reason_text}` : ""}`]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Risk settings", err));
       return;
     }
     if (name === "automation") {                                                                    // Automation: Paper Auto and the background loops, read only; the controls stay on TRADE
-      getJson("/api/account-refresh").then((a) => { const x = exec() || {}; const s = x.scheduler || {}; const sv = safety();
+      getJson("/api/account-refresh").then((a) => { const x = exec() || {}; const s = x.scheduler || {}; const sv = effView();
         body.innerHTML = `<h3>Automation</h3><p class="pui-sub">Paper Auto, Pause New Trades and Emergency Stop are on TRADE › Risk card. Paper Auto ON is not trading allowed: the gate decides separately.</p>` +
-          kv([["Paper Auto", x.mode === "PAPER_AUTO" ? "ON" : x.mode === "MONITOR_ONLY" ? "OFF" : "—"], ["Trading", sv ? (sv.state === "TRADING_ALLOWED" ? "ALLOWED" : sv.state === "NO_NEW_ENTRIES" ? "PAUSED" : sv.state === "HALTED" ? "STOPPED" : "UNKNOWN") : "—"],
+          kv([["Paper Auto", x.mode === "PAPER_AUTO" ? "ON" : x.mode === "MONITOR_ONLY" ? "OFF" : "—"], ["Trading", automationTrading(sv)],
               ["Executor loop", s.enabled === false ? "disabled" : s.running ? `running · ${s.interval_s || "—"} s` : "off"], ["Account refresh loop", a.loop && a.loop.running ? "running" : "off"], ["Last cycle", x.last_cycle_at], ["Mode changed", x.mode_changed_at ? `${hm(x.mode_changed_at)} by ${x.mode_changed_by || "—"}` : null]]) + `<div data-pui-health></div>`; }).catch((err) => fail("Automation", err));
       return;
     }
@@ -1916,10 +2055,20 @@
   }
 
   function openLegacy(tab) { const b = legacyTab(tab); if (b) b.click(); }
+  function openBarConfirm() {
+    openLegacy("trader");                                                      // trader_view.js's own click listener runs boot(), which mounts the Risk Controls panel
+    state.tabsDead = activeLegacyTab() !== "trader";                            // app.js switches tabs synchronously: a tab that did not switch means app.js is gone
+    state.barConfirm = true; state.barPressAt = Date.now(); state.barNoLegacy = false; state.barConfirmHidden = false; state.barConfirmChecked = false;
+    clearTimeout(state.barTimer); state.barTimer = setTimeout(() => { if (state.barConfirm) { state.barConfirm = false; renderStatus(); } }, CONFIRM_MS);
+    setTimeout(renderStatus, 2050);                                             // 2 s after a press, a missing legacy Stop shows the banner
+    renderStatus();
+  }
+  function closeBarConfirm() { state.barConfirm = false; clearTimeout(state.barTimer); state.barTimer = null; }
   function go(section) {
     const nav = NAV.find((n) => n.id === section) || NAV[0];
     state.section = nav.id;
     openLegacy(nav.host);
+    state.tabsDead = activeLegacyTab() !== nav.host;                             // review N-M1: a flag set here and at the bar's press, never a per-tick comparison
     syncNav();
     // the bookmarkable hash follows the section the user opens (a foreign hash such as #daily-brief is left alone at load time: mount() never calls go() for it)
     try { if (G.history && G.history.replaceState) G.history.replaceState(null, "", `#${nav.id}`); } catch (e) { /* display only */ }
@@ -1949,8 +2098,8 @@
   }
 
   function tick() {
+    try { renderStatus(); } catch (e) { state.statusError = String((e && e.message) || e); }   // the status bar first (design 3.4); its failure never stops the cards below
     observeBot();
-    renderStatus();
     if (activeLegacyTab() === "trader") { if (ensureTradeCards()) { renderCards(); renderChart(); renderDiag(); } if (ensureBotActivity()) loadBotActivity(); loadUnified(); if (ensureDecision()) loadDecision(); }   // + Stage 6.10C
   }
   // Stage 6.9: GET /api/unified-portfolio (Robinhood is read at most once per ROBINHOOD_PORTFOLIO_TTL_SECONDS on the server) - every 30 s on TRADE, on demand on POSITIONS
@@ -2138,12 +2287,21 @@
     state.booted = true;
     document.body.classList.add("pui");
     const tabs = q("nav.tabs");
+    // risk controls panel (design 3.6, review M-3): the status bar and its tick come first, so Emergency Stop stays reachable from the bar even if
+    // the rest of mount() throws; the static notice is removed as the last step, and only if nothing threw
     const status = document.createElement("div"); status.id = "pui-status"; status.className = "pui-status"; status.setAttribute("role", "status");
     status.addEventListener("click", onAction);
+    tabs.insertAdjacentElement("beforebegin", status);
+    const release = () => { state.pressAt = 0; };
+    document.addEventListener("pointerdown", (e) => { if (e.target && e.target.closest && e.target.closest("#pui-status, #pui-cards")) state.pressAt = Date.now(); }, true);
+    for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) document.addEventListener(ev, release, true);
+    state.timer = setInterval(tick, 2000);
+    let failed = null;
+    try { renderStatus(); } catch (e) { failed = e; state.mountError = String((e && e.message) || e); }   // the tick retries every 2 s; a throw here keeps the static notice (3.6)
+    try {
     const nav = document.createElement("nav"); nav.id = "pui-nav"; nav.className = "pui-nav"; nav.setAttribute("aria-label", "Primary");
     nav.innerHTML = NAV.map((n) => `<button type="button" data-pui-nav="${n.id}">${n.label}</button>`).join("") + `<span class="pui-crumb" id="pui-crumb"></span>` +
       `<span class="pui-tools"><button type="button" id="pui-details-btn" class="pui-link" aria-expanded="false">View details ▸</button></span>`;
-    tabs.insertAdjacentElement("beforebegin", status);
     tabs.insertAdjacentElement("afterend", nav);
     nav.addEventListener("click", (e) => { const b = e.target.closest("[data-pui-nav]"); if (b) { go(b.dataset.puiNav); return; } if (e.target.closest("[data-pui-back]")) go("more");
                                            if (e.target.closest("#pui-details-btn")) setCollapsed(!collapsed()); });
@@ -2175,8 +2333,9 @@
     else if (location.hash || (already && already !== "overview")) { state.section = HOST_OF[already] || "more"; syncNav(); } else go(DEFAULT);
     window.addEventListener("hashchange", () => { const r = routeFor(location.hash); if (r && r.section !== state.section) openRoute(r); });
     tick();
-    state.timer = setInterval(tick, 2000);
     state.fetchTimer = setInterval(() => { if (state.section === "positions" && activeLegacyTab() === "paper") loadPositions(); if (state.section === "activity" && activeLegacyTab() === "alerts") loadActivity(); }, 30000);
+    } catch (e) { failed = e; state.mountError = String((e && e.message) || e); if (G.console) G.console.error("product shell: mount failed; the status bar keeps running", e); }
+    if (!failed && !state.statusError) { const n = $("pui-boot-notice"); if (n) n.remove(); }   // only if nothing threw (3.6), the status bar's first tick included
   }
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount); else mount();
@@ -2271,7 +2430,11 @@
   }
   // <<< Engine health visibility, Stage 6.10D
 
-  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY, agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
+  return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY,
+           // risk controls panel (design 3.4)
+           STOP_ROW_TEXT, UNKNOWN_EXPLAIN, UNCERTAIN_TEXT, CHECKING_TEXT, BANNER_TEXT, PARTIAL_TEXT, ACTION_NAMES, f2Post, f2Read, safetyLabel, effectiveSafety, checkingSafety, setHtml, openOrdersLine, riskOutcomeLines,
+           automationTrading, barModel, bannerHtml,
+           agentModel, setupLines, positionNote, autoModel, autoFailureText, systemModel, statusModel, riskModel, controlsModel, positionModel, marketModel,
            chartModel, chartEmptyHtml, diagModel, diagHtml, positionCards, timeline, todaySummary, moreGroups, statusHtml, confirmHtml, controlsHtml, cardsHtml, positionsHtml, positionDetailsHtml,
            activityHtml, moreHtml, go, mount, tick, renderCards, renderStatus, renderChart, renderDiag, renderPositions, renderActivity, renderMore, state,
            expandDetails: () => setCollapsed(false), collapseDetails: () => setCollapsed(true), isCollapsed: collapsed,
