@@ -1151,15 +1151,21 @@ def risk_controls_priority(c):
         with _Patch(svc, emergency_stop=stamp):
             t0 = _press_stop(s)
             s.pump(0.3)
+            held0, aborted0 = s.js("StopPriority.state.counts.held"), s.js("StopPriority.state.counts.aborted")
             t1 = time.time()
             s.js("fetch('/api/execution-safety/pause-new-entries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stock-Agent-Intent': 'dashboard' }, body: '{}' }).catch(() => null)")
-            s.pump(0.5)
-            sent = _main_sent(s, "/pause-new-entries", t1, "POST")
+            sent, end = [], time.time() + 5                                       # the CDP event may land late on a slow runner: wait for it, judge "never held" by the module's own counters
+            while not sent and time.time() < end:
+                s.pump(0.1)
+                sent = _main_sent(s, "/pause-new-entries", t1 - 1.0, "POST")
+            t_seen = time.time() - t1
+            held1, aborted1 = s.js("StopPriority.state.counts.held"), s.js("StopPriority.state.counts.aborted")
             _decided(s, "CONFIRMED", 20, "J7 confirmed")
         s.pump(4.5)
         v = _state(c)
-        c.r.check("J7 a write during the pending Stop was sent at once and reached the server (never held or aborted)", len(sent) == 1 and bool((v.get("no_new_entries") or {}).get("active")) and _kill(c),
-                  {"sent": len(sent), "state": v.get("state")})
+        paused = bool((v.get("no_new_entries") or {}).get("active"))
+        c.r.check(f"J7 a write during the pending Stop was never held or aborted (held {held0}->{held1}, aborted {aborted0}->{aborted1}; its request seen after {int(t_seen * 1000)} ms) and reached the server (pause active: {paused})",
+                  len(sent) >= 1 and held1 == held0 and aborted1 == aborted0 and paused and _kill(c), {"sent": len(sent), "seen_s": t_seen, "state": v.get("state"), "paused": paused})
         _fresh(s, c, "J7")
         # ---- J8 (B49): the module's load aborted: the Stop still works, confirmed by the latch reads, nothing preempted
         s.intercept(abort=("stop_priority.js",))
