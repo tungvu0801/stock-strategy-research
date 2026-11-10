@@ -780,13 +780,13 @@ def risk_controls(c: Ctx):
               and "TRADING_ALLOWED" not in (c.js("__tvText('#tv-safety')") or ""))
     c.r.check("no action language in the Risk Controls panel", not words.search(c.js("__tvText('#tv-safety')") or ""), (c.js("__tvText('#tv-safety')") or "")[:200])
     c.shot("risk_controls_allowed", "#tv-safety")
-    # a READY proposal to watch the entry eligibility on (SNDK may be anything after the earlier flows: reset, WATCH, READY through the real setup service)
-    c.js("TraderView.switchTo('SNDK')")
-    c.wait(_tv_settled("SNDK") + " && __tvState('#tv-proposal')[1] === 'SNDK'", 30, "SNDK settled")
-    for over in (dict(stretch=-10.0, confidence=58, demand=72), SETUP_STEPS[0][2], SETUP_STEPS[1][2]):
-        svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
-        time.sleep(1.1)
-    c.wait(_review_settled("SNDK", "REVIEWABLE"), 20, "proposal reviewable")
+    # a READY proposal to watch the entry eligibility on. SNDK may be in any setup state after the earlier flows (trade_review leaves it READY), and the
+    # server evaluates it again, asynchronously and with live simulated inputs, when the page subscribes: wait for that evaluation, then drive SNDK from
+    # its real state through the setup state machine's own transitions to READY, each checked as persisted (harness fix: _sndk_to_ready, end of file)
+    route = _sndk_to_ready(c, svc, psvc, SetupInputs)
+    c.r.eq("service: SNDK is READY through the real setup service and its READY transition stored a REVIEWABLE proposal (NOT SUBMITTED)",
+           [svc.current("SNDK").state, psvc.current("SNDK").effective_status, psvc.current("SNDK").submission_status], ["READY", "REVIEWABLE", "NOT SUBMITTED"])
+    _wait_sndk_review(c, svc, psvc, route, "REVIEWABLE", 20, "proposal reviewable")
     c.r.eq("proposal card: entry eligibility allowed while trading is allowed", c.js("(document.querySelector('#tv-proposal .tv-prop-exec') || {}).dataset ? document.querySelector('#tv-proposal .tv-prop-exec').dataset.execAllowed : null"), "true")
     # pause
     c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').click()")
@@ -3724,3 +3724,111 @@ FLOWS = (dashboard, strategy_lab_builder, backtest_stored, forward_journal, stra
          risk_controls_scripts, risk_controls_races, risk_controls_presses, risk_controls, paper_bot, account_refresh, cash_flow, forward_validation, product_ui, product_flow, product_flow_degraded, product_flow_lab, product_flow_links, product_flow_ready, product_flow_session, automation, saved_scans, daily_brief, brief_delivery, notification_click,
          paper_portfolio, alpaca_paper, alpaca_orders)          # Stage 5.6.1 / 5.7 / 5.8: the Trader View flows sit before the clock-moving flows; Stage 6.1.2: the product flows follow product_ui
 EXTRA_FLOWS = (portfolio_rotation,)          # Stage 4.7: run with --only portfolio_rotation (it links the fake paper account)
+
+
+# ---- harness fix: the Stage 5.9.1 risk_controls flow's SNDK review proposal, driven from SNDK's real setup state ------------------------------
+# risk_controls used to send three fixed evaluations (reset, WATCH, READY) as soon as the page settled. On CI (main run #145) that failed twice: the
+# reset inputs move a READY setup to INVALIDATED, not to NONE, and the WATCH / READY inputs cannot leave INVALIDATED; whether the server's own
+# SUBSCRIBE evaluation (live simulated inputs, run asynchronously after the page settles) had already moved SNDK out of READY depended on the
+# simulated market at that moment. Now the flow waits for that evaluation, reads SNDK's persisted state and takes only the transitions setups.engine
+# defines for these inputs, checking each one as persisted. Nothing here waits on the simulated market and nothing is retried.
+SNDK_RESET = dict(stretch=-10.0, confidence=58, demand=72)          # no downside stretch and the confirmation intact: leaves every open state
+
+
+def _sndk_reset_route():
+    """setups.engine with SNDK_RESET, from each open state (stretch -10 is above INVALIDATE_STRETCH -20, WATCH_EXIT_STRETCH -30 and WATCH_ENTER_STRETCH
+    -40): READY -> INVALIDATED (stretch normalized), INVALIDATED -> NONE (episode closed), WATCH -> NONE (stretch faded); NONE holds. So any state
+    reaches NONE in at most two supported transitions."""
+    from setups import INVALIDATE_STRETCH, R_EPISODE_CLOSED, R_STRETCH_FADED, R_STRETCH_NORMALIZED, WATCH_ENTER_STRETCH, WATCH_EXIT_STRETCH
+    assert SNDK_RESET["stretch"] > max(INVALIDATE_STRETCH, WATCH_EXIT_STRETCH, WATCH_ENTER_STRETCH), "the reset inputs no longer leave every open state"
+    return {"READY": ("INVALIDATED", R_STRETCH_NORMALIZED), "INVALIDATED": ("NONE", R_EPISODE_CLOSED), "WATCH": ("NONE", R_STRETCH_FADED)}
+
+
+def _sndk_evaluations(c: Ctx, limit: int = 20) -> list:
+    return c.http("GET", f"/api/setups/evaluations?symbol=SNDK&limit={limit}")["evaluations"]
+
+
+def _sndk_diag(c: Ctx, svc, psvc, route: list, t0: float) -> str:
+    """A compact failure context, most useful first (the harness keeps the first 800 characters of an error): the elapsed time, the route so far,
+    the server's SNDK setup and proposal, the page's proposal card, the simulated market's SNDK stretch / demand now and the last three SNDK
+    evaluations with their inputs. Synthetic harness data only."""
+    def evals():
+        out = []
+        for e in _sndk_evaluations(c, 3):
+            i = json.loads(e.get("inputs_json") or "{}")
+            out.append(f"{e.get('trigger')} {e.get('prior_state')}->{e.get('resulting_state')} {e.get('decision')} {e.get('reason_code')} "
+                       f"s={i.get('stretch')} d={i.get('demand')}")
+        return out
+    out = {"elapsed_s": round(time.time() - t0, 1), "route": route}
+    parts = (("setup", lambda: [getattr(svc.current("SNDK"), k, None) for k in ("state", "decision", "reason_code")]),
+             ("proposal", lambda: [getattr(psvc.current("SNDK"), k, None) for k in ("effective_status", "review_state")]),
+             ("page", lambda: c.js("__tvState('#tv-proposal')")),
+             ("market", lambda: [(c.http("GET", "/api/terminal/ppe/SNDK").get("stretch") or {}).get("score"), c.http("GET", "/api/terminal/demand/SNDK").get("score")]),
+             ("evaluations", evals))
+    for key, fn in parts:
+        try:
+            out[key] = fn()
+        except Exception as exc:  # noqa: BLE001 - a diagnostic never hides the failure it describes
+            out[key] = f"unavailable ({type(exc).__name__})"
+    return json.dumps(out, default=str)
+
+
+def _sndk_force(c: Ctx, svc, psvc, SetupInputs, over: dict, frm: str, to: str, reason: str, route: list, t0: float) -> str:
+    """One TEST evaluation of SNDK through the real setup service: it must be exactly the transition frm -> to with `reason`, also as persisted."""
+    v = svc.evaluate_symbol("SNDK", trigger="TEST", inputs=SetupInputs(symbol="SNDK", evaluated_at="x", **{**SETUP_FIXTURE, **over}))
+    persisted = svc.current("SNDK").state
+    route.append(f"TEST {frm}->{v.state} {v.decision} {v.reason_code}")
+    if (v.decision, v.state, v.reason_code, persisted) != ("TRANSITION", to, reason, to):
+        raise AssertionError(f"SNDK setup: expected {frm} -> {to} ({reason}), got {v.decision} {v.state} ({v.reason_code}), persisted {persisted} | "
+                             f"{_sndk_diag(c, svc, psvc, route, t0)}")
+    time.sleep(1.1)                                                                                  # distinct seconds: proposal and episode identities include created_at (as trade_review)
+    return to
+
+
+def _sndk_to_ready(c: Ctx, svc, psvc, SetupInputs) -> list:
+    """Open SNDK on the page and wait until the server has recorded its own SUBSCRIBE evaluation of SNDK (it runs after the page has settled), then
+    take SNDK from its persisted state to NONE (at most two supported transitions), then NONE -> WATCH -> READY, each checked. Returns the route; an
+    unexpected state raises with the diagnostics. Page already on SNDK: this flow sends no subscribe, so it has no evaluation of its own to wait for;
+    a subscribe from elsewhere (the tab re-activated on SNDK, a socket reconnect) is not awaited and would make a step's check fail with the
+    diagnostics (not reached in the harness order: the page is on another ticker when risk_controls starts)."""
+    from setups import R_CONFIRMED, R_STRETCH_DETECTED
+    t0, route = time.time(), []
+    settled = _tv_settled("SNDK") + " && __tvState('#tv-proposal')[1] === 'SNDK'"
+    if c.js(f"{TV}.active") != "SNDK":
+        seen = {e["evaluation_id"] for e in _sndk_evaluations(c, 50)}
+        c.js("TraderView.switchTo('SNDK')")
+        c.wait(settled, 30, "SNDK settled")
+        end, sub = time.time() + 30, None
+        while True:
+            sub = next((e for e in _sndk_evaluations(c) if e.get("trigger") == "SUBSCRIBE" and e["evaluation_id"] not in seen), None)
+            if sub is not None or time.time() > end:
+                break
+            time.sleep(0.2)
+        if sub is None:
+            raise TimeoutError(f"timed out waiting for the server's SUBSCRIBE evaluation of SNDK | {_sndk_diag(c, svc, psvc, route, t0)}")
+        route.append(f"SUBSCRIBE {sub.get('prior_state')}->{sub.get('resulting_state')} {sub.get('decision')} {sub.get('reason_code')}")
+    else:
+        c.wait(settled, 30, "SNDK settled")
+    state, steps = svc.current("SNDK").state, _sndk_reset_route()
+    route.append(f"start {state}")
+    for _ in range(2):                                                                               # READY -> INVALIDATED -> NONE is the longest supported route
+        if state == "NONE":
+            break
+        if state not in steps:
+            raise AssertionError(f"SNDK setup in an unexpected state {state!r} | {_sndk_diag(c, svc, psvc, route, t0)}")
+        to, reason = steps[state]
+        state = _sndk_force(c, svc, psvc, SetupInputs, SNDK_RESET, state, to, reason, route, t0)
+    if state != "NONE":
+        raise AssertionError(f"SNDK setup did not reach NONE in two supported transitions: {state!r} | {_sndk_diag(c, svc, psvc, route, t0)}")
+    _sndk_force(c, svc, psvc, SetupInputs, SETUP_STEPS[0][2], "NONE", "WATCH", R_STRETCH_DETECTED, route, t0)
+    _sndk_force(c, svc, psvc, SetupInputs, SETUP_STEPS[1][2], "WATCH", "READY", R_CONFIRMED, route, t0)
+    return route
+
+
+def _wait_sndk_review(c: Ctx, svc, psvc, route: list, status: str, seconds: float, label: str) -> None:
+    """The page's SNDK proposal card reaches `status`; on a timeout the error carries the SNDK diagnostics (elapsed_s = the wait)."""
+    t0 = time.time()
+    try:
+        c.wait(_review_settled("SNDK", status), seconds, label)
+    except TimeoutError as exc:
+        raise TimeoutError(f"{exc} | {_sndk_diag(c, svc, psvc, route, t0)}") from None
