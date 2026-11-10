@@ -443,12 +443,20 @@ def risk_controls_scripts(c):
         post = ["curl.exe", "-sS", "--max-time", "60", "-X", "POST", f"http://127.0.0.1:{port}/api/execution-safety/emergency-stop", "-H", "X-Stock-Agent-Intent: dashboard",
                 "-H", "Content-Type: application/json", "-d", "{}"]
         out = subprocess.run(post, capture_output=True, text=True, timeout=90, check=False)            # a fixed argument list, no shell
-        read = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                               f'(curl.exe -sS --max-time 60 http://127.0.0.1:{port}/api/execution-safety -H "X-Stock-Agent-Intent: dashboard" | ConvertFrom-Json).kill_switch.active'],
-                              capture_output=True, text=True, timeout=120, check=False)
-        c.r.check("B37 the F2 POST passes the real gate and saves the latch; the F2 read prints True",
-                  out.returncode == 0 and '"kill_switch"' in out.stdout and _kill(c) and read.stdout.strip() == "True", [out.returncode, out.stdout[:120], read.stdout.strip(), read.stderr[:120]])
+        # J-04 (PR #59 review LOW-1): F2's second command exactly as README.md prints it (the latch read), this instance's port in place of 8000,
+        # the same text the status bar prints (ProductUI.f2Read), run end to end through the real gate: True once saved, False once cleared
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        f2 = [l.strip() for l in readme.splitlines() if "/api/execution-safety/latch" in l and l.strip().startswith("(curl.exe")]
+        cmd = f2[0].replace("http://127.0.0.1:8000/", f"http://127.0.0.1:{port}/") if len(f2) == 1 else ""
+        page = s.js(f"window.ProductUI && typeof ProductUI.f2Read === 'function' ? ProductUI.f2Read({json.dumps(port)}) : null")
+        run_read = lambda: subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=120, check=False)  # noqa: E731
+        read = run_read()
+        c.r.check("B37 the F2 POST passes the real gate and saves the latch; the README's F2 read (the latch, as the bar prints it) prints True",
+                  out.returncode == 0 and '"kill_switch"' in out.stdout and _kill(c) and len(f2) == 1 and cmd == page and cmd.endswith(").kill_active")
+                  and read.stdout.strip() == "True", [out.returncode, out.stdout[:120], len(f2), cmd == page, read.stdout.strip(), read.stderr[:120]])
         _reset(c, "B37")
+        cleared = run_read()
+        c.r.check("B37 after the Clear the same F2 read prints False (not saved: run the first command again)", cleared.stdout.strip() == "False", [cleared.stdout.strip(), cleared.stderr[:120]])
     finally:
         s.close()
         _reset(c, "risk_controls_scripts")
@@ -549,12 +557,16 @@ def risk_controls_races(c):
             s.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
             s.wait(f"{rc}.status().outcomes.stop && {rc}.status().outcomes.stop.result === 'CONFIRMED'", 40, "B17 confirmed")
             s.pump(2.5)
-            # J-04: the latch read confirms the saved stop and its overlay drives the display (HALTED, "Emergency stop active") while the server's own
-            # evaluation still answers UNKNOWN with the kill active
+            # J-04 (PR #59 review MED-1): the latch read confirms the saved stop; the server's own view (UNKNOWN with the kill active) is shown as the
+            # server sent it, with Clear disabled (section 5), never hidden behind the latch overlay. The latch can decide before the POST's own
+            # answer lands: wait for the POST to settle (pending.stop false) before reading the panel (Task S delta review)
+            s.wait(f"{rc}.status().pending.stop === false", 25, "B17 the Stop POST settled")
+            s.pump(0.5)
             panel = s.text("#tv-safety")
-            c.r.check("B17 200 UNKNOWN with the kill active: confirmed by the latch read with no re-send; the panel shows the saved stop over the server's UNKNOWN",
-                      len(s.posts("/api/execution-safety/emergency-stop")) - n0 == 1 and _kill(c) and "New automatic entries stopped" in panel and "Emergency stop active" in panel
-                      and _state(c).get("state") == "UNKNOWN" and s.js(f"!!{rc}.status().latchKill") is True, panel[:300])
+            c.r.check("B17 200 UNKNOWN with the kill active: confirmed with no re-send; the server UNKNOWN reads 'Risk status unknown · Emergency Stop active'",
+                      len(s.posts("/api/execution-safety/emergency-stop")) - n0 == 1 and _kill(c) and "Risk status unknown" in s.text("#tv-safety")
+                      and "Emergency Stop active" in panel and "New automatic entries stopped" not in panel and _state(c).get("state") == "UNKNOWN"
+                      and s.js(f"{rc}.status().latchShown") is False and s.js("!!document.querySelector('#tv-safety [data-safety=\"clear\"][disabled]')") is True, panel[:300])
         _reset(c, "B17")
         s.js(f"{rc}.refresh()"); s.pump(1.0)
 

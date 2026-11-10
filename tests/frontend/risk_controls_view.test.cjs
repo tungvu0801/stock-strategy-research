@@ -273,12 +273,21 @@ test("the status bar: a Stop in every state; the banner wins over the outcome an
 
 // ---- J-04 (design 2.1 Part D): the overlay, the slow-Stop texts, the fallback line and the paused line ---------------------------------------
 test("J-04 the latch overlay wins over any server view in the effective model; the bar's NOT confirmed line prints both commands; the paused line shows only while this tab preempts and never beside the banner", () => {
-  const over = RC({ latchKill: { active: true, at: T0, activated_at: "2026-11-10T15:00:00+00:00" } });
+  const over = RC({ latchKill: { active: true, at: T0, activated_at: "2026-11-10T15:00:00+00:00" }, latchShown: true });
   for (const v of [ALLOWED, PAUSED, UNKNOWN, null]) {
     const e = PUI.effectiveSafety(v, over);
     assert.deepEqual([e.state, e.kill_switch.active, e.uncertain, e.latch], ["HALTED", true, false, true], JSON.stringify(v && v.state));
   }
   assert.equal(PUI.effectiveSafety(ALLOWED, RC({ latchKill: null })).state, "TRADING_ALLOWED");
+  // PR #59 review MED-1: the panel decides whether the overlay drives the display (latchShown); when it does not (the server's own view shows the
+  // kill, UNKNOWN included, or the latch read aged), the shell shows the server's view: UNKNOWN with the kill reads "Risk status unknown", never HALTED
+  const notShown = RC({ latchKill: { active: true, at: T0 }, latchShown: false });
+  const uk = PUI.effectiveSafety(UNKNOWN_KILL, notShown);
+  assert.deepEqual([uk.state, uk.kill_switch.active, uk.latch], ["UNKNOWN", true, undefined]);
+  const ud = PUI.effectiveSafety(UNKNOWN, notShown);
+  assert.deepEqual([ud.state, ud.kill_switch.active, ud.latch], ["UNKNOWN", false, undefined]);
+  assert.equal(PUI.barModel({ rc: RC({ outcomes: { stop: { result: "CONFIRMED" } }, latchKill: { active: true, at: T0 }, latchShown: false }), killShown: ud.kill_switch.active === true }).outcome,
+               "Last known: Emergency Stop active. Could not confirm the current state.");                                               // the aged overlay never reads present tense
   const aged = PUI.effectiveSafety(ALLOWED, RC({ latchKill: { active: true, at: T0 }, uncertain: true }));                     // the overlay aged out (65 s): last known, not a claim
   assert.deepEqual([aged.state, aged.uncertain, aged.lastKnown && aged.lastKnown.state], ["UNKNOWN", true, "TRADING_ALLOWED"]);
   assert.equal(PUI.automationTrading(PUI.effectiveSafety(ALLOWED, over)), "STOPPED · Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.");

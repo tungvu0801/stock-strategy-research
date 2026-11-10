@@ -3101,7 +3101,7 @@
   "state.data": 2,
   "v.kill_switch": 1,
   "window.TraderRender": 1,
-  "{ data: null, el: null, timer: null, detailsOpen: false, confirmClear: false, confirmTimer: null, er #426200fca190": 1,
+  "{ data: null, el: null, timer: null, detailsOpen: false, confirmClear: false, confirmTimer: null, er #deef26b7eca9": 1,
   "{ ok: r.ok, status: r.status, body: j }": 1,
   "{}": 2
  },

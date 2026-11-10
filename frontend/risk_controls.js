@@ -17,11 +17,12 @@
 //  - While the POST is pending and until the decision, the saved latch is read every 2 s (GET /api/execution-safety/latch: the persisted kill
 //    flag alone, answered in milliseconds while GET /api/execution-safety waits for the cash-flow cycle). A counted read is ordered like every
 //    other read (D1); one that shows the stop saved confirms it and drives the display (the latch overlay: the HALTED kill label, "Emergency Stop
-//    active", Clear shown, the open-order line), until a server view showing the stop cleared or a counted "not saved" replaces it; only a
-//    server view announces the stop gone (B-3). Like any read it ages: after 65 s without a newer good read the page is uncertain again.
+//    active", Clear shown, the open-order line) while that read is fresh (65 s, like any read) and the server's own last view does not itself
+//    show the kill; a server view that shows the kill, UNKNOWN included, is shown as the server sent it, one that shows the stop cleared or a
+//    counted "not saved" removes the overlay; only a server view announces the stop gone (B-3).
 //  - Today's rules stay on top: no read counts before every earlier action settled; a saved stop does not finalise while an aborted Clear
 //    may still commit; a counted "not saved" after the POST settled re-sends once (preempting again), whatever the POST's own outcome.
-//  - Pause, Resume and Clear are available again as soon as the POST settles; a newer action ends this Stop's reconciliation and resolves its
+//  - Pause, Resume and Clear are available again once no Stop POST (the re-send included) is in flight; a newer action ends this Stop's reconciliation and resolves its
 //    outcome (CONFIRMED if a counted read showed it saved, NOT_CONFIRMED otherwise). Reconciliation lasts 60 s at most, or 3 s past an
 //    aborted Clear's window (about 83 s).
 //  - A POST's 200 body, a request being sent and a stale view are never shown as proof that the stop was saved. NOT_CONFIRMED carries the
@@ -55,7 +56,7 @@
                   loading: true, readOk: false, lastGoodAt: null, gen: 0, readSeq: 0, appliedSeq: 0, actionSeq: 0, busy: null,
                   pending: { stop: false, pause: false, resume: false, clear: false }, outcomes: { stop: null, pause: null, resume: null, clear: null },
                   inflight: [], stopSeq: 0, abortedClearUntil: 0, clearedByPage: false, stopSeen: false, announce: null, openOrders: null, retryTimers: [],
-                  latchKill: null, latchLast: null, stopPressedAt: null, stopActive: false };   // J-04: the latch overlay, the last counted latch read, the press, press-to-decision
+                  latchKill: null, latchLast: null, stopPressedAt: null, stopActive: false, stopPosts: 0 };   // J-04: the latch overlay, the last counted latch read, the press, press-to-decision, Stop POSTs in flight
 
   const now = () => Date.now();
   const readable = (j) => !!j && typeof j === "object" && KNOWN.indexOf(j.state) >= 0;     // getJson's {} for an unreadable 200 is a failed read (3.2 item 7)
@@ -87,10 +88,18 @@
   // good read, the overlay too goes "uncertain · last known" after 65 s
   function latchFresh() { return !!state.latchKill && now() - (Number(state.latchKill.at) || 0) <= STALE_MS; }
   function uncertain() { return stale() && !latchFresh(); }
-  // J-04: the view the page shows. With the latch overlay set (a counted latch read showed the stop saved, and no later server view replaced it),
-  // the kill switch reads active and the state HALTED with its label, over the last server view's other fields; otherwise the last server view
+  // J-04 (PR #59 review MED-1): the latch overlay drives the display only while that read is fresh (STALE_MS, like any read) and the server's own
+  // last view does not itself show the kill. A server view that shows the kill, UNKNOWN included, is shown as the server sent it (its label, its
+  // explanation and the Clear rules of section 5); a view that shows the stop cleared removes the overlay (applyView); a server UNKNOWN with the
+  // default inactive kill switch leaves it until it ages (design 2.1 Part C), then the page reads "last known" again (3.1, B-3)
+  function overlayOn() { return latchFresh() && !WANTED.stop(state.data); }
+  // J-04: the view the page shows. With the overlay on, the kill switch reads active and the state HALTED with its label, over the last server
+  // view's other fields; otherwise the last server view
   function shown() {
-    if (!state.latchKill) return state.data;
+    // aged on a page that cannot read the server: a latch read newer than the last good read stays the "last known" state, shown uncertain with
+    // Clear disabled (design 2.1 Part C: it never falls back to the pre-press view; Task S delta review)
+    const lastKnownLatch = !!state.latchKill && uncertain() && !WANTED.stop(state.data) && (Number(state.latchKill.at) || 0) > (Number(state.lastGoodAt) || 0);
+    if (!overlayOn() && !lastKnownLatch) return state.data;
     const v = state.data || {};
     const k = v.kill_switch && typeof v.kill_switch === "object" ? v.kill_switch : {};
     return Object.assign({}, v, { state: "HALTED", state_label: R.SAFETY_LABELS.HALTED, icon: "🔴", allowed_new_entry: false, halted: true, reason_text: "Emergency stop active",
@@ -102,6 +111,7 @@
     return { loading: state.loading && !!state.el, uncertain: uncertain(), pending: Object.assign({}, state.pending), error: state.error, outcomes, lastGoodAt: state.lastGoodAt,
              announce: state.announce, openOrders: state.openOrders ? Object.assign({}, state.openOrders) : null,
              latchKill: state.latchKill ? Object.assign({}, state.latchKill) : null, latchLast: state.latchLast ? Object.assign({}, state.latchLast) : null,   // J-04
+             latchShown: overlayOn(),                                                                                                                           // J-04: the overlay drives the display
              stopPressedAt: state.stopPressedAt, stopActive: state.stopActive, preempting: preempting(), now: now() };
   }
   function render() {
@@ -219,6 +229,17 @@
     } catch (e) { return { aborted: true, message: errText(e) }; }
   }
 
+  // J-04 (PR #59 review LOW-2, LOW-3): every Stop POST, the automatic re-send included, keeps pending.stop set while it is in flight (Pause, Resume and
+  // Clear wait for it: design M-3b) and moves the generation when it settles, whichever press it belongs to (3.2: "at the end of every action")
+  function sendStop() {
+    state.stopPosts++; state.pending.stop = true;
+    return send("stop").then((r) => {
+      state.stopPosts = Math.max(0, state.stopPosts - 1); state.gen++;
+      if (!state.stopPosts) state.pending.stop = false;
+      return r;
+    });
+  }
+
   async function simpleAction(kind) {
     // Pause, Resume and Clear: one at a time, and never while a Stop is pending (3.2 item 4)
     if (state.busy || state.pending.stop) return;
@@ -257,13 +278,13 @@
     render();
     preempt();
     let res = null, errored = false, resent = false;
-    const settle = (r) => {                                                    // the POST settled: Pause, Resume and Clear are available again (design M-3b)
-      if (mine !== state.stopSeq) return;
-      res = r; state.gen++; state.pending.stop = false; errored = errored || !!(r.aborted || r.failed);
+    const settle = (r) => {                                                    // the POST settled (sendStop moved the generation and pending.stop)
+      if (mine !== state.stopSeq) { render(); return; }
+      res = r; errored = errored || !!(r.aborted || r.failed);
       if (r.ok && seq === state.actionSeq) applyView(r.view, false);          // a response applies only if it is the latest action started (3.2 item 2; J-01)
       render();
     };
-    send("stop").then(settle);
+    sendStop().then(settle);
     // the aborted-Clear window is read live (review HIGH-1): an earlier Clear still in flight at the press may abort after it and open the window;
     // a Clear pressed after this Stop is a newer action and ends this flow instead. While the window is open, no decision is final (review M-4).
     const clearOpen = () => now() < state.abortedClearUntil;
@@ -271,8 +292,8 @@
     const last = () => (state.latchLast ? state.latchLast.active : null);     // the latest counted latch read of this press (review MED-1: it decides)
     const posted = () => !!res && !!res.ok && WANTED.stop(res.view) && earlier.length === 0;
     const confirmed = () => ({ result: "CONFIRMED", note: errored ? "error-but-active" : null });
-    const finish = (outcome) => {
-      state.pending.stop = false; state.stopActive = false; state.outcomes.stop = Object.assign({ at: now() }, outcome);
+    const finish = (outcome) => {                                              // pending.stop stays while a Stop POST is still in flight (review LOW-3)
+      state.stopActive = false; state.outcomes.stop = Object.assign({ at: now() }, outcome);
       release();
       if (state.latchKill && state.ordersDeferred) loadOpenOrders();          // C-4: the read deferred while this tab preempted goes after the release
       state.ordersDeferred = false;
@@ -301,9 +322,9 @@
         else {
           resent = true; res = null;
           preempt();
-          send("stop").then((r2) => {
-            if (mine !== state.stopSeq) return;
-            res = r2; state.gen++; errored = errored || !!(r2.aborted || r2.failed);
+          sendStop().then((r2) => {
+            if (mine !== state.stopSeq) { render(); return; }
+            res = r2; errored = errored || !!(r2.aborted || r2.failed);
             if (r2.ok && seq === state.actionSeq) applyView(r2.view, false);
             render();
           });

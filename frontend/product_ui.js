@@ -638,8 +638,9 @@
   function effectiveSafety(sv, rc) {
     // J-04 (design 2.1, review H-1): the latch overlay. A counted latch read showed the Emergency Stop saved and no later server view replaced it:
     // the kill switch is shown as a fresh read (HALTED, its label, Clear offered) over the last server view's other fields; never the reverse.
-    // Like any read it ages: after 65 s without a newer good read the panel reports uncertain and this falls through to "last known"
-    if (rc && rc.latchKill && rc.latchKill.active === true && !rc.uncertain) {
+    // Like any read it ages (65 s), and a server view that itself shows the kill, UNKNOWN included, is shown as the server sent it: the panel
+    // decides (latchShown, PR #59 review MED-1) and this falls through to the server's own view or to "last known"
+    if (rc && rc.latchShown === true && rc.latchKill && rc.latchKill.active === true && !rc.uncertain) {
       const v = sv || {};
       const k = v.kill_switch && typeof v.kill_switch === "object" ? v.kill_switch : {};
       return Object.assign({ daily_loss: {}, no_new_entries: { active: false } }, v,
