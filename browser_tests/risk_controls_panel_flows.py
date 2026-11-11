@@ -1159,25 +1159,87 @@ def risk_controls_priority(c):
                 t.close()
         _fresh(s, c, "J6")
         # ---- J7 (B47): a write sent while the Stop is pending goes at once
-        stamp = _Stamp(svc, after=4.0)
-        with _Patch(svc, emergency_stop=stamp):
-            t0 = _press_stop(s)
-            s.pump(0.3)
-            held0, aborted0 = s.js("StopPriority.state.counts.held"), s.js("StopPriority.state.counts.aborted")
-            t1 = time.time()
-            s.js("fetch('/api/execution-safety/pause-new-entries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Stock-Agent-Intent': 'dashboard' }, body: '{}' }).catch(() => null)")
-            sent, end = [], time.time() + 5                                       # the CDP event may land late on a slow runner: wait for it, judge "never held" by the module's own counters
-            while not sent and time.time() < end:
-                s.pump(0.1)
-                sent = _main_sent(s, "/pause-new-entries", t1 - 1.0, "POST")
-            t_seen = time.time() - t1
-            held1, aborted1 = s.js("StopPriority.state.counts.held"), s.js("StopPriority.state.counts.aborted")
-            _decided(s, "CONFIRMED", 20, "J7 confirmed")
+        # Measured on the write itself, never on StopPriority's page-wide counters: those also count any unrelated read the page sends meanwhile,
+        # which a pending Stop holds by design (CI run #152 failed on exactly that). A pass-through recorder under StopPriority (installed before the
+        # page's scripts, as B27 does; app.js and StopPriority wrap it) sees whether the write leaves in the same instant it is sent. The latch is kept
+        # unreadable (J4's patch), so the Stop stays pending and its hold open until the harness lifts it: "reached the server during the pending Stop"
+        # is then checked by order (the receipt is counted before the hold is sampled), not by racing the page's other requests. Margins: the probe
+        # runs about 0.3 s after the press while the Stop POST stays unanswered for 4 s, and all the bounded waits below (at most 25 s) end inside the
+        # 30 s hold window. A control read sent in the same instant must be held: it proves the hold was on and shows the page-wide counter moving
+        # while the write's own measurement stays clean.
+        rec = ("(() => { const native = window.fetch; window.__j7 = { rec: [] }; window.fetch = function (input, init) { "
+               "const url = String(typeof input === 'string' ? input : (input && input.url) || ''); "
+               "if (url.indexOf('j7=') >= 0) window.__j7.rec.push({ url: url, signal: !!(init && init.signal), priority: (init && init.priority) || null }); "
+               "return native.apply(this, arguments); }; })();")
+        s.inject(rec)
+        s.open("/")
+        s.wait("!!window.RiskControls && !!RiskControls.state.data && !!window.StopPriority && StopPriority.state.installed && !!window.__j7", 30, "J7 loaded with the recorder")
+        s.uninject()
+        nonce = str(int(time.time() * 1000))
+        probe_js = ("(() => { try { const sp = window.StopPriority, j = window.__j7, st = RiskControls.status(); "
+                    "const snap = () => [sp.state.counts.held, sp.state.held.length, sp.state.counts.aborted, j.rec.length]; "
+                    "const out = { holding: sp.holding(), preempting: sp.preempting(), outcome: st.outcomes.stop ? st.outcomes.stop.result : null, "
+                    "pending: !!st.pending.stop, preempts: sp.state.counts.preempts, released: sp.state.counts.released }; "
+                    "const a = snap(); "
+                    f"fetch('/api/health?j7=noise-{nonce}').catch(() => null); "
+                    "const b = snap(); "
+                    f"fetch('/api/execution-safety/pause-new-entries?j7=write-{nonce}', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json', "
+                    "'X-Stock-Agent-Intent': 'dashboard' }, body: '{}' }).then((r) => { j.status = r.status; }, (e) => { j.error = (e && e.name) || String(e); }); "
+                    "const w = snap(); "
+                    "out.noise = { held: b[0] - a[0], queued: b[1] - a[1], aborted: b[2] - a[2], rec: j.rec.slice(a[3], b[3]) }; "
+                    "out.write = { held: w[0] - b[0], queued: w[1] - b[1], aborted: w[2] - b[2], rec: j.rec.slice(b[3], w[3]) }; "
+                    "out.pagewide = w[0] - a[0]; return JSON.stringify(out); } catch (e) { return JSON.stringify({ error: String((e && e.message) || e) }); } })()")
+        after_js = ("JSON.stringify({ holding: StopPriority.holding(), preempts: StopPriority.state.counts.preempts, released: StopPriority.state.counts.released, "
+                    "outcome: RiskControls.status().outcomes.stop ? RiskControls.status().outcomes.stop.result : null })")
+        stamp, received = _Stamp(svc, after=4.0), []
+        real_pause = svc.pause
+
+        def pause_received(*a, **k):                                             # the server's pause action: the write arrived
+            received.append(time.time())
+            return real_pause(*a, **k)
+        with _Patch(svc, emergency_stop=stamp, pause=pause_received):
+            with _Patch(svc.store, has_state_row=_raise):                        # the latch unreadable: the Stop stays pending, its hold open, until lifted below
+                t0 = _press_stop(s)
+                end = t0 + 10
+                while not stamp.at and time.time() < end:
+                    s.pump(0.1)
+                t_probe = time.time()
+                probe = json.loads(s.js(probe_js) or "{}")
+                end = time.time() + 5
+                while not received and time.time() < end:
+                    s.pump(0.1)
+                n_received = len(received)                                       # counted BEFORE the hold is sampled: received while it was still on
+                after = json.loads(s.js(after_js) or "{}")                     # sampled after the server had the write (or after the bound)
+                end = time.time() + 5
+                while s.js("window.__j7.status === undefined && window.__j7.error === undefined") and time.time() < end:
+                    s.pump(0.1)
+                answer = json.loads(s.js("JSON.stringify([window.__j7.status === undefined ? null : window.__j7.status, window.__j7.error === undefined ? null : window.__j7.error])") or "[null, null]")
+                sent, end = [], time.time() + 5
+                while not sent and time.time() < end:
+                    s.pump(0.1)
+                    sent = _main_sent(s, f"j7=write-{nonce}", t0 - 1.0, "POST")
+            _decided(s, "CONFIRMED", 20, "J7 confirmed once the latch is readable")
         s.pump(4.5)
         v = _state(c)
         paused = bool((v.get("no_new_entries") or {}).get("active"))
-        c.r.check(f"J7 a write during the pending Stop was never held or aborted (held {held0}->{held1}, aborted {aborted0}->{aborted1}; its request seen after {int(t_seen * 1000)} ms) and reached the server (pause active: {paused})",
-                  len(sent) >= 1 and held1 == held0 and aborted1 == aborted0 and paused and _kill(c), {"sent": len(sent), "seen_s": t_seen, "state": v.get("state"), "paused": paused})
+        noise, write = probe.get("noise") or {}, probe.get("write") or {}
+        wrec = write.get("rec") or []
+        intent = [{k.lower(): val for k, val in e["params"]["request"].get("headers", {}).items()}.get("x-stock-agent-intent") for e in sent]
+        c.r.check(f"J7 setup: the write is sent while the Stop is pending and its hold is on (holding, preempting, PENDING), and a control read sent in the same "
+                  f"instant is held (the page-wide held counter moved by {probe.get('pagewide')}: the old page-wide measurement would have failed here)",
+                  probe.get("holding") is True and probe.get("preempting") is True and probe.get("outcome") == "PENDING" and probe.get("pending") is True
+                  and noise.get("held") == 1 and noise.get("queued") == 1 and noise.get("rec") == [], probe)
+        c.r.check("J7 the write itself left StopPriority at once: handed to the next layer in the same instant, the caller's options untouched (no signal, no priority), "
+                  "never queued, held or aborted; the browser sent exactly one such request, with the intent header",
+                  write.get("held") == 0 and write.get("queued") == 0 and write.get("aborted") == 0 and len(wrec) == 1 and f"j7=write-{nonce}" in wrec[0].get("url", "")
+                  and wrec[0].get("signal") is False and wrec[0].get("priority") is None and len(sent) == 1 and intent == ["dashboard"],
+                  {"write": write, "requests": len(sent), "intent": intent})
+        c.r.check(f"J7 the server received the write while the Stop was still pending (its hold still on, no release since the write), exactly once, and answered 200 "
+                  f"(received {int((received[0] - t_probe) * 1000) if received else 'never'} ms after the probe)",
+                  n_received == 1 and len(received) == 1 and after.get("holding") is True and after.get("outcome") == "PENDING" and after.get("preempts") == probe.get("preempts")
+                  and after.get("released") == probe.get("released") and answer == [200, None],
+                  {"received_before_sample": n_received, "received": len(received), "after": after, "answer": answer})
+        c.r.check("J7 once the latch is readable the Stop is CONFIRMED, and the pause and the stop are both saved", paused and _kill(c), {"state": v.get("state"), "paused": paused})
         _fresh(s, c, "J7")
         # ---- J8 (B49): the module's load aborted: the Stop still works, confirmed by the latch reads, nothing preempted
         s.intercept(abort=("stop_priority.js",))

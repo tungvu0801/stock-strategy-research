@@ -3488,9 +3488,32 @@ def product_flow_links(c: Ctx):
     c.wait("document.body.dataset.puiSection === 'positions'", 20, "#portfolio routed")
     c.r.eq("#portfolio (old Portfolio) -> POSITIONS", [c.js("document.body.dataset.puiSection"), c.js("document.getElementById('tab-paper').classList.contains('active')"), c.js("location.hash")], ["positions", True, "#positions"])
     c.shot("product_flow_link_portfolio")
+    # #paper: the routing switches to ACTIVITY and sets the Trades filter at once, but the view draws its filter chips only after its eight reads
+    # return (loadActivity awaits them; CI run #152 read the chips before that). So: prove the navigation itself started those reads (a listener
+    # added after the shell's own runs right after it, in the same event), wait for the render it caused (a filter row that is a new element), then
+    # assert the rendered state exactly.
+    c.js("(() => { window.__pfLinks = { doc: 1, n0: window.__f.length, row0: document.querySelector('#pui-activity [data-pui-filters]'), nav: null }; "
+         "window.addEventListener('hashchange', () => { if (window.__pfLinks && window.__pfLinks.nav === null) window.__pfLinks.nav = window.__f.length; }, { once: true }); return true; })()")
     _pf_boot(c, "/#paper")
     c.wait("document.body.dataset.puiSection === 'activity'", 20, "#paper routed")
-    c.r.eq("#paper (old Paper Trades) -> ACTIVITY with the Trades filter", [c.js("document.body.dataset.puiSection"), c.js("ProductUI.state.filter"), c.js("!!document.querySelector('#pui-activity [data-pui-filter=\"trades\"].active')")], ["activity", "trades", True])
+    nav = c.js("window.__pfLinks ? [window.__pfLinks.doc === 1, window.__pfLinks.nav === null ? null : window.__f.slice(window.__pfLinks.n0, window.__pfLinks.nav), "
+               "!!document.querySelector('#pui-activity [data-pui-filter=\"trades\"].active')] : null")
+    reads = ["GET /api/setups/events?limit=100", "GET /api/proposals/history?limit=50", "GET /api/execution/intents?limit=100", "GET /api/execution/positions?limit=100",
+             "GET /api/execution-safety/events?limit=50", "GET /api/execution/findings?limit=50", "GET /api/forward-validation", "GET /api/forward-validation/events?limit=50"]
+    started = [u for u in reads if nav and nav[1] is not None and u in nav[1]]
+    c.r.check(f"#paper: the navigation itself started the ACTIVITY view's reads ({len(started)} of {len(reads)}), in the same document "
+              f"(its chips were {'already' if nav and nav[2] else 'not yet'} drawn where the old check read them, 0.5 s after the navigation)", bool(nav) and nav[0] is True and started == reads,
+              {"same_document": nav and nav[0], "missing": [u for u in reads if u not in started], "drawn_where_old_check_read": nav and nav[2]})
+    c.wait("(() => { const f = document.querySelector('#pui-activity [data-pui-filters]'); return !!f && !!window.__pfLinks && f !== window.__pfLinks.row0; })()", 20,
+           "#paper: the ACTIVITY view rendered after the navigation")
+    got = c.js("(() => { const q = (s) => [...document.querySelectorAll(s)]; const nav = document.querySelector('#pui-nav [data-pui-nav=\"activity\"]'); "
+                "return [document.body.dataset.puiSection, ProductUI.state.filter, q('#pui-activity [data-pui-filter].active').map((e) => e.dataset.puiFilter), "
+                "q('#pui-activity [data-pui-filter]').map((e) => e.dataset.puiFilter), document.getElementById('tab-alerts').classList.contains('active') && !!nav && nav.classList.contains('active'), "
+                "__tvVisible('#pui-activity [data-pui-filters]'), location.hash, q('#pui-activity [data-pui-timeline] li[data-pui-group]').every((e) => e.dataset.puiGroup === 'trades'), "
+                "q('#pui-activity [data-pui-timeline] li[data-pui-group]').length]; })()")
+    want = ["activity", "trades", ["trades"], ["all", "trades", "safety", "system", "research"], True, True, "#activity", True]
+    c.r.check("#paper (old Paper Trades) -> ACTIVITY with the Trades filter", isinstance(got, list) and got[:8] == want,
+              {"got": got[:8] if isinstance(got, list) else got, "want": want, "timeline_rows": got[8] if isinstance(got, list) and len(got) > 8 else None})
     _pf_boot(c, "/#trader")
     c.wait("document.body.dataset.puiSection === 'trade'", 20, "#trader routed")
     c.r.eq("#trader (old Trader View) -> TRADE", [c.js("document.body.dataset.puiSection"), c.js("document.getElementById('tab-trader').classList.contains('active')")], ["trade", True])
