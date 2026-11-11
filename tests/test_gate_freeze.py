@@ -70,8 +70,8 @@ DEFS_GATE = {
     "paper/alpaca_order_store.py": ({"OrderStore"}, set()),
     "execution/store.py": ({"ExecutionStore"}, set()),
     "execution/service.py": ({"ExecutionService"}, set()),
-    "browser_tests/flows.py": ({"risk_controls", "alpaca_orders", "=PUI_CONFIRM", "_pui_system", "product_ui", "product_flow_degraded"}, set()),   # every other flow unchanged
-    "browser_tests/risk_controls_panel_flows.py": ({"risk_controls_races"}, set()),
+    "browser_tests/flows.py": ({"risk_controls", "alpaca_orders", "=PUI_CONFIRM", "_pui_system", "product_ui", "product_flow_degraded", "product_flow_links"}, set()),   # product_flow_links: main's PR #61 change (merged with main 4205cdf4), not the gate's; every other flow unchanged
+    "browser_tests/risk_controls_panel_flows.py": ({"risk_controls_races", "risk_controls_priority"}, set()),   # risk_controls_priority: main's PR #61 change (J7), not the gate's
     "safety/engine.py": ({"icon_label"}, {"=STATE_LABEL_KILL"}),
 }
 METHODS_GATE = {                                                                            # class -> (methods that change, methods that appear)
