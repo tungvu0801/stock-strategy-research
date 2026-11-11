@@ -4,7 +4,7 @@ no database, no clock of its own: every input is passed in. Deterministic.
 
   * client_order_id: "sa46b-" + uuid4 hex, created ONCE per preview and reused forever (retries included)
   * the exact canonical POST body (sorted keys, no spaces, qty as a string) and its sha256; the preview hash
-  * validation rules V1–V17 (each returns a fixed code and text; never AI)
+  * validation rules V1–V17, and V18–V20 of the Emergency Stop order gate (each returns a fixed code and text; never AI)
   * the classification of the single POST's outcome into O1–O9 (conservative: only a failure before any byte left is
     "not sent"; only an allow-listed, definitive, non-duplicate rejection may become BROKER_REJECTED)
   * the Alpaca status → state map and the exact consistency check of a found order (never heuristic matching)
@@ -90,7 +90,40 @@ RULE_TEXT = {
     "NO_SHORTING_REQUIRED": "Turn on 'no shorting' in your Alpaca paper dashboard; Stock Agent never changes it.",
     "MARKET_CLOSED": "The market is closed — confirmation is available during regular hours.",
     "NEAR_CLOSE": "Confirmation is disabled within 5 minutes of the market close.",
+    # ---- Emergency Stop order gate (EMERGENCY_STOP_ORDER_GATE_DESIGN.md revision 3.5, sections 3.2, 3.5, 3.6, 4): each under 200 characters
+    "EMERGENCY_STOP_ACTIVE": "Emergency Stop is active. This order was not sent.",
+    "EMERGENCY_STOP_STATE_UNKNOWN": ("The Emergency Stop state could not be read, so manual orders are refused. Nothing was sent. Use Alpaca's website if "
+                                     "you must act now."),
+    "STOP_BLOCKS_BUY": "Emergency Stop blocks manual BUY orders, including buy-to-cover. Nothing was sent. Alpaca's website stays available.",
+    "STOP_BOT_OWNED": ("The bot manages this symbol, so the app refuses this SELL during Emergency Stop. A position marked Needs attention gets "
+                       "no automatic exit. Alpaca's website stays available; see the runbook first."),
+    "STOP_OWNERSHIP_UNKNOWN": "Could not check whether the bot manages this symbol, so the order was refused. Nothing was sent.",
+    "STOP_READS_STALE": "The broker reads for this order are too old. Nothing was sent. Preview it again.",
+    "STOP_UNKNOWN_SIDE": "During Emergency Stop only a SELL can be checked; this order's side is not one. Nothing was sent.",
+    "STOP_SELL_NO_POSITION": "There is no position to reduce, so this SELL would open a short during Emergency Stop. Nothing was sent.",
+    "STOP_POSITION_NOT_LONG": "The broker does not report this position as long, so the SELL cannot be checked during Emergency Stop. Nothing was sent.",
+    "STOP_POSITION_INCONSISTENT": "The broker's position figures are missing or inconsistent, so the SELL was refused during Emergency Stop. Nothing was sent.",
+    "STOP_SELL_EXCEEDS_AVAILABLE": "The SELL is larger than the shares available to sell, so it was refused during Emergency Stop. Nothing was sent.",
+    "STOP_NO_SHORTING_UNCONFIRMED": "'No shorting' is not confirmed on the paper account, so the SELL was refused during Emergency Stop. Nothing was sent.",
+    "STOP_UNRESOLVED_IN_SYMBOL": "Another manual order in this symbol has an unresolved outcome, so the SELL was refused during Emergency Stop. Nothing was sent.",
+    "STOP_OPEN_ORDERS_UNREADABLE": "The open orders in this symbol could not be read completely, so the SELL was refused during Emergency Stop. Nothing was sent.",
+    "STOP_OPEN_ORDER_CONFLICT": ("An open order in this symbol is not a plain SELL (or its size is unclear), so the SELL was refused during Emergency Stop. "
+                                 "Nothing was sent."),
+    "STOP_SELLS_EXCEED_POSITION": "Open SELL orders plus this SELL exceed the position, so it was refused during Emergency Stop. Nothing was sent.",
+    "PAUSE_DOES_NOT_BLOCK_MANUAL": "A Pause is active. It stops automatic entries. It does not block this manual paper order.",
+    "DAILY_HALT_DOES_NOT_BLOCK_MANUAL": "The daily-loss halt is active. It stops automatic entries. It does not block this manual paper order.",
+    "BOT_OWNED_SELL_WARNING": ("The bot manages this symbol. Selling it leaves the bot's record wrong: the position needs attention, a remainder gets "
+                               "no automatic exit, and entries and Paper Auto stay refused until recovery runs."),
 }
+RULE_TEXT["DAILY_LIMIT"] += " This limit also applies during Emergency Stop. Alpaca's website stays available."   # C-5: kept and disclosed (design section 6)
+
+# ---- Emergency Stop order gate: the latch and the manual-order classification (design revision 3.5, sections 3 and 4) ---------------
+STOP_OFF, STOP_ON, STOP_UNKNOWN = "OFF", "ON", "UNKNOWN"              # OrderStore.stop_state(): the persisted latch, never the gate's evaluation
+RISK_REDUCING, RISK_INCREASING, AMBIGUOUS = "RISK_REDUCING", "RISK_INCREASING", "AMBIGUOUS"
+STOP_READS_MAX_AGE_S = 10                                             # a stop-time SELL's classification is at most this old at the arm (3.3)
+OPEN_ORDERS_LIMIT = 200                                               # GET /v2/orders?status=open&symbols=SYM&limit=200&direction=desc
+STOP_EXIT_ALLOWED, ARMED_BEFORE_STOP = "STOP_EXIT_ALLOWED", "ARMED_BEFORE_STOP"   # STATUS_CHANGE event codes (no new audit kind)
+ARMED_BEFORE_STOP_LABEL = "armed before the stop"
 CASH_GUARD_TEXT = ("Stock Agent cash guard: previous close + 5% must fit in your Alpaca paper cash — a conservative estimate, "
                    "not the fill price; Alpaca decides buying power")
 REFERENCE_NOTE = "previous close ({}) — not a quote, not the fill price"
@@ -286,6 +319,78 @@ def v17_near_close(clock: dict, info: bool = False) -> dict:
 
 def blocking(results) -> list:
     return [r for r in results if not r["ok"] and not r["info"]]
+
+
+# ---- Emergency Stop order gate: classification of a manual order while the latch is ON (design revision 3.5, section 4) ------------
+def _num(v) -> Optional[Decimal]:
+    """A strict quantity: None when missing; raises ValueError when unparsable (a read with an unparsable field fails closed upstream)."""
+    return None if v is None else dec(v)
+
+
+def classify_manual_order(side, qty, bot_owned, position, open_orders, others_unresolved_in_symbol, no_shorting) -> tuple:
+    """(class, code). Runs only while the latch is ON; only RISK_REDUCING passes. The first matching row wins; rows 1 to 4 need no broker read.
+    `position` is the STRICT position read (None = 404, no position; missing fields stay missing); `open_orders` is the open-orders read of
+    this symbol (None = unreadable); `others_unresolved_in_symbol` counts OTHER own intents with an unresolved outcome in this symbol."""
+    if side == "BUY":                                                                         # 1: buy-to-cover included (C-3)
+        return RISK_INCREASING, "STOP_BLOCKS_BUY"
+    if side != "SELL":                                                                        # 2
+        return AMBIGUOUS, "STOP_UNKNOWN_SIDE"
+    if bot_owned is None:                                                                     # 3
+        return AMBIGUOUS, "STOP_OWNERSHIP_UNKNOWN"
+    if bot_owned is not False:                                                                # 4 (C-8)
+        return AMBIGUOUS, "STOP_BOT_OWNED"
+    if position is None:                                                                      # 5: no position, the SELL would open a short
+        return RISK_INCREASING, "STOP_SELL_NO_POSITION"
+    if position.get("side") != "long":                                                        # 6: missing or not exactly "long"
+        return AMBIGUOUS, "STOP_POSITION_NOT_LONG"
+    try:
+        held, available = _num(position.get("qty")), _num(position.get("qty_available"))
+    except ValueError:
+        return AMBIGUOUS, "STOP_POSITION_INCONSISTENT"
+    if held is None or available is None or held <= 0 or available < 0 or available > held:  # 7
+        return AMBIGUOUS, "STOP_POSITION_INCONSISTENT"
+    if Decimal(qty) > available:                                                              # 8
+        return RISK_INCREASING, "STOP_SELL_EXCEEDS_AVAILABLE"
+    if no_shorting is not True:                                                               # 9
+        return AMBIGUOUS, "STOP_NO_SHORTING_UNCONFIRMED"
+    if others_unresolved_in_symbol:                                                           # 10: another own intent may exist at the broker
+        return AMBIGUOUS, "STOP_UNRESOLVED_IN_SYMBOL"
+    if not isinstance(open_orders, list) or len(open_orders) >= OPEN_ORDERS_LIMIT or \
+            any(not isinstance(o, dict) or o.get("symbol") != position.get("symbol") for o in open_orders):   # 11
+        return AMBIGUOUS, "STOP_OPEN_ORDERS_UNREADABLE"
+    resting = Decimal(0)
+    for o in open_orders:                                                                     # 12: only plain SELLs with known sizes
+        try:
+            oq, of = _num(o.get("qty")), _num(o.get("filled_qty"))
+        except ValueError:
+            return AMBIGUOUS, "STOP_OPEN_ORDER_CONFLICT"
+        if o.get("side") != "sell" or o.get("order_class") not in ("", "simple") or oq is None or of is None or of < 0 or of > oq:
+            return AMBIGUOUS, "STOP_OPEN_ORDER_CONFLICT"
+        resting += oq - of
+    if resting + Decimal(qty) > held:                                                         # 13: compared with qty, not qty_available
+        return AMBIGUOUS, "STOP_SELLS_EXCEED_POSITION"
+    return RISK_REDUCING, None                                                                # 14
+
+
+def v18_stop(klass: str, code: Optional[str]) -> dict:
+    """V18: the Emergency Stop classification of this SELL (a refusal is ok false, so its text prints with no frontend change)."""
+    return result("V18", klass == RISK_REDUCING, code or "EMERGENCY_STOP_ACTIVE")
+
+
+def v19_disclosure(flags: Optional[dict], trading_date: str) -> Optional[dict]:
+    """V19 (C-1): a Pause or today's daily-loss halt does not block a manual order. Informational: prints, never blocks. None adds no line."""
+    if not flags:
+        return None
+    if flags.get("pause_active") == 1:
+        return result("V19", False, "PAUSE_DOES_NOT_BLOCK_MANUAL", info=True)
+    if flags.get("daily_halt_active") == 1 and flags.get("daily_halt_trading_date") == trading_date:
+        return result("V19", False, "DAILY_HALT_DOES_NOT_BLOCK_MANUAL", info=True)
+    return None
+
+
+def v20_bot_owned_warning() -> dict:
+    """V20 (R-5): with the stop off, a SELL of a bot-owned symbol prints this warning; it does not block (PF-18 stays accepted)."""
+    return result("V20", False, "BOT_OWNED_SELL_WARNING", info=True)
 
 
 # ---- the broker's answer ------------------------------------------------------------------------------------------------------------

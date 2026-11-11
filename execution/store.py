@@ -207,6 +207,61 @@ class ExecutionStore:
             conn.close()
         return self.intent(execution_id)
 
+    # ---------------------------------------------------------------- Emergency Stop order gate, C-7 (design revision 3.5, section 7) --
+    STOP_REFUSALS = {"ON": "EMERGENCY_STOP_ACTIVE", "UNKNOWN": "EMERGENCY_STOP_STATE_UNKNOWN"}
+
+    @staticmethod
+    def _latch(conn: sqlite3.Connection) -> str:
+        """The Emergency Stop latch row, by raw SQL (no import from safety/): "OFF" only for exactly 0, "ON" for exactly 1, anything else
+        (no table, no row, a read error, another value) "UNKNOWN". A failed SELECT leaves the caller's transaction usable."""
+        try:
+            rows = conn.execute("SELECT kill_active FROM execution_safety_state WHERE id = 1").fetchall()
+        except sqlite3.Error:
+            return "UNKNOWN"
+        if len(rows) != 1 or type(rows[0][0]) is not int or rows[0][0] not in (0, 1):
+            return "UNKNOWN"
+        return "OFF" if rows[0][0] == 0 else "ON"
+
+    def record_entry_attempt(self, execution_id: str, now: datetime) -> Optional[str]:
+        """ENTRY only. ONE BEGIN IMMEDIATE: read the latch; anything but exactly 0 returns a refusal code and writes nothing. Otherwise record
+        the attempt (attempt_count = 1, submitted_at) in the same transaction, BEFORE the wire. The latch and this commit form one total order
+        with a stop's commit (both BEGIN IMMEDIATE on one file): if KILL_ON commits first, the entry is refused. A locked database raises,
+        as update_intent does, so nothing is posted."""
+        conn = self._rw()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            state = self._latch(conn)
+            if state != "OFF":
+                conn.execute("ROLLBACK")
+                return self.STOP_REFUSALS[state]
+            stamp = _iso(now)
+            conn.execute("UPDATE execution_intents SET attempt_count = ?, submitted_at = ?, updated_at = ? WHERE execution_id = ?",
+                         (1, stamp, stamp, execution_id))
+            conn.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            conn.execute("ROLLBACK")
+            raise ExecutionStoreError(f"intent not updated: {exc}") from None
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return None
+
+    def stop_state(self) -> str:
+        """The latch, read-only (the note after an entry's POST). "UNKNOWN" when it cannot be read."""
+        if not self.path.exists():
+            return "UNKNOWN"
+        try:
+            conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)
+        except sqlite3.Error:
+            return "UNKNOWN"
+        try:
+            return self._latch(conn)
+        finally:
+            conn.close()
+
     # ---------------------------------------------------------------- broker orders (current view + append-only events) -------
     def _upsert_order(self, conn: sqlite3.Connection, order: dict, execution_id: Optional[str], stamp: str, source: str) -> bool:
         """Returns True when the status / fill changed (an event row was appended)."""

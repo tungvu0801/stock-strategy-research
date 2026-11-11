@@ -36,6 +36,7 @@ NEW_PRODUCT = ["paper/alpaca_order_rules.py", "paper/alpaca_order_store.py", "pa
                "paper/alpaca_order_writer.py", "paper/alpaca_orders.py", "database/alpaca_order_migrations.py",
                "api/routes/alpaca_paper_orders.py", "frontend/alpaca_orders.js"]
 TABLES = ("alpaca_paper_order_settings", "alpaca_paper_order_intents", "alpaca_paper_order_events")
+OPEN_ORDERS_LINE = '_OPEN_ORDERS = "/v2/orders"'
 
 
 # ---- fixtures ------------------------------------------------------------------------------------------------------------------
@@ -64,6 +65,7 @@ def lab(monkeypatch):
     T45.account(lb, cash="100000")
     T45.order(lb, "2026-09-25", "AMD", "BUY", 10)
     T45.process(lb, "2026-09-28")
+    seed_latch(lb.path)                                                # the order gate (design 3.5, C-2) refuses every order without the latch row
     monkeypatch.setattr(RO, "db_path", lambda: Path(lb.path))
     calls = []
 
@@ -90,6 +92,16 @@ def broker(monkeypatch, clock, lab):
     monkeypatch.setattr(W, "WIRE", lambda: b)
     b.lab = lab
     return b
+
+
+def seed_latch(path, kill_active=0):
+    """The Emergency Stop latch row a running deployment writes at startup (Stage 5.9.1), Emergency Stop OFF unless asked."""
+    from database.execution_safety_migrations import run_execution_safety_migrations
+    with sqlite3.connect(str(path)) as c:
+        run_execution_safety_migrations(c)
+        c.execute("INSERT OR IGNORE INTO execution_safety_state (id, kill_active, updated_at) VALUES (1, ?, '2026-09-29T13:00:00+00:00')",
+                  (kill_active,))
+    c.close()
 
 
 def ready(b):
@@ -1025,6 +1037,9 @@ def test_L_static_isolation_no_sdk_no_ai_no_automation_no_other_verbs():
         assert not re.search(r"""["'](PATCH|PUT|DELETE)["']|\.(patch|put|delete)\(""", s), f
     for f in [x for x in NEW_PRODUCT if x != "paper/alpaca_order_writer.py"]:
         s = (ROOT / f).read_text(encoding="utf-8")
+        if f == "paper/alpaca_order_reads.py":                     # the order gate's GET-only open-orders path (design 3.5, section 4): exactly this one line
+            assert s.count(OPEN_ORDERS_LINE) == 1, f
+            s = s.replace(OPEN_ORDERS_LINE, "")
         assert not re.search(r"""["']/v2/orders["']|requests\.post\(|\.post\(\s*ORDERS_URL|method\s*==\s*["']POST["']\s*and""", s), f
     wr = (ROOT / "paper" / "alpaca_order_writer.py").read_text(encoding="utf-8")
     assert wr.count('ORDERS_URL = f"https://{PAPER_HOST}/v2/orders"') == 1

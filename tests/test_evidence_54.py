@@ -546,7 +546,8 @@ def test_regression_frozen_stages_untouched():
     for rel, prefix in pins.items():
         blob = subprocess.run(["git", "show", f"97a191a:{rel}"], cwd=ROOT, capture_output=True).stdout
         assert blob, rel
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob.replace(b"\r\n", b"\n"), f"{rel} differs from stage-52"
+        from freeze_ledger import pre_gate  # the order gate: its declared 4.6B edit read as main left it (tests/test_gate_freeze.py)
+        assert pre_gate(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n").decode("utf-8")).encode("utf-8") == blob.replace(b"\r\n", b"\n"), f"{rel} differs from stage-52"
         if prefix:
             assert hashlib.sha256(blob).hexdigest().startswith(prefix), rel
 

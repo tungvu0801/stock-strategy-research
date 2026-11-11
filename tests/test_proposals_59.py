@@ -738,7 +738,11 @@ def test_U02_trade_review_section_wiring_in_the_page():
 
 def test_U03_no_buy_wording_target_or_probability_in_the_trade_review_ui():
     section = RENDER.split("Trade review proposal (Stage 5.9")[1].split("status strip")[0]
+    approved = ("Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is "
+                "active, BUYs are refused and a SELL is checked.")                       # the order gate's UNKNOWN explanation (panel design section 4), and only it
     code = re.sub(r"//.*", "", section)
+    assert code.count(approved) == 1 and code.count(f'const SAFETY_UNKNOWN_EXPLAIN = "{approved}";') == 1   # once in the scanned code, as the product constant
+    code = code.replace(approved, "")
     assert not TRADE_WORDS.search(code) and not FORECAST.search(code) and "recommend" not in code.lower()
     assert "NOT SUBMITTED" in section and "REVIEWABLE PROPOSAL" in section and "Long review proposal" in section and "It is not an entry signal" in section
     review = re.sub(r"//.*", "", REVIEW_JS)

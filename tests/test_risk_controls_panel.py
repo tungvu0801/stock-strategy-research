@@ -197,7 +197,8 @@ def test_P09_icon_label_follows_section_4_per_flag_and_the_real_gate_reports_it(
     assert E.icon_label("TRADING_ALLOWED") == ("🟢", "Trading allowed")
     assert E.icon_label("NO_NEW_ENTRIES", pause_active=True) == ("🟡", "New automatic entries paused")
     assert E.icon_label("NO_NEW_ENTRIES", pause_active=False) == ("🟡", "New automatic entries blocked: daily-loss data unavailable")
-    assert E.icon_label("HALTED", kill_active=True) == E.icon_label("HALTED", kill_active=False) == ("🔴", "New automatic entries stopped")   # the order-gate PR splits the kill
+    assert E.icon_label("HALTED", kill_active=False) == ("🔴", "New automatic entries stopped")
+    assert E.icon_label("HALTED", kill_active=True) == ("🔴", "New entries stopped")              # the order-gate PR split the kill (panel design section 4)
     assert E.icon_label("UNKNOWN") == ("🔴", "Risk status unknown") and E.icon_label("SOMETHING_ELSE")[1] == "Risk status unknown"
     s = svc(tmp_path)
     assert s.evaluate("TEST", NOW).state_label == "Trading allowed"
@@ -211,7 +212,7 @@ def test_P09_icon_label_follows_section_4_per_flag_and_the_real_gate_reports_it(
     n = s2.evaluate("TEST", NOW)
     assert (n.state, n.state_label, n.no_new_entries.active) == ("NO_NEW_ENTRIES", "New automatic entries blocked: daily-loss data unavailable", False)
     k = svc(tmp_path, name="panel3.db").emergency_stop("k", actor="test", now=NOW)
-    assert (k.state_label, k.reason_codes[0]) == ("New automatic entries stopped", SF.R_KILL)   # same label, different reason: the two stay distinct
+    assert (k.state_label, k.reason_codes[0]) == ("New entries stopped", SF.R_KILL)            # the kill: the order gate also refuses manual paper BUYs
     assert svc(tmp_path, name="panel4.db", account_fn=boom).evaluate("TEST", NOW).state_label == "Risk status unknown"
 
 

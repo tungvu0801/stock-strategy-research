@@ -816,7 +816,7 @@ None of these commands is needed in normal use.
 | F2 | The status bar shows "Emergency Stop unavailable on this page", or the notice "If this message stays visible" stays, and the server is up | Run the two commands below in PowerShell on this computer, changing 8000 if the page uses another port | Saves the stop on the server. Cancels nothing at Alpaca |
 | F3 | The server does not answer | **No stop can be saved.** Use Alpaca's website to cancel orders or close positions. Then decide about the process | The bot keeps running while the process lives |
 | F4 | F3, and automatic activity must end now | Run `.\scripts\stop_stock_agent.ps1` from the app folder (see below) | Stopping ends the bot's exit rules and reconciliation too; orders at Alpaca keep working |
-| F5 | The dashboard reads "Risk status unknown" with the line "Automatic entries are blocked. This state does not by itself block manual paper orders.": the server cannot read its safety state | Automatic entries are blocked. Use Alpaca's website if you must act. `scripts\check_stock_agent.ps1` and the order list stay available. If the page instead shows "Risk controls unavailable" or "Could not confirm the current state.", its last read failed or is old and nothing is known: press Emergency Stop (F1), use F2 if the bar says it is unavailable or Emergency Stop stays NOT confirmed after a second press, and F3 only if the F2 commands get no answer | Manual paper orders are not blocked by this state |
+| F5 | The dashboard reads "Risk status unknown" with the line "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked.": the server cannot read its safety state | Automatic entries are blocked. Use Alpaca's website if you must act. `scripts\check_stock_agent.ps1` and the order list stay available. If the page instead shows "Risk controls unavailable" or "Could not confirm the current state.", its last read failed or is old and nothing is known: press Emergency Stop (F1), use F2 if the bar says it is unavailable or Emergency Stop stays NOT confirmed after a second press, and F3 only if the F2 commands get no answer | This state alone does not block manual paper orders. They are refused while the Emergency Stop state cannot be read, and gated as below while it is active |
 | F6 | You closed or reduced a bot position on Alpaca's website | Expect **Needs attention**. Any remainder has no automatic exit. New entries and Paper Auto stay refused, even after a Clear, until a recovery command ships. Editing the database by hand is not a route | Nothing in the app resolves it yet |
 
 **F2 commands** (PowerShell, `curl.exe`):
@@ -843,8 +843,11 @@ Emergency Stop first:** a restart reads the saved latch, so a stop saved earlier
 
 **What Emergency Stop and Pause do.** Both block **new automatic entries** once saved. Neither cancels an order at Alpaca or closes a
 position. The bot's exit rules keep running while a position is monitored; a position marked Needs attention gets no automatic exit.
-**Emergency Stop does not yet block manual paper orders**, and neither do Pause or the daily-loss halt: that needs the later
-Emergency Stop order gate. The page reports a stop as active only after a server read shows it.
+**Emergency Stop also gates manual paper orders** (the order gate, Stage 4.6B): while it is active, a manual BUY is refused, and a manual
+SELL is sent only if fresh Alpaca reads show it reduces a long position the bot does not manage; anything ambiguous is refused. While the
+stop state cannot be read, every manual paper order is refused. The usual limits still apply, including 20 confirmed orders a day. An order
+committed for sending before the stop can still reach Alpaca, and Alpaca's website stays available. Pause and the daily-loss halt do not
+block manual paper orders. The page reports a stop as active only after a server read shows it.
 
 ## Running without VS Code (Windows background runner)
 

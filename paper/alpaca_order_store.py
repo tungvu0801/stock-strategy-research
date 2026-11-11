@@ -1,6 +1,8 @@
 """
-paper/alpaca_order_store.py — Stage 4.6B SQLite access for manual Alpaca PAPER orders (the three alpaca_paper_order_*
-tables only; the Stage 4.5 paper_* tables are never touched).
+paper/alpaca_order_store.py — Stage 4.6B SQLite access for manual Alpaca PAPER orders (writes: the three alpaca_paper_order_* tables
+only; the Stage 4.5 paper_* tables are never touched). The Emergency Stop order gate (EMERGENCY_STOP_ORDER_GATE_DESIGN.md revision 3.5)
+also READS, by raw SQL with no import from safety/ or execution/: the latch row of execution_safety_state, the bot's open positions
+(paper_positions) and open intents (execution_intents) in a symbol. It never writes those tables.
 
 Reads never create tables (no linked account yet = no tables). Every write runs the additive, idempotent migration first
 and happens inside ONE `BEGIN IMMEDIATE` transaction together with its audit event. State changes are compare-and-set
@@ -88,6 +90,65 @@ class OrderStore:
     def submitted_since(self, iso_from: str) -> List[str]:
         return [r["confirmed_at"] for r in self.read(
             "SELECT confirmed_at FROM alpaca_paper_order_intents WHERE submit_attempts > 0 AND confirmed_at >= ?", (iso_from,))]
+
+    # ---- Emergency Stop order gate: reads of other stages' rows, by raw SQL (design revision 3.5, sections 3.1, 3.4, 3.5) ---------
+    def _gate_read(self, conn, fn):
+        """Run `fn(conn)` on the caller's connection (inside its transaction), or on a fresh read-only connection. Any SQLite error
+        propagates as sqlite3.Error; a missing database file is an error too (mode=ro never creates one)."""
+        if conn is not None:
+            return fn(conn)
+        own = self._ro()
+        try:
+            return fn(own)
+        finally:
+            own.close()
+
+    def stop_state(self, conn=None) -> str:
+        """The persisted Emergency Stop latch: "OFF" (kill_active is exactly 0), "ON" (exactly 1) or "UNKNOWN" (missing database, table or
+        row, a read error, or any other value). It reads the latch, never the gate's evaluation. A failed SELECT leaves the caller's
+        transaction usable."""
+        try:
+            rows = self._gate_read(conn, lambda c: c.execute("SELECT kill_active FROM execution_safety_state WHERE id = 1").fetchall())
+        except sqlite3.Error:
+            return RU.STOP_UNKNOWN
+        if len(rows) != 1:
+            return RU.STOP_UNKNOWN
+        v = rows[0][0]
+        if type(v) is int and v == 0:
+            return RU.STOP_OFF
+        if type(v) is int and v == 1:
+            return RU.STOP_ON
+        return RU.STOP_UNKNOWN
+
+    BOT_INTENT_OPEN = ("PENDING", "SUBMITTED", "PARTIALLY_FILLED", "RECONCILIATION_REQUIRED")   # == execution.INTENT_OPEN (pinned by a test)
+
+    def bot_owned(self, conn, symbol: str) -> Optional[bool]:
+        """True when the bot has a position that is not CLOSED or an open intent in `symbol` (an entry may be about to create one);
+        False when it has neither; None when that cannot be read (missing tables included), which refuses during a stop."""
+        def q(c):
+            p = c.execute("SELECT 1 FROM paper_positions WHERE symbol = ? AND state != 'CLOSED' LIMIT 1", (symbol,)).fetchone()
+            i = c.execute("SELECT 1 FROM execution_intents WHERE symbol = ? AND state IN (?, ?, ?, ?) LIMIT 1",
+                          (symbol, *self.BOT_INTENT_OPEN)).fetchone()
+            return p is not None or i is not None
+        try:
+            return bool(self._gate_read(conn, q))
+        except sqlite3.Error:
+            return None
+
+    def safety_flags(self) -> Optional[dict]:
+        """C-1 disclosure (3.5): the Pause and daily-loss latch on the same row, in a SELECT separate from stop_state, so a failure here
+        never changes the latch result. None on any failure (no line is added)."""
+        try:
+            rows = self._gate_read(None, lambda c: [dict(r) for r in c.execute(
+                "SELECT pause_active, daily_halt_active, daily_halt_trading_date FROM execution_safety_state WHERE id = 1").fetchall()])
+        except sqlite3.Error:
+            return None
+        return rows[0] if len(rows) == 1 else None
+
+    def armed_before_stop_ids(self) -> set:
+        """The intents carrying the ARMED_BEFORE_STOP record: ONE query for a whole list (3.3, N38)."""
+        return {r["intent_id"] for r in self.read("SELECT DISTINCT intent_id FROM alpaca_paper_order_events WHERE kind = 'STATUS_CHANGE' "
+                                                  "AND code = ? AND intent_id IS NOT NULL", (RU.ARMED_BEFORE_STOP,))}
 
     # ---- writes ---------------------------------------------------------------------------------------------------------
     @contextmanager

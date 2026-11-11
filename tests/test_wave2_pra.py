@@ -156,7 +156,7 @@ def test_TW04_the_production_diff_is_exactly_pr_a_and_names_no_pr_c_object():
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2A).split())
     for rel in sorted(prod):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        added = "\n".join(l for l in FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel)))).splitlines() if l not in base)
+        added = "\n".join(l for l in FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel))))).splitlines() if l not in base)
         assert not [t for t in PR_C_TOKENS if t in added], rel
     assert {"execution/engine.py", "execution/broker.py", "execution/exposure_gate.py", "config.py"}.isdisjoint(pra_files())
     assert not {p for p in pra_files() if p.startswith(("safety/", "cash_flow/", "autorun/", "forward_capture/", "setups/", "proposals/", "frontend/"))}
@@ -182,12 +182,12 @@ def _normalized(rel, name, text):
 
 def test_TW05_only_the_listed_functions_changed_and_only_the_listed_names_are_new():
     for rel, (may_change, may_add) in CLOSED_LIST.items():
-        now, base = named_nodes(FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))), named_nodes(at_base(rel))
+        now, base = named_nodes(FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))))), named_nodes(at_base(rel))
         assert set(base) <= set(now), (rel, sorted(set(base) - set(now)))                          # nothing of 5d6f7dd disappears
         assert set(now) - set(base) <= may_add, (rel, sorted(set(now) - set(base) - may_add))        # nothing new outside the list
         changed = {k for k in base if digest(base[k]) != digest(now[k])}
         assert changed <= may_change, (rel, sorted(changed - may_change))                           # every pinned function hash-equal
-        u_now, u_base = unnamed(FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))), unnamed(at_base(rel))
+        u_now, u_base = unnamed(FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))))), unnamed(at_base(rel))
         added = [ast.dump(ast.parse(s).body[0]) for s in NEW_IMPORTS.get(rel, [])]
         assert sorted(u_now) == sorted(u_base + added), (rel, sorted(set(u_now) ^ set(u_base + added)))   # L-07: imports and other statements too
     probe = unnamed("x = 1\nclass A:\n    def f(self):\n        pass\nA.f = lambda self: None\nA.g, h = 1, 2\n")       # M-01: a rebinding of a pinned method is seen
@@ -196,7 +196,7 @@ def test_TW05_only_the_listed_functions_changed_and_only_the_listed_names_are_ne
     for rel, name in narrow:
         base_node = named_nodes(at_base(rel))[name]
         base_node.decorator_list = []
-        assert _normalized(rel, name, FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))) == ast.dump(base_node), (rel, name)
+        assert _normalized(rel, name, FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))))) == ast.dump(base_node), (rel, name)
     for col, extra in (("TRADE_COLS", ("verified",)), ("DAILY_COLS", ("pnl_status", "unverified"))):
         val = lambda t: tuple(ast.literal_eval(named_nodes(t)["=" + col].value))  # noqa: E731
         assert val(now_text("forward_validation/reports.py")) == val(at_base("forward_validation/reports.py")) + extra, col
@@ -235,7 +235,7 @@ NEW_LEDGER_W2A = {"execution/__init__.py", "execution/store.py"}                
 def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2A == "5d6f7dd1e1beb90fc5b2909a7dafabfd8e932a6a" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2A}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files()
-    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01 | FL.NEW_PANEL | FL.NEW_J04, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A) | (FL.EDITED_W2C - FL.NEW_W2A - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06) | (FL.EDITED_PANEL - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01) | (FL.EDITED_J04 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04)   # Wave 2 PR B / PR C / EX-06: their own sets (their edits of earlier new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py / test_wave2_prc.py
+    both_new, both_edited = FL.NEW_W2A | FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01 | FL.NEW_PANEL | FL.NEW_J04 | FL.NEW_GATE, FL.EDITED_W2A | (FL.EDITED_W2B - FL.NEW_W2A) | (FL.EDITED_W2C - FL.NEW_W2A - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06) | (FL.EDITED_PANEL - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01) | (FL.EDITED_J04 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04) | (FL.EDITED_GATE - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE)   # Wave 2 PR B / PR C / EX-06: their own sets (their edits of earlier new files stay new since BASE_W2A), pinned by tests/test_wave2_prb.py / test_wave2_prc.py
     assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2A).split())
     assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
@@ -245,7 +245,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_b
     marker = re.compile(r"^\s*(#|//|<!--)\s*(>>>|<<<) ")                                       # a marked block an older freeze test would strip unseen
     for rel in sorted(app):
         base = set(at_base(rel).splitlines()) if rel in in_base else set()
-        assert not [l for l in FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel)))).splitlines() if l not in base and marker.match(l)], rel
+        assert not [l for l in FL.pre_w2b(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel))))).splitlines() if l not in base and marker.match(l)], rel
 
 
 def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_threshold_or_frozen_control_moved():
@@ -256,7 +256,7 @@ def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_thre
                                   "2552bd6639f691b828624250665519cc90c4a00da7f70893dbb635f7551006fa",
                                   "d2819342f6c8ccb1cd4a0ce2bfb5d1b0664f2453770c3e6736f7be420a17aed4"], out.stderr[-600:]
     for rel in ("execution/service.py", "execution/store.py"):
-        added = "\n".join(l for l in now_text(rel).splitlines() if l not in set(at_base(rel).splitlines()))
+        added = "\n".join(l for l in FL.pre_gate(rel, now_text(rel)).splitlines() if l not in set(at_base(rel).splitlines()))   # the order gate's C-7 edit: tests/test_gate_freeze.py
         assert not re.search(r"post_order|insert_intent|update_intent|update_position|enable_auto|disable_auto|set_mode|submit|_scan_entries\(|_recheck_entry\(|cancel|liquidat|flatten|broker\.", added), rel
     fv_added = "\n".join(l for l in now_text("forward_validation/service.py").splitlines() if l not in set(at_base("forward_validation/service.py").splitlines()))
     assert fv_added.count("disable_auto(") == 0 and now_text("forward_validation/service.py").count("disable_auto(") == at_base("forward_validation/service.py").count("disable_auto(") == 1   # the one action, its line kept, none added
@@ -267,7 +267,7 @@ def test_F02_the_declared_semantics_only_no_order_or_mode_call_added_and_no_thre
 
 def test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     for rel, edits in REPLAY_W2A.items():
-        text = FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel)))))))                               # Wave 2 PR B / PR C: their own in-place edits undone first (F03B / F03C)
+        text = FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, now_text(rel))))))))                               # Wave 2 PR B / PR C: their own in-place edits undone first (F03B / F03C)
         for old, new in reversed(edits):
             assert text.count(new) == 1, (rel, new[:100])
             text = text.replace(new, old)

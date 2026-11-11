@@ -121,7 +121,7 @@ test("10 no BUY NOW / SELL NOW / buy / sell wording; the only side wording is th
     assert.doesNotMatch(t, /ready to buy|approved|execute/i);
   }
   const section = codeOnly(RENDER_JS.split("Trade review proposal (Stage 5.9")[1].split("status strip")[0]);
-  assert.doesNotMatch(section, TRADE_WORDS);
+  assert.doesNotMatch(section.split(R.SAFETY_UNKNOWN_EXPLAIN).join(""), TRADE_WORDS);   // the order gate's approved UNKNOWN sentence, and only it, names a SELL
   assert.doesNotMatch(codeOnly(REVIEW_JS), TRADE_WORDS);
   assert.match(R.proposalHtml(proposal({ side_label: "Long review proposal (server)" })), /Long review proposal \(server\)/);   // the label comes from the server (side_label)
 });

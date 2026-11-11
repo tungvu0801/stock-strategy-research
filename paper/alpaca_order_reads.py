@@ -11,6 +11,9 @@ budget) — to https://paper-api.alpaca.markets only, authenticated with ALPACA_
     GET /v2/positions/{SYMBOL}                            (404 = no position)
     GET /v2/orders:by_client_order_id?client_order_id=…   (exact lookup of a stored sa46b-… id)
     GET /v2/orders/{uuid}                                 (exact lookup of a stored Alpaca order id)
+    GET /v2/orders?status=open&symbols={SYMBOL}&limit=200&direction=desc
+                                                          (Emergency Stop order gate only: the open orders of ONE symbol, sent only
+                                                           while the latch is ON and only for a SELL the bot does not manage)
 
 Anything else — another verb, host, scheme, port, path, query, or a request beyond the budget — is refused BEFORE it is
 sent. No alpaca-py (its REST client has no timeout and retries automatically). No credential, header, full account number
@@ -43,6 +46,9 @@ _ASSET = re.compile(rf"^/v2/assets/{_SYM}$")
 _POSITION = re.compile(rf"^/v2/positions/{_SYM}$")
 _ORDER_ID = re.compile(r"^/v2/orders/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _BY_COID = "/v2/orders:by_client_order_id"
+_OPEN_ORDERS = "/v2/orders"                     # the gate's open-orders read: GET only, exactly the query below (test_alpaca_orders_46b pins this line)
+_OPEN_ORDERS_QUERY = {"status": "open", "limit": str(RU.OPEN_ORDERS_LIMIT), "direction": "desc"}
+_SYMBOL_ONLY = re.compile(rf"^{_SYM}$")
 
 
 class ReadRefused(RuntimeError):
@@ -84,6 +90,11 @@ class _ReadTransport(HTTPAdapter):
             q = parse_qs(u.query, keep_blank_values=True)
             if set(q) != {"client_order_id"} or len(q["client_order_id"]) != 1 or not RU.COID_RE.match(q["client_order_id"][0]):
                 raise ReadRefused("only an exact lookup of a Stock Agent client order id is allowed")
+        elif path == _OPEN_ORDERS:
+            q = parse_qs(u.query, keep_blank_values=True)
+            if set(q) != set(_OPEN_ORDERS_QUERY) | {"symbols"} or any(len(v) != 1 for v in q.values()) or \
+                    any(q[k][0] != v for k, v in _OPEN_ORDERS_QUERY.items()) or not _SYMBOL_ONLY.match(q["symbols"][0]):
+                raise ReadRefused("only the open orders of exactly one symbol are allowed")
         elif u.query or not (path in _EXACT or _ASSET.match(path) or _POSITION.match(path) or _ORDER_ID.match(path)):
             raise ReadRefused("not one of the exact read paths")
         if self._left <= 0:
@@ -175,6 +186,44 @@ class PaperOrderReader:
         return None if p is None else self._norm(lambda x: {
             "symbol": x.get("symbol"), "side": str(x.get("side") or "long").lower(), "qty": RU.qty_str(RU.dec(x.get("qty"))),
             "qty_available": RU.qty_str(RU.dec(x.get("qty_available") if x.get("qty_available") is not None else x.get("qty")))}, p)
+
+    def position_strict(self, symbol: str) -> Optional[dict]:
+        """The Emergency Stop order gate's position read: the same GET, with missing fields kept missing (side as sent, no lower-casing;
+        no qty_available fallback), so the classification can see them. None = 404, no position. An unparsable number fails the read."""
+        p = self._get(f"/v2/positions/{symbol}", allow_404=True)
+        return None if p is None else self._norm(lambda x: {
+            "symbol": x.get("symbol"), "side": x.get("side") if isinstance(x.get("side"), str) else None,
+            "qty": RU.qty_str(RU.dec(x.get("qty"))), "qty_available": RU.qty_str(RU.dec(x.get("qty_available")))}, p)
+
+    def open_orders(self, symbol: str) -> list:
+        """The open orders of ONE symbol (the only way to see orders this path did not create: Paper Auto's and Alpaca's website's).
+        A body that is not a list, or any row that is not an object or has an unparsable number, fails the WHOLE read (never dropped)."""
+        try:
+            r = self._http.get(BASE + _OPEN_ORDERS, params={"status": "open", "symbols": symbol, "limit": str(RU.OPEN_ORDERS_LIMIT),
+                                                            "direction": "desc"},
+                               headers=self._headers, allow_redirects=False, timeout=TIMEOUT)
+        except ReadRefused as exc:
+            raise ReadError("BUDGET" if "budget" in str(exc) else "BLOCKED") from None
+        except requests.exceptions.ConnectTimeout:
+            raise ReadError("CONNECT_FAILED") from None
+        except requests.exceptions.Timeout:
+            raise ReadError("TIMEOUT") from None
+        except requests.exceptions.ConnectionError:
+            raise ReadError("CONNECT_FAILED") from None
+        if r.status_code != 200:
+            code = ("AUTH_FAILED" if r.status_code in (401, 403) else
+                    "SERVER_ERROR" if r.status_code == 429 or r.status_code >= 500 else "UNEXPECTED_RESPONSE")
+            raise ReadError(code, r.status_code)
+        try:
+            data = r.json()
+        except ValueError:
+            raise ReadError("UNEXPECTED_RESPONSE", r.status_code) from None
+        if not isinstance(data, list) or any(not isinstance(o, dict) for o in data):
+            raise ReadError("UNEXPECTED_RESPONSE", r.status_code)
+        return self._norm(lambda rows: [{
+            "symbol": o.get("symbol"), "side": o.get("side"), "order_class": o.get("order_class"),   # missing stays missing: not a plain order (row 12)
+            "qty": RU.qty_str(RU.dec(o.get("qty"))), "filled_qty": RU.qty_str(RU.dec(o.get("filled_qty"))), "status": o.get("status")}
+            for o in rows], data)
 
     def order_by_client_id(self, client_order_id: str) -> Optional[dict]:
         return self._order(self._get(_BY_COID, params={"client_order_id": client_order_id}, allow_404=True))

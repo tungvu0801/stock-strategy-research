@@ -35,7 +35,16 @@ class FakeAlpaca(BaseAdapter):
       http_after_record:<status>  store, then return that status
       garbage200 / garbage200_after_record   200 with an unparseable body
       inconsistent200      200 with an order whose qty differs (not stored)
-    Duplicate client_order_id → 422 {"code": 40010001, "message": "client_order_id must be unique"} (like Alpaca)."""
+    Duplicate client_order_id → 422 {"code": 40010001, "message": "client_order_id must be unique"} (like Alpaca).
+
+    Emergency Stop order gate (design revision 3.5, section 10): positions carry a side and may lack fields; GET /v2/orders?status=open
+    lists the open orders of one symbol (this fake's own orders that are not final, plus `extra_open_orders`, e.g. Paper Auto's or a
+    website order); `open_orders_mode` makes that read fail ("fail", "http:<status>", "garbage", "notlist", "badrow") or answer the
+    open orders of EVERY symbol ("unfiltered"); `on_get` is
+    called with (path, query) BEFORE each GET is answered (to inject a race); `set_status(..., move_position=True)` moves the
+    position by the newly filled quantity."""
+
+    FINAL = ("filled", "canceled", "expired", "rejected", "replaced", "done_for_day")
 
     def __init__(self):
         super().__init__()
@@ -62,10 +71,29 @@ class FakeAlpaca(BaseAdapter):
         self.requests: list = []                                # (method, path, query)
         self.posts: list = []                                   # raw POST bodies (bytes) that reached the broker
         self.headers_seen: list = []
+        self.extra_open_orders: list = []                       # open orders this fake did not receive (Paper Auto, Alpaca's website)
+        self.open_orders_mode = None                            # None | "fail" | "http:<status>" | "garbage" | "notlist" | "badrow" | "unfiltered"
+        self.on_get = None                                      # callback(path, query) before a GET is answered
 
     # ---- helpers ------------------------------------------------------------------------------------------------------
-    def set_position(self, sym, qty, available=None):
-        self.positions[sym] = {"qty": str(qty), "qty_available": str(qty if available is None else available)}
+    def set_position(self, sym, qty, available=None, side="long", drop=()):
+        """`side` as Alpaca sends it ("long" / "short"); `drop` names fields left out of the response (e.g. ("side",), ("qty_available",))."""
+        self.positions[sym] = {"qty": str(qty), "qty_available": str(qty if available is None else available), "side": side,
+                               "drop": tuple(drop)}
+
+    def open_order(self, sym, side="sell", qty=1, filled_qty=0, order_class="", status="new", **extra):
+        """Add an open order this fake did not receive (a Paper Auto or website order). `extra` overrides or adds raw fields;
+        a value of None removes the field."""
+        o = {"id": str(uuid.uuid4()), "client_order_id": f"web-{uuid.uuid4().hex[:8]}", "symbol": sym, "side": side,
+             "qty": None if qty is None else str(qty), "filled_qty": None if filled_qty is None else str(filled_qty), "order_class": order_class,
+             "type": "market", "status": status}
+        for k, v in extra.items():
+            if v is None:
+                o.pop(k, None)
+            else:
+                o[k] = v
+        self.extra_open_orders.append(o)
+        return o
 
     def order_by_coid(self, coid):
         return next((o for o in self.orders.values() if o["client_order_id"] == coid), None)
@@ -93,6 +121,8 @@ class FakeAlpaca(BaseAdapter):
         with self.lock:
             self.requests.append((request.method, path, u.query))
             self.headers_seen.append(dict(request.headers))
+        if request.method == "GET" and self.on_get:
+            self.on_get(path, u.query)
         if request.method == "POST":
             return self._post(request)
         if request.method != "GET":
@@ -112,9 +142,14 @@ class FakeAlpaca(BaseAdapter):
             p = self.positions.get(sym)
             if not p:
                 return self._resp(request, 404, {"code": 40410000, "message": "position does not exist"})
-            return self._resp(request, 200, {"asset_id": "x", "symbol": sym, "exchange": "NASDAQ", "asset_class": "us_equity",
-                                             "qty": p["qty"], "qty_available": p["qty_available"], "side": "long",
-                                             "avg_entry_price": "100", "market_value": "1000", "cost_basis": "1000"})
+            body = {"asset_id": "x", "symbol": sym, "exchange": "NASDAQ", "asset_class": "us_equity",
+                    "qty": p["qty"], "qty_available": p["qty_available"], "side": p.get("side", "long"),
+                    "avg_entry_price": "100", "market_value": "1000", "cost_basis": "1000"}
+            for k in p.get("drop", ()):
+                body.pop(k, None)
+            return self._resp(request, 200, body)
+        if path == "/v2/orders":
+            return self._open_orders(request, q)
         if path == "/v2/orders:by_client_order_id" or path.startswith("/v2/orders/"):
             if self.lookup_fail:
                 self.lookup_fail -= 1
@@ -126,6 +161,24 @@ class FakeAlpaca(BaseAdapter):
                 return self._resp(request, 404, {"code": 40410000, "message": "order not found"})
             return self._resp(request, 200, o)
         return self._resp(request, 404, {"code": 40410000, "message": "not found"})
+
+    def _open_orders(self, request, q):
+        mode = self.open_orders_mode or ""
+        if mode == "fail":
+            raise requests.exceptions.ConnectionError("open orders read failed (fake)")
+        if mode.startswith("http:"):
+            return self._resp(request, int(mode.split(":", 1)[1]), {"code": 50000000, "message": "error"})
+        if mode == "garbage":
+            return self._resp(request, 200, b"not json")
+        if mode == "notlist":
+            return self._resp(request, 200, {"orders": []})
+        sym = (q.get("symbols") or [""])[0]
+        with self.lock:
+            rows = [o for o in list(self.orders.values()) + self.extra_open_orders
+                    if (mode == "unfiltered" or o.get("symbol") == sym) and o.get("status") not in self.FINAL]
+        if mode == "badrow":
+            rows = rows + ["not an order"]
+        return self._resp(request, 200, rows)
 
     def _post(self, request):
         if self.on_post:
@@ -175,11 +228,21 @@ class FakeAlpaca(BaseAdapter):
     def gets(self):
         return [p for m, p, _ in self.requests if m == "GET"]
 
-    def set_status(self, coid, status, filled_qty=None, filled_avg_price=None):
+    def set_status(self, coid, status, filled_qty=None, filled_avg_price=None, move_position=False):
         o = self.order_by_coid(coid)
+        before = float(o.get("filled_qty") or 0)
         o["status"] = status
         if filled_qty is not None:
             o["filled_qty"], o["filled_avg_price"] = str(filled_qty), filled_avg_price
+        if move_position and filled_qty is not None:
+            delta = float(filled_qty) - before
+            p = self.positions.get(o["symbol"])
+            held = float(p["qty"]) if p else 0.0
+            held = held + delta if o["side"] == "buy" else held - delta
+            if held <= 0:
+                self.positions.pop(o["symbol"], None)
+            else:
+                self.set_position(o["symbol"], int(held) if held == int(held) else held)
         return o
 
     def minutes_to_close(self, minutes: float):

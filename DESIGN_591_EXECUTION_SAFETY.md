@@ -45,6 +45,16 @@ kill columns and only while the kill is off, and writes one `KILL_ON` event (`to
 it ran, the action is not applied again, so a Clear committed during the account read stands. If the latch itself fails, the evaluation
 applies the action and the fallback tries once more. A Pause, a Resume and a Clear keep the evaluated order.
 
+**The Emergency Stop order gate (EMERGENCY_STOP_ORDER_GATE_DESIGN.md, revision 3.5).** The kill also governs manual Stage 4.6B orders and
+Paper Auto entries. Stage 4.6B reads `kill_active` by raw SQL inside the transaction that commits an order for sending. While the kill is
+active it commits no BUY, and commits a SELL only if the bot has no position or open intent in that symbol and a server-side
+classification on fresh broker reads (at most 10 s old) finds that it reduces an existing long position; anything ambiguous is refused.
+While the latch cannot be read, Stage 4.6B commits no order. A Paper Auto entry records its attempt in one `BEGIN IMMEDIATE` transaction
+that requires `kill_active` to be exactly 0 (C-7, `execution.store.record_entry_attempt`); otherwise the intent ends `NOT_SENT` with the
+refusal code and nothing is sent. Exits are unchanged. An order committed for sending before the stop can still reach Alpaca: no database
+transaction makes the external request atomic with the commit. A Pause and the daily-loss halt do not block manual orders (C-1). The
+kill never cancels, closes or liquidates anything.
+
 ## 4. No-new-entries mode (manual pause)
 
 Persisted (`pause_active`, `pause_activated_at`, `pause_activated_by`, `pause_reason`). **Pause New Trades** sets it;
