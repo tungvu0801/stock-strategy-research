@@ -104,7 +104,7 @@ def digest(dump: str) -> str:
 
 def added_lines(rel):
     base = set(at_base(rel).splitlines())
-    return "\n".join(l for l in FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))).splitlines() if l not in base)   # Wave 2 PR C: PR B's lines (PR C's own: T-W04C)
+    return "\n".join(l for l in FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))).splitlines() if l not in base)   # Wave 2 PR C: PR B's lines (PR C's own: T-W04C)
 
 
 def prb_files(base):
@@ -124,7 +124,7 @@ def test_TW04B_the_production_diff_is_pr_a_plus_pr_b_and_pr_b_adds_no_pr_c_or_or
         assert added and not [t for t in PR_C_TOKENS_B if t in added], rel
         assert not [t for t in N01_TOKENS if t in added] and "disable_auto(" not in added, rel   # V-18: the merged bans, re-run on PR B's lines
         assert not re.search(r"\brequests\b|robinhood|update_intent|set_mode\(|# >>> Stage 6\.1", added), rel   # 6.10A F05's list (health.py is a 6.10A file)
-    lit = lambda rel, name: ast.literal_eval(named_assign(FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))), name))  # noqa: E731 - Wave 2 PR C: PR B's text (PR C adds run_id / frozen_hash)
+    lit = lambda rel, name: ast.literal_eval(named_assign(FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))), name))  # noqa: E731 - Wave 2 PR C: PR B's text (PR C adds run_id / frozen_hash)
     V2_SAMPLE_COLUMNS, V2_SESSION_COLUMNS = lit("database/forward_validation_migrations.py", "V2_SAMPLE_COLUMNS"), lit("database/forward_validation_migrations.py", "V2_SESSION_COLUMNS")
     SAMPLE_COLS = lit("forward_validation/store.py", "SAMPLE_COLS")
     assert not {"run_id", "frozen_hash"} & ({c for c, _ in V2_SAMPLE_COLUMNS} | set(SAMPLE_COLS) | {c for c, _ in V2_SESSION_COLUMNS})
@@ -134,17 +134,17 @@ def test_TW04B_the_production_diff_is_pr_a_plus_pr_b_and_pr_b_adds_no_pr_c_or_or
 
 def test_TW05B_only_the_listed_functions_changed_and_only_the_listed_names_are_new():
     for rel, (may_change, may_add) in CLOSED_LIST_B.items():
-        now, base = named_nodes(FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel)))), named_nodes(at_base(rel))
+        now, base = named_nodes(FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel))))), named_nodes(at_base(rel))
         assert set(base) <= set(now), (rel, sorted(set(base) - set(now)))                          # nothing of 50cb2d7b disappears
         assert set(now) - set(base) == may_add, (rel, sorted((set(now) - set(base)) ^ may_add))     # exactly the listed names are new
         changed = {k for k in base if digest(base[k]) != digest(now[k])}
         assert changed <= may_change, (rel, sorted(changed - may_change))                           # every other function hash-equal
-        assert sorted(unnamed(FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))) == sorted(unnamed(at_base(rel))), rel                 # no new module-level statement (imports go inside)
+        assert sorted(unnamed(FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))))) == sorted(unnamed(at_base(rel))), rel                 # no new module-level statement (imports go inside)
     store_class = ast.parse(FL.pre_w2c("forward_validation/store.py", FL.pre_ex06("forward_validation/store.py", now_text("forward_validation/store.py")))).body
     cls = next(n for n in store_class if isinstance(n, ast.ClassDef) and n.name == "EvidenceSourceAbsent")
     assert [ast.unparse(b) for b in cls.bases] == ["ForwardValidationStoreError"] and not cls.keywords
     for rel, name in PINNED_B:
-        assert digest(named_nodes(FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))))[name]) == digest(named_nodes(at_base(rel))[name]), (rel, name)
+        assert digest(named_nodes(FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))))[name]) == digest(named_nodes(at_base(rel))[name]), (rel, name)
     probe = named_nodes("class A(B):\n    x = 1\n    def f(self):\n        pass\n")
     assert set(probe) == {"class A", "A.f"} and named_nodes("class A(C):\n    x = 1\n")["class A"] != probe["class A"]   # bases and body are seen
     assert len(unnamed('"""doc"""\nimport os\nx = 1\nA.f = 2\n')) == 2
@@ -174,7 +174,7 @@ def fn_text(text, qual):
 
 def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the_declared_lines():
     rel = "forward_validation/service.py"
-    now, base = fn_text(FL.pre_w2c(rel, FL.pre_ex06(rel, now_text(rel))), FN + "cumulative"), fn_text(at_base(rel), FN + "cumulative")   # Wave 2 PR C: PR B's text; the current text keeps D-5: T-W06C
+    now, base = fn_text(FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel)))), FN + "cumulative"), fn_text(at_base(rel), FN + "cumulative")   # Wave 2 PR C: PR B's text; the current text keeps D-5: T-W06C
     undone = now
     for old, new in D5_CUMULATIVE:
         assert undone.count(new) == 1 and base.count(old) == 1, new[:80]
@@ -193,7 +193,7 @@ def test_TW06B_d5_unreadable_evidence_is_excluded_from_acceptance_by_exactly_the
 def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed():
     assert FL.BASE_W2B == "50cb2d7bc0384f1a020c01c9ba22c52c1283f339" and subprocess.run(["git", "cat-file", "-e", f"{FL.BASE_W2B}^{{commit}}"], cwd=ROOT).returncode == 0
     changed = changed_files(FL.BASE_W2B)
-    both_new, both_edited = FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01 | FL.NEW_PANEL | FL.NEW_J04, FL.EDITED_W2B | (FL.EDITED_W2C - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06) | (FL.EDITED_PANEL - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01) | (FL.EDITED_J04 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04)   # Wave 2 PR C / EX-06: its own sets (its edits of PR B's new files stay new since BASE_W2B), pinned by tests/test_wave2_prc.py
+    both_new, both_edited = FL.NEW_W2B | FL.NEW_W2C | FL.NEW_EX06 | FL.NEW_XSS01 | FL.NEW_PANEL | FL.NEW_J04 | FL.NEW_GATE, FL.EDITED_W2B | (FL.EDITED_W2C - FL.NEW_W2B) | (FL.EDITED_EX06 - FL.NEW_W2B - FL.NEW_W2C) | (FL.EDITED_XSS01 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06) | (FL.EDITED_PANEL - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01) | (FL.EDITED_J04 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04) | (FL.EDITED_GATE - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE)   # Wave 2 PR C / EX-06: its own sets (its edits of PR B's new files stay new since BASE_W2B), pinned by tests/test_wave2_prc.py
     assert changed == both_new | both_edited, {"unexpected": sorted(changed - both_new - both_edited), "missing": sorted((both_new | both_edited) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_W2B).split())
     assert {p for p in changed if p not in in_base} == both_new and {p for p in changed if p in in_base} == both_edited
@@ -227,7 +227,7 @@ def defs(text):
 def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):   # the ledger: F03B
-        b, n = defs(at_base(rel)), defs(FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel)))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)
+        b, n = defs(at_base(rel)), defs(FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, now_text(rel))))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))                                   # no merged test removed
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2B)
@@ -244,7 +244,7 @@ def test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_
 def test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2B) == {p for p in FL.EDITED_W2B if p.startswith("tests/") and p.endswith(".py")} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2B):
-        assert FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel))))))) == at_base(rel), rel           # now -> (F03C) 875bc06d -> 50cb2d7b, byte for byte
+        assert FL.undo_w2b(rel, FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, now_text(rel)))))))) == at_base(rel), rel           # now -> (F03C) 875bc06d -> 50cb2d7b, byte for byte
     main_fl = at_base("tests/freeze_ledger.py")
     fl = subprocess.run(["git", "show", f"{FL.BASE_W2C}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # Wave 2 PR C: the ledger as PR #52 left it
     assert fl.count("LEDGER = {") == 1 and fl.count("BASE_W2B = ") == 1                       # the anchors every older ledger test uses stay unique
@@ -285,7 +285,7 @@ FLOWS_EDIT_B = [                                                                
 
 def test_F04B_the_harness_flow_gives_k3_observations_exactly_and_keeps_t_a42s_lines_in_place():
     rel = "browser_tests/flows.py"
-    now, base = FL.pre_ex06(rel, now_text(rel)), at_base(rel)                               # EX-06: PR B's text (EX-06's own edit: T-X20)
+    now, base = FL.pre_ex06(rel, FL.pre_gate(rel, now_text(rel))), at_base(rel)                               # EX-06: PR B's text (EX-06's own edit: T-X20)
     undone = now
     for old, new in reversed(FLOWS_EDIT_B):
         assert undone.count(new) == 1 and base.count(old) == 1, new[:80]

@@ -43,7 +43,7 @@ const ROWS = [
   ["Fresh, kill active", KILLED, { openOrders: { status: "FRESH", count: 2, at: "2026-11-09T14:32:00+00:00" } }, "🔴 New automatic entries stopped", { pause: "off", resume: "off", stop: "on", clear: "on" },
    ["Reason: Emergency stop active", "Open orders at Alpaca: 2, as of 14:32 UTC. This app does not cancel orders. Use Alpaca's website to cancel."]],
   ["Fresh, server UNKNOWN, kill not shown active", UNKNOWN, {}, "🔴 Risk status unknown", { pause: "on", resume: "off", stop: "on" },
-   ["Reason: Safety status unavailable", "Automatic entries are blocked. This state does not by itself block manual paper orders."]],
+   ["Reason: Safety status unavailable", "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked."]],
   ["Fresh, server UNKNOWN, kill active", UNKNOWN_KILL, {}, "🔴 Risk status unknown · Emergency Stop active", { pause: "on", resume: "off", stop: "on", clear: "off" }, ["Reason: Safety status unavailable"]],
   ["Read failed or older than 65 s, last state with a kill", KILLED, { uncertain: true, lastGoodAt: T0 }, "⚪ Status uncertain · last known New automatic entries stopped at 15:00 UTC",
    { pause: "on", resume: "off", stop: "on", clear: "off" }, ["Could not confirm the current state."]],
@@ -142,7 +142,7 @@ test("B12 uncertain: blocker, agent, AUTO note, position note, risk level, headl
 test("server UNKNOWN is not uncertain: it says Risk status unknown and what it blocks; a kill read in UNKNOWN is ACTIVE, Clear mirrors the legacy button", () => {
   const e = PUI.effectiveSafety(UNKNOWN, RC());
   assert.equal(PUI.riskModel(EXEC, e).headline, "Risk status unknown");
-  assert.equal(PUI.riskModel(EXEC, e).explain, "Automatic entries are blocked. This state does not by itself block manual paper orders.");
+  assert.equal(PUI.riskModel(EXEC, e).explain, "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked.");
   assert.equal(PUI.systemModel(EXEC, e).text, "RISK STATUS UNKNOWN");
   assert.equal(PUI.agentModel({ key: "NONE" }, "WATCH", "UNKNOWN", EXEC, false).text, "Risk status unknown");
   const k = PUI.controlsModel(EXEC, PUI.effectiveSafety(UNKNOWN_KILL, RC()), { clear: false }, {});
@@ -225,25 +225,28 @@ test("the Risk card shows the outcome lines, the not-sent line and the open-orde
 });
 
 test("section 4 words: the bar names what is stopped, the Risk card's stop and pause notes say exit rules, never 'protected'", () => {
-  assert.equal(PUI.systemModel(EXEC, KILLED).text, "NEW AUTOMATIC ENTRIES STOPPED");
+  assert.equal(PUI.systemModel(EXEC, KILLED).text, "NEW ENTRIES STOPPED");
   assert.equal(PUI.systemModel({ ...EXEC, attention: true }, ALLOWED).text, "NEW AUTOMATIC ENTRIES STOPPED");
-  assert.equal(PUI.riskModel(EXEC, KILLED).primary, "New automatic entries blocked. Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.");
+  assert.equal(PUI.riskModel(EXEC, KILLED).primary, "New entries blocked. Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.");
   assert.equal(PUI.riskModel(EXEC, PAUSED).primary, "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.");
-  assert.equal(PUI.controlsModel(EXEC, ALLOWED, {}, {}).stop.text, "Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.");
-  assert.equal(PUI.positionNote({ key: "IN_TRADE" }, EXEC, KILLED), "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.");
-  assert.equal(PUI.CONFIRM.stop.text, "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.");
+  assert.equal(PUI.controlsModel(EXEC, ALLOWED, {}, {}).stop.text, "Blocks new automatic entries and manual paper BUYs once saved. Nothing at Alpaca is cancelled.");
+  assert.equal(PUI.positionNote({ key: "IN_TRADE" }, EXEC, KILLED), "No new entries. Bot exit rules keep running for this position unless it needs attention.");
+  assert.equal(PUI.CONFIRM.stop.text, "Once saved, this blocks new automatic entries and manual paper BUYs. An order already being sent can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. A manual SELL of an existing long may be possible within the usual limits, including 20 confirmed orders a day, but is refused for a position the bot manages. The stop stays active until cleared manually.");
   assert.equal(PUI.agentModel({ key: "NONE" }, "WATCH", "HALTED", EXEC, false).text, "New automatic entries stopped by risk controls");
 });
 
 test("MORE › Automation 'Trading': one word and one sentence per case; never a manual-order sentence on the kill; a stale read never reads ALLOWED", () => {
   const RCs = RC();
-  const cases = [[ALLOWED, "ALLOWED"], [PAUSED, "PAUSED · New automatic entries paused."], [DATA_NA, "BLOCKED · New automatic entries blocked: daily-loss data unavailable."],
-                 [DAILY, "STOPPED · New automatic entries stopped."], [KILLED, "STOPPED · Blocks new automatic entries once saved. Nothing at Alpaca is cancelled."],
-                 [UNKNOWN, "UNKNOWN · Risk status unknown. Automatic entries are blocked. This state does not by itself block manual paper orders."]];
+  const cases = [[ALLOWED, "ALLOWED"], [PAUSED, "PAUSED · New automatic entries paused. A Pause does not block manual paper orders."],
+                 [DATA_NA, "BLOCKED · New automatic entries blocked: daily-loss data unavailable. Unavailable daily-loss data does not block manual paper orders."],
+                 [DAILY, "STOPPED · New automatic entries stopped. The daily-loss halt does not block manual paper orders."],
+                 [KILLED, "STOPPED · Blocks new automatic entries and manual paper BUYs once saved. Nothing at Alpaca is cancelled."],   // the kill: no manual-order sentence
+                 [UNKNOWN, "UNKNOWN · Risk status unknown. Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked."]];
   for (const [v, want] of cases) assert.equal(PUI.automationTrading(PUI.effectiveSafety(v, RCs)), want);
   assert.equal(PUI.automationTrading(PUI.effectiveSafety(ALLOWED, RC({ uncertain: true }))), "UNKNOWN · Could not confirm the current state. Last known: Trading allowed.");
   assert.equal(PUI.automationTrading(PUI.effectiveSafety(null, null)), "UNKNOWN · Could not confirm the current state.");
-  assert.ok(!/manual/i.test(PUI.automationTrading(PUI.effectiveSafety(KILLED, RCs))));
+  assert.ok(!/does not block manual/i.test(PUI.automationTrading(PUI.effectiveSafety(KILLED, RCs))));   // the kill never says manual orders are not blocked
+  assert.ok(/manual paper BUYs/.test(PUI.automationTrading(PUI.effectiveSafety(KILLED, RCs))));         // after the order-gate PR it says what it blocks
 });
 
 test("the status bar: a Stop in every state; the banner wins over the outcome and the 'part of this page' line, and prints both fallback commands with this page's port", () => {
@@ -290,7 +293,7 @@ test("J-04 the latch overlay wins over any server view in the effective model; t
                "Last known: Emergency Stop active. Could not confirm the current state.");                                               // the aged overlay never reads present tense
   const aged = PUI.effectiveSafety(ALLOWED, RC({ latchKill: { active: true, at: T0 }, uncertain: true }));                     // the overlay aged out (65 s): last known, not a claim
   assert.deepEqual([aged.state, aged.uncertain, aged.lastKnown && aged.lastKnown.state], ["UNKNOWN", true, "TRADING_ALLOWED"]);
-  assert.equal(PUI.automationTrading(PUI.effectiveSafety(ALLOWED, over)), "STOPPED · Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.");
+  assert.equal(PUI.automationTrading(PUI.effectiveSafety(ALLOWED, over)), "STOPPED · Blocks new automatic entries and manual paper BUYs once saved. Nothing at Alpaca is cancelled.");
   const nc = PUI.barModel({ rc: RC({ outcomes: { stop: { result: "NOT_CONFIRMED" } } }), port: "8123" });
   const html = PUI.statusHtml(EXEC, ALLOWED, { bar: nc });
   assert.match(html, /data-pui-bar-fallback/);

@@ -208,8 +208,9 @@ def test_protected_stage_46a_46b_files_and_stage_45_are_untouched():
               "frontend/alpaca_paper.js": "805ebf49", "frontend/alpaca_paper.css": "1b4b0122", "tests/trading_client_allowlist.py": "0fed7abe",
               "tests/test_alpaca_paper_46.py": "764c55c1"}
     import subprocess  # noqa: S404 - git read of committed blobs (LF as stored), test only
+    from freeze_ledger import view_bytes as ledger_bytes  # Emergency Stop order gate: a registered 4.6B file reads as main (BASE_68) through the ledger
     for rel, prefix in frozen.items():
-        blob = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True).stdout
+        blob = ledger_bytes(rel, subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True).stdout)
         assert hashlib.sha256(blob).hexdigest().startswith(prefix), rel                           # the Stage 4.6B freeze manifest
     for rel in ("paper/execution.py", "paper/portfolio.py", "paper/accounting.py", "paper/store.py", "api/routes/paper.py",
                 "database/paper_migrations.py", "frontend/paper_portfolio.js"):

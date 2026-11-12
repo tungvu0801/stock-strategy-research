@@ -626,7 +626,7 @@ def risk_controls_races(c):
         head = s.text('#pui-cards [data-pui-card="risk"] .pui-big')
         agent = s.text('#pui-cards [data-pui-card="agent"]')
         c.r.check("B12 uncertain: the headline, the agent card and the system line never say allowed, healthy, stopped or blocked",
-                  head.startswith("Status uncertain") and "stopped by risk controls" not in agent and "SYSTEM HEALTHY" not in bar and "NEW AUTOMATIC ENTRIES STOPPED" not in bar
+                  head.startswith("Status uncertain") and "stopped by risk controls" not in agent and "SYSTEM HEALTHY" not in bar and "NEW AUTOMATIC ENTRIES STOPPED" not in bar and "NEW ENTRIES STOPPED" not in bar
                   and "EMERGENCY STOP ACTIVE" not in card, [head, agent[:120], bar[:200]])
         s.js("location.reload()")                                                      # the real clock again
         s.wait("document.readyState === 'complete' && !!window.RiskControls && !!RiskControls.state.data", 60, "reload")
@@ -637,7 +637,7 @@ def risk_controls_races(c):
             s.js(f"{rc}.refresh()"); s.pump(3.0)
             card, bar = _card(s), _bar(s)
             c.r.check("B12 server UNKNOWN: 'Risk status unknown', its explanation, and the bar says RISK STATUS UNKNOWN",
-                      "Risk status unknown" in card and "Automatic entries are blocked. This state does not by itself block manual paper orders." in card and "RISK STATUS UNKNOWN" in bar,
+                      "Risk status unknown" in card and "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked." in card and "RISK STATUS UNKNOWN" in bar,
                       [card[:300], bar[:200]])
         s.js(f"{rc}.refresh()"); s.pump(1.0)
 

@@ -328,8 +328,9 @@ def test_protected_files_and_frozen_paths_untouched():
               "paper/alpaca_order_writer.py": "f6cfe85b", "paper/alpaca_order_store.py": "5ad100be", "database/alpaca_order_migrations.py": "2f66ad55",
               "api/routes/alpaca_paper_orders.py": "36c000f9", "frontend/alpaca_orders.js": "f79bdde5", "paper/alpaca_readonly.py": "aa81bb31",
               "paper/alpaca_view.py": "bcb63760", "api/routes/alpaca_paper.py": "d6be4b99", "rotation/handoff.py": None}
+    from freeze_ledger import view_bytes as ledger_bytes  # Emergency Stop order gate: a registered 4.6B file reads as main (BASE_68) through the ledger
     for rel, prefix in frozen.items():
-        blob = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True).stdout
+        blob = ledger_bytes(rel, subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT, capture_output=True).stdout)
         if prefix:
             assert hashlib.sha256(blob).hexdigest().startswith(prefix), rel
-        assert (ROOT / rel).read_bytes().replace(b"\r\n", b"\n") == blob.replace(b"\r\n", b"\n"), rel        # working tree == HEAD
+        assert ledger_bytes(rel, (ROOT / rel).read_bytes().replace(b"\r\n", b"\n")) == blob.replace(b"\r\n", b"\n"), rel        # working tree == HEAD

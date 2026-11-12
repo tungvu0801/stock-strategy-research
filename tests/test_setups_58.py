@@ -823,7 +823,11 @@ def test_U02_setup_section_wiring_in_the_page():
 
 def test_U03_no_buy_wording_in_the_setup_ui():
     section = RENDER.split("Setup state (Stage 5.8")[1].split("status strip")[0]
-    assert not TRADE_WORDS.search(re.sub(r"//.*", "", section)) and "READY FOR REVIEW" in section and "not an entry signal" in section
+    approved = ("Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is "
+                "active, BUYs are refused and a SELL is checked.")                       # the order gate's UNKNOWN explanation (panel design section 4), and only it
+    code = re.sub(r"//.*", "", section)
+    assert code.count(approved) == 1 and code.count(f'const SAFETY_UNKNOWN_EXPLAIN = "{approved}";') == 1   # once in the scanned code, as the product constant
+    assert not TRADE_WORDS.search(code.replace(approved, "")) and "READY FOR REVIEW" in section and "not an entry signal" in section
     assert not re.search(r"(?i)probability|expected return|reversal", section)
     alerts = re.sub(r"//.*", "", ALERTS_JS)
     assert not TRADE_WORDS.search(alerts) and "Open in Trader View" in ALERTS_JS and "Mark read" in ALERTS_JS

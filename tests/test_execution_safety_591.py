@@ -668,7 +668,11 @@ def test_U03_beginner_wording_and_no_trade_wording():
     for label in ("Trading allowed", "New automatic entries paused", "New automatic entries stopped", "Risk status unknown", "Pause New Trades", "Resume", "Emergency Stop",   # risk controls panel, section 4
                   "Clear Emergency Stop", "View details"):
         assert label in section, label
+    approved = ("Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is "
+                "active, BUYs are refused and a SELL is checked.")                       # the order gate's UNKNOWN explanation (panel design section 4), and only it
     code = re.sub(r"//.*", "", section)
+    assert code.count(approved) == 1 and code.count(f'const SAFETY_UNKNOWN_EXPLAIN = "{approved}";') == 1   # once in the scanned code, as the product constant
+    code = code.replace(approved, "")
     assert not TRADE_WORDS.search(code) and not re.search(r"(?i)probabilit|expected return|target price", code)
     risk = re.sub(r"//.*", "", RISK_JS)
     assert not TRADE_WORDS.search(risk) and re.findall(r"method: \"(POST|PUT|PATCH|DELETE)\"", RISK_JS) == ["POST"]

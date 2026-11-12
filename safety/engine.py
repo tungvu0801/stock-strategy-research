@@ -179,11 +179,17 @@ def controls(kill: KillSwitch, pause: Pause, daily: DailyLoss, baseline: Optiona
     return out
 
 
+STATE_LABEL_KILL = "New entries stopped"          # HALTED by the kill (risk controls panel design, section 4, after the order-gate PR)
+
+
 def icon_label(state: str, kill_active: bool = False, pause_active: bool = False) -> Tuple[str, str]:
     """(icon, label). NO_NEW_ENTRIES has two meanings (a Pause, or a daily-loss control that cannot be verified), so the label follows the
-    pause flag (risk controls panel design 3.1, section 4). Every HALTED label says "automatic" while manual paper orders are not gated;
-    `kill_active` is for the Emergency Stop order gate, which makes "New entries stopped" true for the kill and changes that one label."""
+    pause flag (risk controls panel design 3.1, section 4). HALTED by the kill reads "New entries stopped": the Emergency Stop order gate
+    (EMERGENCY_STOP_ORDER_GATE_DESIGN.md 3.5) refuses manual paper BUYs while the latch is set. HALTED by the daily-loss halt keeps
+    "automatic", since that halt does not block manual paper orders (C-1)."""
     icon = STATE_ICONS.get(state, STATE_ICONS["UNKNOWN"])
+    if state == "HALTED" and kill_active:
+        return icon, STATE_LABEL_KILL
     if state == "NO_NEW_ENTRIES" and not pause_active:
         return icon, STATE_LABEL_DAILY_UNAVAILABLE
     return icon, STATE_LABELS.get(state, STATE_LABELS["UNKNOWN"])

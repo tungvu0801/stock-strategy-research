@@ -116,15 +116,20 @@ test("9 the headline is plain language: no internal enum in the visible text, no
     const html = R.safetyHtml(v);
     const visible = text(html);
     assert.doesNotMatch(visible, /TRADING_ALLOWED|NO_NEW_ENTRIES|HALTED|UNKNOWN|PERSISTENCE_FAILED|KILL_SWITCH_ACTIVE/);
-    const headline = text(html.replace(/<div class="tv-safe-details[\s\S]*$/, ""));                       // what a beginner sees before "View details"
+    const explain = (html.match(/<div class="tv-safe-reason" data-safety-explain>([\s\S]*?)<\/div>/) || [])[1];
+    if (explain !== undefined) assert.ok([R.SAFETY_UNKNOWN_EXPLAIN, ...Object.values(R.SAFETY_MANUAL_NOT_BLOCKED)].includes(text(explain)), explain);   // order gate: the approved copy only
+    const headline = text(html.replace(/<div class="tv-safe-details[\s\S]*$/, "").replace(/<div class="tv-safe-reason" data-safety-explain>[\s\S]*?<\/div>/, ""));   // what a beginner sees before "View details"
     assert.ok(headline.length < 260, headline);
   }
 });
 
 test("10 no BUY / SELL / recommendation wording in the panel or the control script", () => {
-  for (const v of [view(), PAUSED, DAILY, KILLED, UNKNOWN]) assert.doesNotMatch(text(R.safetyHtml(v, { detailsOpen: true })), TRADE_WORDS);
+  // the order gate's approved UNKNOWN explanation (panel design section 4) says "BUYs are refused and a SELL is checked": exactly that sentence is admitted
+  const approved = (s) => s.split(R.SAFETY_UNKNOWN_EXPLAIN).join("");
+  assert.ok(text(R.safetyHtml(UNKNOWN)).includes(R.SAFETY_UNKNOWN_EXPLAIN));
+  for (const v of [view(), PAUSED, DAILY, KILLED, UNKNOWN]) assert.doesNotMatch(approved(text(R.safetyHtml(v, { detailsOpen: true }))), TRADE_WORDS);
   const section = RENDER_JS.split("Risk controls (Stage 5.9.1")[1].split("status strip")[0];
-  assert.doesNotMatch(codeOnly(section), TRADE_WORDS);
+  assert.doesNotMatch(approved(codeOnly(section)), TRADE_WORDS);
   assert.doesNotMatch(codeOnly(RISK_JS), TRADE_WORDS);
   assert.doesNotMatch(codeOnly(RISK_JS), /probabilit|target price|expected return/i);
 });

@@ -923,17 +923,36 @@ class ExecutionService:
             self._after_terminal(it, "NOT_SENT", now)
             return
         payload = RU.canonical_payload(it.client_order_id, it.symbol, it.side, it.qty)
-        it = self.store.update_intent(it.execution_id, now, attempt_count=1, submitted_at=_iso(now))          # the attempt is recorded BEFORE the wire
+        if it.intent_type == "ENTRY":                                                       # C-7 (order gate design 3.5, section 7): the latch IN the attempt's transaction
+            refused = self.store.record_entry_attempt(it.execution_id, now)
+            if refused:
+                self.store.update_intent(it.execution_id, now, state="NOT_SENT", failure_code=refused, resolved_at=_iso(now),
+                                         failure_text="Emergency Stop is active" if refused == "EMERGENCY_STOP_ACTIVE" else "the Emergency Stop state could not be read")
+                self._touch(now, control_id, "BLOCK", f"{it.symbol}: not sent ({refused})", {"execution_id": it.execution_id, "code": refused})
+                self._after_terminal(it, "NOT_SENT", now)
+                return
+            it = self.store.intent(it.execution_id)
+        else:
+            it = self.store.update_intent(it.execution_id, now, attempt_count=1, submitted_at=_iso(now))      # exits: byte-identical behaviour, no latch read
         self._hook("after_attempt_recorded", intent=it)
         res = self.broker.post_order(payload, it.client_order_id)
         self._hook("after_post", intent=it, result=res)
         out = RU.classify_post(res, {"client_order_id": it.client_order_id, "symbol": it.symbol, "side": it.side, "qty": it.qty})
         klass, code = out["klass"], out.get("code")
         inp = {"execution_id": it.execution_id, "symbol": it.symbol, "side": it.side, "qty": it.qty, "outcome": klass, "code": code, "http_status": out.get("http_status")}
+        # C-7 record: an entry whose attempt was recorded before a stop's commit may reach the broker; if the latch reads ON now, say so. Best effort:
+        # a failed read is "not armed", so nothing can come between the broker's answer and recording it (reviews of Task U)
+        try:
+            armed = it.intent_type == "ENTRY" and klass not in ("O3", "O5", "O6") and self.store.stop_state() == "ON"
+        except Exception:  # noqa: BLE001 - the note only; the outcome below is recorded either way
+            armed = False
+        note = " (armed before the stop)" if armed else ""
+        if armed:
+            inp["armed_before_stop"] = True
         if klass == "O1":
             self.store.update_intent(it.execution_id, now, outcome_class=klass)
             self._apply_order(it, out["order"], now, "post")
-            self._touch(now, control_id, "RUN", f"{it.symbol}: {it.side} {it.qty} submitted ({out['order'].get('status')})", inp)
+            self._touch(now, control_id, "RUN", f"{it.symbol}: {it.side} {it.qty} submitted ({out['order'].get('status')}){note}", inp)
         elif klass == "O3":
             self.store.update_intent(it.execution_id, now, state="NOT_SENT", failure_code=code, outcome_class=klass, resolved_at=_iso(now), failure_text="nothing left the machine")
             self._touch(now, control_id, "BLOCK", f"{it.symbol}: not sent ({code})", inp)
@@ -950,13 +969,13 @@ class ExecutionService:
             if found is not None:
                 self.store.update_intent(it.execution_id, now, outcome_class=klass, lookup_count=1, last_lookup_at=_iso(now))
                 self._apply_order(it, found, now, "lookup")
-                self._touch(now, control_id, "RUN", f"{it.symbol}: existing broker order adopted", inp)
+                self._touch(now, control_id, "RUN", f"{it.symbol}: existing broker order adopted{note}", inp)
             else:
                 self.store.update_intent(it.execution_id, now, state="RECONCILIATION_REQUIRED", outcome_class=klass, failure_code=code, lookup_count=1, last_lookup_at=_iso(now))
-                self._touch(now, control_id, "UNKNOWN", f"{it.symbol}: duplicate id reported but order not found; reconciliation required", inp)
+                self._touch(now, control_id, "UNKNOWN", f"{it.symbol}: duplicate id reported but order not found; reconciliation required{note}", inp)
         else:                                                                                 # O2 / O7 / O8: ambiguous — never a second POST
             self.store.update_intent(it.execution_id, now, state="RECONCILIATION_REQUIRED", outcome_class=klass, failure_code=code)
-            self._touch(now, control_id, "UNKNOWN", f"{it.symbol}: ambiguous result ({code}); reconciliation required, no retry", inp)
+            self._touch(now, control_id, "UNKNOWN", f"{it.symbol}: ambiguous result ({code}); reconciliation required, no retry{note}", inp)
 
     # ---------------------------------------------------------------- views -----------------------------------------------------------
     def _attention(self) -> List[str]:

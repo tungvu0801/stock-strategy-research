@@ -805,9 +805,9 @@ def risk_controls(c: Ctx):
     # emergency stop
     c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').click()")
     _wait_safety(c, "HALTED")
-    c.r.eq("Emergency Stop -> New automatic entries stopped with its reason; Pause disabled, Emergency Stop never disabled (risk controls panel); Clear control shown", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
+    c.r.eq("Emergency Stop -> New entries stopped with its reason; Pause disabled, Emergency Stop never disabled (risk controls panel); Clear control shown", [_safety_chip(c), c.js("__tvText('#tv-safety .tv-safe-reason')"),
            c.js("document.querySelector('#tv-safety [data-safety=\"stop\"]').disabled"), c.js("document.querySelector('#tv-safety [data-safety=\"pause\"]').disabled"), c.js("!!document.querySelector('#tv-safety [data-safety=\"clear\"]')")],
-           ["🔴 New automatic entries stopped", "Reason: Emergency stop active", False, True, True])
+           ["🔴 New entries stopped", "Reason: Emergency stop active", False, True, True])
     c.r.eq("Resume is disabled while stopped and the stop persists", [c.js("document.querySelector('#tv-safety [data-safety=\"resume\"]').disabled"), c.http("POST", "/api/execution-safety/resume-new-entries", {})["state"]], [True, "HALTED"])
     time.sleep(1.1)
     psvc.evaluate("SNDK", trigger="TEST")
@@ -2335,6 +2335,77 @@ def alpaca_orders(c: Ctx):
     c.r.check("403 insufficient buying power: Rejected by Alpaca with the fixed text (Alpaca decides buying power)",
               c.js(f"{APO}.current.state") == "BROKER_REJECTED" and "Alpaca decides buying power" in (c.js("__apoText('.apo-preview')") or "") and len(fk.posts) == 6)
     c.shot("alpaca_orders_rejected", f"{APO_PANE} .apo-preview")
+    # Emergency Stop order gate (EMERGENCY_STOP_ORDER_GATE_DESIGN.md revision 3.5, section 10): Stop on -> a BUY refused with its message, a SELL
+    # preview shows its reason, a bot-owned SELL refused, a reducing manual SELL confirmed through the fake; Clear -> a BUY works again
+    import sqlite3 as _sq
+    from paper import alpaca_order_rules as APORU
+
+    def _ro(sql, args=()):
+        con = _sq.connect(f"file:{c.world.db.as_posix()}?mode=ro", uri=True)
+        try:
+            return con.execute(sql, args).fetchall()
+        finally:
+            con.close()
+
+    def _rw(sql, args=()):                                         # this run's scratch database only: one statement, committed; its row count
+        con = _sq.connect(str(c.world.db), timeout=10)
+        try:
+            with con:
+                return con.execute(sql, args).rowcount
+        finally:
+            con.close()
+    from api.routes.trader_view import stream
+    stream().execution.store.ensure()     # the executor's tables, as its startup() makes them: its scheduler never starts under browser_test and only paper_bot
+    #                                       runs cycles by hand, so this is a no-op in a full run and creates the tables in a subset run
+    _apo_sync(c)
+    c.r.eq("order gate: the latch row exists and Emergency Stop is off before the stop", _ro("SELECT kill_active FROM execution_safety_state WHERE id = 1"), [(0,)])
+    c.http("POST", "/api/execution-safety/emergency-stop", {})
+    c.r.eq("order gate: Emergency Stop saved", _ro("SELECT kill_active FROM execution_safety_state WHERE id = 1"), [(1,)])
+    p0, q0 = len(fk.posts), len(fk.requests)
+    _apo_preview(c, "KO", "BUY", 1)
+    c.r.check("order gate: stop on, a BUY is refused with its message before any broker request; nothing sent",
+              APORU.RULE_TEXT["STOP_BLOCKS_BUY"] in (c.js(f"{APO}.notice") or "") and len(fk.requests) == q0 and len(fk.posts) == p0, c.js(f"{APO}.notice"))
+    fk.set_position("KO", 5)
+    _apo_preview(c, "KO", "SELL", 6)
+    c.r.check("order gate: a SELL above the position is not confirmable and the preview shows the reason",
+              c.js(f"{APO}.current.confirmable") is False and c.js("__apoBtn('confirm').disabled")
+              and APORU.RULE_TEXT["STOP_SELL_EXCEEDS_AVAILABLE"] in (c.js("__apoText('.apo-preview')") or ""), (c.js("__apoText('.apo-preview')") or "")[:600])
+    # a bot position, seeded as tests/test_stop_order_gate.py's bot_position seeds one: no earlier flow leaves an open bot position or intent (paper_bot
+    # exits its SNDK entry; the exact-set check below pins that the seed is the only one). It is closed again right after its check; positions are never
+    # deleted, so a CLOSED SPY row stays in the bot's history for the rest of the run: keep this flow last, or account for that row in a later flow
+    bot, bot_id, t = "SPY", "p-order-gate-browser", fk.now.isoformat()
+    _rw("INSERT INTO paper_positions (position_id, execution_id, symbol, quantity, entry_qty, average_entry_price, opened_at, state, updated_at) "
+        "VALUES (?, ?, ?, 5, 5, '100', ?, 'OPEN', ?)", (bot_id, "x-order-gate-browser", bot, t, t))
+    owned = [r[0] for r in _ro("SELECT symbol FROM paper_positions WHERE state != 'CLOSED' UNION SELECT symbol FROM execution_intents "
+                                "WHERE state IN ('PENDING', 'SUBMITTED', 'PARTIALLY_FILLED', 'RECONCILIATION_REQUIRED') ORDER BY 1")]
+    c.r.eq(f"order gate: the seeded bot position's symbol ({bot}) is the only one the app database names as bot-managed", owned, [bot])
+    q1 = len(fk.requests)
+    _apo_preview(c, bot, "SELL", 1)
+    c.r.check(f"order gate: a SELL of a symbol the bot manages ({bot}) is refused before any broker request",
+              APORU.RULE_TEXT["STOP_BOT_OWNED"] in (c.js(f"{APO}.notice") or "") and len(fk.requests) == q1, c.js(f"{APO}.notice"))
+    c.r.eq("order gate: the seeded bot position is closed again", _rw("UPDATE paper_positions SET state = 'CLOSED', quantity = 0, closed_at = ?, updated_at = ? "
+                                                                     "WHERE position_id = ? AND state = 'OPEN'", (t, t, bot_id)), 1)
+    from paper import alpaca_order_store as APOS
+    c.r.eq(f"order gate: after the close the gate no longer counts {bot} as bot-owned", APOS.OrderStore().bot_owned(None, bot), False)
+    # the manual long is CLS, which has no order at the fake: KO, MU and AMD keep open BUYs from the steps above, and an open BUY in the symbol makes a
+    # SELL during the stop ambiguous (design section 4, row 12)
+    c.r.eq("order gate: the manual long (CLS) has no open order at the fake",
+           [o.get("id") for o in list(fk.orders.values()) + fk.extra_open_orders if o.get("symbol") == "CLS" and o.get("status") not in fk.FINAL], [])
+    fk.set_position("CLS", 5)
+    _apo_preview(c, "CLS", "SELL", 2)
+    c.r.check("order gate: a reducing SELL of a manual long is confirmable during the stop", c.js(f"{APO}.current.confirmable") is True, c.js(f"{APO}.current"))
+    _apo_act(c, "__apoBtn('confirm').click()")
+    iid = c.js(f"{APO}.current.id")
+    c.r.check("order gate: the reducing SELL is confirmed through the fake with its STOP_EXIT_ALLOWED record",
+              c.js(f"{APO}.current.state") == "SUBMITTED" and len(fk.posts) == p0 + 1 and json.loads(fk.posts[-1])["side"] == "sell"
+              and json.loads(fk.posts[-1])["symbol"] == "CLS"
+              and ("STOP_EXIT_ALLOWED",) in _ro("SELECT code FROM alpaca_paper_order_events WHERE intent_id = ?", (iid,)), [c.js(f"{APO}.current.state"), len(fk.posts) - p0])
+    c.shot("alpaca_orders_stop_sell", f"{APO_PANE} .apo-preview")
+    c.http("POST", "/api/execution-safety/clear-emergency-stop", {})
+    _apo_preview(c, "KO", "BUY", 1)
+    _apo_act(c, "__apoBtn('confirm').click()")
+    c.r.check("order gate: after Clear a BUY is confirmed again", c.js(f"{APO}.current.state") == "SUBMITTED" and len(fk.posts) == p0 + 2
+              and _ro("SELECT kill_active FROM execution_safety_state WHERE id = 1") == [(0,)])
     # another account in .env: preview flags it; explicit Relink only (manual orders go OFF)
     fk.account.update(id=OTHER_ACCOUNT_ID, account_number="PA3OTHER1234")
     _apo_preview(c, "KO", "BUY", 1)
@@ -2356,8 +2427,8 @@ def alpaca_orders(c: Ctx):
     words = c.js(f"document.querySelector('{APO_PANE}').innerText") or ""
     c.r.check("no cancel / replace / close controls and no guarantee wording", not c.js(f"[...document.querySelectorAll('{APO_PANE} button')].some((b) => /cancel|replace|close position|liquidate/i.test(b.innerText))")
               and not re.search(r"(?i)guarantee", words))
-    c.r.check("broker requests: GET and POST /v2/orders only; 6 POSTs, all from Confirm / Retry",
-              {m for m, *_ in fk.requests} <= {"GET", "POST"} and [p for m, p, _ in fk.requests if m == "POST"] == ["/v2/orders"] * 6)
+    c.r.check("broker requests: GET and POST /v2/orders only; 8 POSTs, all from Confirm / Retry (2 of them in the order gate's steps)",
+              {m for m, *_ in fk.requests} <= {"GET", "POST"} and [p for m, p, _ in fk.requests if m == "POST"] == ["/v2/orders"] * 8)
     untimed = lambda v: {k: x for k, x in v.items() if k != "timings"}  # noqa: E731 - per-request timings vary by design
     c.r.check("the local simulator payload is unchanged", c.http("GET", "/api/paper-portfolio") == local0)
     c.r.check("the five Stage 4.5 paper_* tables are unchanged", _paper_digest(c.world.db) == paper0)
@@ -2593,7 +2664,7 @@ PUI_STALE = ("never places a trade", "Not available in this version", "no order 
 PUI_TAGLINE = "Paper trading only. Strategy and risk decisions are deterministic. Live trading is disabled."
 PUI_TECH = ("PPE", "Demand", "Evidence", "Proposal", "Confidence")
 PUI_CONFIRM = {"auto-on": "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
-               "stop": "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.",
+               "stop": "Once saved, this blocks new automatic entries and manual paper BUYs. An order already being sent can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. A manual SELL of an existing long may be possible within the usual limits, including 20 confirmed orders a day, but is refused for a position the bot manages. The stop stays active until cleared manually.",
                "clear": "This removes the emergency-stop latch. Trading resumes only if all safety checks pass."}
 PUI_POSTS = {"POST /api/execution/auto/enable", "POST /api/execution/auto/disable", "POST /api/execution-safety/pause-new-entries", "POST /api/execution-safety/resume-new-entries",
              "POST /api/execution-safety/emergency-stop", "POST /api/execution-safety/clear-emergency-stop"}                       # the only writes: the legacy buttons' own routes
@@ -2605,7 +2676,10 @@ def _pui_system(exec_, safety):
     acct = exec_.get("account_data") or {}
     cash = acct.get("cash_flow") or {}
     if st in ("HALTED", "UNKNOWN") or exec_.get("attention"):
-        return "RISK STATUS UNKNOWN" if st == "UNKNOWN" and not exec_.get("attention") else "NEW AUTOMATIC ENTRIES STOPPED"   # risk controls panel, section 4
+        if st == "UNKNOWN" and not exec_.get("attention"):
+            return "RISK STATUS UNKNOWN"
+        kill = st == "HALTED" and (safety.get("kill_switch") or {}).get("active") is True
+        return "NEW ENTRIES STOPPED" if kill else "NEW AUTOMATIC ENTRIES STOPPED"   # panel design section 4, after the order-gate PR: the kill case
     degraded = st == "NO_NEW_ENTRIES" or bool(acct.get("status") and acct["status"] != "FRESH") or bool(cash.get("status") and cash["status"] != "FRESH") or exec_.get("reconciliation_healthy") is False
     return "SYSTEM DEGRADED" if degraded else "SYSTEM HEALTHY"
 
@@ -3014,11 +3088,11 @@ def product_ui(c: Ctx):
         posts += _pui_posts(reqs)
         time.sleep(2.3)
         risk_text = c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or ""
-        c.r.eq("Confirm Emergency Stop -> the legacy POST; EMERGENCY STOP ACTIVE / New automatic entries blocked. / Bot exit rules keep running while a position is monitored.; Clear Emergency Stop offered, no Pause / Resume / Stop, NEW AUTOMATIC ENTRIES STOPPED",
-               [_pui_posts(reqs), risk_text.startswith("Risk\nEMERGENCY STOP ACTIVE") or "EMERGENCY STOP ACTIVE" in risk_text, "New automatic entries blocked." in risk_text and "Bot exit rules keep running while a position is monitored." in risk_text,
+        c.r.eq("Confirm Emergency Stop -> the legacy POST; EMERGENCY STOP ACTIVE / New entries blocked. / Bot exit rules keep running while a position is monitored.; Clear Emergency Stop offered, no Pause / Resume / Stop, NEW ENTRIES STOPPED",
+               [_pui_posts(reqs), risk_text.startswith("Risk\nEMERGENCY STOP ACTIVE") or "EMERGENCY STOP ACTIVE" in risk_text, "New entries blocked." in risk_text and "Bot exit rules keep running while a position is monitored." in risk_text,
                 c.js("document.querySelector('#pui-cards [data-pui-card=\"risk\"]').dataset.kill"), _pui_rows(c), [b for b in _pui_buttons(c) if b[0] in ("pause", "resume", "stop", "clear")], _pui_segs(c).get("system"),
                 c.js("__tvVisible('#pui-cards [data-pui=\"clear\"]')")],
-               [["POST /api/execution-safety/emergency-stop"], True, True, "1", {"auto": "OFF", "trading": "STOPPED", "stop": "ACTIVE"}, [["clear", "Clear Emergency Stop"]], "NEW AUTOMATIC ENTRIES STOPPED", True])
+               [["POST /api/execution-safety/emergency-stop"], True, True, "1", {"auto": "OFF", "trading": "STOPPED", "stop": "ACTIVE"}, [["clear", "Clear Emergency Stop"]], "NEW ENTRIES STOPPED", True])
         c.shot("product_ui_emergency_stop")
         # an existing position under the active stop and under Paper Auto OFF: the shell's own card renderer with the live payloads and a synthetic MU position
         mu = ("{ key: 'IN_TRADE', symbol: 'MU', label: 'In trade', line: '4 shares · entry 830.00 · now 835.50 · +22.00', shares: 4, entry: '830.00', current: '835.50', pnl: '+22.00', pnl_pct: '0.66', "
@@ -3027,9 +3101,9 @@ def product_ui(c: Ctx):
                   "dom: { setupState: 'NONE', blockers: [] }, symbol: 'MU', limits: { max_hold_sessions: 5 }, avail: {}, confirm: null }); const d = document.createElement('div'); d.innerHTML = h; "
                   "return [d.querySelector('[data-pui-card=\"agent\"]').dataset.agent, (d.querySelector('[data-pui-position-note]') || {}).textContent || '', d.querySelector('[data-pui-card=\"position\"]').textContent]; })()")
         shown = c.js(render)
-        c.r.eq("existing position + Emergency Stop ACTIVE (MU, IN TRADE, live gate payload): 'No new automatic entries. Bot exit rules keep running for this position unless it needs attention.' and the position card intact",
+        c.r.eq("existing position + Emergency Stop ACTIVE (MU, IN TRADE, live gate payload): 'No new entries. Bot exit rules keep running for this position unless it needs attention.' and the position card intact",
                [shown[0], shown[1], "MU · 4 shares" in shown[2] and "830.00" in shown[2], any(w in (shown[1] + shown[2]).lower() for w in ("reset", "abandon", "delete"))],
-               ["IN TRADE", "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.", True, False])
+               ["IN TRADE", "No new entries. Bot exit rules keep running for this position unless it needs attention.", True, False])
         # Clear Emergency Stop: explanation first, Confirm -> the legacy two-click button; the display then follows the backend (never a forced Trading allowed)
         reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
         c.r.eq("Clear Emergency Stop: first click shows the confirmation (trading resumes only if all safety checks pass) and sends nothing; the legacy clear is not armed",
@@ -3340,8 +3414,8 @@ def product_flow_degraded(c: Ctx):
     posts += _pui_posts(reqs)
     time.sleep(2.3)
     focus = _pf_focus(c)
-    c.r.eq("emergency stop: the focus strip reads NEEDS ATTENTION (NEW AUTOMATIC ENTRIES STOPPED) first; the Risk card headline EMERGENCY STOP ACTIVE", [focus[0] if focus else None, _pui_segs(c).get("system"), "EMERGENCY STOP ACTIVE" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or "")],
-           ["ATTENTION", "NEW AUTOMATIC ENTRIES STOPPED", True])
+    c.r.eq("emergency stop: the focus strip reads NEEDS ATTENTION (NEW ENTRIES STOPPED) first; the Risk card headline EMERGENCY STOP ACTIVE", [focus[0] if focus else None, _pui_segs(c).get("system"), "EMERGENCY STOP ACTIVE" in (c.js("__tvText('#pui-cards [data-pui-card=\"risk\"]')") or "")],
+           ["ATTENTION", "NEW ENTRIES STOPPED", True])
     c.shot("product_flow_stopped")
     c.step("__click('#pui-cards [data-pui=\"clear\"]')", "!!document.querySelector('#pui-cards [data-pui-confirm=\"clear\"]')", 10)
     reqs, _, _ = c.step("__click('#pui-cards [data-pui=\"clear-confirm\"]')", "RiskControls.state.data && RiskControls.state.data.kill_switch && RiskControls.state.data.kill_switch.active === false", 30)

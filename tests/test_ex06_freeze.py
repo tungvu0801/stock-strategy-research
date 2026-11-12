@@ -96,7 +96,7 @@ def test_TX20_the_production_diff_is_exactly_the_declared_lines_and_no_trading_f
     prod = {p for p in changed if not p.startswith("tests/") and p != ".github/ci/pytest_groups.json" and p not in NEW_FILES_EX06}
     assert prod == PROD_EX06, {"unexpected": sorted(prod - PROD_EX06), "missing": sorted(PROD_EX06 - prod)}
     for rel, (removed, added) in PROD_EDITS_EX06.items():
-        base, now = at_base(rel).split("\n"), FL.pre_panel(rel, FL.pre_j04(rel, now_text(rel))).split("\n")   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
+        base, now = at_base(rel).split("\n"), FL.pre_panel(rel, FL.pre_j04(rel, FL.pre_gate(rel, now_text(rel)))).split("\n")   # risk controls panel: main's text (its own delta: tests/test_panel_freeze.py)
         ops = [(base[i1:i2], now[j1:j2]) for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, base, now, autojunk=False).get_opcodes() if tag != "equal"]
         assert [l for b, _ in ops for l in b] == removed and [l for _, n in ops for l in n] == added, (rel, ops)   # the exact edit, in order:
         assert len(now) == len(base) + len(added) - len(removed), rel                        # a moved or reordered line is a removal + an addition
@@ -134,7 +134,7 @@ def test_F01X_the_change_set_is_exactly_the_declared_files():
 def test_F02X_every_changed_older_test_function_is_declared():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel)))))                     # XSS-01: its own in-place edits undone first (tests/test_xss01_freeze.py)
+        b, n = defs(at_base(rel)), defs(FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, now_text(rel))))))                     # XSS-01: its own in-place edits undone first (tests/test_xss01_freeze.py)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_EX06)
@@ -148,7 +148,7 @@ def test_F02X_every_changed_older_test_function_is_declared():
 def test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_EX06) == {p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_EX06):
-        assert FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, now_text(rel))))) == at_base(rel), rel       # now -> (XSS-01 undone) 9df1717a -> 46ebc656, byte for byte
+        assert FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, now_text(rel)))))) == at_base(rel), rel       # now -> (XSS-01 undone) 9df1717a -> 46ebc656, byte for byte
     fl = subprocess.run(["git", "show", f"{FL.BASE_XSS01}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # XSS-01: the ledger as PR #55 left it
     main_fl = at_base("tests/freeze_ledger.py")
     for a in ("LEDGER = {", "BASE_W2C = ", "BASE_EX06 = ", "\n\ndef unchanged(", "\n\ndef pre_w2c(", "\n\ndef pre_ex06(", "\nWave 2 PR C (design", "\nEX-06 ("):
@@ -168,7 +168,7 @@ def test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("\n\ndef pre_ex06("):rebuilt.index("\n\ndef unchanged(")], "", 1)
     rebuilt = rebuilt.replace(led(rebuilt), led(main_fl), 1)
     assert rebuilt == main_fl                                                                 # the paragraph, one line, the declarations, two helpers and the ledger
-    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_EX06 | FL.NEW_LEDGER_XSS01 | FL.NEW_LEDGER_PANEL | FL.NEW_LEDGER_J04 and set(main_ledger) <= set(FL.LEDGER)   # XSS-01, the panel, J-04: their registrations are their own pins
+    assert set(FL.LEDGER) - set(main_ledger) == FL.NEW_LEDGER_EX06 | FL.NEW_LEDGER_XSS01 | FL.NEW_LEDGER_PANEL | FL.NEW_LEDGER_J04 | FL.NEW_LEDGER_GATE and set(main_ledger) <= set(FL.LEDGER)   # XSS-01, the panel, J-04: their registrations are their own pins
     ex06_ledger = ast.literal_eval(led(fl)[len("LEDGER = "):])                                # risk controls panel (design 7a): the ledger as PR #55 left it; later re-hashes are their stages' own pins
     assert {k for k in main_ledger if main_ledger[k] != ex06_ledger[k]} == FL.EDITED_EX06 & set(main_ledger)
     for rel in sorted(FL.NEW_LEDGER_EX06):

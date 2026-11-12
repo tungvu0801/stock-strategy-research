@@ -330,8 +330,12 @@
   const SAFETY_LABELS = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New automatic entries paused", HALTED: "New automatic entries stopped", UNKNOWN: "Risk status unknown" };
   const SAFETY_ICONS = { TRADING_ALLOWED: "🟢", NO_NEW_ENTRIES: "🟡", HALTED: "🔴", UNKNOWN: "🔴" };
   const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "paused", HALTED: "stopped", UNKNOWN: "stopped" };
-  const SAFETY_UNKNOWN_EXPLAIN = "Automatic entries are blocked. This state does not by itself block manual paper orders.";
+  const SAFETY_UNKNOWN_EXPLAIN = "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked.";
+  // C-1 (order gate design 3.5, panel design section 4): what does not block manual paper orders; the kill case never carries one of these
+  const SAFETY_MANUAL_NOT_BLOCKED = { pause: "A Pause does not block manual paper orders.", daily: "The daily-loss halt does not block manual paper orders.",
+                                      unavailable: "Unavailable daily-loss data does not block manual paper orders." };
   const SAFETY_UNCERTAIN_TEXT = "Could not confirm the current state.";
+  const SAFETY_KILL_LABEL = "New entries stopped";                               // a saved kill shown by the latch overlay (panel design section 4, after the order-gate PR)
   const SAFETY_ACTION_NAMES = { stop: "Emergency Stop", pause: "Pause", resume: "Resume", clear: "Clear Emergency Stop" };
   // J-04 (design 2.1 Part D): a Stop pending for more than 10 s says what the saved-state reads found so far; NOT confirmed points to the fallback
   const STOP_SLOW_MS = 10000;
@@ -346,7 +350,7 @@
     const d = (v && v.daily_loss) || {};
     const k = (v && v.kill_switch) || {};
     const p = (v && v.no_new_entries) || {};
-    return { loaded, state: st, label: loaded ? (v.state_label || SAFETY_LABELS[st]) : "Checking risk controls…", icon: loaded ? SAFETY_ICONS[st] : "⚪", cls: loaded ? SAFETY_CLS[st] : "",
+    return { loaded, state: st, label: loaded ? (v.latch === true && st === "HALTED" ? SAFETY_KILL_LABEL : (v.state_label || SAFETY_LABELS[st])) : "Checking risk controls…", icon: loaded ? SAFETY_ICONS[st] : "⚪", cls: loaded ? SAFETY_CLS[st] : "",
              reason: (v && v.reason_text) || (st === "UNKNOWN" && loaded ? "Safety status unavailable" : ""), allowed: !!(v && v.allowed_new_entry),
              killActive: k.active === true, killSince: stampOf(k.activated_at, 16), killBy: k.activated_by || "", killReason: k.reason || "",
              pauseActive: p.active === true, pauseSince: stampOf(p.activated_at, 16), pauseBy: p.activated_by || "",
@@ -410,7 +414,10 @@
     const err = o.error ? `<div class="tv-safe-reason">${esc(o.error)}</div>` : "";
     if (!m.loaded) return head + msgs + err + actions;
     const reason = !unc && m.reason ? `<div class="tv-safe-reason">Reason: ${esc(m.reason)}</div>` : "";
-    const explain = unknown ? `<div class="tv-safe-reason" data-safety-explain>${esc(SAFETY_UNKNOWN_EXPLAIN)}</div>` : "";
+    const manual = unc || !(v && v.kill_switch && v.no_new_entries) ? "" : m.state === "HALTED" && !m.killActive ? SAFETY_MANUAL_NOT_BLOCKED.daily
+      : m.state === "NO_NEW_ENTRIES" ? (m.pauseActive ? SAFETY_MANUAL_NOT_BLOCKED.pause : SAFETY_MANUAL_NOT_BLOCKED.unavailable) : "";
+    const explain = unknown ? `<div class="tv-safe-reason" data-safety-explain>${esc(SAFETY_UNKNOWN_EXPLAIN)}</div>`
+      : manual ? `<div class="tv-safe-reason" data-safety-explain>${esc(manual)}</div>` : "";
     const uncLine = unc ? `<div class="tv-safe-reason" data-safety-uncertain-line>${esc(SAFETY_UNCERTAIN_TEXT)}</div>` : "";
     const orders = m.killActive && !unc && o.openOrders ? `<div class="tv-safe-reason" data-safety-orders>${esc(openOrdersLine(o.openOrders))}</div>` : "";
     const row = (k, val) => `<div class="tv-safe-row"><span>${esc(k)}</span><b>${esc(val)}</b></div>`;
@@ -442,6 +449,6 @@
   return { esc, words, connectionView, sourceView, quoteView, watchlistRowsHtml, recentRowsHtml, stateHtml, skeletonHtml, evidenceHtml,
            ppeBadgeHtml, ppeModel, ppeHtml, ppeSourceHtml, demandModel, demandHtml, demandSourceHtml, setupModel, setupHtml, setupAlertLine, statusChips,
            proposalModel, proposalHtml, proposalDetailsHtml, safetyModel, safetyHtml, safetyEventLine, safetyButtons, safetyMessages, openOrdersLine,
-           SAFETY_UNKNOWN_EXPLAIN, SAFETY_UNCERTAIN_TEXT, STOP_SLOW_MS, STOP_NOT_SAVED_TEXT, STOP_CHECKING_SAVED_TEXT, STOP_NOT_CONFIRMED_TEXT,
+           SAFETY_UNKNOWN_EXPLAIN, SAFETY_MANUAL_NOT_BLOCKED, SAFETY_KILL_LABEL, SAFETY_UNCERTAIN_TEXT, STOP_SLOW_MS, STOP_NOT_SAVED_TEXT, STOP_CHECKING_SAVED_TEXT, STOP_NOT_CONFIRMED_TEXT,
            EXPLAIN_STRETCH, EXPLAIN_CONFIDENCE, EXPLAIN_DEMAND, EXPLAIN_SETUP, EXPLAIN_PROPOSAL, SETUP_LABELS, PROPOSAL_LABELS, SAFETY_LABELS };
 });

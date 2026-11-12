@@ -678,7 +678,10 @@ def test_U2_demand_section_is_separate_from_ppe_in_the_page():
 
 def test_U3_no_buy_sell_text_in_the_demand_ui():
     section = RENDER.split("Market Demand (Stage 5.7")[1].split("status strip")[0]
-    assert not re.search(r"(?i)\b(buy|sell|recommend\w*|should)\b", section) and "buyer" in section
+    approved = ("Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is "
+                "active, BUYs are refused and a SELL is checked.")                       # the order gate's UNKNOWN explanation (panel design section 4), and only it
+    assert section.count(approved) == 1 and section.count(f'const SAFETY_UNKNOWN_EXPLAIN = "{approved}";') == 1   # once in the scanned text, as the product constant
+    assert not re.search(r"(?i)\b(buy|sell|recommend\w*|should)\b", section.replace(approved, "")) and "buyer" in section
     assert not re.search(r"(?i)probability|expected return|reversal|win rate", section)
     assert DISCLAIMER not in RENDER and DISCLAIMER not in JS                                             # always the server's sentence
 

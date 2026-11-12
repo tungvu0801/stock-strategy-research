@@ -34,11 +34,13 @@
   // the user-facing state model: the Stage 6.0 card keys / Stage 5.8 setup states mapped for display only (the backend state machines are untouched)
   const AGENT = { WATCHING: ["WATCHING", "Waiting for setup conditions"], READY: ["READY", "Eligible for entry review"], ENTERING: ["ENTERING", "Order submitted. Waiting for broker reconciliation."],
                   IN_TRADE: ["IN TRADE", "Existing trade continues. Exit conditions monitored."], EXITING: ["EXITING", "Exit required / order submitted"], CLOSED: ["CLOSED", "Trade completed."],
-                  ATTENTION: ["NEEDS ATTENTION", "Manual review required"], STOPPED: ["NEEDS ATTENTION", "New automatic entries stopped by risk controls"], NONE: ["WATCHING", "Waiting for setup conditions"],
+                  ATTENTION: ["NEEDS ATTENTION", "Manual review required"], STOPPED: ["NEEDS ATTENTION", "New automatic entries stopped by risk controls"],
+                  KILLED: ["NEEDS ATTENTION", "New entries stopped by risk controls"], NONE: ["WATCHING", "Waiting for setup conditions"],
                   ENTRY_FAILED: ["ENTRY FAILED", "No position opened. No automatic replacement order."] };
   const SETUP_TO_AGENT = { WATCH: "WATCHING", READY: "READY", INVALIDATED: "WATCHING", NONE: "WATCHING" };
   const SAFETY_TEXT = { TRADING_ALLOWED: "Trading allowed", NO_NEW_ENTRIES: "New automatic entries paused", HALTED: "New automatic entries stopped", UNKNOWN: "Risk status unknown" };   // the fallback: the words come from the server's state_label (risk controls panel design 3.1)
   const SAFETY_CLS = { TRADING_ALLOWED: "ok", NO_NEW_ENTRIES: "warn", HALTED: "bad", UNKNOWN: "bad" };
+  const KILL_LABEL = "New entries stopped";                                      // HALTED by the kill: the server's own label since the order gate (panel design section 4)
   const ACCOUNT_TEXT = { FRESH: "Account data fresh", STALE: "Account data stale", STARTING: "Account data checking", UNAVAILABLE: "Account data unavailable", DISABLED: "Account refresh disabled" };
   const CASH_TEXT = { FRESH: "fresh", STALE: "stale", UNAVAILABLE: "unavailable", AMBIGUOUS: "unclear" };
   const SYSTEM_CLS = { HEALTHY: "ok", DEGRADED: "warn", STOPPED: "bad", UNCERTAIN: "warn", UNKNOWN: "" };
@@ -48,14 +50,18 @@
   const AUTO_OFF_NOTE = "Positions the bot manages keep their exit rules unless they need attention.";
   const AUTO_OFF_POSITION = "New automatic entries are disabled. Existing position monitoring continues.";
   const STOP_ACTIVE_HEAD = "EMERGENCY STOP ACTIVE";
-  const STOP_ACTIVE_TEXT = "New automatic entries blocked.";
+  const STOP_ACTIVE_TEXT = "New entries blocked.";
   const STOP_ACTIVE_NOTE = "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.";
-  const STOP_POSITION = "No new automatic entries. Bot exit rules keep running for this position unless it needs attention.";
+  const STOP_POSITION = "No new entries. Bot exit rules keep running for this position unless it needs attention.";
   const PAUSED_NOTE = "Bot exit rules keep running while a position is monitored. A position marked Needs attention gets no automatic exit.";
   // risk controls panel (RISK_CONTROLS_PANEL_DESIGN.md 3.4, section 4, section 5): a page that could not read the gate never claims a state; the
-  // server's own UNKNOWN says what it blocks; the status bar keeps an Emergency Stop and says when part of the page did not load
-  const STOP_ROW_TEXT = "Blocks new automatic entries once saved. Nothing at Alpaca is cancelled.";
-  const UNKNOWN_EXPLAIN = "Automatic entries are blocked. This state does not by itself block manual paper orders.";
+  // server's own UNKNOWN says what it blocks; the status bar keeps an Emergency Stop and says when part of the page did not load. The strings are
+  // the "After the order-gate PR" column: the Emergency Stop order gate refuses manual paper BUYs and checks a SELL; a Pause, the daily-loss
+  // halt and unavailable daily-loss data do not block manual paper orders (C-1), and the kill case never says so
+  const STOP_ROW_TEXT = "Blocks new automatic entries and manual paper BUYs once saved. Nothing at Alpaca is cancelled.";
+  const UNKNOWN_EXPLAIN = "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked.";
+  const MANUAL_NOT_BLOCKED = { pause: "A Pause does not block manual paper orders.", daily: "The daily-loss halt does not block manual paper orders.",
+                               unavailable: "Unavailable daily-loss data does not block manual paper orders." };
   const UNCERTAIN_TEXT = "Could not confirm the current state.";
   const CHECKING_TEXT = "Checking risk controls…";                                // section 5 row 1: the first read is still on its way; no message
   const AUTO_UNCERTAIN_NOTE = "Auto is armed; the risk status could not be confirmed.";
@@ -79,7 +85,7 @@
   const CONFIRM = {
     "auto-on": { title: "Enable Paper Auto?", text: "You are enabling automatic Alpaca PAPER trading. New eligible entries may be submitted automatically when all strategy and risk conditions pass. Live trading remains disabled.",
                  ok: "Confirm: enable Paper Auto", cls: "go" },
-    stop: { title: "Emergency Stop?", text: "Once saved, this blocks new automatic entries. A Paper Auto entry past its last check can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. The stop stays active until cleared manually.",
+    stop: { title: "Emergency Stop?", text: "Once saved, this blocks new automatic entries and manual paper BUYs. An order already being sent can still reach Alpaca. Orders already at Alpaca are not cancelled. Bot exit rules keep running while a position is monitored. A manual SELL of an existing long may be possible within the usual limits, including 20 confirmed orders a day, but is refused for a position the bot manages. The stop stays active until cleared manually.",
             ok: "Confirm Emergency Stop", cls: "stop" },
     clear: { title: "Clear Emergency Stop?", text: "This removes the emergency-stop latch. Trading resumes only if all safety checks pass.", ok: "Confirm: clear Emergency Stop", cls: "danger" },
   };
@@ -132,15 +138,16 @@
                   dxForm: null, dxAnswer: null, dxSeq: 0, dxHtml: null };
 
   // ---------------------------------------------------------------- pure models ------------------------------------------------------
-  function agentModel(card, setupState, safetyState, exec, uncertain) {
+  function agentModel(card, setupState, safetyState, exec, uncertain, kill) {
     const failed = !!(card && card.key === "ATTENTION" && card.state === "FAILED" && card.shares == null);   // a rejected / cancelled / unsent entry today, no position
     const key = failed ? "ENTRY_FAILED" : card && card.key && card.key !== "NONE" ? card.key : (SETUP_TO_AGENT[setupState] || "WATCHING");
     const [label, text] = AGENT[key] || AGENT.WATCHING;
     const stopped = !uncertain && (safetyState === "HALTED" || safetyState === "UNKNOWN");                // an uncertain page never claims a stop (design 3.4)
+    const killOn = stopped && safetyState === "HALTED" && !!kill;                                       // the kill also refuses manual paper BUYs (order gate)
     const attention = !!(exec && exec.attention);
     let out = { key, label, text, cls: label.toLowerCase().replace(/ /g, "-") };
     if (attention && key !== "ATTENTION" && key !== "ENTRY_FAILED") out = { key: "ATTENTION", label: "NEEDS ATTENTION", text: (exec.attention_reasons && exec.attention_reasons[0]) || "Manual review required", cls: "needs-attention" };
-    else if (stopped && !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION", "ENTRY_FAILED"].includes(key)) out = { key: "STOPPED", label: "NEEDS ATTENTION", text: safetyState === "UNKNOWN" ? SAFETY_TEXT.UNKNOWN : AGENT.STOPPED[1], cls: "needs-attention" };
+    else if (stopped && !["IN_TRADE", "EXITING", "ENTERING", "ATTENTION", "ENTRY_FAILED"].includes(key)) out = { key: "STOPPED", label: "NEEDS ATTENTION", text: safetyState === "UNKNOWN" ? SAFETY_TEXT.UNKNOWN : killOn ? AGENT.KILLED[1] : AGENT.STOPPED[1], cls: "needs-attention", kill: killOn };
     if (card && card.line && ["EXITING", "CLOSED", "ATTENTION"].includes(key) && out.key === key) out.text = card.line;
     return out;
   }
@@ -216,7 +223,8 @@
     const level = !loaded ? "UNKNOWN" : execStop || gateStop ? "STOPPED" : unc ? "UNCERTAIN" : items.some((i) => i.level !== "ok") ? "DEGRADED" : "HEALTHY";
     const primary = items.find((i) => i.level === "bad") || items.find((i) => i.level === "warn") || null;
     // section 4: "SYSTEM STOPPED" overclaimed; the bar names what is stopped, and an unknown or uncertain gate says so
-    const text = !loaded ? "SYSTEM —" : level === "STOPPED" ? (gateStop && st === "UNKNOWN" && !execStop ? "RISK STATUS UNKNOWN" : "NEW AUTOMATIC ENTRIES STOPPED")
+    const killOn = gateStop && st === "HALTED" && killOf(safety);                  // after the order-gate PR the kill also refuses manual paper BUYs
+    const text = !loaded ? "SYSTEM —" : level === "STOPPED" ? (gateStop && st === "UNKNOWN" && !execStop ? "RISK STATUS UNKNOWN" : killOn ? "NEW ENTRIES STOPPED" : "NEW AUTOMATIC ENTRIES STOPPED")
       : level === "UNCERTAIN" ? "RISK STATUS UNCERTAIN" : `SYSTEM ${level}`;
     return { level, loaded, text, cls: SYSTEM_CLS[level], items, primary: primary ? (primary.reason || primary.text) : "" };
   }
@@ -258,7 +266,7 @@
     const primary = unc ? (!lk && safety.error ? safety.error : safety.loading && !lk ? "" : UNCERTAIN_TEXT) : k.active ? `${STOP_ACTIVE_TEXT} ${STOP_ACTIVE_NOTE}` : paused ? PAUSED_NOTE
       : st === "TRADING_ALLOWED" ? (dep ? dep.text : "") : (safety && safety.reason_text) || (st === "HALTED" || st === "UNKNOWN" ? "Critical issue requires attention" : (dep ? dep.text : ""));
     return { state: st, headline: head, level, lines, stopped: !unc && st === "HALTED", killActive: !!k.active, paused, primary, uncertain: unc,
-             explain: !unc && st === "UNKNOWN" ? UNKNOWN_EXPLAIN : "", critical: (!unc && (st === "HALTED" || st === "UNKNOWN")) || !!(exec && exec.attention) };
+             explain: unc ? "" : st === "UNKNOWN" ? UNKNOWN_EXPLAIN : manualNotBlocked(safety), critical: (!unc && (st === "HALTED" || st === "UNKNOWN")) || !!(exec && exec.attention) };
   }
 
   // the Automation / Trading Controls rows: statuses from the payloads, exactly one relevant action per row, mirroring the legacy buttons' availability
@@ -539,7 +547,7 @@
   // Against / risks · Portfolio · Safety · Decision, with the raw values under Technical details. Nothing is inferred and no model is consulted.
   function whyModel(ctx) {
     const exec = ctx.exec, safety = ctx.safety, card = ctx.card, dom = ctx.dom || {}, t = ctx.terminal || {}, limits = ctx.limits, pos = ctx.position || null, fz = ctx.frozen || {};
-    const a = agentModel(card, dom.setupState, safety && safety.state, exec, !!(safety && safety.uncertain));
+    const a = agentModel(card, dom.setupState, safety && safety.state, exec, !!(safety && safety.uncertain), killOf(safety));
     const m = marketModel(dom);
     const sm = strategyModel(card, dom, ctx.registry, dom.proposalState);
     const setup = t.setup || {}, prop = t.proposal || {};
@@ -547,7 +555,8 @@
     const vs = (v, op, k, label) => (fz[k] == null ? `${label} ${v}` : `${label} ${v} (needs ${op} ${fz[k]})`);
     const blockers = setup.blockers && setup.blockers.length ? setup.blockers.map(words) : (dom.blockers || []);
     const question = { WATCHING: "Why is this stock WATCHING?", READY: "Why is it READY?", ENTERING: "Why is the order pending?", IN_TRADE: "Why is the position still held?", EXITING: "Why is the position exiting?",
-                       CLOSED: "Why did the position exit?", ATTENTION: "Why does it need attention?", STOPPED: "Why are new automatic entries stopped?", ENTRY_FAILED: "Why did the entry fail?" }[a.key] || "Why?";
+                       CLOSED: "Why did the position exit?", ATTENTION: "Why does it need attention?", STOPPED: a.kill ? "Why are new entries stopped?" : "Why are new automatic entries stopped?",
+                       ENTRY_FAILED: "Why did the entry fail?" }[a.key] || "Why?";
     const signal = [`Setup ${m.setupLabel}${setup.since ? ` since ${hm(setup.since)}` : ""}${setup.reason_text ? ` · ${setup.reason_text}` : dom.setupReason ? ` · ${dom.setupReason}` : ""}`];
     if (blockers.length && (a.key === "WATCHING" || a.key === "STOPPED")) signal.push(`Not ready: ${blockers.join(" · ")}`);
     const strategy = [sm.best ? `${sm.best} (${sm.bestId}${sm.bestStatus ? ` · ${sm.bestStatus}` : ""})` : "Strategy registry not loaded", `${sm.evaluated} strateg${sm.evaluated === 1 ? "y" : "ies"} evaluated · ${sm.supportingText}`, sm.scoreText];
@@ -635,6 +644,14 @@
   // section 5 row 1: no read has finished yet (no last state, no error): "Checking risk controls…" and no message, never "could not confirm"
   function checkingSafety(sv) { return !!(sv && sv.uncertain && sv.loading && !sv.lastKnown && !sv.error); }
   function uncText(sv) { return checkingSafety(sv) ? CHECKING_TEXT : UNCERTAIN_TEXT; }
+  function killOf(sv) { return !!(sv && !sv.uncertain && sv.kill_switch && sv.kill_switch.active === true); }   // the server's kill flag, never a guess
+  // C-1: the sentence saying what does not block manual paper orders; only from a settled server view that carries both flags, never on the kill
+  function manualNotBlocked(sv) {
+    if (!sv || sv.uncertain || !sv.kill_switch || !sv.no_new_entries) return "";
+    if (sv.state === "HALTED") return sv.kill_switch.active === true ? "" : MANUAL_NOT_BLOCKED.daily;
+    if (sv.state === "NO_NEW_ENTRIES") return sv.no_new_entries.active === true ? MANUAL_NOT_BLOCKED.pause : MANUAL_NOT_BLOCKED.unavailable;
+    return "";
+  }
   function effectiveSafety(sv, rc) {
     // J-04 (design 2.1, review H-1): the latch overlay. A counted latch read showed the Emergency Stop saved and no later server view replaced it:
     // the kill switch is shown as a fresh read (HALTED, its label, Clear offered) over the last server view's other fields; never the reverse.
@@ -644,7 +661,7 @@
       const v = sv || {};
       const k = v.kill_switch && typeof v.kill_switch === "object" ? v.kill_switch : {};
       return Object.assign({ daily_loss: {}, no_new_entries: { active: false } }, v,
-                           { state: "HALTED", state_label: SAFETY_TEXT.HALTED, allowed_new_entry: false, halted: true, reason_text: "Emergency stop active",
+                           { state: "HALTED", state_label: KILL_LABEL, allowed_new_entry: false, halted: true, reason_text: "Emergency stop active",
                              kill_switch: Object.assign({}, k, { active: true, activated_at: rc.latchKill.activated_at || k.activated_at || null }), uncertain: false, lastKnown: null, latch: true });
     }
     const uncertain = !sv || !rc || !!rc.uncertain;
@@ -690,8 +707,9 @@
     if (!sv || sv.uncertain) return `UNKNOWN · ${uncText(sv)}${sv && sv.lastKnown ? ` Last known: ${sv.lastKnown.label}.` : ""}`;
     const k = sv.kill_switch || {}, p = sv.no_new_entries || {};
     if (sv.state === "TRADING_ALLOWED") return "ALLOWED";
-    if (sv.state === "NO_NEW_ENTRIES") return p.active === true ? "PAUSED · New automatic entries paused." : "BLOCKED · New automatic entries blocked: daily-loss data unavailable.";
-    if (sv.state === "HALTED") return k.active === true ? `STOPPED · ${STOP_ROW_TEXT}` : "STOPPED · New automatic entries stopped.";
+    const c1 = manualNotBlocked(sv) ? ` ${manualNotBlocked(sv)}` : "";
+    if (sv.state === "NO_NEW_ENTRIES") return p.active === true ? `PAUSED · New automatic entries paused.${c1}` : `BLOCKED · New automatic entries blocked: daily-loss data unavailable.${c1}`;
+    if (sv.state === "HALTED") return k.active === true ? `STOPPED · ${STOP_ROW_TEXT}` : `STOPPED · New automatic entries stopped.${c1}`;
     return `UNKNOWN · Risk status unknown. ${UNKNOWN_EXPLAIN}`;
   }
   // the status bar's own messages: the banner wins over everything; otherwise the Emergency Stop outcome and the "part of this page" line
@@ -770,7 +788,7 @@
   }
 
   function cardsHtml(ctx) {
-    const a = agentModel(ctx.card, ctx.dom.setupState, ctx.safety && ctx.safety.state, ctx.exec, !!(ctx.safety && ctx.safety.uncertain));
+    const a = agentModel(ctx.card, ctx.dom.setupState, ctx.safety && ctx.safety.state, ctx.exec, !!(ctx.safety && ctx.safety.uncertain), killOf(ctx.safety));
     const m = marketModel(ctx.dom);
     const r = riskModel(ctx.exec, ctx.safety);
     const p = positionModel(ctx.card, ctx.position, ctx.limits);
@@ -2470,7 +2488,7 @@
 
   return { NAV, MORE, TAGLINE, DEFAULT, AGENT, SETUP_TO_AGENT, SAFETY_TEXT, CONFIRM, LEGACY,
            // risk controls panel (design 3.4)
-           STOP_ROW_TEXT, UNKNOWN_EXPLAIN, UNCERTAIN_TEXT, CHECKING_TEXT, BANNER_TEXT, PARTIAL_TEXT, ACTION_NAMES, f2Post, f2Read, safetyLabel, effectiveSafety, checkingSafety, setHtml, openOrdersLine, riskOutcomeLines,
+           STOP_ROW_TEXT, UNKNOWN_EXPLAIN, MANUAL_NOT_BLOCKED, manualNotBlocked, killOf, KILL_LABEL, UNCERTAIN_TEXT, CHECKING_TEXT, BANNER_TEXT, PARTIAL_TEXT, ACTION_NAMES, f2Post, f2Read, safetyLabel, effectiveSafety, checkingSafety, setHtml, openOrdersLine, riskOutcomeLines,
            automationTrading, barModel, bannerHtml,
            // J-04 (design 2.1 Part D)
            STOP_SLOW_MS, STOP_NOT_SAVED_TEXT, STOP_CHECKING_SAVED_TEXT, STOP_NOT_CONFIRMED_TEXT, STOP_NOT_CONFIRMED_BAR_TEXT, PANELS_PAUSED_TEXT, fallbackHtml,

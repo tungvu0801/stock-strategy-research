@@ -391,12 +391,12 @@ test("J-04 A2 the latch overlay drives the display: the POST failed, the latch r
   assert.deepEqual([out(w, "stop"), w.rc.status().outcomes.stop.note], ["CONFIRMED", "error-but-active"]);
   assert.ok(w.rc.status().latchKill && w.rc.status().latchKill.active === true && w.rc.status().stopActive === false);
   assert.equal(shown(w).state, "TRADING_ALLOWED", "state.data is still the last server view");
-  assert.match(w.html, /New automatic entries stopped/);                          // rendered from the overlay, not from state.data
+  assert.match(w.html, /New entries stopped/);                                    // rendered from the overlay, not from state.data (the kill label, order gate)
   assert.equal(w.open((c) => c.url === "/api/account-refresh").length, 1, "the open-order line is read once the latch shows the stop");
   await w.advance(30000); await w.answerReads(ALLOWED);                            // cleared elsewhere: a later full read replaces the overlay
   assert.equal(w.rc.status().latchKill, null);
   assert.equal(w.rc.status().announce, "Emergency Stop is no longer active.");
-  assert.doesNotMatch(w.html, /New automatic entries stopped/);
+  assert.doesNotMatch(w.html, /New (automatic )?entries stopped/);
 });
 
 test("J-04 A10 a newer Clear ends a pending Stop at once: NOT confirmed when no counted read showed it saved (the POST's 200 body is not proof), with the retry reads; a latch answer arriving after the Clear started is not counted (D1)", async () => {
@@ -498,11 +498,11 @@ test("J-04 (PR #59 review MED-1, P5/P6) after a latch-confirmed stop, a server v
   await w.click("stop");
   await w.advance(1000); await w.answerLatch(true);                               // confirmed by the latch read while the POST is unanswered
   assert.deepEqual([out(w, "stop"), w.rc.status().latchShown], ["CONFIRMED", true]);
-  assert.match(w.html, /New automatic entries stopped/);                          // the overlay: the server's last view (ALLOWED) does not show the kill
+  assert.match(w.html, /New entries stopped/);                                    // the overlay: the server's last view (ALLOWED) does not show the kill
   w.posts("emergency-stop")[0].respond(200, UNKNOWN_KILL); await w.flush();      // the latch was saved, the evaluation failed: UNKNOWN with the kill
   assert.equal(w.rc.status().latchShown, false, "the server's own view shows the kill: it is shown as sent");
   assert.match(w.html, /Risk status unknown · Emergency Stop active/);
-  assert.doesNotMatch(w.html, /New automatic entries stopped/);
+  assert.doesNotMatch(w.html, /New (automatic )?entries stopped/);
   assert.match(w.html, /data-safety-explain/);                                    // the server UNKNOWN's explanation
   assert.match(w.html, /data-safety="clear" disabled/, "Clear is disabled while the server says UNKNOWN (section 5)");
   await w.advance(30000); await w.answerReads(UNKNOWN_KILL);                      // a later full read: the same
@@ -520,7 +520,7 @@ test("J-04 (PR #59 review MED-1, P1/P6) a server UNKNOWN with the default inacti
   const seen = [];
   for (let i = 0; i < 20; i++) {                                                  // full reads every 30 s for 10 min, all UNKNOWN with the default kill
     await w.advance(30000); await w.answerReads(UNKNOWN_DEFAULT_KILL);
-    seen.push([w.now - T0, w.rc.status().latchShown, w.rc.status().uncertain, /New automatic entries stopped/.test(w.html), /data-safety="clear"/.test(w.html)]);
+    seen.push([w.now - T0, w.rc.status().latchShown, w.rc.status().uncertain, /New (automatic )?entries stopped/.test(w.html), /data-safety="clear"/.test(w.html)]);
   }
   assert.deepEqual(seen[0], [31000, true, false, true, true]);                   // fresh (30 s): the design's exception, the overlay stays
   assert.deepEqual(seen[1], [61000, true, false, true, true]);                   // 60 s: still fresh
@@ -537,7 +537,7 @@ test("J-04 (PR #59 review MED-1, aged and unreadable) once the overlay ages on a
   assert.equal(out(w, "stop"), "CONFIRMED");
   for (let i = 0; i < 4; i++) { await w.advance(25000); for (const c of w.gets()) c.fail(); await w.flush(); }   // every later full read fails: +101 s
   assert.deepEqual([w.rc.status().uncertain, w.rc.status().latchShown], [true, false]);
-  assert.match(w.html, /Status uncertain · last known New automatic entries stopped/);
+  assert.match(w.html, /Status uncertain · last known New entries stopped/);
   assert.doesNotMatch(w.html, /last known Trading allowed/, "never the view from before the press");
   assert.match(w.html, /data-safety="clear" disabled/);
 });
@@ -586,7 +586,7 @@ test("J-04 (review MED-4) on a stale page the Stop's own late 200 body never dem
   await w.click("stop");
   await w.advance(1000); await w.answerLatch(true);                               // the POST still pending
   assert.deepEqual([out(w, "stop"), w.rc.status().uncertain], ["CONFIRMED", false]);
-  assert.match(w.html, /New automatic entries stopped/); assert.doesNotMatch(w.html, /Status uncertain/);
+  assert.match(w.html, /New entries stopped/); assert.doesNotMatch(w.html, /Status uncertain/);
   w.posts("emergency-stop")[0].respond(200, KILLED); await w.flush();            // the slow answer lands after the decision
   assert.ok(w.rc.status().latchKill && w.rc.status().latchKill.active === true, "the overlay stays: the body agrees");
   assert.equal(w.rc.status().uncertain, false);

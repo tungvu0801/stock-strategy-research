@@ -105,13 +105,51 @@ def at_base(rel):
     return at(FL.BASE_J04, rel)
 
 
+# The Emergency Stop order gate (design 7a, its design section 12, as J-04 did for the panel): the files the gate edits are read at BASE_GATE,
+# J-04's side as merged (PR #59), a commit that cannot change; J-04's change set is the fixed diff to BASE_GATE and its ledger checks read the
+# ledger there. tests/test_gate_freeze.py F06G pins that this list is exactly the gate's edited files.
+GATE_MOVED = ('.github/ci/pytest_groups.json', 'DESIGN_591_EXECUTION_SAFETY.md', 'README.md', 'browser_tests/flows.py',
+              'browser_tests/risk_controls_panel_flows.py', 'execution/__init__.py', 'execution/service.py', 'execution/store.py',
+              'frontend/product_ui.js', 'frontend/trader_render.js', 'paper/ALPACA_ORDERS.md', 'paper/alpaca_order_reads.py',
+              'paper/alpaca_order_rules.py', 'paper/alpaca_order_store.py', 'paper/alpaca_orders.py', 'safety/engine.py',
+              'tests/alpaca_order_fakes.py', 'tests/freeze_ledger.py', 'tests/frontend/product_ui.test.cjs',
+              'tests/frontend/risk_controls_order.test.cjs', 'tests/frontend/risk_controls_view.test.cjs',
+              'tests/frontend/trader_proposal.test.cjs', 'tests/frontend/trader_safety.test.cjs',
+              'tests/frontend/xss01_raw_interpolations.json', 'tests/test_alpaca_orders_46b.py', 'tests/test_bot_activity_68.py',
+              'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_demand_57.py',
+              'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_54.py',
+              'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py',
+              'tests/test_execution_safety_591.py', 'tests/test_forward_paper_610a.py', 'tests/test_market_intel_70.py',
+              'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py',
+              'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py',
+              'tests/test_panel_freeze.py', 'tests/test_proposals_59.py', 'tests/test_research_flow_47.py',
+              'tests/test_risk_controls_panel.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_rotation_handoff_47.py',
+              'tests/test_runtime_reliability_ops.py', 'tests/test_setups_58.py', 'tests/test_sip_eval_78b1.py',
+              'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_trader_view_55.py',
+              'tests/test_trader_view_561.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py',
+              'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py')
+
+
+def at_gate(rel):
+    return at(FL.BASE_GATE, rel)
+
+
+def ledger_gate():
+    """The ledger as the order gate found it (BASE_GATE): the hashes J-04's bookkeeping is checked against."""
+    t = at_gate("tests/freeze_ledger.py")
+    led = t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]
+    return ast.literal_eval(led[len("LEDGER = "):])
+
+
 def now_text(rel):
+    if rel in GATE_MOVED:
+        return at_gate(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # the order gate (design 7a): J-04's side is the fixed diff from `base` to BASE_GATE; the working tree's change set belongs to tests/test_gate_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_GATE).split())
 
 
 def line_ops(rel):
@@ -138,7 +176,7 @@ def test_F01J_the_change_set_is_exactly_the_declared_files_and_no_gate_server_sa
     assert changed == FL.NEW_J04 | FL.EDITED_J04, {"unexpected": sorted(changed - FL.NEW_J04 - FL.EDITED_J04), "missing": sorted((FL.NEW_J04 | FL.EDITED_J04) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_J04).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_J04 == NEW_FILES_J04 and {p for p in changed if p in in_base} == FL.EDITED_J04
-    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_J04).split()
+    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_J04, FL.BASE_GATE).split()
     production = {p for p in FL.EDITED_J04 if not p.startswith(("tests/", "browser_tests/", ".github/"))}
     assert production == PROD_J04 | DOCS_J04 and set(FL.SEMANTIC_J04) == PROD_J04 | DOCS_J04 | HARNESS_J04
     assert {p for p in FL.EDITED_J04 if p.startswith("tests/") and not p.endswith((".py", ".cjs"))} == TESTS_EDITED_J04
@@ -147,12 +185,12 @@ def test_F01J_the_change_set_is_exactly_the_declared_files_and_no_gate_server_sa
     assert {p for p in changed if p.startswith("api/")} == {"api/routes/execution_safety.py"}
     for rel in UNTOUCHED_J04:
         assert rel not in changed and now_text(rel) == at_base(rel), rel
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_J04, "--", "api/routes/alpaca_paper_orders.py", "paper", "database", "safety", "api/local_gate.py", "api/server.py"], cwd=ROOT).returncode == 0
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_J04, FL.BASE_GATE, "--", "api/routes/alpaca_paper_orders.py", "paper", "database", "safety", "api/local_gate.py", "api/server.py"], cwd=ROOT).returncode == 0
     groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g != "core"} == {g: v for g, v in base_groups.items() if g != "core"}
     i = base_groups["core"]["files"].index("test_panel_freeze.py") + 1
     assert groups["core"] == {**base_groups["core"], "files": base_groups["core"]["files"][:i] + list(CI_FILES_J04) + base_groups["core"]["files"][i:]}
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_gate()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # the order gate: the manifest and its hash, both at BASE_GATE
 
 
 def test_F02J_the_route_file_the_pages_the_readme_the_design_and_the_manifest_change_exactly_the_declared_lines():
@@ -248,7 +286,7 @@ def test_F05J_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_J04}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_J04})
     for rel in rehashed | FL.NEW_LEDGER_J04:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_gate()[rel], rel                     # the order gate: J-04's hashes against J-04's texts, both at BASE_GATE
     start = fl.index("\n\nJ-04 Emergency Stop reliability (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_J04 = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)

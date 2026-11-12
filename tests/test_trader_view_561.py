@@ -77,7 +77,10 @@ def test_03_no_recommendation_or_probability_language_in_the_ui():
         assert not re.search(r"(?i)recommend", src), name
         assert not re.search(r"(?i)probability|expected.return|price target|target price|win rate|reversal", src), name
         assert not re.search(r"(?i)\b(buy now|sell now|enter now|trade now|you should)\b", src), name
-    assert not re.search(r"(?i)\b(buy|sell)\b", render)                                               # the render module names no side at all
+    approved = ("Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is "
+                "active, BUYs are refused and a SELL is checked.")                       # the order gate's UNKNOWN explanation (panel design section 4), and only it
+    assert render.count(approved) == 1 and render.count(f'const SAFETY_UNKNOWN_EXPLAIN = "{approved}";') == 1   # once in the scanned code, as the product constant
+    assert not re.search(r"(?i)\b(buy|sell)\b", render.replace(approved, ""))                         # the render module names no side at all
     for line in view.splitlines():                                                                     # the view names a side only in the disabled action labels
         if re.search(r"(?i)\b(buy|sell)\b", line):
             assert re.search(r"prepare_buy|prepare_sell|Prepare Buy|Prepare Sell", line), line

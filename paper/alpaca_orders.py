@@ -2,14 +2,19 @@
 paper/alpaca_orders.py — Stage 4.6B service: manual Alpaca PAPER orders (DESIGN_46B_FINAL).
 
   settings    settings_view · link_account · relink_account · enable · disable     (no broker writes; ≤ 2 GET each)
-  orders      preview (≤ 5 paper GET + ≤ 1 market-data request, 0 POST) → explicit confirm (≤ 4 GET + exactly 1 POST +
-              ≤ 1 exact lookup) · retry (explicit; same client_order_id; exact lookup first) · abandon (explicit; 1 account
-              GET, then 1 exact lookup) · check_status (1 account GET, then exact lookups only) · list_intents (0 requests)
+  orders      preview (≤ 5 paper GET, ≤ 6 for a SELL during an Emergency Stop, + ≤ 1 market-data request, 0 POST) → explicit confirm
+              (≤ 4 GET, ≤ 5 for a SELL during a stop, + exactly 1 POST + ≤ 1 exact lookup) · retry (explicit; same client_order_id;
+              exact lookup first) · abandon (explicit; 1 account GET, then 1 exact lookup) · check_status (1 account GET, then exact
+              lookups only) · list_intents (0 requests)
+Emergency Stop order gate (EMERGENCY_STOP_ORDER_GATE_DESIGN.md revision 3.5): the persisted latch is read before any request and again
+INSIDE the transaction that commits an order for sending. While it is ON no BUY is committed, and a SELL only if the bot has nothing in
+the symbol and a classification on fresh reads finds that it reduces an existing long; while it cannot be read, no order is committed.
+An order committed before the stop can still reach Alpaca; nothing here cancels an order already there.
 Every action that touches the broker first verifies the account the credentials point to is the LINKED account: a
 different paper account → ACCOUNT_NOT_LINKED before any order lookup, POST or state change.
 
 The ONLY path to the broker write (paper/alpaca_order_writer.py) is `_post_once`, called only by `confirm` and `retry`,
-after the intent was committed as SUBMISSION_PENDING (write-ahead) and every gate (V1–V17) passed on fresh reads.
+after the intent was committed as SUBMISSION_PENDING (write-ahead) and every gate (V1–V17; V18 during an Emergency Stop) passed on fresh reads.
 No automatic POST retry. Exact-ID reconciliation only (client_order_id / Alpaca order id; never symbol / qty / time /
 price matching). Deterministic Python rules only — no Claude. No background job, startup hook or timer. The Stage 4.5
 simulator is only read (local shares, for information) and never written; Stage 4.6A is not used or changed.
@@ -270,14 +275,16 @@ def _market(clock: dict) -> dict:
             "confirm_available_until": until}
 
 
-def _view(row: dict, now: Optional[datetime] = None) -> dict:
+def _view(row: dict, now: Optional[datetime] = None, armed: frozenset = frozenset()) -> dict:
+    """`armed`: the intents carrying ARMED_BEFORE_STOP, precomputed by the caller with one query (it has no store here)."""
     p = json.loads(row["preview_json"])
     now = now or _now()
     state, side, qty, sym = row["state"], row["side"].upper(), row["qty"], row["symbol"]
     expired = state == RU.PREVIEWED and now >= RU.parse_time(row["expires_at"])
     ref = p["reference"]
+    label = RU.LABELS.get(state, state) + (f" · {RU.ARMED_BEFORE_STOP_LABEL}" if row["intent_id"] in armed else "")
     return {"intent_id": row["intent_id"], "client_order_id": row["client_order_id"], "symbol": sym, "side": side, "qty": qty,
-            "order_type": "MARKET", "time_in_force": "DAY", "state": state, "state_label": RU.LABELS.get(state, state),
+            "order_type": "MARKET", "time_in_force": "DAY", "state": state, "state_label": label,
             "confirmable": state == RU.PREVIEWED and bool(p.get("confirmable")) and not expired, "expired": expired,
             "preview_hash": row["preview_hash"], "previewed_at": row["previewed_at"], "expires_at": row["expires_at"],
             "label": LABEL, "account_masked": row["account_masked"],
@@ -302,7 +309,8 @@ def _view(row: dict, now: Optional[datetime] = None) -> dict:
 def list_intents(limit: int = 100) -> dict:
     st = _store()
     now = _now()
-    return {"settings": settings_view(), "intents": [_view(r, now) for r in st.intents(limit)]}
+    armed = frozenset(st.armed_before_stop_ids())                                # one query for the whole list (design 3.3, N38)
+    return {"settings": settings_view(), "intents": [_view(r, now, armed) for r in st.intents(limit)]}
 
 
 def _confirmed_today(st: S.OrderStore, now: datetime) -> int:
@@ -341,10 +349,28 @@ def preview(symbol, side, quantity) -> dict:
         confirmed_today = _confirmed_today(st, now)
         if confirmed_today >= RU.DAILY_LIMIT:
             raise OrderError("DAILY_LIMIT")
-        rd = _reader(5)
+        # Emergency Stop order gate (design 3.2): the persisted latch, before any broker request; refusals create no row
+        stop = st.stop_state()
+        if stop == RU.STOP_UNKNOWN:
+            raise OrderError("EMERGENCY_STOP_STATE_UNKNOWN")                       # C-2: every manual order, including a reducing SELL
+        owned = st.bot_owned(None, sym) if side == "SELL" else None                  # one local SQL read; never a broker call
+        if stop == RU.STOP_ON:
+            if side == "BUY":
+                raise OrderError("STOP_BLOCKS_BUY")                                  # row 1, buy-to-cover included (C-3)
+            if owned is None:
+                raise OrderError("STOP_OWNERSHIP_UNKNOWN")                           # row 3
+            if owned:
+                raise OrderError("STOP_BOT_OWNED")                                   # row 4 (C-8)
+        stop_sell = stop == RU.STOP_ON                                               # a SELL the bot does not manage, during a stop
+        rd = _reader(6 if stop_sell else 5)
         acct, conf = _read(rd.account), _read(rd.configurations)
         asset, clock = _read(lambda: rd.asset(sym)), _read(rd.clock)
-        position = _read(lambda: rd.position(sym)) if side == "SELL" else None
+        open_orders = None
+        if stop_sell:                                                                # open orders FIRST, then the strict position (section 4)
+            open_orders = _read(lambda: rd.open_orders(sym))
+            position = _read(lambda: rd.position_strict(sym))
+        else:
+            position = _read(lambda: rd.position(sym)) if side == "SELL" else None
         ref = _reference(sym)
         reference = RU.dec(ref["price"]) if ref["price"] else None
         qty = quantity
@@ -358,6 +384,14 @@ def preview(symbol, side, quantity) -> dict:
             rules.append(RU.v10_buy(reference, qty, cash, _other_buy_guard(unresolved)))
         rules += [RU.v11_unresolved(0), RU.v12a_daily(confirmed_today), RU.v12b_notional(notional), RU.v15_no_shorting(conf),
                   RU.v16_open(clock, info=True), RU.v17_near_close(clock, info=True)]
+        if stop_sell:                                                                # V18: the stop-time classification (confirmable follows it)
+            klass, code = RU.classify_manual_order("SELL", qty, owned, position, open_orders, 0, conf.get("no_shorting"))
+            rules.append(RU.v18_stop(klass, code))
+        v19 = RU.v19_disclosure(st.safety_flags(), now.astimezone(NY).date().isoformat())   # C-1: prints, never blocks
+        if v19 is not None:
+            rules.append(v19)
+        if side == "SELL" and stop == RU.STOP_OFF and owned is True:                 # R-5: prints, never blocks
+            rules.append(RU.v20_bot_owned_warning())
         coid = RU.new_client_order_id()
         payload = RU.canonical_payload(coid, sym, side.lower(), qty)
         expires = now + timedelta(seconds=RU.PREVIEW_TTL_S)
@@ -387,11 +421,24 @@ def preview(symbol, side, quantity) -> dict:
 # confirm / retry / abandon — the only paths that can reach the writer are confirm and retry, via _post_once
 # ==================================================================================================================================
 
-def _fresh_gates(st: S.OrderStore, row: dict, s: dict, include_daily: bool) -> list:
-    """V8, V9 | V10, V11, V12a (confirm only), V12b, V15, V16, V17 on fresh reads (≤ 4 GET)."""
-    rd = _reader(4)
+def _fresh_gates(st: S.OrderStore, row: dict, s: dict, include_daily: bool, stop: str = RU.STOP_OFF) -> tuple:
+    """(gates, klass, klass_at). V8, V9 | V10, V11, V12a (confirm only), V12b, V15, V16, V17 on fresh reads (≤ 4 GET). During an
+    Emergency Stop a SELL also gets V18 on the open orders read FIRST and a strict position read (≤ 5 GET); `klass_at` is taken before
+    those reads, so the arm can refuse a classification that is too old (design 3.3). The bot's ownership is checked first, locally."""
+    stop_sell = stop == RU.STOP_ON and row["side"] == "sell"
+    owned = st.bot_owned(None, row["symbol"]) if stop_sell else None
+    if stop_sell and owned is not False:                                             # rows 3, 4: refused before any broker read
+        klass, code = RU.classify_manual_order("SELL", row["qty"], owned, None, None, 0, None)
+        return [RU.v18_stop(klass, code)], klass, None
+    rd = _reader(5 if stop_sell else 4)
     acct, conf, clock = _read(rd.account), _read(rd.configurations), _read(rd.clock)
-    position = _read(lambda: rd.position(row["symbol"])) if row["side"] == "sell" else None
+    klass = klass_at = open_orders = None
+    if stop_sell:
+        klass_at = _now()
+        open_orders = _read(lambda: rd.open_orders(row["symbol"]))
+        position = _read(lambda: rd.position_strict(row["symbol"]))
+    else:
+        position = _read(lambda: rd.position(row["symbol"])) if row["side"] == "sell" else None
     others = [u for u in st.in_states(RU.UNRESOLVED) if u["intent_id"] != row["intent_id"]]
     gates = [RU.v8_account(acct, s["bound_account_fp"]), RU.v15_no_shorting(conf), RU.v16_open(clock), RU.v17_near_close(clock)]
     if row["side"] == "sell":
@@ -402,7 +449,51 @@ def _fresh_gates(st: S.OrderStore, row: dict, s: dict, include_daily: bool) -> l
     if include_daily:
         gates.append(RU.v12a_daily(_confirmed_today(st, _now())))
     gates.append(RU.v12b_notional(RU.dec(row["estimated_notional"])))
-    return gates
+    if stop_sell:
+        klass, code = RU.classify_manual_order("SELL", row["qty"], owned, position, open_orders,
+                                               sum(1 for u in others if u["symbol"] == row["symbol"]), conf.get("no_shorting"))
+        gates.append(RU.v18_stop(klass, code))
+    return gates, klass, klass_at
+
+
+def _pre_gate_refusal(stop: str, row: dict) -> Optional[str]:
+    """Before any broker read: the latch cannot be read (C-2), or a BUY during a stop (row 1)."""
+    if stop == RU.STOP_UNKNOWN:
+        return "EMERGENCY_STOP_STATE_UNKNOWN"
+    if stop == RU.STOP_ON and row["side"] != "sell":
+        return "STOP_BLOCKS_BUY"
+    return None
+
+
+def _arm_refusal(st: S.OrderStore, c, stop: str, klass: Optional[str], klass_at: Optional[datetime], t: datetime, symbol: str) -> Optional[str]:
+    """INSIDE the arm transaction (design 3.3), local SQL only: the latch as committed now decides. ON refuses anything but a RISK_REDUCING
+    classification young enough and still not bot-owned (a bot entry can fill between the classification and the arm)."""
+    if stop == RU.STOP_UNKNOWN:
+        return "EMERGENCY_STOP_STATE_UNKNOWN"
+    if stop == RU.STOP_ON:
+        if klass != RU.RISK_REDUCING:                                                # klass is None if the stop was off when the gates ran
+            return "EMERGENCY_STOP_ACTIVE"
+        if klass_at is None or (t - klass_at).total_seconds() > RU.STOP_READS_MAX_AGE_S:
+            return "STOP_READS_STALE"
+        if st.bot_owned(c, symbol) is not False:                                     # True, or None when unreadable
+            return "STOP_BOT_OWNED"
+    return None
+
+
+def _armed_before_stop(st: S.OrderStore, intent_id: int, stop_at_arm: Optional[str], final: dict) -> frozenset:
+    """ARMED_BEFORE_STOP (design 3.3, M3): the arm read OFF, the outcome is neither BROKER_REJECTED nor SUBMIT_NOT_SENT, and the latch
+    reads ON after _settle. Best effort, after _settle, so a failed audit write can never leave the intent pending."""
+    if stop_at_arm != RU.STOP_OFF or final["state"] in (RU.BROKER_REJECTED, RU.SUBMIT_NOT_SENT):
+        return frozenset()
+    try:
+        if st.stop_state() != RU.STOP_ON:
+            return frozenset()
+        with st.write() as c:
+            st.event(c, intent_id, "STATUS_CHANGE", _now(), code=RU.ARMED_BEFORE_STOP)
+        return frozenset({intent_id})
+    except Exception as exc:  # noqa: BLE001 - best effort: the record can be lost, the order is settled either way
+        log.warning("alpaca paper order #%s: ARMED_BEFORE_STOP not recorded (%s)", intent_id, type(exc).__name__)
+        return frozenset()
 
 
 def _post_once(intent_id: int, row: dict) -> dict:
@@ -549,20 +640,38 @@ def confirm(preview_id: int, preview_hash: str) -> dict:
             return {"intent": _view(st.intent(preview_id)), "already_confirmed": True, "outcome": None}
         _INFLIGHT.add(preview_id)
         try:
-            try:
-                fail = _gate_failure(_fresh_gates(st, row, s, include_daily=True))
-            except OrderError as exc:
-                fail = {"code": "BROKER_READ_FAILED", "text": exc.message}
+            klass = klass_at = None
+            stop0 = st.stop_state()                                           # Emergency Stop order gate: before any broker read
+            pre = _pre_gate_refusal(stop0, row)
+            if pre:
+                fail = {"code": pre, "text": RU.RULE_TEXT[pre]}
+            else:
+                try:
+                    gates, klass, klass_at = _fresh_gates(st, row, s, include_daily=True, stop=stop0)
+                    fail = _gate_failure(gates)
+                except OrderError as exc:
+                    fail = {"code": "BROKER_READ_FAILED", "text": exc.message}
             if fail:
                 with st.write() as c:
                     st.transition(c, preview_id, {RU.CONFIRMING}, RU.CONFIRM_REJECTED, _now(), kind="CONFIRM_REJECTED",
                                   error_code=fail["code"], error_text=(fail["text"] or fail["code"])[:200])
                 raise OrderError("CONFIRM_REJECTED", fail["text"], reason=fail["code"], intent=_view(st.intent(preview_id)))
-            t = _now()
-            with st.write() as c:                                             # write-ahead: committed BEFORE the POST
-                armed = st.transition(c, preview_id, {RU.CONFIRMING}, RU.SUBMISSION_PENDING, t, kind="SUBMIT_STARTED",
-                                      submit_attempts=row["submit_attempts"] + 1, last_submit_at=_iso(t), lookups_not_found=0,
-                                      first_not_found_at=None)
+            with st.write() as c:                                             # write-ahead: committed BEFORE the POST; BEGIN IMMEDIATE, no network
+                t = _now()                                                    # inside the transaction: a lock wait counts against the age
+                stop = st.stop_state(c)                                       # the latch as committed now (design 3.3): one total order with a stop
+                why = _arm_refusal(st, c, stop, klass, klass_at, t, row["symbol"])
+                if why:
+                    st.transition(c, preview_id, {RU.CONFIRMING}, RU.CONFIRM_REJECTED, t, kind="CONFIRM_REJECTED",
+                                  error_code=why, error_text=RU.RULE_TEXT[why][:200])
+                    armed = False
+                else:
+                    armed = st.transition(c, preview_id, {RU.CONFIRMING}, RU.SUBMISSION_PENDING, t, kind="SUBMIT_STARTED",
+                                          submit_attempts=row["submit_attempts"] + 1, last_submit_at=_iso(t), lookups_not_found=0,
+                                          first_not_found_at=None)
+                    if armed and stop == RU.STOP_ON:
+                        st.event(c, preview_id, "STATUS_CHANGE", t, code=RU.STOP_EXIT_ALLOWED)   # in this transaction: a crash cannot lose it
+            if why:
+                raise OrderError("CONFIRM_REJECTED", RU.RULE_TEXT[why], reason=why, intent=_view(st.intent(preview_id)))
             if not armed:                                                     # the intent left CONFIRMING meanwhile: no POST
                 cur = st.intent(preview_id)
                 raise OrderError("CONFIRM_REJECTED", cur["error_text"] or "The order changed state before it was committed for "
@@ -570,7 +679,8 @@ def confirm(preview_id: int, preview_hash: str) -> dict:
                                  intent=_view(cur))
             res = _post_once(preview_id, row)
             final, outcome = _settle(st, preview_id, res)
-            return {"intent": _view(final), "already_confirmed": False, "outcome": outcome}
+            return {"intent": _view(final, armed=_armed_before_stop(st, preview_id, stop, final)), "already_confirmed": False,
+                    "outcome": outcome}
         finally:
             _INFLIGHT.discard(preview_id)
 
@@ -594,7 +704,12 @@ def retry(intent_id: int, preview_hash: str) -> dict:
             raise OrderError("ATTEMPTS_EXHAUSTED", "This order already had 3 submission attempts.")
         _INFLIGHT.add(intent_id)
         try:
-            fail = _gate_failure(_fresh_gates(st, row, s, include_daily=False))
+            stop0 = st.stop_state()                                           # Emergency Stop order gate: state unchanged, 0 requests
+            pre = _pre_gate_refusal(stop0, row)
+            if pre:
+                raise OrderError("RETRY_REJECTED", RU.RULE_TEXT[pre], reason=pre, intent=_view(row))
+            gates, klass, klass_at = _fresh_gates(st, row, s, include_daily=False, stop=stop0)
+            fail = _gate_failure(gates)
             if fail:
                 raise OrderError("RETRY_REJECTED", fail["text"], reason=fail["code"], intent=_view(row))
             found, obj = _lookup(row)                                         # exact lookup immediately before any POST
@@ -615,17 +730,27 @@ def retry(intent_id: int, preview_hash: str) -> dict:
                     st.transition(c, intent_id, {RU.RR}, RU.RR, now, kind="LOOKUP", **fields)
                 raise OrderError("NOT_FOUND_RULE", "Retry needs at least 2 exact lookups finding nothing over at least 30 "
                                  "seconds. Check the order status again later.")
-            with st.write() as c:
-                armed = st.transition(c, intent_id, {row["state"]}, RU.SUBMISSION_PENDING, now, kind="RETRY",
-                                      submit_attempts=row["submit_attempts"] + 1, last_submit_at=_iso(now), lookups_not_found=0,
-                                      first_not_found_at=None, last_lookup_at=_iso(now), error_code=None, error_text=None,
-                                      http_status=None, broker_error_code=None)
+            with st.write() as c:                                             # the arm: the latch is read IN this transaction (design 3.3)
+                t = _now()
+                stop = st.stop_state(c)
+                why = _arm_refusal(st, c, stop, klass, klass_at, t, row["symbol"])
+                armed = False
+                if not why:
+                    armed = st.transition(c, intent_id, {row["state"]}, RU.SUBMISSION_PENDING, now, kind="RETRY",
+                                          submit_attempts=row["submit_attempts"] + 1, last_submit_at=_iso(now), lookups_not_found=0,
+                                          first_not_found_at=None, last_lookup_at=_iso(now), error_code=None, error_text=None,
+                                          http_status=None, broker_error_code=None)
+                    if armed and stop == RU.STOP_ON:
+                        st.event(c, intent_id, "STATUS_CHANGE", t, code=RU.STOP_EXIT_ALLOWED)
+            if why:                                                           # refused by the stop: the intent stays as it was, 0 POST
+                raise OrderError("RETRY_REJECTED", RU.RULE_TEXT[why], reason=why, intent=_view(st.intent(intent_id)))
             if not armed:                                                     # the order changed state meanwhile: no POST
                 raise OrderError("NOT_RETRYABLE", "The order changed state before it was committed for submission. Nothing was sent.",
                                  intent=_view(st.intent(intent_id)))
             res = _post_once(intent_id, row)
             final, outcome = _settle(st, intent_id, res)
-            return {"intent": _view(final), "linked_without_post": False, "outcome": outcome}
+            return {"intent": _view(final, armed=_armed_before_stop(st, intent_id, stop, final)), "linked_without_post": False,
+                    "outcome": outcome}
         finally:
             _INFLIGHT.discard(intent_id)
 
@@ -698,4 +823,5 @@ def check_status() -> dict:
             else:
                 final = row
             results.append({"intent_id": row["intent_id"], "result": found, "state": final["state"]})
-        return {"checked": len(rows), "results": results, "intents": [_view(r) for r in st.intents(100)]}
+        armed = frozenset(st.armed_before_stop_ids())
+        return {"checked": len(rows), "results": results, "intents": [_view(r, None, armed) for r in st.intents(100)]}
