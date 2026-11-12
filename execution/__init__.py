@@ -12,7 +12,7 @@ Boundaries (tests/test_execution_60.py pins them):
   - the safety gate blocks NEW ENTRIES only; deterministic risk-reducing exits continue; an Emergency Stop never liquidates;
   - the user controls the mode (MONITOR_ONLY by default; PAPER_AUTO is an explicit, persisted choice).
 """
-VERSION = "execution_v4"                                     # Emergency Stop order gate (C-7): the latch is read in the transaction that records an entry's attempt; a new 6.10A cohort
+VERSION = "execution_v5"                                     # bot-position recovery (design 3.5, section 6): enable_auto and run_cycle reconcile while unhealthy with nothing open; a new 6.10A cohort
 STAGE = "6.0"
 
 MODES = ("MONITOR_ONLY", "PAPER_AUTO")
@@ -40,7 +40,8 @@ POSITION_OPEN = frozenset({"OPEN", "HEALTHY", "WEAKENING", "EXIT_REQUIRED", "EXI
 EXIT_REASONS = ("HARD_INVALIDATION", "EVIDENCE_INVALIDATION", "SETUP_INVALIDATED", "DEMAND_FAILURE", "TIME_EXIT", "DISLOCATION_NORMALIZED")
 EXIT_TEXT = {"HARD_INVALIDATION": "Price reached the invalidation level", "EVIDENCE_INVALIDATION": "New company-specific evidence contradicted the setup",
              "SETUP_INVALIDATED": "The setup was invalidated", "DEMAND_FAILURE": "Demand stayed too weak", "TIME_EXIT": "Maximum holding time reached",
-             "DISLOCATION_NORMALIZED": "The dislocation normalized"}
+             "DISLOCATION_NORMALIZED": "The dislocation normalized",
+             "MANUAL_EXTERNAL": "Closed outside the app"}               # bot-position recovery: a close recorded by execution/recovery.py; NOT in EXIT_REASONS (not a strategy exit)
 
 # liveness controls (database rows: last evaluated, last fired, counts, last result, last error)
 CONTROLS = ("PAPER_ENVIRONMENT", "EXECUTION_MODE", "SAFETY_GATE", "PROPOSAL_VALIDITY", "SESSION_POLICY", "DUPLICATE_ENTRY", "MAX_OPEN_POSITIONS", "BROKER_ACCOUNT",

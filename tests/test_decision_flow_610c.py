@@ -641,7 +641,7 @@ def test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_stra
     assert edited == FL.EDITED_610C, {"unexpected": sorted(edited - FL.EDITED_610C), "missing": sorted(FL.EDITED_610C - edited)}
     changed = set(_git("diff", "--name-only", FL.BASE_610C).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
-    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
+    later = FL.NEW_541 | FL.EDITED_541 | FL.NEW_611FIX | FL.EDITED_611FIX | FL.NEW_OPS | FL.EDITED_OPS | FL.NEW_610D | FL.EDITED_610D | FL.NEW_542 | FL.EDITED_542 | FL.NEW_70 | FL.EDITED_70 | FL.NEW_71 | FL.EDITED_71 | FL.NEW_72 | FL.EDITED_72 | FL.NEW_73 | FL.EDITED_73 | FL.NEW_731 | FL.EDITED_731 | FL.NEW_74 | FL.EDITED_74 | FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC                     # Stage 5.4.1 / the 6.1.1 CSS fix, each pinned by its own F tests
     assert changed == FL.NEW_610C | FL.EDITED_610C | later, {"unexpected": sorted(changed - FL.NEW_610C - FL.EDITED_610C - later),
                                                               "missing": sorted((FL.NEW_610C | FL.EDITED_610C | later) - changed)}
     for d in STAGE_DIRS_NOT_TOUCHED:
@@ -657,8 +657,10 @@ def test_F02_execution_setups_auto_run_and_the_live_coverage_are_byte_identical_
     for d in ("execution", "setups", "autorun", "trader_view", "forward_capture", "safety", "proposals"):
         for p in sorted((ROOT / d).glob("*.py")):
             rel = p.relative_to(ROOT).as_posix()
+            if rel in FL.NEW_REC:
+                continue                                                                # bot-position recovery's new command: tests/test_recovery_freeze.py pins it
             assert post(rel) == at_base(rel), rel                                       # the executor, the strategy, startup demotion and MANUAL_ARM: untouched
-            assert now_text(rel) == post(rel) or rel in FL.SEMANTIC_541 or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B or rel in FL.SEMANTIC_W2C or rel in FL.SEMANTIC_EX06 or rel in FL.SEMANTIC_XSS01 or rel in FL.SEMANTIC_PANEL or rel in FL.SEMANTIC_J04 or rel in FL.SEMANTIC_GATE, rel   # since then: only Stage 5.4.1's and Wave 1's declared corrections
+            assert now_text(rel) == post(rel) or rel in FL.SEMANTIC_541 or rel in FL.SEMANTIC_W1 or rel in FL.SEMANTIC_W2A or rel in FL.SEMANTIC_W2B or rel in FL.SEMANTIC_W2C or rel in FL.SEMANTIC_EX06 or rel in FL.SEMANTIC_XSS01 or rel in FL.SEMANTIC_PANEL or rel in FL.SEMANTIC_J04 or rel in FL.SEMANTIC_GATE or rel in FL.SEMANTIC_REC, rel   # since then: only Stage 5.4.1's and Wave 1's declared corrections
     for rel in ("scanner/watchlist.py", "watchlist.txt", "data/sector_map.py"):
         assert now_text(rel) == at_base(rel), rel                                       # live ticker coverage: watchlist.txt as before
     import execution as X

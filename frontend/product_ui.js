@@ -400,6 +400,7 @@
       else if (e.kind === "CLOSED") push(e.at, `${s} · Trade closed · ${closedPnl(e)}`, "", "exit", s);
       else if (e.kind === "ATTENTION") push(e.at, `${s} · Needs attention · ${words(e.reason)}`, "bad", "attention", s);
       else if (e.kind === "ATTENTION_CLEARED") push(e.at, `${s} · Attention cleared`, "", "attention", s);
+      else if (e.kind === "MANUAL_RECOVERY") push(e.at, `${s} · Position record corrected by ${(e.detail && e.detail.actor) || "the operator"}: ${(e.detail && e.detail.reason) || "no reason recorded"}`, "bad", "attention", s);   // bot-position recovery (decision R-3): the event's detail; activityHtml escapes it
     }
     const SAFETY_EVENT = { PAUSE_ON: ["New automatic entries paused", "warn"], PAUSE_OFF: ["New trades resumed", ""], KILL_ON: ["Emergency Stop on", "bad"], KILL_OFF: ["Emergency stop cleared", ""],
                            DAILY_HALT_TRIGGERED: ["Daily loss limit reached · New automatic entries stopped", "bad"], DAILY_RESET: ["New trading day · daily halt reset", ""], BASELINE_CREATED: ["Daily risk baseline set", ""],

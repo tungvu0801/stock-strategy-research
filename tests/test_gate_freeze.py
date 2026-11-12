@@ -97,13 +97,43 @@ def at_base(rel):
     return at(FL.BASE_GATE, rel)
 
 
+# Bot-position recovery (design 7a, its design section 13 step 1, as the gate did for J-04): the files the recovery edits are read at BASE_REC, the
+# gate's side as merged (PR #60), a commit that cannot change; the gate's change set is the fixed diff to BASE_REC and its ledger checks read the
+# ledger there. tests/test_recovery_freeze.py F06R pins that this list is exactly the recovery's edited files.
+REC_MOVED = ('.github/ci/pytest_groups.json', 'README.md', 'execution/__init__.py', 'execution/service.py', 'forward_capture/capture.py',
+             'forward_validation/reports.py', 'forward_validation/service.py', 'frontend/product_ui.js', 'tests/freeze_ledger.py',
+             'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py',
+             'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+             'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py', 'tests/test_forward_paper_610a.py',
+             'tests/test_j04_freeze.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py',
+             'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py',
+             'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_panel_freeze.py',
+             'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py',
+             'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py',
+             'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py',
+             'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py', 'tests/test_wave2_prc_drawdown.py')
+
+
+def at_rec(rel):
+    return at(FL.BASE_REC, rel)
+
+
+def ledger_rec():
+    """The ledger as the recovery found it (BASE_REC): the hashes the gate's bookkeeping is checked against."""
+    t = at_rec("tests/freeze_ledger.py")
+    led = t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]
+    return ast.literal_eval(led[len("LEDGER = "):])
+
+
 def now_text(rel):
+    if rel in REC_MOVED:
+        return at_rec(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # bot-position recovery (design 7a): the gate's side is the fixed diff from `base` to BASE_REC; the working tree's change set belongs to tests/test_recovery_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_REC).split())
 
 
 def line_ops(rel):
@@ -146,7 +176,7 @@ def test_F01G_the_change_set_is_exactly_the_declared_files_and_the_writer_routes
     assert changed == FL.NEW_GATE | FL.EDITED_GATE, {"unexpected": sorted(changed - FL.NEW_GATE - FL.EDITED_GATE), "missing": sorted((FL.NEW_GATE | FL.EDITED_GATE) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_GATE).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_GATE == NEW_FILES_GATE and {p for p in changed if p in in_base} == FL.EDITED_GATE
-    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_GATE).split()
+    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_GATE, FL.BASE_REC).split()
     production = {p for p in FL.EDITED_GATE if not p.startswith(("tests/", "browser_tests/", ".github/"))}
     assert production == PROD_GATE | DOCS_GATE and set(FL.SEMANTIC_GATE) == PROD_GATE | DOCS_GATE | HARNESS_GATE
     assert {p for p in FL.EDITED_GATE if p.startswith("tests/") and not p.endswith((".py", ".cjs"))} == TESTS_EDITED_GATE
@@ -155,14 +185,14 @@ def test_F01G_the_change_set_is_exactly_the_declared_files_and_the_writer_routes
     assert {p for p in changed if p.startswith(("paper/", "execution/", "safety/"))} == {p for p in PROD_GATE | DOCS_GATE if p.startswith(("paper/", "execution/", "safety/"))}
     for rel in UNTOUCHED_GATE:
         assert rel not in changed and now_text(rel) == at_base(rel), rel
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_GATE, "--", "paper/alpaca_order_writer.py", "api", "database", "frontend/alpaca_orders.js",
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_GATE, FL.BASE_REC, "--", "paper/alpaca_order_writer.py", "api", "database", "frontend/alpaca_orders.js",
                            "execution/broker.py", "safety/service.py", "safety/store.py", "config.py"], cwd=ROOT).returncode == 0
     groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g not in ("core", "paper")} == {g: v for g, v in base_groups.items() if g not in ("core", "paper")}
     for g, after, new in (("core", "test_j04_freeze.py", "test_gate_freeze.py"), ("paper", "test_alpaca_orders_46b.py", "test_stop_order_gate.py")):
         i = base_groups[g]["files"].index(after) + 1
         assert groups[g] == {**base_groups[g], "files": base_groups[g]["files"][:i] + [new] + base_groups[g]["files"][i:]}, g
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_rec()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # the recovery: the manifest and its hash, both at BASE_REC
 
 
 def test_F02G_the_declared_lines_and_definitions_change_and_nothing_else():
@@ -252,7 +282,7 @@ def test_F05G_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_GATE}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_GATE})
     for rel in rehashed | FL.NEW_LEDGER_GATE:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_rec()[rel], rel                     # the recovery: the gate's hashes against the gate's texts, both at BASE_REC
     start = fl.index("\n\nEmergency Stop order gate (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_GATE = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)

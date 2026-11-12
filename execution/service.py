@@ -261,7 +261,7 @@ class ExecutionService:
                 raise ExecutionRefused("SAFETY_GATE_UNKNOWN", "Safety status unavailable")
             if not self.ready:
                 self.startup(now)
-            elif self.needs_broker():
+            elif self.needs_broker() or not self.recon_healthy:                # bot-position recovery (design 3.5, section 6): also with nothing open
                 self.broker.reset_budget()
                 self._reconcile(now, "ENABLE", None)
             if not self.recon_healthy:
@@ -306,7 +306,7 @@ class ExecutionService:
             if not self.ready:
                 self.startup(now)
             mode = self.mode()["mode"]
-            if not self.needs_broker():
+            if not self.needs_broker() and self.recon_healthy:                 # bot-position recovery (design 3.5, section 6): an unhealthy executor reconciles
                 self.last_cycle = {"at": _iso(now), "finished_at": _iso(now), "result": "IDLE", "trigger": trigger, "mode": mode}
                 return self.last_cycle                                            # nothing to do: no broker call, no write
             summary: Dict[str, Any] = {"trigger": trigger, "mode": mode}

@@ -141,9 +141,32 @@ def ledger_gate():
     return ast.literal_eval(led[len("LEDGER = "):])
 
 
+# Bot-position recovery (design 7a, its design section 13 step 1, as the gate did here): the files the recovery edits are read at BASE_REC, J-04's
+# side as the gate left it (the files both edit stay at BASE_GATE, read first), a commit that cannot change. tests/test_recovery_freeze.py F06R
+# pins that this list is exactly the recovery's edited files.
+REC_MOVED = ('.github/ci/pytest_groups.json', 'README.md', 'execution/__init__.py', 'execution/service.py', 'forward_capture/capture.py',
+             'forward_validation/reports.py', 'forward_validation/service.py', 'frontend/product_ui.js', 'tests/freeze_ledger.py',
+             'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py',
+             'tests/test_dynamic_universe_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+             'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py', 'tests/test_forward_paper_610a.py',
+             'tests/test_gate_freeze.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py',
+             'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py',
+             'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_panel_freeze.py',
+             'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py',
+             'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py',
+             'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py',
+             'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py', 'tests/test_wave2_prc_drawdown.py')
+
+
+def at_rec(rel):
+    return at(FL.BASE_REC, rel)
+
+
 def now_text(rel):
     if rel in GATE_MOVED:
         return at_gate(rel)
+    if rel in REC_MOVED:
+        return at_rec(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
