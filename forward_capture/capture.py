@@ -633,7 +633,8 @@ class ForwardCapture:
                 execution_id=p.execution_id, position_id=p.position_id, legacy=1 if (p.opened_at or "") < epoch else 0,
                 detail={"first_observed": {"entry_qty": p.entry_qty, "average_entry_price": p.average_entry_price, "state": p.state}, "source": p.source})))
         for r in q("SELECT position_id FROM paper_positions p WHERE p.state = 'CLOSED' AND IFNULL(p.closed_at, '') >= ? AND NOT EXISTS (SELECT 1 FROM forward_capture_decisions d "
-                   "WHERE d.position_id = p.position_id AND d.decision = 'EXITED') ORDER BY closed_at LIMIT 200", (epoch,)):
+                   "WHERE d.position_id = p.position_id AND d.decision = 'EXITED') AND NOT EXISTS (SELECT 1 FROM position_events e WHERE e.position_id = p.position_id "
+                   "AND e.kind = 'MANUAL_RECOVERY') ORDER BY closed_at LIMIT 200", (epoch,)):   # bot-position recovery: never EXITED evidence; excluded in the query (LIMIT 200)
             p = x.store.position(r["position_id"])
             if p is None or p.state != "CLOSED":
                 continue

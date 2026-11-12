@@ -356,8 +356,10 @@ def test_TT08_summaries_stay_on_the_observation_date(tmp_path, monkeypatch):
 def test_TT09_the_610a_lifecycle_time_is_untouched():
     import subprocess
     from pathlib import Path
+    import freeze_ledger as FL
     root = Path(__file__).resolve().parents[1]
     for rel in ("forward_capture/capture.py", "forward_capture/health.py", "forward_capture/cohort.py"):
         base = subprocess.run(["git", "show", f"875bc06dd08b36ace1d3930877f90cb96ff81b08:{rel}"], cwd=root, capture_output=True).stdout
-        assert (root / rel).read_bytes().replace(b"\r\n", b"\n") == base.replace(b"\r\n", b"\n"), rel
+        now = FL.pre_rec(rel, (root / rel).read_bytes().decode("utf-8")).encode("utf-8")   # bot-position recovery: capture.py's declared query change, read as main left it
+        assert now.replace(b"\r\n", b"\n") == base.replace(b"\r\n", b"\n"), rel
         assert "_fill_times" not in (root / rel).read_text(encoding="utf-8")

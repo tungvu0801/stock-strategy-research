@@ -965,6 +965,12 @@ class ForwardValidationService:
         cf = self._safe(lambda: st.cash_flow.freshness(now), {}) or {}
         if cf.get("status") == "STALE" and _n(cf.get("consecutive_failures")) >= _n(cf.get("max_failures") or 3):
             add("PERSISTENT_CASH_FLOW_FAILURE", cf.get("reason"), _n(cf.get("consecutive_failures")))
+        iv = self.interventions((session_date(now) or now.date()).isoformat())       # bot-position recovery (decision R-3): the live note, inline and
+        if iv is None:                                                               # never critical (no ATTENTION_RAISED, no early stop), as MANUAL_ORDERS_UNRESOLVED
+            out.append({"code": "MANUAL_RECOVERY_UNREADABLE", "text": "manual recovery records could not be read", "critical": False, "detail": None, "count": 1})
+        elif iv:
+            out.append({"code": "MANUAL_RECOVERY_IN_SESSION", "text": "a bot position record was corrected with the manual recovery command in this session (an intervention)",
+                        "critical": False, "detail": [f"{i['symbol']} at {i['at']} (by {i['actor']})" for i in iv], "count": len(iv)})
         return out
 
     def _early_stop(self, now: datetime, att: List[dict], sample: dict) -> Optional[dict]:
@@ -1541,15 +1547,16 @@ class ForwardValidationService:
         return self._null_pnl(s if s is not None else self.daily_summary(trading_date, now))
 
     def fresh_daily(self, trading_date: str) -> dict:
-        """The read sites' daily summary: the stored one when its watermark is current, otherwise a fresh bracketed one (not persisted). Never writes."""
+        """The read sites' daily summary: the stored one when its watermark is current, otherwise a fresh bracketed one (not persisted). Never writes.
+        Bot-position recovery (decision R-3): either way it carries `interventions`, read now, never from the stored JSON."""
         stored = self.store.daily(trading_date)
         if stored is not None and stored.get("pnl_watermark") is not None:
             try:
                 if stored["pnl_watermark"] == self.pnl_watermark(trading_date):
-                    return stored
+                    return {**stored, "interventions": self.interventions(trading_date)}
             except Exception:  # noqa: BLE001 - currency unknown: served fresh, never the stored row
                 pass
-        return self.bracketed_summary(trading_date)
+        return {**self.bracketed_summary(trading_date), "interventions": self.interventions(trading_date)}
 
     def fresh_dailies(self, limit: int = 400, newest_first: bool = True) -> List[dict]:
         """fresh_daily() over the stored dates (the stored set and order, as store.dailies()); one watermark read for the currency check."""
@@ -1561,8 +1568,44 @@ class ForwardValidationService:
                 wrows = self.execution.store.pnl_watermark_rows(ny_window(dates[0])[0], ny_window(dates[-1])[1])
             except Exception:  # noqa: BLE001 - currency unknown: every row served fresh
                 wrows = None
-        return [r if wrows is not None and r.get("pnl_watermark") is not None and r["pnl_watermark"] == self.pnl_watermark(r["trading_date"], wrows)
-                else self.bracketed_summary(r["trading_date"]) for r in rows]
+        out = [r if wrows is not None and r.get("pnl_watermark") is not None and r["pnl_watermark"] == self.pnl_watermark(r["trading_date"], wrows)
+               else self.bracketed_summary(r["trading_date"]) for r in rows]
+        iv = self._interventions_by_date([s["trading_date"] for s in out])        # bot-position recovery (decision R-3): one read for the whole range
+        return [{**s, "interventions": iv[s["trading_date"]] if iv is not None else None} for s in out]
+
+    # ---------------------------------------------------------------- bot-position recovery: the intervention note (decision R-3) --------
+    def interventions(self, trading_date: str) -> Optional[List[dict]]:
+        """BOT_POSITION_RECOVERY_DESIGN.md revision 3.5, section 5 step 8 (decision R-3; reviews SD-MED-1 and R-LOW-1): every MANUAL_RECOVERY
+        position event of the date's window, as [{code, at, position_id, symbol, actor}]. The window runs from the end of the New York day of
+        the latest EARLIER date with a session row to the end of the date's own New York day (both through ny_window), so a weekend or holiday
+        recovery belongs to the next session; with no earlier session it is the date's own New York day. Strict reads (query_strict): any
+        read error is None, never [], so a read error is never shown as "no recovery". Reads only."""
+        out = self._interventions_by_date([trading_date])
+        return None if out is None else out[trading_date]
+
+    def _interventions_by_date(self, dates: List[str]) -> Optional[Dict[str, List[dict]]]:
+        """interventions() of several dates from ONE read of the session dates and ONE read of the events; None on any error."""
+        if not dates:
+            return {}
+        try:
+            known = sorted(r["trading_date"] for r in self.store.query_strict("SELECT trading_date FROM forward_validation_sessions"))
+            bounds = {}
+            for d in dates:
+                earlier = [s for s in known if s < d]
+                bounds[d] = (ny_window(earlier[-1])[1] if earlier else ny_window(d)[0], ny_window(d)[1])
+            rows = self.store.query_strict("SELECT e.at, e.position_id, e.detail_json, p.symbol FROM position_events e JOIN paper_positions p ON p.position_id = e.position_id "
+                                           "WHERE e.kind = 'MANUAL_RECOVERY' AND e.at >= ? AND e.at < ? ORDER BY e.at, e.rowid",
+                                           (min(b[0] for b in bounds.values()), max(b[1] for b in bounds.values())))
+            items = []
+            for r in rows:
+                detail = json.loads(r["detail_json"] or "{}")
+                if not isinstance(detail, dict):
+                    raise ValueError("a MANUAL_RECOVERY event's detail is not an object")
+                items.append({"code": "MANUAL_RECOVERY_IN_SESSION", "at": r["at"], "position_id": r["position_id"], "symbol": r["symbol"], "actor": detail.get("actor")})
+            return {d: [i for i in items if lo <= i["at"] < hi] for d, (lo, hi) in bounds.items()}
+        except Exception as exc:  # noqa: BLE001 - unreadable is None, never "no recovery"
+            log.warning("forward validation: manual recovery records unreadable (%s)", type(exc).__name__)
+            return None
 
     @staticmethod
     def _pnl_content(s: Optional[dict]) -> str:

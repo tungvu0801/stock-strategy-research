@@ -817,7 +817,7 @@ None of these commands is needed in normal use.
 | F3 | The server does not answer | **No stop can be saved.** Use Alpaca's website to cancel orders or close positions. Then decide about the process | The bot keeps running while the process lives |
 | F4 | F3, and automatic activity must end now | Run `.\scripts\stop_stock_agent.ps1` from the app folder (see below) | Stopping ends the bot's exit rules and reconciliation too; orders at Alpaca keep working |
 | F5 | The dashboard reads "Risk status unknown" with the line "Automatic entries are blocked. Manual paper orders are refused if the Emergency Stop state cannot be read. While Emergency Stop is active, BUYs are refused and a SELL is checked.": the server cannot read its safety state | Automatic entries are blocked. Use Alpaca's website if you must act. `scripts\check_stock_agent.ps1` and the order list stay available. If the page instead shows "Risk controls unavailable" or "Could not confirm the current state.", its last read failed or is old and nothing is known: press Emergency Stop (F1), use F2 if the bar says it is unavailable or Emergency Stop stays NOT confirmed after a second press, and F3 only if the F2 commands get no answer | This state alone does not block manual paper orders. They are refused while the Emergency Stop state cannot be read, and gated as below while it is active |
-| F6 | You closed or reduced a bot position on Alpaca's website | Expect **Needs attention**. Any remainder has no automatic exit. New entries and Paper Auto stay refused, even after a Clear, until a recovery command ships. Editing the database by hand is not a route | Nothing in the app resolves it yet |
+| F6 | You closed or reduced a bot position on Alpaca's website | Expect **Needs attention**. Any remainder has no automatic exit. New entries and Paper Auto stay refused, even after a Clear, until you run the recovery command (F6 in detail, below). Editing the database by hand is not a route | The command corrects the bot's record from the stored account data. It places, cancels and changes no order |
 
 **F2 commands** (PowerShell, `curl.exe`):
 
@@ -840,6 +840,28 @@ bot's exit rules and reconciliation resume. If `PAPER_AUTO_RUN_POLICY=SCHEDULED_
 (both are off by default), the scheduled arm can arm Paper Auto once per session after that restart: check the policy before relying on
 Monitor only. A task trigger (logon, weekdays) also starts the server again later, after a deliberate stop. **After any restart, press
 Emergency Stop first:** a restart reads the saved latch, so a stop saved earlier still holds; a stop that was never saved does not.
+
+**F6 in detail: the recovery command.** Set Monitor only, keep the server running, wait for the next account refresh, then run from the app folder, with the
+server's env file: `python -m execution.recovery preview --position-id <id>`, then `python -m execution.recovery apply --position-id <id> --evidence-hash <hash>
+--approved-by <your name> --reason <text>`, adding `--i-confirmed-flat-on-the-website` for a full close once you have looked at Alpaca's positions page. It works
+from the database only and never contacts Alpaca. It reads this checkout's `.env` only: `preview` prints the database it reads and the settings it applies
+(the refresh intervals and the exit-attempt limit); if the server runs with an overrides file and they differ, set the server's values in the shell first,
+for example `$env:EXECUTION_MAX_EXIT_CYCLES = "2"`. It refuses unless the position needs attention because the broker is flat, the quantities differ or its exit
+attempts are used up; Paper Auto is off; no bot order and no manual order is open or unresolved in the symbol, and no manual order of the symbol changed since
+the last account refresh began; the account data refreshed without a failure, after the position's latest finding, at most two refresh intervals ago (600 s for
+a partial), and lists no open order in the symbol, an order placed on the website included; the broker shows fewer whole shares than the record, on a long;
+the latest finding agrees; the bot's loop ran in the last 600 s; and, for a partial, an exit attempt is left. **S1:** do not trade the symbol on Alpaca's
+website between `preview` and the first cycle after `apply`. **S5:** watch that first cycle, without restarting the server before it, and read the Risk
+card: a blocking "broker position without an internal position" finding means shares arrived, so sell them on the website. **S6:** prefer a time outside
+regular hours; a resting order placed on the website still fills at the next open, and the command sees it only if the account data lists it, so S1 covers
+the rest. A recovery on a weekend or holiday shows in the next session's report. **The known cost:** a fill that lands between the newest account read and
+`apply`, from an order placed against S1, leaves shares the app has no record of and no automatic exit. The first cycle after `apply` reports them (S5); a fill
+after that cycle shows only as "Not managed · needs a look" among the account's positions until Paper Auto is armed. Sell such shares on the website. A
+partial gives the remainder its exit rules back, so a SELL of the remainder can follow in the next cycle if any exit rule is met; outside regular hours it
+can come at the first cycle of the next session, and neither Monitor only nor Emergency Stop prevents it. A recovered trade stays unverified and is no
+strategy evidence, though the funnel still counts the close. The command changes no Emergency Stop, Pause or daily-loss halt. Paper Auto stays off until
+you enable it, or until the scheduled arm does if `PAPER_AUTO_RUN_POLICY=SCHEDULED_ARM` and `PAPER_AUTO_SCHEDULED_ARM_ENABLED=true` are both set (both
+are off by default).
 
 **What Emergency Stop and Pause do.** Both block **new automatic entries** once saved. Neither cancels an order at Alpaca or closes a
 position. The bot's exit rules keep running while a position is monitored; a position marked Needs attention gets no automatic exit.

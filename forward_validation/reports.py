@@ -184,6 +184,10 @@ def daily_report(summary: Dict[str, Any]) -> str:
     out.append("NOTES")
     for a in s.get("attention") or []:
         out.append(f"  attention: {a.get('code')} at {a.get('at')}")
+    if "interventions" in s and s["interventions"] is None:                            # bot-position recovery (decision R-3): a read error is never "no recovery"
+        out.append("  interventions: unreadable")
+    for i in s.get("interventions") or []:                                           # an absent key (daily_summary(), store.daily()) or [] prints nothing
+        out.append(f"  intervention: {i.get('code')} {i.get('symbol')} at {i.get('at')} (by {i.get('actor')})")
     out.append(f"  {INSUFFICIENT_TEXT}: one session is never a strategy conclusion.")
     out.append("  No threshold, rule, size or exit was changed. Alpaca PAPER only; no real money.")
     return "\n".join(out) + "\n"
