@@ -245,7 +245,7 @@ def test_F01C_the_change_set_is_exactly_the_declared_files():
 def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel))))))))                        # EX-06: its own in-place edits undone first (F02X)
+        b, n = defs(at_base(rel)), defs(FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_exp(rel, now_text(rel)))))))))                        # EX-06: its own in-place edits undone first (F02X)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_W2C)
@@ -262,7 +262,7 @@ def test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_
 def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_W2C) == {p for p in FL.EDITED_W2C if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_W2C):
-        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
+        assert FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_exp(rel, now_text(rel))))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte
     main_fl = at_base("tests/freeze_ledger.py")
     fl = subprocess.run(["git", "show", f"{FL.BASE_EX06}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # EX-06: the ledger as PR #53 left it
     for a in ("LEDGER = {", "BASE_W2A = ", "BASE_W2B = ", "BASE_W2C = ", "\n\ndef unchanged(", "\n\ndef pre_w2b(", "\n\ndef pre_w2c(", "\nWave 2 PR B (the Stage 6.1"):
@@ -286,7 +286,7 @@ def test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_on
     assert set(prc_ledger) - set(main_ledger) == FL.NEW_LEDGER_W2C and set(main_ledger) <= set(prc_ledger)
     assert {k for k in main_ledger if main_ledger[k] != prc_ledger[k]} == FL.EDITED_W2C & set(main_ledger)
     for rel in sorted(FL.NEW_LEDGER_W2C):
-        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, FL.pre_rec(rel, now_text(rel)))))))))))), rel   # unchanged from BASE_68 to main: the view IS main's text
+        assert FL.base_text(rel) == at_base(rel) == FL.undo_w2c(rel, FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_exp(rel, FL.pre_w2c(rel, FL.pre_ex06(rel, FL.pre_gate(rel, FL.pre_rec(rel, now_text(rel))))))))))))), rel   # unchanged from BASE_68 to main: the view IS main's text
     for rel in FL.LEDGER:
         assert FL.view(rel, FL.now_text(rel)) == FL.base_text(rel), rel
     FL.UNDO_W2C["tests/_probe.py"] = [("y = 2\n", "y = 3\n")]

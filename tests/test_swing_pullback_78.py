@@ -1034,7 +1034,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_78, FL.BASE_78B1).split())               # Stage 7.8 itself, between two fixed commits
     assert stage == FL.NEW_78 | FL.EDITED_78, {"unexpected": sorted(stage - FL.NEW_78 - FL.EDITED_78), "missing": sorted((FL.NEW_78 | FL.EDITED_78) - stage)}
-    later = FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC                                                     # Stage 7.8B-1, pinned by its own F tests
+    later = FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC | FL.NEW_EXP | FL.EDITED_EXP                                                     # Stage 7.8B-1, pinned by its own F tests
     assert changed == FL.NEW_78 | FL.EDITED_78 | later, {"unexpected": sorted(changed - FL.NEW_78 - FL.EDITED_78 - later),
                                                          "missing": sorted((FL.NEW_78 | FL.EDITED_78 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_78).split())

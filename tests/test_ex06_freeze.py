@@ -134,7 +134,7 @@ def test_F01X_the_change_set_is_exactly_the_declared_files():
 def test_F02X_every_changed_older_test_function_is_declared():
     actual = set()
     for rel in sorted(p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith(".py") and p != "tests/freeze_ledger.py"):
-        b, n = defs(at_base(rel)), defs(FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))                     # XSS-01: its own in-place edits undone first (tests/test_xss01_freeze.py)
+        b, n = defs(at_base(rel)), defs(FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_exp(rel, now_text(rel))))))))                     # XSS-01: its own in-place edits undone first (tests/test_xss01_freeze.py)
         assert set(b) <= set(n), (rel, sorted(set(b) - set(n)))
         actual |= {f"{rel}::{k}" for k in set(n) if b.get(k) != n[k]}
     declared = set(FL.SEMANTIC_TESTS_EX06)
@@ -148,7 +148,7 @@ def test_F02X_every_changed_older_test_function_is_declared():
 def test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries():
     assert set(FL.UNDO_EX06) == {p for p in FL.EDITED_EX06 if p.startswith("tests/") and p.endswith((".py", ".cjs"))} - {"tests/freeze_ledger.py"}
     for rel in sorted(FL.UNDO_EX06):
-        assert FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel))))))) == at_base(rel), rel       # now -> (XSS-01 undone) 9df1717a -> 46ebc656, byte for byte
+        assert FL.undo_ex06(rel, FL.undo_xss01(rel, FL.undo_panel(rel, FL.undo_j04(rel, FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_exp(rel, now_text(rel)))))))) == at_base(rel), rel       # now -> (XSS-01 undone) 9df1717a -> 46ebc656, byte for byte
     fl = subprocess.run(["git", "show", f"{FL.BASE_XSS01}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True).stdout.decode("utf-8").replace("\r\n", "\n")   # XSS-01: the ledger as PR #55 left it
     main_fl = at_base("tests/freeze_ledger.py")
     for a in ("LEDGER = {", "BASE_W2C = ", "BASE_EX06 = ", "\n\ndef unchanged(", "\n\ndef pre_w2c(", "\n\ndef pre_ex06(", "\nWave 2 PR C (design", "\nEX-06 ("):
