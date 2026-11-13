@@ -28,6 +28,8 @@
         "test_j04_freeze.py",
         "test_gate_freeze.py",
         "test_recovery_freeze.py",
+        "test_explorer_freeze.py",
+        "test_market_explorer_a0.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
         "test_daily_brief_42.py",

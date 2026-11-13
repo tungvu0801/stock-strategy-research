@@ -104,13 +104,40 @@ def at_base(rel):
     return at(FL.BASE_REC, rel)
 
 
+# Market Explorer A0 (design 7a, as the recovery did for the order gate): the files the explorer stage edits are read at BASE_EXP, the recovery's side
+# as merged (PR #62), a commit that cannot change; the recovery's change set is the fixed diff to BASE_EXP and its ledger checks read the ledger
+# there. tests/test_explorer_freeze.py F06E pins that this list is exactly the explorer stage's edited files.
+EXP_MOVED = ('.github/ci/pytest_groups.json', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py',
+             'tests/test_decision_flow_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+             'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py', 'tests/test_forward_paper_610a.py', 'tests/test_market_intel_70.py',
+             'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py',
+             'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py',
+             'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py',
+             'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py',
+             'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py',
+             'tests/test_wave2_prc.py')
+
+
+def at_exp(rel):
+    return at(FL.BASE_EXP, rel)
+
+
+def ledger_exp():
+    """The ledger as the explorer stage found it (BASE_EXP): the hashes the recovery's bookkeeping is checked against."""
+    t = at_exp("tests/freeze_ledger.py")
+    led = t[t.index("\nLEDGER = {\n") + 1:t.index("}\n", t.index("\nLEDGER = {\n")) + 2]
+    return ast.literal_eval(led[len("LEDGER = "):])
+
+
 def now_text(rel):
+    if rel in EXP_MOVED:
+        return at_exp(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # Market Explorer A0 (design 7a): the recovery's side is the fixed diff from `base` to BASE_EXP; the working tree's change set belongs to tests/test_explorer_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_EXP).split())
 
 
 def line_ops(rel):
@@ -152,7 +179,7 @@ def test_F01R_the_change_set_is_exactly_the_declared_files_and_the_broker_store_
     assert changed == FL.NEW_REC | FL.EDITED_REC, {"unexpected": sorted(changed - FL.NEW_REC - FL.EDITED_REC), "missing": sorted((FL.NEW_REC | FL.EDITED_REC) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_REC).split())
     assert {p for p in changed if p not in in_base} == FL.NEW_REC == NEW_FILES_REC and {p for p in changed if p in in_base} == FL.EDITED_REC
-    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_REC).split()
+    assert not _git("diff", "--name-only", "--diff-filter=D", FL.BASE_REC, FL.BASE_EXP).split()
     production = {p for p in FL.EDITED_REC if not p.startswith(("tests/", "browser_tests/", ".github/"))}
     assert production == PROD_REC | DOCS_REC and set(FL.SEMANTIC_REC) == PROD_REC | DOCS_REC
     assert all(len(v) > 60 for v in FL.SEMANTIC_REC.values())
@@ -160,14 +187,14 @@ def test_F01R_the_change_set_is_exactly_the_declared_files_and_the_broker_store_
     assert {p for p in changed if p.startswith("execution/")} == {"execution/service.py", "execution/__init__.py", "execution/recovery.py"}
     for rel in UNTOUCHED_REC:
         assert rel not in changed and now_text(rel) == at_base(rel), rel
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_REC, "--", "api", "database", "safety", "paper", "account_refresh", "config.py", "execution/broker.py",
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_REC, FL.BASE_EXP, "--", "api", "database", "safety", "paper", "account_refresh", "config.py", "execution/broker.py",
                            "execution/store.py", "execution/engine.py"], cwd=ROOT).returncode == 0
     groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g not in ("core", "execution")} == {g: v for g, v in base_groups.items() if g not in ("core", "execution")}
     for g, after, new in (("core", "test_gate_freeze.py", "test_recovery_freeze.py"), ("execution", "test_execution_60.py", "test_bot_position_recovery.py")):
         i = base_groups[g]["files"].index(after) + 1
         assert groups[g] == {**base_groups[g], "files": base_groups[g]["files"][:i] + [new] + base_groups[g]["files"][i:]}, g
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_exp()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # Market Explorer A0: the manifest and its hash, both at BASE_EXP
 
 
 def test_F02R_the_declared_lines_and_definitions_change_and_nothing_else():
@@ -250,7 +277,7 @@ def test_F05R_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_REC}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_REC})
     for rel in rehashed | FL.NEW_LEDGER_REC:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_exp()[rel], rel                     # Market Explorer A0: the recovery's hashes against the recovery's texts, both at BASE_EXP
     start = fl.index("\n\nBot-position recovery (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_REC = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)
