@@ -1527,7 +1527,7 @@ def test_X01_the_new_packages_import_no_broker_execution_store_or_live_module():
 def test_X02_nothing_outside_the_new_packages_and_tests_imports_them():
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("research_data/", "swing_eval/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
+        if rel.startswith(("research_data/", "swing_eval/", "historical_data/calendar.py", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
             continue
         t = p.read_text(encoding="utf-8", errors="replace")
         assert "research_data" not in t and "swing_eval" not in t, rel
@@ -1587,7 +1587,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     stage = set(_git("diff", "--name-only", FL.BASE_78B1, FL.BASE_W1).split())               # Stage 7.8B-1 itself, between two fixed commits
     assert stage == FL.NEW_78B1 | FL.EDITED_78B1, {"unexpected": sorted(stage - FL.NEW_78B1 - FL.EDITED_78B1),
                                                    "missing": sorted((FL.NEW_78B1 | FL.EDITED_78B1) - stage)}
-    later = FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC                              # Wave 1 / Wave 2 PR A, pinned by their own F tests
+    later = FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC | FL.NEW_MDA | FL.EDITED_MDA                              # Wave 1 / Wave 2 PR A, pinned by their own F tests
     assert changed == FL.NEW_78B1 | FL.EDITED_78B1 | later, {"unexpected": sorted(changed - FL.NEW_78B1 - FL.EDITED_78B1 - later),
                                                              "missing": sorted((FL.NEW_78B1 | FL.EDITED_78B1 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_78B1).split())

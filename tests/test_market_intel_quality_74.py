@@ -757,7 +757,7 @@ def test_X01_the_report_reaches_no_network_broker_trading_or_model_has_no_write_
     assert re.findall(r"\bopen\([^)]*\)", src) == ['open(src, "rb")', 'open(dst, "xb")']    # the only file write: the private copy, exclusively
     assert src.count(".unlink(") == 1 and "dst.unlink()" in src                             # a refused copy, in the private directory
     assert src.count("sqlite3.connect(") == 1 and "?mode=ro" in src                         # and it opens only copies, read-only
-    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "tests/", ".venv/",
+    users = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py") if not p.relative_to(ROOT).as_posix().startswith(("market_intel/", "market_scan/", "historical_data/calendar.py", "tests/", ".venv/",
              "scratchpad/")) and "market_intel" in p.read_text(encoding="utf-8", errors="replace")]
     assert users == []
     assert not ST.default_path().exists() and not (ROOT / "runtime" / "market_intel" / "collector.db").exists()
@@ -988,7 +988,7 @@ def test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module
     changed = {p for p in changed if not p.startswith(("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")) and (ROOT / p).exists()}
     stage = set(_git("diff", "--name-only", FL.BASE_74, FL.BASE_75).split())                 # Stage 7.4 itself, between two fixed commits
     assert stage == FL.NEW_74 | FL.EDITED_74, {"unexpected": sorted(stage - FL.NEW_74 - FL.EDITED_74), "missing": sorted((FL.NEW_74 | FL.EDITED_74) - stage)}
-    later = FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC                                                         # Stage 7.5, pinned by its own F tests
+    later = FL.NEW_75 | FL.EDITED_75 | FL.NEW_78 | FL.EDITED_78 | FL.NEW_78B1 | FL.EDITED_78B1 | FL.NEW_W1 | FL.EDITED_W1 | FL.NEW_W2A | FL.EDITED_W2A | FL.NEW_W2B | FL.EDITED_W2B | FL.NEW_W2C | FL.EDITED_W2C | FL.NEW_EX06 | FL.EDITED_EX06 | FL.NEW_XSS01 | FL.EDITED_XSS01 | FL.NEW_PANEL | FL.EDITED_PANEL | FL.NEW_J04 | FL.EDITED_J04 | FL.NEW_GATE | FL.EDITED_GATE | FL.NEW_REC | FL.EDITED_REC | FL.NEW_MDA | FL.EDITED_MDA                                                         # Stage 7.5, pinned by its own F tests
     assert changed == FL.NEW_74 | FL.EDITED_74 | later, {"unexpected": sorted(changed - FL.NEW_74 - FL.EDITED_74 - later),
                                                          "missing": sorted((FL.NEW_74 | FL.EDITED_74 | later) - changed)}
     in_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_74).split())

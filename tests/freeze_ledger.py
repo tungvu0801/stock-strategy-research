@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A + NEW_W2B + NEW_W2C + NEW_EX06 + NEW_XSS01 + NEW_PANEL + NEW_J04 + NEW_GATE + NEW_REC plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A + NEW_W2B + NEW_W2C + NEW_EX06 + NEW_XSS01 + NEW_PANEL + NEW_J04 + NEW_GATE + NEW_REC + NEW_MDA plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -215,6 +215,17 @@ older freeze tests pin that were unchanged at BASE_68; it re-hashes the register
 older test files; SEMANTIC_TESTS_REC declares every changed test function; VERSION_PINS_W2A gains execution_v5 (only enable_auto moves). The
 panel's, J-04's and the gate's freeze tests read their side at BASE_REC (design 7a). tests/test_recovery_freeze.py pins it (BASE_REC / NEW_REC /
 EDITED_REC); tests/test_bot_position_recovery.py and tests/frontend/recovery_activity.test.cjs pin the behaviour.
+
+MD-A (the historical data contract package; HISTORICAL_DATA_CONTRACT v2, MD-A / MD-B implementation gate 2026-11-16) adds the offline,
+read-only package historical_data/ (schemas, P4 status objects, the authoritative 2016-2026 session calendar, the canonical form, the provider
+interface and its point-in-time view, the section 5 validation and acceptance criteria, and three offline adapters: synthetic, the MS-1 raw
+archive and the sip_daily_v1 bundle). Nothing in the live or trading path imports it. Its one production edit is requirements.txt, which pins
+tzdata==2026.4 (the contract's pinned time-zone database). SEMANTIC_MDA names that file; pre_mda() gives an older freeze test main's text of
+it (BASE_MDA); NEW_LEDGER_MDA registers it (unchanged from BASE_68 to BASE_MDA, which tests/test_mda_freeze.py proves); it re-hashes the
+registered files it edits; UNDO_MDA undoes its exact in-place edits of older test files, including the six isolation guards that now admit
+historical_data/calendar.py as the one reader of the 7.1 calendar and the 7.8B-1 NYSE table; SEMANTIC_TESTS_MDA declares every changed test
+function. The panel's, J-04's, the gate's and the recovery's freeze tests read their side at BASE_MDA (design 7a). tests/test_mda_freeze.py
+pins it (BASE_MDA / NEW_MDA / EDITED_MDA); tests/test_historical_data_mda.py and tests/test_historical_data_ms1_local_mda.py pin the behaviour.
 """
 import hashlib
 import subprocess
@@ -3268,8 +3279,196 @@ VERSION_PINS_W2A["execution_v5"] = {                                            
     'forward_validation/attention_signature.py::=READERS': 'd913c004b042826f9c6cc20b79ba45756d878cfa8d6ad306c3b5c39a92099ee4',
 }
 
+BASE_MDA = '96d3a7665d11206111e88dd7dace588d374b42e9'                                    # main: bot-position recovery merged (PR #62); the MD-A base
+NEW_MDA = {'historical_data/ACCEPTANCE_CRITERIA.md', 'historical_data/__init__.py', 'historical_data/acceptance.py', 'historical_data/adapters/__init__.py',
+           'historical_data/adapters/ms1_evidence.py', 'historical_data/adapters/sip_daily_v1.py', 'historical_data/adapters/synthetic.py',
+           'historical_data/calendar.py', 'historical_data/canonical.py', 'historical_data/expected_events.py', 'historical_data/provider.py',
+           'historical_data/schema.py', 'historical_data/status.py', 'historical_data/validate.py', 'tests/historical_data_fixtures.py',
+           'tests/test_historical_data_mda.py', 'tests/test_historical_data_ms1_local_mda.py', 'tests/test_mda_freeze.py'}   # MD-A: the package and its tests
+EDITED_MDA = {'.github/ci/pytest_groups.json', 'requirements.txt', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py',
+              'tests/test_decision_flow_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py',
+              'tests/test_ex06_freeze.py', 'tests/test_forward_paper_610a.py', 'tests/test_gate_freeze.py', 'tests/test_j04_freeze.py', 'tests/test_market_intel_70.py',
+              'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py',
+              'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_panel_freeze.py',
+              'tests/test_recovery_freeze.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py',
+              'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py',
+              'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py'}
+SEMANTIC_MDA = {                                                                            # MD-A: the INTENTIONAL change, file by file
+    'requirements.txt': "one added line after pandas: tzdata==2026.4, the time-zone database the historical_data calendar's zoneinfo conversion needs (contract section 2: a pinned dependency, its absence a BLOCK); the version already installed with pandas; nothing else changes",
+}
+INSTRUMENTATION_MDA: dict = {}                                                           # MD-A: no executor instrumentation
+NEW_LEDGER_MDA = {'requirements.txt'}   # pinned by older freeze tests (test_product_ui_611 / test_product_flow_612), unchanged from BASE_68 to BASE_MDA, edited here
+_U_MDA = ('FL.NEW_REC | FL.EDITED_REC', 'FL.NEW_REC | FL.EDITED_REC | FL.NEW_MDA | FL.EDITED_MDA')
+_G_MDA = ('.startswith(("market_intel/", "market_scan/", "tests/", ".venv/",', '.startswith(("market_intel/", "market_scan/", "historical_data/calendar.py", "tests/", ".venv/",')
+UNDO_MDA = {                                                                                 # MD-A's in-place edits of older test files: (main, MD-A)
+    'tests/test_bot_activity_68.py': [
+        ('FL.NEW_GATE | FL.NEW_REC, {"unexpected_new"', 'FL.NEW_GATE | FL.NEW_REC | FL.NEW_MDA, {"unexpected_new"'),
+        ('FL.NEW_GATE | FL.NEW_REC) - new)}', 'FL.NEW_GATE | FL.NEW_REC | FL.NEW_MDA) - new)}'),
+    ],
+    'tests/test_chart_empty_state_611fix.py': [_U_MDA],
+    'tests/test_decision_flow_610c.py': [_U_MDA],
+    'tests/test_engine_health_610d.py': [_U_MDA],
+    'tests/test_evidence_gate_541.py': [_U_MDA],
+    'tests/test_evidence_refresh_542.py': [_U_MDA],
+    'tests/test_ex06_freeze.py': [
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))                     # XSS-01: its own in-place edits undone first',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel))))))))                     # XSS-01: its own in-place edits undone first'),
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel))))))) == at_base(rel), rel       # now -> (XSS-01 undone)',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel)))))))) == at_base(rel), rel       # now -> (XSS-01 undone)'),
+        ('FL.NEW_LEDGER_GATE | FL.NEW_LEDGER_REC and set(main_ledger)', 'FL.NEW_LEDGER_GATE | FL.NEW_LEDGER_REC | FL.NEW_LEDGER_MDA and set(main_ledger)'),
+    ],
+    'tests/test_forward_paper_610a.py': [_U_MDA],
+    'tests/test_gate_freeze.py': [
+        ('def now_text(rel):\n    if rel in REC_MOVED:\n        return at_rec(rel)\n    return (ROOT',
+         'MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_gate_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)\n\n\n'
+         'def at_mda(rel):\n    return at(FL.BASE_MDA, rel)\n\n\ndef now_text(rel):\n    if rel in REC_MOVED:\n        return at_rec(rel)\n    if rel in MDA_MOVED:\n        return at_mda(rel)\n    return (ROOT'),
+    ],
+    'tests/test_j04_freeze.py': [
+        ('def at_rec(rel):\n    return at(FL.BASE_REC, rel)\n\n\ndef now_text(rel):\n',
+         'def at_rec(rel):\n    return at(FL.BASE_REC, rel)\n\n\n'
+         'MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_j04_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)\n\n\n'
+         'def at_mda(rel):\n    return at(FL.BASE_MDA, rel)\n\n\ndef now_text(rel):\n'),
+        ('    if rel in REC_MOVED:\n        return at_rec(rel)\n    return (ROOT', '    if rel in REC_MOVED:\n        return at_rec(rel)\n    if rel in MDA_MOVED:\n        return at_mda(rel)\n    return (ROOT'),
+    ],
+    'tests/test_market_intel_70.py': [
+        _U_MDA,
+        ('        if rel.startswith(("market_intel/", "market_scan/", "tests/", ".venv/", "scratchpad/")) or "/site-packages/" in rel:',
+         '        if rel.startswith(("market_intel/", "market_scan/", "historical_data/calendar.py", "tests/", ".venv/", "scratchpad/")) or "/site-packages/" in rel:'),
+    ],
+    'tests/test_market_intel_collector_73.py': [_U_MDA, _G_MDA],
+    'tests/test_market_intel_quality_74.py': [_U_MDA, _G_MDA],
+    'tests/test_market_intel_schema_v2_731.py': [_U_MDA, _G_MDA],
+    'tests/test_market_intel_sources_72.py': [_U_MDA, _G_MDA],
+    'tests/test_market_intel_store_71.py': [_U_MDA, _G_MDA],
+    'tests/test_market_scan_75.py': [_U_MDA],
+    'tests/test_panel_freeze.py': [
+        ('def at_rec(rel):\n    return at(FL.BASE_REC, rel)\n\n\ndef now_text(rel):\n',
+         'def at_rec(rel):\n    return at(FL.BASE_REC, rel)\n\n\n'
+         'MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_panel_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)\n\n\n'
+         'def at_mda(rel):\n    return at(FL.BASE_MDA, rel)\n\n\ndef now_text(rel):\n'),
+        ('    if rel in REC_MOVED:\n        return at_rec(rel)\n    return (ROOT', '    if rel in REC_MOVED:\n        return at_rec(rel)\n    if rel in MDA_MOVED:\n        return at_mda(rel)\n    return (ROOT'),
+        ('and rel not in REC_MOVED:', 'and rel not in REC_MOVED and rel not in MDA_MOVED:'),
+    ],
+    'tests/test_recovery_freeze.py': [
+        ('def now_text(rel):\n    return (ROOT',
+         'MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_recovery_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)\n\n\n'
+         'def at_mda(rel):\n    return at(FL.BASE_MDA, rel)\n\n\n'
+         'def ledger_mda():\n    """MD-A (design 7a): the ledger at BASE_MDA, the hashes the recovery\'s bookkeeping is checked against."""\n    return FL.ledger_at(FL.BASE_MDA)\n\n\n'
+         'def now_text(rel):\n    if rel in MDA_MOVED:\n        return at_mda(rel)\n    return (ROOT'),
+        ('    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())\n'
+         '    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}\n',
+         "    # MD-A (design 7a): the recovery's side is the fixed diff from `base` to BASE_MDA; the working tree's change set belongs to tests/test_mda_freeze.py\n"
+         '    return set(_git("diff", "--name-only", base, FL.BASE_MDA).split())\n'),
+        ('"--quiet", FL.BASE_REC, "--", "api"', '"--quiet", FL.BASE_REC, FL.BASE_MDA, "--", "api"'),
+        ('    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))\n',
+         '    assert ledger_mda()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # MD-A: the manifest and its hash, both at BASE_MDA\n'),
+        ('== FL.LEDGER[rel], rel', "== ledger_mda()[rel], rel                     # MD-A: the recovery's hashes against its texts, both at BASE_MDA"),
+    ],
+    'tests/test_robinhood_portfolio_69.py': [_U_MDA],
+    'tests/test_runtime_reliability_ops.py': [_U_MDA],
+    'tests/test_sip_eval_78b1.py': [
+        _U_MDA,
+        ('        if rel.startswith(("research_data/", "swing_eval/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:',
+         '        if rel.startswith(("research_data/", "swing_eval/", "historical_data/calendar.py", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:'),
+    ],
+    'tests/test_strategy_validation_62.py': [
+        ('NEW_GATE, NEW_REC, unchanged as ledger_unchanged', 'NEW_GATE, NEW_REC, NEW_MDA, unchanged as ledger_unchanged'),
+        ('NEW_J04 | NEW_GATE | NEW_REC   # Stage 6.8 / 6.9', 'NEW_J04 | NEW_GATE | NEW_REC | NEW_MDA   # Stage 6.8 / 6.9'),
+    ],
+    'tests/test_swing_pullback_78.py': [_U_MDA],
+    'tests/test_unified_exposure_gate_691.py': [_U_MDA],
+    'tests/test_wave1_safety_remediation.py': [_U_MDA],
+    'tests/test_wave2_pra.py': [
+        ('FL.NEW_GATE | FL.NEW_REC, FL.EDITED_W2A', 'FL.NEW_GATE | FL.NEW_REC | FL.NEW_MDA, FL.EDITED_W2A'),
+        ('(FL.EDITED_REC - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC)   #',
+         '(FL.EDITED_REC - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC) | '
+         '(FL.EDITED_MDA - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA)   #'),
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))))                               # Wave 2 PR B / PR C',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel))))))))))                               # Wave 2 PR B / PR C'),
+    ],
+    'tests/test_wave2_pra_accounting.py': [
+        ('FL.undo_rec("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")))))))))',
+         'FL.undo_rec("tests/test_forward_paper_610a.py", FL.undo_mda("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))))))))))'),
+    ],
+    'tests/test_wave2_prb.py': [
+        ('FL.NEW_GATE | FL.NEW_REC, FL.EDITED_W2B', 'FL.NEW_GATE | FL.NEW_REC | FL.NEW_MDA, FL.EDITED_W2B'),
+        ('(FL.EDITED_REC - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC)   #',
+         '(FL.EDITED_REC - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC) | '
+         '(FL.EDITED_MDA - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA)   #'),
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel))))))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)'),
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel))))))))) == at_base(rel), rel           # now -> (F03C)',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel)))))))))) == at_base(rel), rel           # now -> (F03C)'),
+    ],
+    'tests/test_wave2_prc.py': [
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel))))))))                        # EX-06: its own in-place edits undone first (F02X)',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel)))))))))                        # EX-06: its own in-place edits undone first (F02X)'),
+        ('FL.undo_gate(rel, FL.undo_rec(rel, now_text(rel)))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte',
+         'FL.undo_gate(rel, FL.undo_rec(rel, FL.undo_mda(rel, now_text(rel))))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte'),
+    ],
+}
+_F_MDA = "MDA-F01 the working-tree change set of this older freeze test also admits MD-A's declared files (NEW_MDA | EDITED_MDA); nothing else changes"
+_I_MDA = "MDA-I01 the isolation guard admits historical_data/calendar.py, the one declared reader (the section 2 calendar cross-check / the NYSE table); every other file is still checked"
+SEMANTIC_TESTS_MDA = {                                                                       # MD-A: every changed test function -> its reason
+    'tests/test_bot_activity_68.py::test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry': "MDA-F02 the new-file union admits NEW_MDA (historical_data/ and its tests); the registered-file rule is unchanged (requirements.txt is a new registration)",
+    'tests/test_chart_empty_state_611fix.py::test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file': _F_MDA,
+    'tests/test_decision_flow_610c.py::test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file': _F_MDA,
+    'tests/test_engine_health_610d.py::test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file': _F_MDA,
+    'tests/test_evidence_gate_541.py::test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution': _F_MDA,
+    'tests/test_evidence_refresh_542.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': _F_MDA,
+    'tests/test_forward_paper_610a.py::test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file': _F_MDA,
+    'tests/test_market_intel_70.py::test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited': _F_MDA,
+    'tests/test_market_intel_70.py::test_I01_pure_contracts_only_pure_imports_no_io_and_nothing_imports_them': _I_MDA,
+    'tests/test_market_intel_store_71.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': _F_MDA,
+    'tests/test_market_intel_store_71.py::test_S01_the_new_modules_import_nothing_that_can_reach_a_network_a_broker_or_a_model': _I_MDA,
+    'tests/test_market_intel_sources_72.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_market_intel_sources_72.py::test_S01_the_72_modules_are_a_closed_registry_with_pure_imports_and_nothing_outside_imports_them': _I_MDA,
+    'tests/test_market_intel_collector_73.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_market_intel_collector_73.py::test_S01_the_collector_is_a_closed_lazy_registry_that_nothing_outside_imports': _I_MDA,
+    'tests/test_market_intel_schema_v2_731.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_market_intel_schema_v2_731.py::test_X01_the_new_modules_reach_no_network_broker_trading_or_model_and_nothing_outside_imports_them': _I_MDA,
+    'tests/test_market_intel_quality_74.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_market_intel_quality_74.py::test_X01_the_report_reaches_no_network_broker_trading_or_model_has_no_write_path_and_nothing_outside_imports_it': _I_MDA,
+    'tests/test_market_scan_75.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_robinhood_portfolio_69.py::test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_risk_file': _F_MDA,
+    'tests/test_runtime_reliability_ops.py::test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_trading_code': _F_MDA,
+    'tests/test_sip_eval_78b1.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_sip_eval_78b1.py::test_X02_nothing_outside_the_new_packages_and_tests_imports_them': _I_MDA,
+    'tests/test_swing_pullback_78.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _F_MDA,
+    'tests/test_unified_exposure_gate_691.py::test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file': _F_MDA,
+    'tests/test_wave1_safety_remediation.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed': _F_MDA,
+    'tests/test_wave2_pra.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "MDA-F03 PR A's new / edited unions gain NEW_MDA and MD-A's edits of files that existed at BASE_W2A; nothing else changes",
+    'tests/test_wave2_pra.py::test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "MDA-U01 the undo chain also undoes MD-A's own in-place edits first (undo_mda), so PR A's replay still reads main's text byte for byte",
+    'tests/test_wave2_prb.py::test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "MDA-F04 PR B's new / edited unions gain NEW_MDA and MD-A's edits of files that existed at BASE_W2B; nothing else changes",
+    'tests/test_wave2_prb.py::test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "MDA-U02 the undo chain also undoes MD-A's own in-place edits first (undo_mda) before PR B's declared functions are compared",
+    'tests/test_wave2_prb.py::test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "MDA-U03 the undo chain also undoes MD-A's own in-place edits first (undo_mda), so PR B's undo still reads main's text byte for byte",
+    'tests/test_wave2_prc.py::test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "MDA-U04 the undo chain also undoes MD-A's own in-place edits first (undo_mda) before PR C's declared functions are compared",
+    'tests/test_wave2_prc.py::test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "MDA-U05 the undo chain also undoes MD-A's own in-place edits first (undo_mda), so PR C's undo still reads main's text byte for byte",
+    'tests/test_wave2_pra_accounting.py::test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_consumers_are_unchanged': "MDA-U06 test_forward_paper_610a.py is read with MD-A's in-place edit undone too (undo_mda); its non-freeze tests are still compared unchanged",
+    'tests/test_ex06_freeze.py::test_F02X_every_changed_older_test_function_is_declared': "MDA-U07 the undo chain also undoes MD-A's own in-place edits first (undo_mda) before EX-06's declared functions are compared",
+    'tests/test_ex06_freeze.py::test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "MDA-U08 the undo chain also undoes MD-A's own in-place edits first (undo_mda), and the live ledger's new keys also admit NEW_LEDGER_MDA (requirements.txt)",
+    'tests/test_strategy_validation_62.py::=NEW_62': "MDA-F05 NEW_62, the set of every file added after main 9fae08b that the earlier freeze tests import, gains NEW_MDA (and its import)",
+    'tests/test_panel_freeze.py::=MDA_MOVED': "MDA-M01 design 7a: the files MD-A edits (EDITED_MDA minus this file) are read at BASE_MDA by the panel's freeze test",
+    'tests/test_panel_freeze.py::at_mda': "MDA-M02 design 7a: the panel's reader of a file at the fixed commit BASE_MDA (main after the recovery merged, PR #62)",
+    'tests/test_panel_freeze.py::now_text': "MDA-M03 design 7a: a file MD-A edits, and no earlier stage moved, is read at BASE_MDA; every other file as before",
+    'tests/test_panel_freeze.py::test_F05P_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_rehashed_entries': "MDA-M04 a file MD-A re-hashes is compared at BASE_MDA (now_text) and skipped by the live-ledger comparison, as the later stages' moved files are",
+    'tests/test_j04_freeze.py::=MDA_MOVED': "MDA-M05 design 7a: the files MD-A edits (EDITED_MDA minus this file) are read at BASE_MDA by J-04's freeze test",
+    'tests/test_j04_freeze.py::at_mda': "MDA-M06 design 7a: J-04's reader of a file at the fixed commit BASE_MDA (main after the recovery merged, PR #62)",
+    'tests/test_j04_freeze.py::now_text': "MDA-M07 design 7a: a file MD-A edits, and no earlier stage moved, is read at BASE_MDA; every other file as before",
+    'tests/test_gate_freeze.py::=MDA_MOVED': "MDA-M08 design 7a: the files MD-A edits (EDITED_MDA minus this file) are read at BASE_MDA by the order gate's freeze test",
+    'tests/test_gate_freeze.py::at_mda': "MDA-M09 design 7a: the gate's reader of a file at the fixed commit BASE_MDA (main after the recovery merged, PR #62)",
+    'tests/test_gate_freeze.py::now_text': "MDA-M10 design 7a: a file MD-A edits, and the recovery did not move, is read at BASE_MDA; every other file as before",
+    'tests/test_recovery_freeze.py::=MDA_MOVED': "MDA-M11 design 7a: the files MD-A edits (EDITED_MDA minus this file) are read at BASE_MDA by the recovery's freeze test",
+    'tests/test_recovery_freeze.py::at_mda': "MDA-M12 design 7a: the recovery's reader of a file at the fixed commit BASE_MDA (main after the recovery merged, PR #62)",
+    'tests/test_recovery_freeze.py::ledger_mda': "MDA-M13 design 7a: the ledger as MD-A found it (BASE_MDA), the hashes the recovery's bookkeeping is checked against",
+    'tests/test_recovery_freeze.py::now_text': "MDA-M14 design 7a: a file MD-A edits is read at BASE_MDA; every other file still reads the working tree",
+    'tests/test_recovery_freeze.py::changed_files': "MDA-M15 design 7a: the recovery's change set is the fixed diff from its base to BASE_MDA; the working tree's belongs to tests/test_mda_freeze.py",
+    'tests/test_recovery_freeze.py::test_F01R_the_change_set_is_exactly_the_declared_files_and_the_broker_store_migrations_api_and_safety_are_byte_identical': "MDA-M16 the api / database / safety byte-identity is the fixed diff BASE_REC..BASE_MDA and the manifest hash is read at BASE_MDA",
+    'tests/test_recovery_freeze.py::test_F05R_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_rehashed_entries': "MDA-M17 the recovery's re-hashed entries are checked against the ledger at BASE_MDA (ledger_mda), not the live ledger MD-A re-hashes",
+}
+
 LEDGER = {
-    ".github/ci/pytest_groups.json": "e430b15d9ce2eda0770f7c309eb27946c4c941844cd0c63597cdde5127c751b7",
+    ".github/ci/pytest_groups.json": "853bc24b88e3968e7fd5f2abc4dd49e00b408c0ae8de90d9d9ebb1db9330a1d6",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "DESIGN_591_EXECUTION_SAFETY.md": "b17c5ce1348305cb6a72fff29c4960aa0b864ec94523d655a1592acc3ac8fcf6",
     "README.md": "9e5c442c1871f41010dfdb379e3eb90c9a34be1470316fc7d9a2f3d95101a562",
@@ -3312,6 +3511,7 @@ LEDGER = {
     "paper/alpaca_order_store.py": "b3738e09ed44e585e482fc3b2807b397b96642843d0691b9855de448219de755",
     "paper/alpaca_orders.py": "aa6322862cdf906e18ded2d6c7794bd585996997681df0c13b407854561915d5",
     "proposals/service.py": "0f2ab55522977b2b8797b276b8b6d04d7afa939a1b73a0d0e19a528c33031a49",
+    "requirements.txt": "794df147cfd0a917e5bf2b8c6580da6fd1ced8ae12b99a01a8e5b11a614c6e41",
     "safety/__init__.py": "349ac930d691e199ac1694f029de37b430a921c2a0aaf4a802e16661e59e3ca4",
     "safety/engine.py": "5ee9cd99a4299bfdd41e5173eb8fcdca087c1162fb672e362a23910b4c79f960",
     "safety/service.py": "92ad6b92d7b1c80cfebacb720f2ffc982d78759355333c9aea89f33189326fc7",
@@ -3351,7 +3551,7 @@ LEDGER = {
     "tests/test_research_flow_47.py": "5cf98db72e303989d88e77963638844ee6ccbdd24026d34549e4551d6509e39d",
     "tests/test_rotation_handoff_47.py": "cf4647f735b103e95634c514a13e7c8c7840e5a14b598fe4688a2b5124c7fe20",
     "tests/test_setups_58.py": "6a5dc561a301f7550ca2f75d88d013f5e5aad056ef05e112769f1233a5569c2e",
-    "tests/test_strategy_validation_62.py": "22aad4930960aff7d09c6dffad7acb3e1ff22429bbbd75192f6896802caa196a",
+    "tests/test_strategy_validation_62.py": "b3494dcccfefec463cd7946ab1d1d685d76e2ad89bc1b92f1993c5e6f1c037fd",
     "tests/test_trader_view_55.py": "8f1a1f85ea60a188d677478b85e97df523c1a013c40d650a2724ca22bd5fd19a",
     "tests/test_trader_view_561.py": "57a7d0f8c97c73e1299af0c4f812d409de0015fec43be3d2b9d1ad3a190c87a0",
     "tests/test_windows_runner_60.py": "04d3935349aabb343def9c3fc415088d0db058c939a97fb9ee4ed9060ce56b99",
@@ -3570,6 +3770,36 @@ def undo_rec(rel: str, text: str) -> str:
         assert text.count(new) == 1, (rel, new[:80])
         text = text.replace(new, old)
     return text
+
+
+def pre_mda(rel: str, text: str) -> str:
+    """`text` (a current file) as main left it at BASE_MDA when MD-A changed it on purpose (SEMANTIC_MDA): an older freeze test reads main's text,
+    where it passed. tests/test_mda_freeze.py pins the delta from that text. Any other file passes through."""
+    if rel not in SEMANTIC_MDA:
+        return text
+    out = subprocess.run(["git", "show", f"{BASE_MDA}:{rel}"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"{rel} is not in {BASE_MDA} (fetch-depth 0 is required)"
+    return _norm(out.stdout.decode("utf-8"))
+
+
+def undo_mda(rel: str, text: str) -> str:
+    """`text` (a current test file) with MD-A's exact in-place edits undone (last first): as on main BASE_MDA. Any other file passes through.
+    tests/test_mda_freeze.py proves the result is main, byte for byte."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_MDA.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
+
+
+def ledger_at(commit: str) -> dict:
+    """MD-A (design 7a): the LEDGER dict of this file as it was at `commit`, read with git (a later stage's freeze test checks its own hashes there)."""
+    import ast
+    out = subprocess.run(["git", "show", f"{commit}:tests/freeze_ledger.py"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"tests/freeze_ledger.py is not in {commit} (fetch-depth 0 is required)"
+    t = _norm(out.stdout.decode("utf-8"))
+    start = t.index("\nLEDGER = {\n") + 1
+    return ast.literal_eval(t[start + len("LEDGER = "):t.index("\n}\n", start) + 2])
 
 def unchanged(paths, blob_fn) -> set:
     """The registered files among `paths` that, read through the ledger, equal the caller's base (`blob_fn(rel)`, str or bytes): for that freeze
