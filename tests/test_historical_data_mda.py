@@ -934,12 +934,25 @@ def test_X03_only_calendar_py_names_the_stage_71_and_78b1_packages_the_isolation
         assert named == ([] if f.name != "calendar.py" or f.parent.name != "historical_data" else ["market_intel", "research_data"]), (f.name, named)
 
 
+ID10_LITERALS = {"md_eval/__init__.py": ('"historical_data_contract_v1"', '"historical_data_contract_v2"')}   # ID-10 (S3): MD-B's contract identifiers (data), not an import
+
+
 def test_X02_nothing_outside_the_package_and_the_tests_imports_it():
+    visited = set()
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
         if rel.startswith(("historical_data/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
             continue
-        assert "historical_data" not in p.read_text(encoding="utf-8", errors="replace"), rel
+        text = p.read_text(encoding="utf-8", errors="replace")
+        if rel in ID10_LITERALS:                                                                 # ID-10: exact literals only, each once in the text and once as a string constant
+            visited.add(rel)
+            consts = [n.value for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+            for lit in ID10_LITERALS[rel]:
+                assert text.count(lit) == 1, (rel, lit)                                          # the exemption cannot silently grow (no second copy, no comment)
+                assert consts.count(ast.literal_eval(lit)) == 1, (rel, lit)                      # and it is data: exactly one string constant with that value
+                text = text.replace(lit, "")
+        assert "historical_data" not in text, rel
+    assert visited == set(ID10_LITERALS), sorted(set(ID10_LITERALS) - visited)                  # ID-10: no stale exemption (the exempt file exists and was read)
 
 
 # ============================================================================================================ the contract (Z)

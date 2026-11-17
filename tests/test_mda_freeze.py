@@ -59,13 +59,27 @@ def at_base(rel):
     return at(FL.BASE_MDA, rel)
 
 
+MDB_MOVED = tuple(sorted(FL.EDITED_MDB - {"tests/test_mda_freeze.py"}))   # MD-B (design 7a): its edited files, read at BASE_MDB (tests/test_mdb_freeze.py F06B)
+
+
+def at_mdb(rel):
+    return at(FL.BASE_MDB, rel)
+
+
+def ledger_mdb():
+    """MD-B (design 7a): the ledger at BASE_MDB, the hashes MD-A's bookkeeping is checked against."""
+    return FL.ledger_at(FL.BASE_MDB)
+
+
 def now_text(rel):
+    if rel in MDB_MOVED:
+        return at_mdb(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # MD-B (design 7a): MD-A's side is the fixed diff from `base` to BASE_MDB; the working tree's change set belongs to tests/test_mdb_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_MDB).split())
 
 
 def line_ops(rel):
@@ -95,7 +109,7 @@ def test_F01A_the_change_set_is_exactly_the_declared_files_and_no_trading_data_l
     i = base_groups["core"]["files"].index("test_recovery_freeze.py") + 1
     assert groups["core"] == {**base_groups["core"], "files": base_groups["core"]["files"][:i] + ["test_mda_freeze.py"] + base_groups["core"]["files"][i:]}
     assert groups["research"] == {**base_groups["research"], "files": base_groups["research"]["files"] + ["test_historical_data_mda.py", "test_historical_data_ms1_local_mda.py"]}
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_mdb()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # MD-B: the manifest and its hash, both at BASE_MDB
 
 
 def test_F02A_requirements_gains_only_the_pinned_tzdata_line_and_was_unchanged_from_base_68_to_base_mda():
@@ -147,7 +161,7 @@ def test_F05A_the_ledger_changes_only_its_declarations_its_helpers_the_rehashed_
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_MDA} == {".github/ci/pytest_groups.json", "tests/test_strategy_validation_62.py"}, sorted(rehashed)
     for rel in rehashed | FL.NEW_LEDGER_MDA:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_mdb()[rel], rel                     # MD-B: MD-A's hashes against its texts, both at BASE_MDB
     start = fl.index("\nMD-A (the historical data contract package")
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_MDA = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)
