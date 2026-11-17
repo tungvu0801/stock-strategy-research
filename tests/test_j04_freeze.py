@@ -162,11 +162,20 @@ def at_rec(rel):
     return at(FL.BASE_REC, rel)
 
 
+MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_j04_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)
+
+
+def at_mda(rel):
+    return at(FL.BASE_MDA, rel)
+
+
 def now_text(rel):
     if rel in GATE_MOVED:
         return at_gate(rel)
     if rel in REC_MOVED:
         return at_rec(rel)
+    if rel in MDA_MOVED:
+        return at_mda(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 

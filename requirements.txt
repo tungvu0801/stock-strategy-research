@@ -1,5 +1,6 @@
 alpaca-py>=0.44.0
 pandas>=3.0.6
+tzdata==2026.4   # MD-A historical_data calendar: zoneinfo's time-zone database, pinned (contract section 2; installed with pandas)
 numpy>=2.5.3
 python-dotenv>=1.2.3
 

@@ -28,6 +28,7 @@
         "test_j04_freeze.py",
         "test_gate_freeze.py",
         "test_recovery_freeze.py",
+        "test_mda_freeze.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
         "test_daily_brief_42.py",
@@ -145,7 +146,9 @@
         "test_market_intel_quality_74.py",
         "test_market_scan_75.py",
         "test_swing_pullback_78.py",
-        "test_sip_eval_78b1.py"
+        "test_sip_eval_78b1.py",
+        "test_historical_data_mda.py",
+        "test_historical_data_ms1_local_mda.py"
       ]
     },
     "campaign": {

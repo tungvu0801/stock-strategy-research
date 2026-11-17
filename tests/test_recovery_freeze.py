@@ -104,13 +104,27 @@ def at_base(rel):
     return at(FL.BASE_REC, rel)
 
 
+MDA_MOVED = tuple(sorted(FL.EDITED_MDA - {"tests/test_recovery_freeze.py"}))   # MD-A (design 7a): its edited files, read at BASE_MDA (tests/test_mda_freeze.py F06A)
+
+
+def at_mda(rel):
+    return at(FL.BASE_MDA, rel)
+
+
+def ledger_mda():
+    """MD-A (design 7a): the ledger at BASE_MDA, the hashes the recovery's bookkeeping is checked against."""
+    return FL.ledger_at(FL.BASE_MDA)
+
+
 def now_text(rel):
+    if rel in MDA_MOVED:
+        return at_mda(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # MD-A (design 7a): the recovery's side is the fixed diff from `base` to BASE_MDA; the working tree's change set belongs to tests/test_mda_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_MDA).split())
 
 
 def line_ops(rel):
@@ -160,14 +174,14 @@ def test_F01R_the_change_set_is_exactly_the_declared_files_and_the_broker_store_
     assert {p for p in changed if p.startswith("execution/")} == {"execution/service.py", "execution/__init__.py", "execution/recovery.py"}
     for rel in UNTOUCHED_REC:
         assert rel not in changed and now_text(rel) == at_base(rel), rel
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_REC, "--", "api", "database", "safety", "paper", "account_refresh", "config.py", "execution/broker.py",
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_REC, FL.BASE_MDA, "--", "api", "database", "safety", "paper", "account_refresh", "config.py", "execution/broker.py",
                            "execution/store.py", "execution/engine.py"], cwd=ROOT).returncode == 0
     groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g not in ("core", "execution")} == {g: v for g, v in base_groups.items() if g not in ("core", "execution")}
     for g, after, new in (("core", "test_gate_freeze.py", "test_recovery_freeze.py"), ("execution", "test_execution_60.py", "test_bot_position_recovery.py")):
         i = base_groups[g]["files"].index(after) + 1
         assert groups[g] == {**base_groups[g], "files": base_groups[g]["files"][:i] + [new] + base_groups[g]["files"][i:]}, g
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_mda()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # MD-A: the manifest and its hash, both at BASE_MDA
 
 
 def test_F02R_the_declared_lines_and_definitions_change_and_nothing_else():
@@ -250,7 +264,7 @@ def test_F05R_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_REC}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_REC})
     for rel in rehashed | FL.NEW_LEDGER_REC:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_mda()[rel], rel                     # MD-A: the recovery's hashes against its texts, both at BASE_MDA
     start = fl.index("\n\nBot-position recovery (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)
     rebuilt = rebuilt.replace(rebuilt[rebuilt.index("BASE_REC = "):rebuilt.index("\nLEDGER = {\n") + 1], "", 1)
