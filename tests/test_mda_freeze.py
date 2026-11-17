@@ -28,7 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ("scratchpad/", "runtime/", "data/market_intel", "logs/", "browser_tests/artifacts/")
 NEW_FILES_MDA = {f"historical_data/{m}" for m in ("ACCEPTANCE_CRITERIA.md", "__init__.py", "acceptance.py", "calendar.py", "canonical.py", "expected_events.py",
                                                   "provider.py", "schema.py", "status.py", "validate.py", "adapters/__init__.py", "adapters/ms1_evidence.py",
-                                                  "adapters/sip_daily_v1.py", "adapters/synthetic.py")} | {
+                                                  "adapters/sip_daily_v1.py", "adapters/synthetic.py", "contract/CONTRACT_SHA256.txt",
+                                                  "contract/HISTORICAL_DATA_CONTRACT_v1.md", "contract/HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md")} | {
     "tests/historical_data_fixtures.py", "tests/test_historical_data_mda.py", "tests/test_historical_data_ms1_local_mda.py", "tests/test_mda_freeze.py"}
 PROD_MDA = {"requirements.txt"}
 TZ_LINE = "tzdata==2026.4   # MD-A historical_data calendar: zoneinfo's time-zone database, pinned (contract section 2; installed with pandas)"

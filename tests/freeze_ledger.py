@@ -219,10 +219,11 @@ EDITED_REC); tests/test_bot_position_recovery.py and tests/frontend/recovery_act
 MD-A (the historical data contract package; HISTORICAL_DATA_CONTRACT v2, MD-A / MD-B implementation gate 2026-11-16) adds the offline,
 read-only package historical_data/ (schemas, P4 status objects, the authoritative 2016-2026 session calendar, the canonical form, the provider
 interface and its point-in-time view, the section 5 validation and acceptance criteria, and three offline adapters: synthetic, the MS-1 raw
-archive and the sip_daily_v1 bundle). Nothing in the live or trading path imports it. Its one production edit is requirements.txt, which pins
+archive and the sip_daily_v1 bundle), plus byte copies of the two approved contract documents and their sha record under
+historical_data/contract/ (MDA-FR-6: the contract-sha check runs in CI). Nothing in the live or trading path imports it. Its one production edit is requirements.txt, which pins
 tzdata==2026.4 (the contract's pinned time-zone database). SEMANTIC_MDA names that file; pre_mda() gives an older freeze test main's text of
 it (BASE_MDA); NEW_LEDGER_MDA registers it (unchanged from BASE_68 to BASE_MDA, which tests/test_mda_freeze.py proves); it re-hashes the
-registered files it edits; UNDO_MDA undoes its exact in-place edits of older test files, including the six isolation guards that now admit
+registered files it edits; UNDO_MDA undoes its exact in-place edits of older test files, including the seven isolation guards that now admit
 historical_data/calendar.py as the one reader of the 7.1 calendar and the 7.8B-1 NYSE table; SEMANTIC_TESTS_MDA declares every changed test
 function. The panel's, J-04's, the gate's and the recovery's freeze tests read their side at BASE_MDA (design 7a). tests/test_mda_freeze.py
 pins it (BASE_MDA / NEW_MDA / EDITED_MDA); tests/test_historical_data_mda.py and tests/test_historical_data_ms1_local_mda.py pin the behaviour.
@@ -3282,7 +3283,9 @@ VERSION_PINS_W2A["execution_v5"] = {                                            
 BASE_MDA = '96d3a7665d11206111e88dd7dace588d374b42e9'                                    # main: bot-position recovery merged (PR #62); the MD-A base
 NEW_MDA = {'historical_data/ACCEPTANCE_CRITERIA.md', 'historical_data/__init__.py', 'historical_data/acceptance.py', 'historical_data/adapters/__init__.py',
            'historical_data/adapters/ms1_evidence.py', 'historical_data/adapters/sip_daily_v1.py', 'historical_data/adapters/synthetic.py',
-           'historical_data/calendar.py', 'historical_data/canonical.py', 'historical_data/expected_events.py', 'historical_data/provider.py',
+           'historical_data/calendar.py', 'historical_data/canonical.py', 'historical_data/contract/CONTRACT_SHA256.txt',
+           'historical_data/contract/HISTORICAL_DATA_CONTRACT_v1.md', 'historical_data/contract/HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md',
+           'historical_data/expected_events.py', 'historical_data/provider.py',
            'historical_data/schema.py', 'historical_data/status.py', 'historical_data/validate.py', 'tests/historical_data_fixtures.py',
            'tests/test_historical_data_mda.py', 'tests/test_historical_data_ms1_local_mda.py', 'tests/test_mda_freeze.py'}   # MD-A: the package and its tests
 EDITED_MDA = {'.github/ci/pytest_groups.json', 'requirements.txt', 'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py',

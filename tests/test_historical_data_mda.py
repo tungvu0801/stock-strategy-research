@@ -1,6 +1,7 @@
 """
 MD-A - the historical data contract package (historical_data/; contract v2 = HISTORICAL_DATA_CONTRACT_v1.md rev 2 + the v2 amendment).
-SYNTHETIC data only (plus the local-only contract-sha check Z01): no network, no database, every output under tmp_path.
+SYNTHETIC data only: no network, no database, every output under tmp_path. Z01 checks the contract files committed under
+historical_data/contract/ (it runs in CI and has no skip path); Z03 is local only (the planning copies live outside the repository).
 
   C01-C07 the authoritative calendar: DST, early closes, closures and coverage, next session, the market_intel cross-check, tzdata
   S01-S04 P4 status objects, strict types, the licence block, the instrument rules
@@ -10,7 +11,7 @@ SYNTHETIC data only (plus the local-only contract-sha check Z01): no network, no
   V00-V14 section 5 validation and the acceptance record / criteria
   T01     the expected-events table (A9: only VERIFIED classifies; the five contradictions UNRESOLVED)
   A01-A05 the MS-1 raw-archive adapter (reads only the archive, never a database) and the sip_daily_v1 adapter
-  X01-X02 isolation; Z01-Z02 the contract versions and shas (A12)
+  X01-X03 isolation; Z01-Z03 the contract versions and shas (A12)
 """
 from __future__ import annotations
 
@@ -45,7 +46,9 @@ from historical_data.schema import (VIEW_MANIFEST_FIELDS, BarInvalid, CorporateE
 from historical_data.status import EARNINGS_DATA_UNAVAILABLE, NO_BAR, Missing, unavailable, unknown
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_DIR = ROOT.parent / "project-planning" / "md"
+CONTRACT_DIR = ROOT / "historical_data" / "contract"                                      # the committed copies (MDA-FR-6): checked in CI
+PLANNING_DIR = ROOT.parent / "project-planning" / "md"                                    # the approved originals: outside the repository (local only)
+CONTRACT_FILES = ("HISTORICAL_DATA_CONTRACT_v1.md", "HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md")
 UTC = timezone.utc
 S = F.S
 
@@ -940,12 +943,16 @@ def test_X02_nothing_outside_the_package_and_the_tests_imports_it():
 
 
 # ============================================================================================================ the contract (Z)
-@pytest.mark.skipif(not (CONTRACT_DIR / "HISTORICAL_DATA_CONTRACT_v1.md").is_file(), reason="local only: the contract files live outside the repository")
 def test_Z01_the_contract_files_match_the_pinned_shas_before_use():
-    base = hashlib.sha256((CONTRACT_DIR / "HISTORICAL_DATA_CONTRACT_v1.md").read_bytes()).hexdigest()
-    amend = hashlib.sha256((CONTRACT_DIR / "HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md").read_bytes()).hexdigest()
+    # MDA-FR-6: the committed copies, so this runs in CI. There is no skip path: a missing file fails.
+    raw = {name: (CONTRACT_DIR / name).read_bytes() for name in CONTRACT_FILES}
+    for name, data in raw.items():                                                          # checkout normalisation would change the shas
+        assert b"\r" not in data and not data.startswith(b"\xef\xbb\xbf"), name
+    base = hashlib.sha256(raw["HISTORICAL_DATA_CONTRACT_v1.md"]).hexdigest()
+    amend = hashlib.sha256(raw["HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md"]).hexdigest()
     assert base == HD.CONTRACT_BASE_SHA256 == "453676fd44554ac9f66ce2d168318893ea18d93916ea2eef3ffa0f8c4de40fd7"
     assert amend == HD.CONTRACT_SHA256 == "7850580ba22195e92ee03f71e75d2d7eb3719176343e90f485ce47c3ac876ed8"
+    assert base in raw["HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md"].decode("utf-8")           # A12: v2 pins its base by sha
     recorded = (CONTRACT_DIR / "CONTRACT_SHA256.txt").read_text(encoding="utf-8")
     assert f"{base}  HISTORICAL_DATA_CONTRACT_v1.md" in recorded and f"{amend}  HISTORICAL_DATA_CONTRACT_v2_AMENDMENT.md" in recorded
 
@@ -957,3 +964,13 @@ def test_Z02_every_manifest_and_adapter_names_contract_v2():
         assert mod.SUPPORTED_CONTRACT_VERSIONS == HD.SUPPORTED_CONTRACT_VERSIONS
     m = clean().manifest()
     assert (m.contract_version, m.contract_sha256, m.contract_base_sha256) == (HD.CONTRACT_VERSION, HD.CONTRACT_SHA256, HD.CONTRACT_BASE_SHA256)
+
+
+@pytest.mark.skipif(not (PLANNING_DIR / "HISTORICAL_DATA_CONTRACT_v1.md").is_file(), reason="local only: the approved planning copies live outside the repository")
+def test_Z03_the_committed_contract_copies_equal_the_approved_planning_originals():
+    for name in CONTRACT_FILES:                                                              # byte for byte
+        assert (CONTRACT_DIR / name).read_bytes() == (PLANNING_DIR / name).read_bytes(), name
+    def lines(p):                                                                           # the planning record has a BOM and CRLF; the committed one is normalised
+        return [s for s in p.read_text(encoding="utf-8-sig").replace("\r\n", "\n").split("\n") if s]
+    assert lines(CONTRACT_DIR / "CONTRACT_SHA256.txt") == lines(PLANNING_DIR / "CONTRACT_SHA256.txt")
+    assert not (CONTRACT_DIR / "CONTRACT_SHA256.txt").read_bytes().startswith(b"\xef\xbb\xbf") and b"\r" not in (CONTRACT_DIR / "CONTRACT_SHA256.txt").read_bytes()

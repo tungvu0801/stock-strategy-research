@@ -28,7 +28,7 @@ from historical_data.provider import LicenceRefused
 
 MS1_ROOT = Path(r"C:\Data Analyst Py\DA IDX\research-data\ms1-2")
 RAW = MS1_ROOT / "raw"
-CONTRACT_DIR = Path(__file__).resolve().parents[2] / "project-planning" / "md"
+CONTRACT_DIR = Path(__file__).resolve().parents[1] / "historical_data" / "contract"       # the committed copies (MDA-FR-6)
 KNOWN_JUMPS = {"BKNG", "INTC", "MRVL", "NOW", "SNDK", "SOXX"}
 
 pytestmark = pytest.mark.skipif(not (RAW / "manifest.jsonl").is_file(), reason="local only: the MS-1 evidence archive is not in this checkout (CI)")
