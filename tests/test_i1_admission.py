@@ -595,6 +595,7 @@ def test_O06_a_missing_tzdata_package_refuses_the_warm_up(monkeypatch):
         with pytest.raises(RG.AdmissionRefused) as e:
             RG.admit_double(I1.pb_flat5())
         assert _code(e) == "CALENDAR_WARMUP_FAILED"
+        assert e.value.reasons == ("TZDATA_UNAVAILABLE",), e.value.reasons          # S4-AM52: the sub-reason, not only the code
     finally:
         monkeypatch.undo()
         CAL.reset_caches()

@@ -279,7 +279,19 @@ def _census_files():
             yield rel, p
 
 
+def _alias_originals(tree):
+    """{local name: {original names}} for `import a.b as X` (-> "b") and `from M import n as X` (-> "n"), at any depth (D-01; AA-9 (b)(2))."""
+    out = {}
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                if a.asname:
+                    out.setdefault(a.asname, set()).add(a.name.rpartition(".")[2])
+    return out
+
+
 def _allow_write_problems(rel, tree):
+    aliases = _alias_originals(tree)
     out = []
     for c in ast.walk(tree):
         if not isinstance(c, ast.Call):
@@ -288,7 +300,8 @@ def _allow_write_problems(rel, tree):
             if k.arg == "allow_write" and not (isinstance(k.value, ast.Constant) and k.value.value is False):
                 out.append((rel, c.lineno, "allow_write"))
         callee = c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, "id", "")
-        if callee == "read_guard" and any(k.arg is None for k in c.keywords):
+        names = {callee} | (aliases.get(callee, set()) if isinstance(c.func, ast.Name) else set())          # [site A4]
+        if "read_guard" in names and any(k.arg is None for k in c.keywords):
             out.append((rel, c.lineno, "**"))
     return out
 
@@ -304,6 +317,21 @@ def test_S15b_no_production_code_turns_write_mode_on():
     for rel, p in _census_files():
         bad += _allow_write_problems(rel, ast.parse(p.read_text(encoding="utf-8", errors="replace")))
     assert bad == []
+
+
+def test_S15b2_an_aliased_read_guard_with_keyword_unpacking_is_flagged():
+    SRC = ("from research_gate.admit import read_guard as rg\n"
+           "import research_gate.admit as RGA2\n"
+           "def k(root, kw):\n"
+           "    with rg(root, **kw):\n"
+           "        pass\n"
+           "    with RGA2.read_guard(root, **kw):\n"
+           "        pass\n"
+           "    with rg(root):\n"
+           "        pass\n"
+           "    with rg(root, allow_write=False):\n"
+           "        pass\n")
+    assert sorted(_allow_write_problems("mem.py", ast.parse(SRC))) == [("mem.py", 4, "**"), ("mem.py", 6, "**")]
 
 
 # ============================================================================================================ S15c (write mode and nesting)
