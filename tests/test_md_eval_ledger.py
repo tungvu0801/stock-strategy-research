@@ -22,6 +22,7 @@ from md_eval import engine as EN
 from md_eval import ledger as LG
 from md_eval.benchmarks import total_return_series
 from md_eval.signals import BuyAndHold, Signal
+import research_gate as RGATE
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -202,7 +203,7 @@ def _recon(d, s):
     r = _run(d, BuyAndHold("SIM:S"))
     assert r["fills"][0]["shares"] == 100 and r["rows"][1]["cash"] == 0.0                    # the notional is an exact multiple of raw_open
     ledger_growth = r["rows"][-1]["equity"] / r["rows"][1]["equity"]
-    tr = total_return_series(d, "SIM:S", s)
+    tr = total_return_series(RGATE.admit_double(d), "SIM:S", s)                              # I-1B-1 (O-7): the benchmark reads an admitted dataset
     tr_growth = 1.0
     for x in tr[2:]:
         tr_growth *= 1.0 + x

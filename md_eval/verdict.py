@@ -44,6 +44,7 @@ from md_eval import inference as IN
 from md_eval import metrics as MT
 from md_eval import prereg as PR
 from md_eval.contract import LicenceRefused
+from research_gate import ADMITTED_AS_REACHABLE
 
 VERDICTS = ("ESTABLISHED", "INCONCLUSIVE", "NOT_ESTABLISHED")
 ROLES = {"strategy": 1.0, "strategy_2x": 2.0, "control": 1.0}
@@ -59,6 +60,10 @@ def _bind(role: str, r: dict, sha: str, holdout) -> dict:
     ident = r.get("identity") or {}
     if EN.sha256_of(ident) != r.get("identity_sha256"):
         raise VerdictRefused(f"{role}: the identity does not hash to its identity_sha256 (edited)")
+    adm = ident.get("admission")                                    # I-1B-1 (RR-2): a consistency check, not a gate
+    asha = adm.get("admission_sha256") if isinstance(adm, dict) else None
+    if not (isinstance(asha, str) and len(asha) == 64 and all(c in "0123456789abcdef" for c in asha) and adm.get("admitted_as") in ADMITTED_AS_REACHABLE):
+        raise VerdictRefused(f"{role}: the run identity names no admission (consistency check)")
     if EN.result_sha256(r) != r.get("result_sha256"):
         raise VerdictRefused(f"{role}: the result content does not hash to its result_sha256 (edited evidence)")
     if ident.get("prereg_sha256") != sha:
@@ -88,7 +93,8 @@ def _settings(ident: dict) -> dict:
             "cash_rate": {k: cr.get(k) for k in ("mode", "annual", "sha256")}, "delisting_mode": ident.get("delisting_mode"),
             "initial_cash": ident.get("initial_cash"), "static_map_sha256": ident.get("static_map_sha256"), "book": ident.get("book"),
             "segment": ident.get("segment"), "segment_label": ident.get("segment_label"), "content_sha256": ident.get("content_sha256"),
-            "kind": ident.get("kind"), "licence": ident.get("licence"), "benchmark": ident.get("benchmark")}
+            "kind": ident.get("kind"), "licence": ident.get("licence"), "benchmark": ident.get("benchmark"),
+            "admission_sha256": (ident.get("admission") or {}).get("admission_sha256")}
 
 
 def _against_prereg(st: dict, p: dict) -> list:
@@ -195,7 +201,7 @@ def _decide(s, s2, c, ids, prereg, sha, rec, op, spy_returns, registry) -> dict:
     if missing:
         out["reasons"].append({"code": "MISSING_INPUT", "fields": missing})
         return out
-    caps = sorted(set(flags) & set(VERDICT_CAPS))
+    caps = sorted((set(flags) & set(VERDICT_CAPS)) | {c for i in ids.values() for c in (i.get("admission") or {}).get("verdict_caps", [])})
     if caps:
         out["caps"] = caps
         out["reasons"].append({"code": "CAPPED", "flags": caps})

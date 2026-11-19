@@ -27,6 +27,7 @@ from md_eval.isolation import offline
 from md_eval.ledger import Ledger
 from md_eval.signals import bar_at
 from md_eval.view import BookSnapshot, DecisionContext, PositionSnapshot
+import research_gate as RGATE
 
 DELISTING_MODES = ("PRIMARY", "LAST_PRICE")
 
@@ -155,26 +156,31 @@ def segment_guard(m, cfg: RunConfig, registry, holdout, source_name: str = "", c
     return label, "REGISTERED_SEGMENT", reg
 
 
-def run(provider, source, cfg: RunConfig, *, registry=None, holdout=None) -> dict:
-    BK.check_frozen(cfg.book_overrides)
-    if cfg.delisting_mode not in DELISTING_MODES:
-        raise ValueError(f"delisting_mode must be one of {DELISTING_MODES}")
-    if source.role not in ("STRATEGY", "BENCHMARK"):
-        raise ValueError(f"unknown source role {source.role!r}")
-    m = provider.manifest()
-    check_version(m)
-    licence = licence_gate(m)                                                   # before any data is read
-    source_identity = source.identity()
-    source_name = str(source_identity.get("name", ""))
-    multiplier = float((cfg.cost_model or CostModel()).multiplier)
-    label, check, reg = segment_guard(m, cfg, registry, holdout, source_name, multiplier, source_identity, source.role)   # before any data is read
-    bench = (reg or {}).get("benchmark_instrument")
-    if bench is not None and bench not in {i.instrument_id for i in provider.instruments()}:
-        raise RunRefused(f"the pre-registered benchmark instrument {bench!r} is not in the dataset")
-    heads = {"registry_head_sha256": registry.head() if registry is not None else None,
-             "holdout_head_sha256": holdout.head() if holdout is not None else None}   # LOW-1: a later truncation is detectable
-    with offline() as attempts:
-        out = _Run(provider, source, cfg, m, licence, check, heads, bench).execute()
+def run(provider, source, cfg: RunConfig, *, registry=None, holdout=None, admission=None) -> dict:
+    with offline() as attempts:                                                     # I-1B-1 (E6): the whole run, the pre-checks included
+        BK.check_frozen(cfg.book_overrides)
+        if cfg.delisting_mode not in DELISTING_MODES:
+            raise ValueError(f"delisting_mode must be one of {DELISTING_MODES}")
+        if source.role not in ("STRATEGY", "BENCHMARK"):
+            raise ValueError(f"unknown source role {source.role!r}")
+        m = RGATE.manifest_view(provider)                                           # the manifest only: no data read
+        check_version(m)
+        licence = licence_gate(m)                                                   # before any data is read
+        source_identity = source.identity()
+        source_name = str(source_identity.get("name", ""))
+        multiplier = float((cfg.cost_model or CostModel()).multiplier)
+        label, check, reg = segment_guard(m, cfg, registry, holdout, source_name, multiplier, source_identity, source.role)   # before any data is read
+        adm = RGATE.admit_for_engine(provider, admission=admission)                 # the admission gate: after the pre-data gates, before any data read
+        if RGATE.admitted_manifest(adm) != m:
+            raise RGATE.NotAdmitted(RGATE.ADMISSION_MISMATCH, (RGATE.ADMISSION_MISMATCH, "MANIFEST"))
+        bench = (reg or {}).get("benchmark_instrument")
+        if bench is not None and bench not in {i.instrument_id for i in adm.instruments()}:
+            raise RunRefused(f"the pre-registered benchmark instrument {bench!r} is not in the dataset")
+        heads = {"registry_head_sha256": registry.head() if registry is not None else None,
+                 "holdout_head_sha256": holdout.head() if holdout is not None else None}   # LOW-1: a later truncation is detectable
+        RGATE.verify(adm)                                                           # run start
+        out = _Run(adm, source, cfg, RGATE.admitted_manifest(adm), licence, check, heads, bench, admission=RGATE.identity_fields(adm)).execute()
+        RGATE.verify(adm)                                                           # run end: a change during the run refuses, nothing is recorded
     if attempts:
         raise RunRefused(f"network or database access attempted: {attempts}")
     out["result_sha256"] = result_sha256(out)
@@ -188,8 +194,9 @@ def run(provider, source, cfg: RunConfig, *, registry=None, holdout=None) -> dic
 
 class _Run:
     def __init__(self, p, source, cfg: RunConfig, m, licence: str, segment_check: str = "SYNTHETIC_EXEMPT_UNSEGMENTED", heads: Optional[dict] = None,
-                 benchmark_instrument: Optional[str] = None):
+                 benchmark_instrument: Optional[str] = None, *, admission: Optional[dict] = None):
         self.p, self.src, self.cfg, self.m, self.licence = p, source, cfg, m, licence
+        self.admission = dict(admission) if admission is not None else None          # I-1B-1: the admission identity (research_gate.identity_fields)
         self.benchmark_instrument = benchmark_instrument
         self.segment_check, self.heads = segment_check, dict(heads or {"registry_head_sha256": None, "holdout_head_sha256": None})
         self.costs = cfg.cost_model or CostModel()
@@ -469,6 +476,8 @@ class _Run:
                 self.flags.add(POSSIBLE_DELISTING)
                 L.log.append({"session": self.sessions[-1], "kind": "FLAG", "flag": POSSIBLE_DELISTING, "instrument_id": iid, "last_bar": last_bar})
         flags = set(self.flags) | set(L.flags) | set(self.src.flags()) | set(cfg.cash_rate.flags())
+        adm = self.admission or {}
+        flags |= set(adm.get("decision_flags") or ()) | set(adm.get("verdict_caps") or ())     # I-1B-1: the admission decision's flags and caps
         if m.membership_basis == "FIXED_CURRENT_UNIVERSE":
             flags |= {FIXED_CURRENT_UNIVERSE, SURVIVORSHIP_BIAS_PRESENT}
         if self.static_used:
@@ -484,7 +493,9 @@ class _Run:
                     "cash_rate": cfg.cash_rate.identity(), "segment": [cfg.start_session, cfg.end_session], "segment_label": cfg.segment_label,
                     "embargo_sessions": cfg.embargo_sessions, "initial_cash": cfg.initial_cash, "delisting_mode": cfg.delisting_mode,
                     "static_map_sha256": sha256_of(cfg.static_map) if cfg.static_map else None, "prereg_sha256": cfg.prereg_sha256,
-                    "ratio_canonicalisation": None, "segment_check": self.segment_check, **self.heads, "benchmark": bench_id}
+                    "ratio_canonicalisation": None, "segment_check": self.segment_check, **self.heads, "benchmark": bench_id,
+                    "admission": {k: adm[k] for k in ("admission_sha256", "admitted_as", "decision_sha256", "allowlist_entry_id", "verdict_caps")}
+                    if self.admission is not None else None}
         return {"identity": identity, "identity_sha256": sha256_of(identity), "rows": self.rows, "decisions": self.decisions, "fills": self.fills,
                 "not_taken": self.not_taken, "ledger_log": L.log, "flags": sorted(flags), "final_equity": self.rows[-1]["equity"],
                 "initial_cash": cfg.initial_cash, "traded_notional": L.traded_notional, "total_costs": L.total_costs,

@@ -941,7 +941,7 @@ def test_X02_nothing_outside_the_package_and_the_tests_imports_it():
     visited = set()
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("historical_data/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
+        if rel.startswith(("historical_data/", "research_gate/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         if rel in ID10_LITERALS:                                                                 # ID-10: exact literals only, each once in the text and once as a string constant

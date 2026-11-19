@@ -41,6 +41,7 @@ from md_eval.costs import ZERO_COST_BUCKETS, CostModel
 from md_eval.isolation import IsolationViolation
 from md_eval.signals import BuyAndHold, Signal, SignalSource, SwingBridge
 from md_eval.view import BookSnapshot, DecisionContext
+import research_gate as RGATE
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = "d" * 64
@@ -309,9 +310,10 @@ def test_R04_a_historical_run_needs_a_registered_pre_registration_and_a_labelled
                     ({"registry": reg, "holdout": led}, FX.v1_config(d, prereg_sha256=PR.validate(p), segment_label="TRAIN"))):
         with pytest.raises(EN.RunRefused):
             EN.run(d, FX.ScriptedSource(s), cfg, **kw)
-    r = EN.run(d, FX.ScriptedSource(s), FX.v1_config(d, prereg_sha256=PR.validate(p), segment_label="VALIDATION"), registry=reg, holdout=led)
-    assert r["identity"]["licence"] == "CONFIRMED" and r["identity"]["segment_check"] == "REGISTERED_SEGMENT"
-    assert led.run_entry("VALIDATION_RUN", PR.validate(p), d.manifest().content_sha256, r["identity_sha256"]) is not None
+    with pytest.raises(RGATE.AdmissionRefused) as e:                                        # I-1B-1 (ID-3, ID-8): a HISTORICAL double is never admitted
+        EN.run(d, FX.ScriptedSource(s), FX.v1_config(d, prereg_sha256=PR.validate(p), segment_label="VALIDATION"), registry=reg, holdout=led)
+    assert e.value.code == "DOUBLE_HISTORICAL_NOT_ADMITTED" and EN.licence_gate(d.manifest()) == "CONFIRMED"
+    assert not [x for x in led.entries() if x["kind"] == "VALIDATION_RUN"]
 
 
 def _src(w, which, extra=ID_EXTRA):
@@ -480,7 +482,7 @@ def test_V09_a_substituted_benchmark_series_is_refused(tmp_path):
     w = _world(tmp_path)
     res, spy = _runs(w, "VALIDATION", 10, 29)
     sessions = [r["session"] for r in res["strategy"]["rows"]]
-    assert spy == BM.total_return_series(w["d"], "SIM:SPY", sessions) and res["strategy"]["identity"]["benchmark"]["instrument_id"] == "SIM:SPY"
+    assert spy == BM.total_return_series(RGATE.admit_double(w["d"]), "SIM:SPY", sessions) and res["strategy"]["identity"]["benchmark"]["instrument_id"] == "SIM:SPY"
     assert all(res[k]["identity"]["benchmark"] == res["strategy"]["identity"]["benchmark"] for k in res)       # same provider, same sessions
     fake = [0.0] + [0.01] * (len(sessions) - 1)
 
@@ -518,7 +520,7 @@ def test_V11_a_missing_total_return_view_is_unavailable_and_the_verdict_refuses(
     w = _world(tmp_path, views=("RAW", "SPLIT_ADJUSTED"))
     res, spy = _runs(w, "VALIDATION", 10, 29)
     assert spy == {"status": "UNAVAILABLE", "reason": "TOTAL_RETURN_VIEW_UNAVAILABLE"} and res["strategy"]["identity"]["benchmark"]["status"] == "UNAVAILABLE"
-    assert BM.total_return_series(w["d"], "SIM:SPY", w["s"][10:30]).status == "UNAVAILABLE"
+    assert BM.total_return_series(RGATE.admit_double(w["d"]), "SIM:SPY", w["s"][10:30]).status == "UNAVAILABLE"
     with pytest.raises(VD.VerdictRefused, match="UNAVAILABLE"):
         _verdict(w, res)
 
@@ -683,7 +685,11 @@ def test_LC03_total_return_series_shares_the_licence_gate():
             BM.total_return_series(d, "SIM:SPY", d.sessions("0", "9"))
         assert d.calls == ["manifest"]
     ok = FX.simple_double({"SIM:SPY": FX.flat(5)}, n=5, kind="HISTORICAL", licence=CONFIRMED)
-    assert BM.total_return_series(ok, "SIM:SPY", ok.sessions("0", "9")) == [0.0] * 5
+    assert EN.licence_gate(ok.manifest()) == "CONFIRMED"                                    # I-1B-1: the licence gate passes; the admission gate refuses
+    n = len(ok.calls)
+    with pytest.raises(RGATE.NotAdmitted) as e:
+        BM.total_return_series(ok, "SIM:SPY", ok.sessions("0", "9"))
+    assert e.value.code == "NOT_ADMITTED" and ok.calls[n:] == ["manifest"]
 
 
 def test_LC04_the_signal_bridge_refuses_a_historical_view_without_a_confirmed_licence():
@@ -699,7 +705,11 @@ def test_LC04_the_signal_bridge_refuses_a_historical_view_without_a_confirmed_li
             with pytest.raises(LicenceRefused):
                 bridge.dataset(view, s[210])
         else:
-            assert isinstance(bridge.entries(ctx), list) and bridge.dataset(view, s[210]) is not None
+            assert EN.licence_gate(view.manifest()) == "CONFIRMED"                         # I-1B-1: no admitted HISTORICAL view exists (ID-8)
+            for call in (lambda: bridge.entries(ctx), lambda: bridge.dataset(view, s[210])):
+                with pytest.raises(RGATE.NotAdmitted) as e:
+                    call()
+                assert e.value.code == "NOT_ADMITTED_VIEW"
 
 
 def test_LC05_the_random_control_refuses_unregistered_historical_data_and_the_test_segment(tmp_path):
@@ -726,7 +736,16 @@ def test_LC06_the_random_control_runs_as_a_registered_recorded_validation_run(tm
     reg.register(p)
     led.record_prereg(p)
     cfg = EN.RunConfig(start_session=s[200], end_session=s[239], prereg_sha256=PR.validate(p), segment_label="VALIDATION")
-    out = BM.random_control(d, cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)
+    if kind == "HISTORICAL":                                                                # I-1B-1 (ID-3, ID-8): refused; nothing is recorded
+        assert EN.licence_gate(d.manifest()) == "CONFIRMED"
+        with pytest.raises(RGATE.NotAdmitted) as e:
+            BM.random_control(d, cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)
+        assert e.value.code == "NOT_ADMITTED"
+        with pytest.raises(RGATE.AdmissionRefused) as e:
+            RGATE.admit_double(d)
+        assert e.value.code == "DOUBLE_HISTORICAL_NOT_ADMITTED" and not [x for x in led.entries() if x["kind"] == "VALIDATION_RUN"]
+        return
+    out = BM.random_control(RGATE.admit_double(d), cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)
     rec = [e["payload"] for e in led.entries() if e["kind"] == "VALIDATION_RUN"]
     assert [r["role"] for r in rec] == ["RANDOM_CONTROL", "RANDOM_CONTROL"] and [r["identity_sha256"] for r in rec] == [x["identity_sha256"] for x in out["runs"]]
     assert out["seeds"] == [3, 4] and out["role"] == "REPORT_ONLY_NEVER_TUNES_V1"
@@ -757,7 +776,7 @@ def test_X01_no_socket_and_no_sqlite_during_a_run_and_both_are_restored_after(wh
 
 
 ALLOWED = ("__future__", "_socket", "_sqlite3", "contextlib", "copy", "dataclasses", "datetime", "hashlib", "json", "math", "pathlib", "random",
-           "socket", "sqlite3", "statistics", "types", "typing", "md_eval", "swing_pullback", "strategy_validation.dataset",
+           "socket", "sqlite3", "statistics", "types", "typing", "md_eval", "research_gate", "swing_pullback", "strategy_validation.dataset",
            "strategy_validation.models", "rotation_backtest.metrics")
 
 
@@ -777,6 +796,6 @@ def test_X03_md_eval_never_names_the_evaluator_or_the_research_data_package_and_
         assert "swing_eval" not in t and "research_data" not in t, f.name
     for p in ROOT.rglob("*.py"):
         rel = p.relative_to(ROOT).as_posix()
-        if rel.startswith(("md_eval/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
+        if rel.startswith(("md_eval/", "research_gate/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:
             continue
         assert "md_eval" not in p.read_text(encoding="utf-8", errors="replace"), rel
