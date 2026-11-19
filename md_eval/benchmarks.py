@@ -19,6 +19,7 @@ from md_eval import engine as EN
 from md_eval import metrics as MT
 from md_eval.contract import is_missing, licence_gate, unavailable
 from md_eval.signals import RandomEntry, SwingBridge
+import research_gate as RGATE
 
 
 def _num(x) -> bool:
@@ -31,6 +32,7 @@ def total_return_series(provider, instrument_id: str, sessions: Sequence[str]) -
     A dataset without the TOTAL_RETURN view gives the explicit UNAVAILABLE (P3, P4): never raw prices in its place."""
     m = provider.manifest()
     licence_gate(m)
+    RGATE.require_admitted(provider)                                     # I-1B-1 (E7): an admitted dataset only, before any data read
     if "TOTAL_RETURN" not in tuple(getattr(m, "price_views_available", ()) or ()):
         return unavailable("TOTAL_RETURN_VIEW_UNAVAILABLE")
     rows = {b.session: b for b in provider.bars(instrument_id, sessions[0], sessions[-1])}
@@ -102,6 +104,7 @@ def random_control(provider, cfg, universe_id: str, seeds: Sequence[int], static
         raise EN.RunRefused("the random-entry control is report-only: refused on the TEST segment")
     if m.kind == "HISTORICAL" and (cfg.segment_label != "VALIDATION" or registry is None or holdout is None):
         raise EN.RunRefused("the random-entry control on HISTORICAL data runs only as a registered, recorded VALIDATION run")
+    RGATE.require_admitted(provider)                                     # I-1B-1 (E7): after the licence and segment refusals
     runs = []
     for seed in seeds:
         src = RandomEntry(SwingBridge(True, universe_id, static_map), SwingBridge(False, universe_id, static_map), seed)

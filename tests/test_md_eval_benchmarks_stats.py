@@ -23,6 +23,7 @@ from md_eval.signals import EqualWeight, SwingBridge
 from strategy_validation.dataset import Dataset
 from strategy_validation.models import Bar
 from swing_pullback.core import SwingPullbackCore
+import research_gate as RGATE
 
 
 def _fake(gross, equity, cash_r=None):
@@ -71,8 +72,9 @@ def test_B05_the_random_entry_control_is_reproducible_records_its_seeds_and_neve
     d = FX.v1_double()
     cfg = FX.v1_config(d)
     v1_before = EN.run(d, SwingBridge(True, FX.UNIVERSE), cfg)
-    one = BM.random_control(d, cfg, FX.UNIVERSE, [11, 12])
-    two = BM.random_control(d, cfg, FX.UNIVERSE, [11, 12])
+    adm = RGATE.admit_double(d)                                                             # I-1B-1 (O-7): an admitted dataset; admission is deterministic
+    one = BM.random_control(adm, cfg, FX.UNIVERSE, [11, 12])
+    two = BM.random_control(adm, cfg, FX.UNIVERSE, [11, 12])
     assert one == two and one["seeds"] == [11, 12] and one["role"] == "REPORT_ONLY_NEVER_TUNES_V1"
     assert one["runs"][0]["identity_sha256"] != one["runs"][1]["identity_sha256"]                    # the seed is in the identity
     v1_after = EN.run(d, SwingBridge(True, FX.UNIVERSE), cfg)

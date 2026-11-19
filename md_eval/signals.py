@@ -27,6 +27,7 @@ from strategy_validation.models import Bar
 from md_eval import (EXITS_NEXT_OPEN, FIXED_CURRENT_UNIVERSE, NO_SIGNALS_SPLIT_VIEW_UNAVAILABLE, SIGNAL_BASIS_SPLIT_ADJUSTED, SPLIT_UNADJUSTED,
                      STATIC_CLASSIFICATION_MAP, SURVIVORSHIP_BIAS_PRESENT, SYMBOL_HISTORY_UNKNOWN)
 from md_eval.contract import is_missing, licence_gate, symbol_at
+import research_gate as RGATE
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ class SwingBridge(SignalSource):
         """(the strategy_validation Dataset of the view at d, {symbol: instrument_id}, {symbol: {session: rebased split factor}}) or None."""
         man = view.manifest()
         licence_gate(man)                                                    # MED-2: HISTORICAL only when CONFIRMED, even outside the engine
+        RGATE.require_admitted_view(view)                                    # I-1B-1 (E7): only a view the admission gate issued
         views = tuple(man.get("price_views_available") or ())
         if "SPLIT_ADJUSTED" not in views and not self.split_unadjusted:
             self.run_flags.add(NO_SIGNALS_SPLIT_VIEW_UNAVAILABLE)
@@ -166,6 +168,7 @@ class SwingBridge(SignalSource):
 
     def entries(self, ctx) -> List[Signal]:
         licence_gate(ctx.view.manifest())                                    # MED-2: the shared gate, on the view's licence (A11 allow-list)
+        RGATE.require_admitted_view(ctx.view)                                # I-1B-1 (E7): only a view the admission gate issued
         built = self.dataset(ctx.view, ctx.session)
         if built is None:
             return []
@@ -201,6 +204,8 @@ class RandomEntry(SignalSource):
         return sorted(set(self.v1.flags()) | set(self.c1.flags()) | {"RANDOM_ENTRY_CONTROL_REPORT_ONLY"})
 
     def entries(self, ctx) -> List[Signal]:
+        licence_gate(ctx.view.manifest())                                    # I-1B-1 (E7): the licence gate first, then the admitted view
+        RGATE.require_admitted_view(ctx.view)
         k = len(self.v1.entries(ctx))
         pool = sorted(self.c1.entries(ctx), key=lambda s: s.instrument_id)
         if not k or not pool:
@@ -223,6 +228,7 @@ class BuyAndHold(SignalSource):
 
     def entries(self, ctx) -> List[Signal]:
         licence_gate(ctx.view.manifest())
+        RGATE.require_admitted_view(ctx.view)                                # I-1B-1 (E7)
         if self.done:
             return []
         b = bar_at(ctx.view, self.instrument_id, ctx.session)
@@ -248,6 +254,7 @@ class EqualWeight(SignalSource):
 
     def entries(self, ctx) -> List[Signal]:
         licence_gate(ctx.view.manifest())
+        RGATE.require_admitted_view(ctx.view)                                # I-1B-1 (E7)
         if self.done:
             return []
         ids = []

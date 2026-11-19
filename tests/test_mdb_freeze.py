@@ -103,13 +103,27 @@ def at_base(rel):
     return at(FL.BASE_MDB, rel)
 
 
+I1_MOVED = tuple(sorted(FL.EDITED_I1 - {"tests/test_mdb_freeze.py"}))   # I-1B-1 (design 7a): its edited files, read at BASE_I1 (tests/test_i1_freeze.py F06I)
+
+
+def at_i1(rel):
+    return at(FL.BASE_I1, rel)
+
+
+def ledger_i1():
+    """I-1B-1 (design 7a): the ledger at BASE_I1, the hashes MD-B's bookkeeping is checked against."""
+    return FL.ledger_at(FL.BASE_I1)
+
+
 def now_text(rel):
+    if rel in I1_MOVED:
+        return at_i1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # I-1B-1 (design 7a): MD-B's side is the fixed diff from `base` to BASE_I1; the working tree's change set belongs to tests/test_i1_freeze.py
+    return set(_git("diff", "--name-only", base, FL.BASE_I1).split())
 
 
 def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_production_file_changed():
@@ -129,7 +143,7 @@ def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_production_fil
         assert groups[g] == {**base_groups[g], "files": base_groups[g]["files"][:i] + new + base_groups[g]["files"][i:]}, g
     listed = {f for v in groups.values() for f in v["files"]}
     assert {p.split("/")[-1] for p in FL.NEW_MDB if p.startswith("tests/test_")} <= listed
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_i1()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # I-1B-1: the manifest and its hash, both at BASE_I1
 
 
 def test_F02B_the_reused_packages_and_the_reviewed_md_eval_blobs_are_byte_identical_and_nothing_semantic_is_declared():
@@ -142,7 +156,7 @@ def test_F02B_the_reused_packages_and_the_reviewed_md_eval_blobs_are_byte_identi
     assert md == {p for p in REVIEWED_BLOBS_66DEB51A if p.startswith("md_eval/")} and len(md) == 18, sorted(md ^ {p for p in REVIEWED_BLOBS_66DEB51A if p.startswith("md_eval/")})
     assert set(REVIEWED_BLOBS_66DEB51A) | {"tests/test_md_eval_lookahead.py", "tests/test_mdb_freeze.py"} == FL.NEW_MDB
     for rel, blob in sorted(REVIEWED_BLOBS_66DEB51A.items()):
-        assert _git("hash-object", rel).strip() == blob, rel                                     # the path (eol filter applies); no -w: nothing is written
+        assert (_git("rev-parse", f"{FL.BASE_I1}:{rel}") if rel in I1_MOVED else _git("hash-object", rel)).strip() == blob, rel                                     # the path (eol filter applies); no -w: nothing is written
     text = now_text("tests/test_md_eval_lookahead.py")
     for old, new in reversed(UNDO_LOOKAHEAD_S3):
         assert text.count(new) == 1, new[:80]
@@ -193,7 +207,7 @@ def test_F05B_the_ledger_changes_only_its_declarations_its_helper_and_the_rehash
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == want, sorted(rehashed ^ want)
     for rel in rehashed:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_i1()[rel], rel                     # I-1B-1: MD-B's hashes against its texts, both at BASE_I1
     pa, ma = fl.index("\nMD-A (the historical data contract package"), main_fl.index("\nMD-A (the historical data contract package")   # MD-A's region, as merged
     assert fl[pa:fl.index("\nMD-B (the portfolio evaluation engine")] == main_fl[ma:main_fl.index('"""', ma)]
     assert fl[fl.index("BASE_MDA = "):fl.index("BASE_MDB = ")] == main_fl[main_fl.index("BASE_MDA = "):main_fl.index("\nLEDGER = {\n") + 1]

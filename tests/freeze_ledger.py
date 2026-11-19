@@ -5,7 +5,7 @@ The earlier freeze tests pin execution, Trader View, route and UI files to their
 purpose. Instead of loosening any freeze test, every such file is registered here with the SHA-256 of the exact text Stage 6.8 leaves, and
 the freeze tests read it through `view()`: a registered file whose text matches its hash is seen exactly as it was on main (BASE_68), where
 every freeze test passed. Any other change - or any later edit of a registered file without updating its hash - still fails, and
-tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A + NEW_W2B + NEW_W2C + NEW_EX06 + NEW_XSS01 + NEW_PANEL + NEW_J04 + NEW_GATE + NEW_REC + NEW_MDA + NEW_MDB plus this ledger.
+tests/test_bot_activity_68.py::test_F01 proves that the change set since main is exactly NEW_68 + NEW_69 + NEW_691 + NEW_610A + NEW_610C + NEW_541 + NEW_611FIX + NEW_OPS + NEW_610D + NEW_542 + NEW_70 + NEW_71 + NEW_72 + NEW_73 + NEW_731 + NEW_74 + NEW_75 + NEW_78 + NEW_78B1 + NEW_W1 + NEW_W2A + NEW_W2B + NEW_W2C + NEW_EX06 + NEW_XSS01 + NEW_PANEL + NEW_J04 + NEW_GATE + NEW_REC + NEW_MDA + NEW_MDB + NEW_I1 plus this ledger.
 Stage 6.9 extends the same ledger (its edits of registered files are new hashes; its new files are NEW_69) - BASE_68 stays the view base.
 
 Stage 6.9.1 (the unified external exposure gate) is the first stage that changes EXECUTION SEMANTICS on purpose: a new entry control,
@@ -238,6 +238,17 @@ contract identifiers); SEMANTIC_TESTS_MDB declares every changed test function. 
 its change set is the fixed diff to BASE_MDB); the panel's, J-04's, the gate's and the recovery's freeze tests are not edited (they read their
 side at fixed commits). tests/test_mdb_freeze.py pins it (BASE_MDB / NEW_MDB / EDITED_MDB, and the reviewed blob ids of md_eval/ and of its
 unchanged test modules); tests/test_md_eval_*.py pin the behaviour.
+
+I-1B-1 (S4: the research admission gate; I-1A r4 with Addendum A) adds the package research_gate/ (admission of MD-A synthetic providers and
+pinned MD-B doubles, the snapshot and its verify, the MD-A to MD-B bridge, the licence-evidence refusal and the pinned synthetic allow-list) and
+gates md_eval's engine, signal sources and benchmarks on it; md_eval/verdict.py gains a consistency check only. SEMANTIC_I1 names those four
+files. Its base BASE_I1 is main after MD-B merged (PR #65). It re-hashes the registered files it edits (no new registration) and pins the
+allow-list sha and the reviewed blobs (SYNTHETIC_ALLOWLIST_SHA256_I1, REVIEWED_BLOBS_I1: the git blob ids of its research_gate files and of the
+four md_eval files it edits); UNDO_I1 undoes its exact in-place edits of older test files (the change-set unions, the undo chains, MD-B's freeze
+test re-pointed, the three directory-exact research_gate/ isolation exemptions and the measured MD-B test edits); SEMANTIC_TESTS_I1 declares
+every changed test function. MD-B's freeze test reads I-1B-1's files at BASE_I1 (design 7a; its change set is the fixed diff to BASE_I1);
+MD-A's, the panel's, J-04's, the gate's and the recovery's freeze tests are not edited. tests/test_i1_freeze.py pins it (BASE_I1 / NEW_I1 /
+EDITED_I1); tests/test_i1_*.py pin the behaviour.
 """
 import hashlib
 import subprocess
@@ -3641,8 +3652,238 @@ SEMANTIC_TESTS_MDB = {                                                          
     'tests/test_historical_data_mda.py::test_X02_nothing_outside_the_package_and_the_tests_imports_it': "MDB-X02 ID-10 (S3-D5): each exempt literal appears once in the text and once as a string constant, is stripped, and the exempt file must have been read",
 }
 
+BASE_I1 = 'f4eb67d732f6f07522751c3066b3ded45d875ba3'                                     # main: MD-B merged (PR #65); the I-1B-1 (S4) base
+NEW_I1 = {'research_gate/__init__.py', 'research_gate/admit.py', 'research_gate/bridge.py', 'research_gate/licence_evidence.py',
+          'research_gate/snapshot.py', 'research_gate/synthetic_allowlist.py', 'tests/i1_builders.py', 'tests/test_i1_admission.py',
+          'tests/test_i1_bridge_conformance.py', 'tests/test_i1_census.py', 'tests/test_i1_freeze.py', 'tests/test_i1_snapshot_toctou.py',
+          'tests/test_i1_synthetic_boundary.py'}   # I-1B-1: the gate package and its tests (exactly 13; no errors.py, M-4)
+EDITED_I1 = {'.github/ci/pytest_groups.json', 'md_eval/benchmarks.py', 'md_eval/engine.py', 'md_eval/signals.py', 'md_eval/verdict.py',
+             'tests/freeze_ledger.py', 'tests/test_bot_activity_68.py', 'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py',
+             'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py', 'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py',
+             'tests/test_forward_paper_610a.py', 'tests/test_historical_data_mda.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py',
+             'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py',
+             'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_md_eval_benchmarks_stats.py', 'tests/test_md_eval_ledger.py',
+             'tests/test_md_eval_registry_verdict.py', 'tests/test_mdb_freeze.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py',
+             'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py',
+             'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py',
+             'tests/test_wave2_prc.py'}   # exactly 37 (tests/md_eval_fixtures.py stays unedited: M-10, no rounding changes)
+SEMANTIC_I1 = {   # the INTENTIONAL production change, file by file
+    'md_eval/engine.py': "E6 gate (I-1A 2.5): run() admits after segment_guard and before any data read, verifies the snapshot at start and end, wraps the whole body in offline(); _Run takes the admission identity; _finish unions the decision flags and caps",
+    'md_eval/signals.py': "E7 gate: SwingBridge.dataset/entries, RandomEntry/BuyAndHold/EqualWeight.entries refuse a view that research_gate did not issue, after the licence gate",
+    'md_eval/benchmarks.py': "E7 gate: total_return_series and random_control refuse a provider that is not an admitted dataset, after the licence and segment refusals",
+    'md_eval/verdict.py': "RR-2 consistency only: _bind requires an admission in each identity, _settings binds the three runs to one admission, _decide unions the admission caps",
+}
+INSTRUMENTATION_I1: dict = {}
+NEW_LEDGER_I1: set = set()   # no new registration (a registration would also need test_ex06_freeze.py:171 and test_bot_activity_68.py:522 edits)
+SYNTHETIC_ALLOWLIST_SHA256_I1 = '17022adf5e0f5020bc63bdbea8d4ba953cd394478be019996d4c6d4af56b5d48'   # FL.sha of research_gate/synthetic_allowlist.py (written during the fixpoint, confirmed at step P; the owner approves it at P5a)
+REVIEWED_BLOBS_I1 = {   # PB-9 scope (ii): git blob ids of the 6 research_gate/*.py in NEW_I1 and the 4 PROD_I1 files; set at step P (after the T1..T6 fixpoint, before T7)
+    'research_gate/__init__.py': '1e506e0826770baf8fb4bd1f47771be165ffcd36',
+    'research_gate/admit.py': 'e13188861b7a2731bde232147438629184ff7636',
+    'research_gate/bridge.py': 'a2ee2120a94c99c199597984a9d8b3f8a471156c',
+    'research_gate/licence_evidence.py': '2c0f3ee362a0f7f931d7d2b5aeb99e719d654f91',
+    'research_gate/snapshot.py': '437244ce974933fd2bd2904e1298a572c673b311',
+    'research_gate/synthetic_allowlist.py': '742fc4abdb5f00a5f2b9933213db4f0411e88106',
+    'md_eval/benchmarks.py': '81ba2e8a53c7e08181908bda9c80c3c3dd2f8d8b',
+    'md_eval/engine.py': '68ebee755cb72f2acfefd768feb6871d61224eaf',
+    'md_eval/signals.py': '28d85594eb72c128d125b9ca16fc1eaf16005d1d',
+    'md_eval/verdict.py': 'aabc4f2310cc282e1d7d7a7ca031be6228ff1130',
+}
+_U_I1 = ('FL.NEW_MDB | FL.EDITED_MDB', 'FL.NEW_MDB | FL.EDITED_MDB | FL.NEW_I1 | FL.EDITED_I1')
+UNDO_I1 = {                                                                                   # I-1B-1's in-place edits of older test files: (main BASE_I1, I-1B-1)
+    'tests/test_bot_activity_68.py': [
+        ('FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB, {"unexpected_new"', 'FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB | FL.NEW_I1, {"unexpected_new"'),
+        ('FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB) - new)}', 'FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB | FL.NEW_I1) - new)}'),
+    ],
+    'tests/test_chart_empty_state_611fix.py': [_U_I1],
+    'tests/test_decision_flow_610c.py': [_U_I1],
+    'tests/test_engine_health_610d.py': [_U_I1],
+    'tests/test_evidence_gate_541.py': [_U_I1],
+    'tests/test_evidence_refresh_542.py': [_U_I1],
+    'tests/test_ex06_freeze.py': [
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))                     # XSS-01: its own in-place edits undone first',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))                     # XSS-01: its own in-place edits undone first'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))) == at_base(rel), rel       # now -> (XSS-01 undone)',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))) == at_base(rel), rel       # now -> (XSS-01 undone)'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+    ],
+    'tests/test_forward_paper_610a.py': [_U_I1],
+    'tests/test_historical_data_mda.py': [
+        ('        if rel.startswith(("historical_data/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:',
+         '        if rel.startswith(("historical_data/", "research_gate/", "tests/", ".venv/", "scratchpad/", ".claude/")) or "/site-packages/" in rel:'),
+    ],
+    'tests/test_market_intel_70.py': [_U_I1],
+    'tests/test_market_intel_collector_73.py': [_U_I1],
+    'tests/test_market_intel_quality_74.py': [_U_I1],
+    'tests/test_market_intel_schema_v2_731.py': [_U_I1],
+    'tests/test_market_intel_sources_72.py': [_U_I1],
+    'tests/test_market_intel_store_71.py': [_U_I1],
+    'tests/test_market_scan_75.py': [_U_I1],
+    'tests/test_md_eval_benchmarks_stats.py': [
+        ('from swing_pullback.core import SwingPullbackCore\n', 'from swing_pullback.core import SwingPullbackCore\nimport research_gate as RGATE\n'),
+        ('    one = BM.random_control(d, cfg, FX.UNIVERSE, [11, 12])\n    two = BM.random_control(d, cfg, FX.UNIVERSE, [11, 12])',
+         '    adm = RGATE.admit_double(d)                                                             # I-1B-1 (O-7): an admitted dataset; admission is deterministic\n'
+         '    one = BM.random_control(adm, cfg, FX.UNIVERSE, [11, 12])\n    two = BM.random_control(adm, cfg, FX.UNIVERSE, [11, 12])'),
+    ],
+    'tests/test_md_eval_ledger.py': [
+        ('from md_eval.signals import BuyAndHold, Signal\n', 'from md_eval.signals import BuyAndHold, Signal\nimport research_gate as RGATE\n'),
+        ('    tr = total_return_series(d, "SIM:S", s)',
+         '    tr = total_return_series(RGATE.admit_double(d), "SIM:S", s)                              # I-1B-1 (O-7): the benchmark reads an admitted dataset'),
+    ],
+    'tests/test_md_eval_registry_verdict.py': [
+        ('from md_eval.view import BookSnapshot, DecisionContext\n', 'from md_eval.view import BookSnapshot, DecisionContext\nimport research_gate as RGATE\n'),
+        ('    r = EN.run(d, FX.ScriptedSource(s), FX.v1_config(d, prereg_sha256=PR.validate(p), segment_label="VALIDATION"), registry=reg, holdout=led)\n'
+         '    assert r["identity"]["licence"] == "CONFIRMED" and r["identity"]["segment_check"] == "REGISTERED_SEGMENT"\n'
+         '    assert led.run_entry("VALIDATION_RUN", PR.validate(p), d.manifest().content_sha256, r["identity_sha256"]) is not None',
+         '    with pytest.raises(RGATE.AdmissionRefused) as e:                                        # I-1B-1 (ID-3, ID-8): a HISTORICAL double is never admitted\n'
+         '        EN.run(d, FX.ScriptedSource(s), FX.v1_config(d, prereg_sha256=PR.validate(p), segment_label="VALIDATION"), registry=reg, holdout=led)\n'
+         '    assert e.value.code == "DOUBLE_HISTORICAL_NOT_ADMITTED" and EN.licence_gate(d.manifest()) == "CONFIRMED"\n'
+         '    assert not [x for x in led.entries() if x["kind"] == "VALIDATION_RUN"]'),
+        ('    assert spy == BM.total_return_series(w["d"], "SIM:SPY", sessions) and',
+         '    assert spy == BM.total_return_series(RGATE.admit_double(w["d"]), "SIM:SPY", sessions) and'),
+        ('    assert BM.total_return_series(w["d"], "SIM:SPY", w["s"][10:30]).status == "UNAVAILABLE"',
+         '    assert BM.total_return_series(RGATE.admit_double(w["d"]), "SIM:SPY", w["s"][10:30]).status == "UNAVAILABLE"'),
+        ('    assert BM.total_return_series(ok, "SIM:SPY", ok.sessions("0", "9")) == [0.0] * 5',
+         '    assert EN.licence_gate(ok.manifest()) == "CONFIRMED"                                    # I-1B-1: the licence gate passes; the admission gate refuses\n'
+         '    n = len(ok.calls)\n'
+         '    with pytest.raises(RGATE.NotAdmitted) as e:\n'
+         '        BM.total_return_series(ok, "SIM:SPY", ok.sessions("0", "9"))\n'
+         '    assert e.value.code == "NOT_ADMITTED" and ok.calls[n:] == ["manifest"]'),
+        ('            assert isinstance(bridge.entries(ctx), list) and bridge.dataset(view, s[210]) is not None',
+         '            assert EN.licence_gate(view.manifest()) == "CONFIRMED"                         # I-1B-1: no admitted HISTORICAL view exists (ID-8)\n'
+         '            for call in (lambda: bridge.entries(ctx), lambda: bridge.dataset(view, s[210])):\n'
+         '                with pytest.raises(RGATE.NotAdmitted) as e:\n'
+         '                    call()\n'
+         '                assert e.value.code == "NOT_ADMITTED_VIEW"'),
+        ('    out = BM.random_control(d, cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)',
+         '    if kind == "HISTORICAL":                                                                # I-1B-1 (ID-3, ID-8): refused; nothing is recorded\n'
+         '        assert EN.licence_gate(d.manifest()) == "CONFIRMED"\n'
+         '        with pytest.raises(RGATE.NotAdmitted) as e:\n'
+         '            BM.random_control(d, cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)\n'
+         '        assert e.value.code == "NOT_ADMITTED"\n'
+         '        with pytest.raises(RGATE.AdmissionRefused) as e:\n'
+         '            RGATE.admit_double(d)\n'
+         '        assert e.value.code == "DOUBLE_HISTORICAL_NOT_ADMITTED" and not [x for x in led.entries() if x["kind"] == "VALIDATION_RUN"]\n'
+         '        return\n'
+         '    out = BM.random_control(RGATE.admit_double(d), cfg, FX.UNIVERSE, [3, 4], registry=reg, holdout=led)'),
+        ('"md_eval", "swing_pullback", "strategy_validation.dataset",', '"md_eval", "research_gate", "swing_pullback", "strategy_validation.dataset",'),
+        ('if rel.startswith(("md_eval/", "tests/",', 'if rel.startswith(("md_eval/", "research_gate/", "tests/",'),
+    ],
+    'tests/test_mdb_freeze.py': [
+        ('def now_text(rel):\n    return (ROOT',
+         'I1_MOVED = tuple(sorted(FL.EDITED_I1 - {"tests/test_mdb_freeze.py"}))   # I-1B-1 (design 7a): its edited files, read at BASE_I1 (tests/test_i1_freeze.py F06I)\n\n\n'
+         'def at_i1(rel):\n    return at(FL.BASE_I1, rel)\n\n\n'
+         'def ledger_i1():\n    """I-1B-1 (design 7a): the ledger at BASE_I1, the hashes MD-B\'s bookkeeping is checked against."""\n    return FL.ledger_at(FL.BASE_I1)\n\n\n'
+         'def now_text(rel):\n    if rel in I1_MOVED:\n        return at_i1(rel)\n    return (ROOT'),
+        ('    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())\n'
+         '    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}\n',
+         "    # I-1B-1 (design 7a): MD-B's side is the fixed diff from `base` to BASE_I1; the working tree's change set belongs to tests/test_i1_freeze.py\n"
+         '    return set(_git("diff", "--name-only", base, FL.BASE_I1).split())\n'),
+        ('    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))\n',
+         '    assert ledger_i1()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # I-1B-1: the manifest and its hash, both at BASE_I1\n'),
+        ('_git("hash-object", rel).strip() == blob, rel', '(_git("rev-parse", f"{FL.BASE_I1}:{rel}") if rel in I1_MOVED else _git("hash-object", rel)).strip() == blob, rel'),
+        ('== FL.LEDGER[rel], rel', "== ledger_i1()[rel], rel                     # I-1B-1: MD-B's hashes against its texts, both at BASE_I1"),
+    ],
+    'tests/test_robinhood_portfolio_69.py': [_U_I1],
+    'tests/test_runtime_reliability_ops.py': [_U_I1],
+    'tests/test_sip_eval_78b1.py': [_U_I1],
+    'tests/test_strategy_validation_62.py': [
+        ('NEW_MDA, NEW_MDB, unchanged as ledger_unchanged', 'NEW_MDA, NEW_MDB, NEW_I1, unchanged as ledger_unchanged'),
+        ('NEW_MDA | NEW_MDB   # Stage 6.8 / 6.9', 'NEW_MDA | NEW_MDB | NEW_I1   # Stage 6.8 / 6.9'),
+    ],
+    'tests/test_swing_pullback_78.py': [_U_I1],
+    'tests/test_unified_exposure_gate_691.py': [_U_I1],
+    'tests/test_wave1_safety_remediation.py': [_U_I1],
+    'tests/test_wave2_pra.py': [
+        ('FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB, FL.EDITED_W2A', 'FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB | FL.NEW_I1, FL.EDITED_W2A'),
+        ('(FL.EDITED_MDB - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB)   #',
+         '(FL.EDITED_MDB - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB) | '
+         '(FL.EDITED_I1 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1)   #'),
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))))                               # Wave 2 PR B / PR C',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))))                               # Wave 2 PR B / PR C'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+    ],
+    'tests/test_wave2_pra_accounting.py': [
+        ('FL.undo_mda("tests/test_forward_paper_610a.py", FL.undo_mdb("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")))',
+         'FL.undo_mda("tests/test_forward_paper_610a.py", FL.undo_mdb("tests/test_forward_paper_610a.py", FL.undo_i1("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))))'),
+    ],
+    'tests/test_wave2_prb.py': [
+        ('FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB, FL.EDITED_W2B', 'FL.NEW_REC | FL.NEW_MDA | FL.NEW_MDB | FL.NEW_I1, FL.EDITED_W2B'),
+        ('(FL.EDITED_MDB - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB)   #',
+         '(FL.EDITED_MDB - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB) | '
+         '(FL.EDITED_I1 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1)   #'),
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))))                          # Wave 2 PR C: its own in-place edits undone first (F02C)'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))))) == at_base(rel), rel           # now -> (F03C)',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))))) == at_base(rel), rel           # now -> (F03C)'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+    ],
+    'tests/test_wave2_prc.py': [
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))))                        # EX-06: its own in-place edits undone first (F02X)',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel))))))))))                        # EX-06: its own in-place edits undone first (F02X)'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+        ('FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte',
+         'FL.undo_rec(rel, FL.undo_mda(rel, FL.undo_mdb(rel, now_text(rel)))))))))) == at_base(rel), rel                             # now -> 875bc06d, byte for byte'.replace(
+             'FL.undo_mdb(rel, now_text(rel))', 'FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))')),
+    ],
+}
+_FI = "I1B-F01 the working-tree change set of this older freeze test also admits I-1B-1's declared files (NEW_I1 | EDITED_I1, since BASE_I1: main after MD-B merged, PR #65); nothing else changes"
+SEMANTIC_TESTS_I1 = {                                                                         # I-1B-1: every changed test function -> its reason
+    'tests/test_chart_empty_state_611fix.py::test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file': _FI,
+    'tests/test_decision_flow_610c.py::test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file': _FI,
+    'tests/test_engine_health_610d.py::test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file': _FI,
+    'tests/test_evidence_gate_541.py::test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution': _FI,
+    'tests/test_evidence_refresh_542.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': _FI,
+    'tests/test_forward_paper_610a.py::test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file': _FI,
+    'tests/test_market_intel_70.py::test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited': _FI,
+    'tests/test_market_intel_store_71.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': _FI,
+    'tests/test_market_intel_sources_72.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_market_intel_collector_73.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_market_intel_schema_v2_731.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_market_intel_quality_74.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_market_scan_75.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_robinhood_portfolio_69.py::test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_risk_file': _FI,
+    'tests/test_runtime_reliability_ops.py::test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_trading_code': _FI,
+    'tests/test_sip_eval_78b1.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_swing_pullback_78.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': _FI,
+    'tests/test_unified_exposure_gate_691.py::test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file': _FI,
+    'tests/test_wave1_safety_remediation.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed': _FI,
+    'tests/test_bot_activity_68.py::test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry': "I1B-F02 the new-file union admits NEW_I1 (research_gate/ and its tests); the registered-file rule is unchanged",
+    'tests/test_wave2_pra.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "I1B-F03 PR A's new / edited unions gain NEW_I1 and I-1B-1's edits of files that existed at BASE_W2A (MD-A's and MD-B's new files excluded); nothing else changes",
+    'tests/test_wave2_prb.py::test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "I1B-F04 PR B's new / edited unions gain NEW_I1 and I-1B-1's edits of files that existed at BASE_W2B (MD-A's and MD-B's new files excluded); nothing else changes",
+    'tests/test_strategy_validation_62.py::=NEW_62': "I1B-F05 NEW_62, the set of every file added after main 9fae08b that the earlier freeze tests import, gains NEW_I1 (and its import)",
+    'tests/test_wave2_pra.py::test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "I1B-U01 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb), so PR A's replay still reads main's text byte for byte",
+    'tests/test_wave2_prb.py::test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "I1B-U02 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb) before PR B's declared functions are compared",
+    'tests/test_wave2_prb.py::test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "I1B-U03 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb), so PR B's undo still reads main's text byte for byte",
+    'tests/test_wave2_prc.py::test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "I1B-U04 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb) before PR C's declared functions are compared",
+    'tests/test_wave2_prc.py::test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "I1B-U05 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb), so PR C's undo still reads main's text byte for byte",
+    'tests/test_wave2_pra_accounting.py::test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_consumers_are_unchanged': "I1B-U06 test_forward_paper_610a.py is read with I-1B-1's in-place edit undone too (undo_i1, innermost); its non-freeze tests are still compared unchanged",
+    'tests/test_ex06_freeze.py::test_F02X_every_changed_older_test_function_is_declared': "I1B-U07 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb) before EX-06's declared functions are compared",
+    'tests/test_ex06_freeze.py::test_F03X_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "I1B-U08 the undo chain also undoes I-1B-1's own in-place edits first (undo_i1, innermost, before undo_mdb), so EX-06's undo still reads main's text byte for byte",
+    'tests/test_mdb_freeze.py::=I1_MOVED': "I1B-B01 design 7a: the files I-1B-1 edits (EDITED_I1 minus this file) are read at BASE_I1 (main after MD-B merged, PR #65) by MD-B's freeze test",
+    'tests/test_mdb_freeze.py::at_i1': "I1B-B02 design 7a: MD-B's reader of a file at the fixed commit BASE_I1 (main after MD-B merged, PR #65), for the files I-1B-1 edits",
+    'tests/test_mdb_freeze.py::ledger_i1': "I1B-B03 design 7a: the ledger as I-1B-1 found it (BASE_I1, main after MD-B merged, PR #65), the hashes MD-B's bookkeeping is checked against",
+    'tests/test_mdb_freeze.py::now_text': "I1B-B04 design 7a: a file I-1B-1 edits is read at BASE_I1 (main after MD-B merged, PR #65); every other file still reads the working tree",
+    'tests/test_mdb_freeze.py::changed_files': "I1B-B05 design 7a: MD-B's change set is the fixed diff from its base to BASE_I1 (main after MD-B merged, PR #65); the working tree's belongs to tests/test_i1_freeze.py",
+    'tests/test_mdb_freeze.py::test_F01B_the_change_set_is_exactly_the_declared_files_and_no_production_file_changed': "I1B-B06 the CI manifest's hash is read at BASE_I1 (ledger_i1), with the manifest itself (now_text at BASE_I1); the deletion and forbidden-path checks stay as they were",
+    'tests/test_mdb_freeze.py::test_F02B_the_reused_packages_and_the_reviewed_md_eval_blobs_are_byte_identical_and_nothing_semantic_is_declared': "I1B-B07 the reviewed 66deb51a blob ids of the files I-1B-1 edits are read at BASE_I1 (git rev-parse); every other blob pin, the package diff and the V1 hash stay live",
+    'tests/test_mdb_freeze.py::test_F05B_the_ledger_changes_only_its_declarations_its_helper_and_the_rehashed_entries_and_mdas_block_is_untouched': "I1B-B08 MD-B's re-hashed entries are checked against the ledger at BASE_I1 (ledger_i1), not the live ledger I-1B-1 re-hashes; the live view loop stays",
+    'tests/test_historical_data_mda.py::test_X02_nothing_outside_the_package_and_the_tests_imports_it': "I1B-X01 ID-2 (approved, D-2): research_gate/ is exempt from MD-A's X02 text scan, directory-exact, beside the unchanged ID-10 literals; nothing else is exempt",
+    'tests/test_md_eval_registry_verdict.py::=ALLOWED': "I1B-X02 ID-2 (approved, D-2): md_eval may import research_gate (exact name or a research_gate. prefix); nothing else is added to MD-B's import allow-list",
+    'tests/test_md_eval_registry_verdict.py::test_X03_md_eval_never_names_the_evaluator_or_the_research_data_package_and_nothing_outside_imports_it': "I1B-X03 ID-2 (approved, D-2): research_gate/ is exempt from MD-B's X03 md_eval text scan, directory-exact; nothing else outside md_eval/ may name md_eval",
+    'tests/test_md_eval_registry_verdict.py::test_R04_a_historical_run_needs_a_registered_pre_registration_and_a_labelled_segment': "I1B-L01 ID-3 / ID-8: the registered HISTORICAL+CONFIRMED double now refuses admission (DOUBLE_HISTORICAL_NOT_ADMITTED) and no VALIDATION_RUN is recorded",
+    'tests/test_md_eval_registry_verdict.py::test_LC03_total_return_series_shares_the_licence_gate': "I1B-L02 ID-3: total_return_series on a raw HISTORICAL+CONFIRMED double passes the licence gate and is refused NOT_ADMITTED before any data read",
+    'tests/test_md_eval_registry_verdict.py::test_LC04_the_signal_bridge_refuses_a_historical_view_without_a_confirmed_licence': "I1B-L03 ID-3 / ID-8: the CONFIRMED branch keeps the raw view (no admitted HISTORICAL view exists) and both bridge calls refuse NOT_ADMITTED_VIEW",
+    'tests/test_md_eval_registry_verdict.py::test_LC06_the_random_control_runs_as_a_registered_recorded_validation_run': "I1B-L04 ID-3: the SYNTHETIC random control runs on an admitted double; the HISTORICAL one is refused NOT_ADMITTED and its double DOUBLE_HISTORICAL_NOT_ADMITTED",
+    'tests/test_md_eval_registry_verdict.py::test_V09_a_substituted_benchmark_series_is_refused': "I1B-V01 O-7: the benchmark series is recomputed on an admitted dataset (the gate refuses raw providers); the substitution checks are unchanged",
+    'tests/test_md_eval_registry_verdict.py::test_V11_a_missing_total_return_view_is_unavailable_and_the_verdict_refuses': "I1B-V02 O-7: the UNAVAILABLE total-return series is read from an admitted dataset (the gate refuses raw providers); the verdict check is unchanged",
+    'tests/test_md_eval_ledger.py::_recon': "I1B-D01 O-7 (frozen text, D-9): the reconciliation's total-return series reads an admitted dataset; the ledger run itself is unchanged",
+    'tests/test_md_eval_benchmarks_stats.py::test_B05_the_random_entry_control_is_reproducible_records_its_seeds_and_never_touches_v1': "I1B-D02 O-7 (frozen text, D-9): the random control runs on one admitted dataset, twice; admission is deterministic, so the two runs are equal",
+}
+
 LEDGER = {
-    ".github/ci/pytest_groups.json": "5d2aa5f57638f5b19692a498c38257eac2a26762564c98b18552877afcacf2cf",
+    ".github/ci/pytest_groups.json": "d55c3692c5e67c9e7b14f38a97350baab7fc4fe6c32d72bd2b161647874f60b6",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "DESIGN_591_EXECUTION_SAFETY.md": "b17c5ce1348305cb6a72fff29c4960aa0b864ec94523d655a1592acc3ac8fcf6",
     "README.md": "9e5c442c1871f41010dfdb379e3eb90c9a34be1470316fc7d9a2f3d95101a562",
@@ -3725,7 +3966,7 @@ LEDGER = {
     "tests/test_research_flow_47.py": "5cf98db72e303989d88e77963638844ee6ccbdd24026d34549e4551d6509e39d",
     "tests/test_rotation_handoff_47.py": "cf4647f735b103e95634c514a13e7c8c7840e5a14b598fe4688a2b5124c7fe20",
     "tests/test_setups_58.py": "6a5dc561a301f7550ca2f75d88d013f5e5aad056ef05e112769f1233a5569c2e",
-    "tests/test_strategy_validation_62.py": "de0ee6653c899eafe01343e50a39e492f64de7be6b82c76b710c44e51cbe93d6",
+    "tests/test_strategy_validation_62.py": "b0a80d28a4350e7b772ebff1dd77dee82e5987aa16a3b5cf7f1048d95ef0d904",
     "tests/test_trader_view_55.py": "8f1a1f85ea60a188d677478b85e97df523c1a013c40d650a2724ca22bd5fd19a",
     "tests/test_trader_view_561.py": "57a7d0f8c97c73e1299af0c4f812d409de0015fec43be3d2b9d1ad3a190c87a0",
     "tests/test_windows_runner_60.py": "04d3935349aabb343def9c3fc415088d0db058c939a97fb9ee4ed9060ce56b99",
@@ -3981,6 +4222,16 @@ def undo_mdb(rel: str, text: str) -> str:
     tests/test_mdb_freeze.py proves the result is main, byte for byte."""
     text = _norm(text)
     for old, new in reversed(UNDO_MDB.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
+
+
+def undo_i1(rel: str, text: str) -> str:
+    """`text` (a current test file) with I-1B-1's exact in-place edits undone (last first): as on main BASE_I1. Any other file passes through.
+    tests/test_i1_freeze.py proves the result is main, byte for byte."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_I1.get(rel, [])):
         assert text.count(new) == 1, (rel, new[:80])
         text = text.replace(new, old)
     return text

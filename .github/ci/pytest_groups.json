@@ -30,6 +30,7 @@
         "test_recovery_freeze.py",
         "test_mda_freeze.py",
         "test_mdb_freeze.py",
+        "test_i1_freeze.py",
         "test_command_center_27f.py",
         "test_compact_28ab.py",
         "test_daily_brief_42.py",
@@ -154,7 +155,12 @@
         "test_md_eval_ledger.py",
         "test_md_eval_book_costs.py",
         "test_md_eval_benchmarks_stats.py",
-        "test_md_eval_registry_verdict.py"
+        "test_md_eval_registry_verdict.py",
+        "test_i1_admission.py",
+        "test_i1_snapshot_toctou.py",
+        "test_i1_synthetic_boundary.py",
+        "test_i1_bridge_conformance.py",
+        "test_i1_census.py"
       ]
     },
     "campaign": {
