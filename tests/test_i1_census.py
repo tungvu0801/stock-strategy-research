@@ -333,6 +333,94 @@ def _diff(found, pinned):
     return {"unexpected": sorted(set(found) - set(pinned)), "missing": sorted(set(pinned) - set(found))}
 
 
+LEGACY_ROOTS = ("run_validation", "assess_stored_run")
+_ALIASES = {}
+
+
+def _import_aliases(tree, rel=""):
+    """{local name: {fully qualified targets}} for every import statement at any depth (D-01/D-02; Plan C 1.2 `:211`, AA-9 (b)(2)).
+    `import a.b as X` -> X: {"a.b"}; `from M import n as X` -> X: {"M.n"}; `from M import n` -> n: {"M.n"}; relative imports are resolved as in _edges.
+    A plain `import a.b` binds `a` (no entry; _dotted resolves the chain). A name bound twice keeps every target (over-detection, never under-detection)."""
+    pkg = ""
+    if rel.endswith(".py"):
+        pkg = _module_of(rel) if rel.endswith("__init__.py") else _module_of(rel).rpartition(".")[0]
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.asname:
+                    out.setdefault(a.asname, set()).add(a.name)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                up = pkg.split(".")[:len(pkg.split(".")) - (node.level - 1)] if pkg else []
+                base = ".".join([p for p in up if p] + ([node.module] if node.module else []))
+            for a in node.names:
+                if a.name != "*":
+                    out.setdefault(a.asname or a.name, set()).add(f"{base}.{a.name}" if base else a.name)
+    return out
+
+
+def _aliases(rel):
+    if rel not in _ALIASES:
+        _ALIASES[rel] = _import_aliases(_parsed()[rel][0], rel)
+    return _ALIASES[rel]
+
+
+def _resolved_names(name, aliases):
+    """The local name plus the original (last-component) name of every import it is bound to: a superset, so no literal match is ever lost."""
+    return {name} | {t.rpartition(".")[2] for t in aliases.get(name, ())}
+
+
+def _dotted(expr, aliases):
+    """Every fully qualified dotted name an attribute chain can denote, with its root name resolved through the import aliases."""
+    parts = []
+    while isinstance(expr, ast.Attribute):
+        parts.append(expr.attr)
+        expr = expr.value
+    if not isinstance(expr, ast.Name):
+        return set()
+    tail = ".".join(reversed(parts))
+    return {r + ("." + tail if tail else "") for r in aliases.get(expr.id, set()) | {expr.id}}
+
+
+def _c03_shape(call, aliases):
+    """The C03 call shape: "run_validation" / "assess_stored_run" / "plan.run", or None. Shapes are the ORIGINAL names, so CALL_SITES keys never change."""
+    f = call.func
+    if isinstance(f, ast.Attribute) and f.attr in LEGACY_ROOTS:                                         # unchanged: E.run_validation(...)
+        return f.attr
+    if isinstance(f, ast.Name):
+        hit = sorted(_resolved_names(f.id, aliases) & set(LEGACY_ROOTS))                                # [site A1] run_validation(...) or an alias of it
+        if hit:
+            return hit[0]
+        if "swing_pullback.plan.run" in aliases.get(f.id, ()):                                          # [site A2] from swing_pullback.plan import run as r; r(...)
+            return "plan.run"
+        return None
+    if isinstance(f, ast.Attribute) and f.attr == "run":
+        if isinstance(f.value, ast.Name) and f.value.id in ("PL", "plan"):                               # unchanged literal receivers
+            return "plan.run"
+        if "swing_pullback.plan" in _dotted(f.value, aliases):                                          # [site A2] P.run / sp.run / swing_pullback.plan.run
+            return "plan.run"
+    return None
+
+
+def _constructor_name(call, aliases, names):
+    """The original constructor name when the call builds one of `names` (attribute, bare name or an import alias of it), else None."""
+    f = call.func
+    if isinstance(f, ast.Attribute):
+        return f.attr if f.attr in names else None
+    if isinstance(f, ast.Name):
+        hit = sorted(_resolved_names(f.id, aliases) & set(names))                                        # [site A3]
+        return hit[0] if hit else None
+    return None
+
+
+def _mem(src, rel="mem/probe.py"):
+    """Parse an in-memory contract-named form (never written to the scanned tree)."""
+    tree = ast.parse(src)
+    return tree, _import_aliases(tree, rel)
+
+
 # ============================================================================================================ the tests
 def _mains():
     found = []
@@ -413,16 +501,7 @@ def test_C02_every_dynamic_import_and_import_path_edit_is_listed():
 
 
 def test_C03_legacy_roots_have_only_their_listed_callers():
-    def site(rel, call):
-        f = call.func
-        if isinstance(f, ast.Attribute) and f.attr in ("run_validation", "assess_stored_run"):
-            return f.attr
-        if isinstance(f, ast.Name) and f.id in ("run_validation", "assess_stored_run"):
-            return f.id
-        if isinstance(f, ast.Attribute) and f.attr == "run" and isinstance(f.value, ast.Name) and f.value.id in ("PL", "plan"):
-            return "plan.run"
-        return None
-    found = _calls(site)
+    found = _calls(lambda rel, call: _c03_shape(call, _aliases(rel)))
     assert set(found) == set(CALL_SITES), _diff(found, CALL_SITES)
     for key in (("strategy_validation.engine", "exact", "strategy_validation/"), ("swing_pullback.plan", "exact", "swing_pullback/"), ("swing_eval", "prefix", "swing_eval/")):
         got = _importers(*key) | ({"strategy_validation/cli.py"} if key[0] == "strategy_validation.engine" and "strategy_validation/cli.py" in
@@ -441,6 +520,47 @@ def test_C03_legacy_roots_have_only_their_listed_callers():
     assert set(ev) == set(CORE_EVALUATE_SITES), _diff(ev, CORE_EVALUATE_SITES)
 
 
+def test_C03a_aliased_legacy_root_calls_are_detected():
+    SRC = ("from strategy_validation.engine import run_validation as rv\n"
+           "from strategy_validation.cross_sectional import assess_stored_run as asr\n"
+           "import strategy_validation.engine as E\n"
+           "def f(a, d, r):\n"
+           "    rv(a, d)\n"
+           "    asr(r)\n"
+           "    E.run_validation(a, d)\n"
+           "    run_validation(a, d)\n"
+           "    rvx(a)\n")
+    tree, al = _mem(SRC)
+    got = sorted((c.lineno, _c03_shape(c, al)) for c in ast.walk(tree) if isinstance(c, ast.Call))
+    assert got == [(5, "run_validation"), (6, "assess_stored_run"), (7, "run_validation"), (8, "run_validation"), (9, None)], got
+
+
+def test_C03b_plan_run_through_aliased_or_dotted_receivers_is_detected():
+    SRC = ("import swing_pullback.plan as P\n"
+           "from swing_pullback import plan as sp\n"
+           "import swing_pullback.plan\n"
+           "from swing_pullback.plan import run as prun\n"
+           "import other.plan as Q\n"
+           "import swing_pullback as SP\n"
+           "from . import plan as rp\n"
+           "from .plan import run\n"
+           "def g(self, v, c, ds):\n"
+           "    P.run(v, c, ds)\n"
+           "    sp.run(v, c, ds)\n"
+           "    swing_pullback.plan.run(v, c, ds)\n"
+           "    prun(v, c, ds)\n"
+           "    PL.run(v, c, ds)\n"
+           "    Q.run(v, c, ds)\n"
+           "    self.plan.run(v, c, ds)\n"
+           "    SP.plan.run(v, c, ds)\n"
+           "    rp.run(v, c, ds)\n"
+           "    run(v, c, ds)\n")
+    tree, al = _mem(SRC, "swing_pullback/probe.py")
+    got = sorted((c.lineno, _c03_shape(c, al)) for c in ast.walk(tree) if isinstance(c, ast.Call))
+    assert got == [(10, "plan.run"), (11, "plan.run"), (12, "plan.run"), (13, "plan.run"), (14, "plan.run"), (15, None), (16, None),
+                   (17, "plan.run"), (18, "plan.run"), (19, "plan.run")], got
+
+
 def test_C04_md_eval_entry_modules_and_research_gate_have_only_their_listed_importers():
     for key in (("md_eval.engine", "exact", "md_eval/"), ("md_eval.signals", "exact", "md_eval/"), ("md_eval.benchmarks", "exact", "md_eval/"),
                 ("md_eval.verdict", "exact", "md_eval/"), ("research_gate", "prefix", "research_gate/")):
@@ -452,8 +572,9 @@ def _constructor_sites(names):
     out = set()
     for rel, (tree, _, items) in _parsed().items():
         for node, scope in items:
-            if isinstance(node, ast.Call) and _callee(node) in names:
-                out.add((rel, scope, _callee(node)))
+            name = _constructor_name(node, _aliases(rel), names) if isinstance(node, ast.Call) else None
+            if name:
+                out.add((rel, scope, name))
     return out
 
 
@@ -463,6 +584,23 @@ def test_C05_md_a_is_named_only_by_research_gate():
     got = {s for s in _constructor_sites({"SyntheticProvider", "Ms1EvidenceProvider", "SipDailyV1Provider"}) if not s[0].startswith("historical_data/")}
     want = {s for s in CONSTRUCTOR_SITES if s[2] in ("SyntheticProvider", "Ms1EvidenceProvider", "SipDailyV1Provider")}
     assert got == want, _diff(got, want)
+
+
+def test_C05a_aliased_md_a_provider_constructors_are_detected():
+    NAMES = {"SyntheticProvider", "Ms1EvidenceProvider", "SipDailyV1Provider"}
+    SRC = ("from historical_data.adapters.synthetic import SyntheticProvider as SP\n"
+           "from historical_data.adapters.ms1_evidence import Ms1EvidenceProvider as MP\n"
+           "from historical_data.adapters.sip_daily_v1 import SipDailyV1Provider as DP\n"
+           "import historical_data.adapters.synthetic as HS\n"
+           "def h():\n"
+           "    SP(1)\n"
+           "    MP(2)\n"
+           "    DP(3)\n"
+           "    HS.SyntheticProvider(4)\n"
+           "    Other(5)\n")
+    tree, al = _mem(SRC)
+    got = sorted((c.lineno, _constructor_name(c, al, NAMES)) for c in ast.walk(tree) if isinstance(c, ast.Call))
+    assert got == [(6, "SyntheticProvider"), (7, "Ms1EvidenceProvider"), (8, "SipDailyV1Provider"), (9, "SyntheticProvider"), (10, None)], got
 
 
 def test_C06_the_strategy_validation_adapter_keys_are_listed():
@@ -480,6 +618,23 @@ def test_C07_admission_objects_are_built_only_by_research_gate():
     got = {s for s in got if not (s[2] == "ContractDouble" and s[0].startswith("md_eval/"))}
     want = {s for s in CONSTRUCTOR_SITES if s[2] in ("Admission", "AdmittedDataset", "AdmittedView", "ContractDouble")}
     assert got == want, _diff(got, want)
+
+
+def test_C07a_aliased_admission_constructors_are_detected():
+    NAMES = {"Admission", "AdmittedDataset", "AdmittedView", "ContractDouble"}
+    SRC = ("from research_gate.admit import Admission as A, AdmittedDataset as AD\n"
+           "from research_gate.bridge import AdmittedView as V\n"
+           "from research_gate.snapshot import ContractDouble as CD\n"
+           "def k():\n"
+           "    A()\n"
+           "    AD()\n"
+           "    V()\n"
+           "    CD()\n"
+           "    Admission()\n"
+           "    Unrelated()\n")
+    tree, al = _mem(SRC)
+    got = sorted((c.lineno, _constructor_name(c, al, NAMES)) for c in ast.walk(tree) if isinstance(c, ast.Call))
+    assert got == [(5, "Admission"), (6, "AdmittedDataset"), (7, "AdmittedView"), (8, "ContractDouble"), (9, "Admission"), (10, None)], got
 
 
 def test_C08_no_md_eval_subpackage_bypasses_X02():
