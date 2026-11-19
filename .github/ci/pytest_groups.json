@@ -60,7 +60,8 @@
         "test_trader_view_55.py",
         "test_trader_view_561.py",
         "test_walkforward_49.py",
-        "test_workspace_28d.py"
+        "test_workspace_28d.py",
+        "test_indicators_math.py"
       ]
     },
     "execution": {
