@@ -561,6 +561,16 @@ def test_C03b_plan_run_through_aliased_or_dotted_receivers_is_detected():
                    (17, "plan.run"), (18, "plan.run"), (19, "plan.run")], got
 
 
+def test_C03c_aliases_reads_the_real_tree_per_file_and_caches():
+    # S5-M2-L3: _aliases(rel) on the real tree (C03a/C03b/C05a/C07a parse in-memory sources through _mem): md_eval/engine.py:21, :22, :30
+    rel = "md_eval/engine.py"
+    al = _aliases(rel)
+    assert {k: al.get(k) for k in ("BK", "PR", "RGATE")} == {"BK": {"md_eval.book"}, "PR": {"md_eval.prereg"}, "RGATE": {"research_gate"}}, al
+    assert _aliases(rel) is al and _ALIASES[rel] is al                                                  # cached per rel
+    other = _aliases("cash_flow/reader.py")                                                             # the same local name in another real file (:23)
+    assert other.get("BK") == {"execution.broker"}, other
+
+
 def test_C04_md_eval_entry_modules_and_research_gate_have_only_their_listed_importers():
     for key in (("md_eval.engine", "exact", "md_eval/"), ("md_eval.signals", "exact", "md_eval/"), ("md_eval.benchmarks", "exact", "md_eval/"),
                 ("md_eval.verdict", "exact", "md_eval/"), ("research_gate", "prefix", "research_gate/")):
