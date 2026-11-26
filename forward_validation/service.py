@@ -38,7 +38,7 @@ UTC = timezone.utc
 LIVE_HOST_MARK = "PAPER host is allowed"                      # the Stage 6.0 transport's refusal text: any occurrence = a non-paper request was attempted
 AMBIGUOUS_CLASSES = ("O2", "O7", "O8")
 BLOCKING_FINDINGS = ("ORDER_MISSING_AT_BROKER", "UNKNOWN_INTERNAL_ORDER", "QTY_MISMATCH", "BROKER_FLAT_INTERNAL_OPEN", "INTERNAL_FLAT_BROKER_POSITION", "MULTIPLE_ORDERS",
-                     "UNKNOWN_STATUS", "BROKER_UNAVAILABLE")
+                     "UNKNOWN_STATUS", "BROKER_UNAVAILABLE", "STOP_CHECK_BLIND", "PROTECTIVE_EXIT_UNVERIFIED")   # HDR-2 OD-R3-1(a): the two blocking lifecycle alert kinds
 RESTART_GRACE_TICKS = 3
 BRACKET_ATTEMPTS = 3                                          # Wave 2 PR A: a summary whose P/L inputs moved on every attempt is UNSTABLE (null P/L), never a mixed number
 SUMMARY_REBUILDS_PER_TICK = 3                                 # Wave 2 PR A: stored summaries made current per observer tick (bounds work only; reads stay fresh)
@@ -1126,7 +1126,7 @@ class ForwardValidationService:
     def reconciliation(self, trading_date: Optional[str] = None) -> dict:
         start, end = self._window(trading_date)
         w, a = self._where("at", start, end)
-        rows = self.store.query(f"SELECT * FROM execution_reconciliations WHERE 1 = 1{w} ORDER BY at", a)
+        rows = self.store.query(f"SELECT *, rowid AS _rowid FROM execution_reconciliations WHERE 1 = 1{w} ORDER BY at", a)   # HDR-2 OD-R3-1(a): rowid for the lifecycle branch
         by_kind: Dict[str, int] = {}
         resolved = 0
         detail = []
@@ -1150,9 +1150,26 @@ class ForwardValidationService:
                 "internal_flat_broker_open": by_kind.get("INTERNAL_FLAT_BROKER_POSITION", 0), "unknown_status": by_kind.get("UNKNOWN_STATUS", 0), "broker_unavailable": by_kind.get("BROKER_UNAVAILABLE", 0),
                 "external_positions": by_kind.get("EXTERNAL_POSITION", 0), "detail": detail[-50:]}
 
-    def _resolution(self, finding: dict) -> str:
+    def _resolution(self, finding: dict, until: Optional[str] = None) -> str:
+        """`until` (c1d-fix2 L-4, OD-R5-7(b) r14:1370): judge a lifecycle alert as of that instant (its resolution row or CLOSED event at or before
+        it); None, the default, is today's behaviour (judged now). Only the lifecycle branch reads it: the carry-in holds no other kind."""
         if finding["kind"] not in BLOCKING_FINDINGS:
             return "INFORMATIONAL"
+        if finding["kind"] in ("STOP_CHECK_BLIND", "PROTECTIVE_EXIT_UNVERIFIED"):           # HDR-2 OD-R3-1(a) (r14 3.13.10): the lifecycle branch, BEFORE the position_id branch
+            rid, pid = finding.get("_rowid"), finding.get("position_id")
+            if type(rid) is not int or not pid:
+                return "OPEN"                                                          # no rowid or no position: never read as resolved
+            if until is not None:                                                      # L-4: a resolution or CLOSED written after `until` does not count
+                later = self.store.query("SELECT 1 FROM execution_reconciliations WHERE kind = ? AND position_id = ? AND rowid > ? AND at <= ? LIMIT 1",
+                                         (finding["kind"] + "_RESOLVED", pid, rid, until))
+                closed = later or self.store.query("SELECT 1 FROM position_events WHERE position_id = ? AND at > ? AND at <= ? AND (kind = 'CLOSED' OR to_state = 'CLOSED') LIMIT 1",
+                                                   (pid, finding["at"], until))
+                return "RESOLVED" if closed else "OPEN"
+            later = self.store.query("SELECT 1 FROM execution_reconciliations WHERE kind = ? AND position_id = ? AND rowid > ? LIMIT 1", (finding["kind"] + "_RESOLVED", pid, rid))
+            if later:
+                return "RESOLVED"
+            closed = self.store.query("SELECT 1 FROM position_events WHERE position_id = ? AND at > ? AND (kind = 'CLOSED' OR to_state = 'CLOSED') LIMIT 1", (pid, finding["at"]))
+            return "RESOLVED" if closed else "OPEN"
         if finding.get("position_id"):
             later = self.store.query("SELECT 1 FROM position_events WHERE position_id = ? AND at > ? AND (kind IN ('ATTENTION_CLEARED', 'CLOSED') OR to_state = 'CLOSED') LIMIT 1", (finding["position_id"], finding["at"]))
             return "RESOLVED" if later else "OPEN"
@@ -2232,8 +2249,11 @@ class ForwardValidationService:
             counts = {"duplicate_broker_orders": self._duplicate_evidence(lo, hi), "live_host_attempts": self._live_host_evidence(lo, hi),
                       "failed_intents": _n(self.store.query_strict("SELECT count(*) AS n FROM execution_intents WHERE state = 'FAILED' AND updated_at >= ? AND updated_at <= ?",
                                                                   (lo, hi))[0]["n"])}
-            findings = self.store.query_strict("SELECT * FROM execution_reconciliations WHERE at >= ? AND at <= ?", (lo, hi))
+            findings = self.store.query_strict("SELECT *, rowid AS _rowid FROM execution_reconciliations WHERE at >= ? AND at <= ?", (lo, hi))   # HDR-2: rowid (OD-R3-1(a))
             counts["reconciliation_open"] = sum(1 for f in findings if f["kind"] in BLOCKING_FINDINGS and counted(f) and self._resolution(f) == "OPEN")   # L-2 (e)
+            carry = self.store.query_strict("SELECT *, rowid AS _rowid FROM execution_reconciliations WHERE at < ? AND kind IN ('STOP_CHECK_BLIND', 'PROTECTIVE_EXIT_UNVERIFIED')",
+                                            (lo,))                                     # HDR-2 OD-R5-7(b): the carry-in of blocking safety alerts dated before the window
+            counts["reconciliation_open"] += sum(1 for f in carry if self._resolution(f, until=hi) == "OPEN")   # c1d-fix2 L-4: still OPEN AT THE WINDOW'S END (r14:1370)
             for k, v in counts.items():
                 if v:
                     reasons.append({"code": "RUN_WINDOW_" + k.upper(), "detail": {k: v}})

@@ -6,6 +6,7 @@ session-health honest: a holiday must not read as a missed (INVALID) session, an
 It is a plain table for 2026-2027 (the NYSE published schedule), recorded as CALENDAR_VERSION in every config snapshot. It never allows or blocks
 an order: entries stay governed by the executor's unchanged SESSION_POLICY control, which also consults the broker clock when it is read.
 A date outside the table is a normal weekday session (the old behaviour) and is reported as `calendar: NOT_COVERED`.
+The execution data gate (execution/data_gate.py, HDR-2 OD-DG-4) reads `covered` and `is_market_day` for E8, X8, P8c and the TIME_EXIT recount; the gate decides, never this table.
 """
 from __future__ import annotations
 

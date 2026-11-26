@@ -89,7 +89,16 @@
         "test_wave2_prc_run.py",
         "test_wave2_prc_evidence.py",
         "test_wave2_prc_drawdown.py",
-        "test_wave2_prc_pnl.py"
+        "test_wave2_prc_pnl.py",
+        "test_data_gate_core_matrix.py",
+        "test_data_gate_core_price_selection.py",
+        "test_data_gate_core_sources.py",
+        "test_data_gate_entries_c1c2.py",
+        "test_data_gate_exits_service.py",
+        "test_data_gate_exits_structure.py",
+        "test_data_gate_lifecycle_recovery_fv.py",
+        "test_data_gate_lifecycle_store.py",
+        "test_data_gate_lifecycle_writer.py"
       ]
     },
     "account": {

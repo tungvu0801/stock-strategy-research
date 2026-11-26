@@ -181,6 +181,13 @@ def at_mda(rel):
     return at(FL.BASE_MDA, rel)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_panel_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in J04_MOVED:
         return at_j04(rel)
@@ -190,6 +197,8 @@ def now_text(rel):
         return at_rec(rel)
     if rel in MDA_MOVED:
         return at_mda(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -331,7 +340,7 @@ def test_F05P_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     assert rehashed == {k for k in main_ledger if k in FL.EDITED_PANEL}, sorted(rehashed ^ {k for k in main_ledger if k in FL.EDITED_PANEL})
     for rel in rehashed | FL.NEW_LEDGER_PANEL:
         assert ledger[rel] == FL.sha(now_text(rel)), rel                                       # J-04: the panel's hashes against the panel's texts, both at BASE_J04
-        if rel not in J04_MOVED and rel not in GATE_MOVED and rel not in REC_MOVED and rel not in MDA_MOVED:
+        if rel not in J04_MOVED and rel not in GATE_MOVED and rel not in REC_MOVED and rel not in MDA_MOVED and rel not in EXEC1_MOVED:
             assert FL.LEDGER[rel] == ledger[rel], rel                                           # a file J-04 did not touch still carries the panel's hash today
     start = fl.index("\n\nRisk controls panel (") + 1
     rebuilt = fl.replace(fl[start:fl.index('"""', start)], "", 1)

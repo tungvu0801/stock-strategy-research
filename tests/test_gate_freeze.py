@@ -132,11 +132,20 @@ def at_mda(rel):
     return at(FL.BASE_MDA, rel)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_gate_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in REC_MOVED:
         return at_rec(rel)
     if rel in MDA_MOVED:
         return at_mda(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -283,7 +292,7 @@ def test_F05G_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     assert [ast.unparse(t) for n in region for t in (n.targets if isinstance(n, ast.Assign) else [n.target])] == [
         "BASE_GATE", "NEW_GATE", "EDITED_GATE", "SEMANTIC_GATE", "INSTRUMENTATION_GATE", "NEW_LEDGER_GATE", "UNDO_GATE", "SEMANTIC_TESTS_GATE", "VERSION_PINS_W2A['execution_v4']"]
     v3, v4 = FL.VERSION_PINS_W2A["execution_v3"], FL.VERSION_PINS_W2A["execution_v4"]
-    assert set(v4) == set(v3) == set(FL.VERSION_BLOCKS_W2A) and {k for k in v3 if v3[k] != v4[k]} == {"execution/service.py::ExecutionService._submit"}   # C-7 moves _submit only
+    assert set(v4) == set(v3) == set(FL.VERSION_BLOCKS_W2A) - {"execution/data_gate.py::evaluate"} and {k for k in v3 if v3[k] != v4[k]} == {"execution/service.py::ExecutionService._submit"}   # C-7 moves _submit only
     assert FL.INSTRUMENTATION_GATE == {}
     assert set(ledger) - set(main_ledger) == FL.NEW_LEDGER_GATE and set(main_ledger) <= set(ledger)
     for rel in sorted(FL.NEW_LEDGER_GATE):

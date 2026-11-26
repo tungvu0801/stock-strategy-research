@@ -115,9 +115,18 @@ def ledger_i1():
     return FL.ledger_at(FL.BASE_I1)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_mdb_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in I1_MOVED:
         return at_i1(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -147,7 +156,9 @@ def test_F01B_the_change_set_is_exactly_the_declared_files_and_no_production_fil
 
 
 def test_F02B_the_reused_packages_and_the_reviewed_md_eval_blobs_are_byte_identical_and_nothing_semantic_is_declared():
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, "--", *REUSED_UNCHANGED, "config.py", "api", "execution", "safety", "data"], cwd=ROOT).returncode == 0
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, "--", *REUSED_UNCHANGED, "config.py", "api", "safety", "data"], cwd=ROOT).returncode == 0
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, FL.BASE_EXEC1, "--", "execution"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): execution/ as C1 found it
+    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1          # ... and since then only C1's declared files
     assert not [p for p in _git("ls-files", "--others", "--exclude-standard", "--", *REUSED_UNCHANGED).split() if not p.startswith(SCRATCH)]
     import swing_pullback as SP
     assert SP.preregistration_hash() == "6c20fdb4f9c093fed0a82c21c642dfceee2cc6d424104390c7c432e3cfa61903"
