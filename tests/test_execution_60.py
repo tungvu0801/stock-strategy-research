@@ -1278,12 +1278,12 @@ def test_A01_read_routes_shapes(stack):
     r = st.api.get("/api/execution")
     assert r.status_code == 200
     j = r.json()
-    assert j["mode"] == "MONITOR_ONLY" and j["modes"] == ["MONITOR_ONLY", "PAPER_AUTO"] and set(j["exit_reasons"]) == set(X.EXIT_REASONS) and j["known_controls"] == list(X.CONTROLS)
+    assert j["mode"] == "MONITOR_ONLY" and j["modes"] == ["MONITOR_ONLY", "PAPER_AUTO"] and set(j["exit_reasons"]) == set(X.EXIT_REASONS) and j["known_controls"] == list(X.CONTROLS) and j["known_controls"][-2:] == ["DATA_GATE", "PROTECTIVE_EXIT"]   # HDR-2 r14 3.11 (r14:954)
     assert "disclaimer" in j and j["limits"]["max_open_positions"] == 10
     s = st.api.get("/api/execution/status").json()
     assert s["headline"] == "Monitor only" and s["icon"] == "⚪" and any(c["symbol"] == "SNDK" and c["key"] == "READY" for c in s["cards"])
     assert st.api.get("/api/execution/history").json()["history"] == []
-    assert st.api.get("/api/execution/controls").json()["known_controls"] == list(X.CONTROLS)
+    assert st.api.get("/api/execution/controls").json()["known_controls"] == list(X.CONTROLS) and len(X.CONTROLS) == 17 and {"DATA_GATE", "PROTECTIVE_EXIT"} <= set(X.CONTROLS)   # r14:954
     assert st.api.get("/api/execution/intents").json()["intents"] == [] and st.api.get("/api/execution/positions").json()["positions"] == []
     assert st.api.get("/api/execution/findings").json()["healthy"] is True
     c = st.api.get("/api/execution/symbol/SNDK").json()

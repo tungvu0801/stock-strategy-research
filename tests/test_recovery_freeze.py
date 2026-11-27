@@ -116,9 +116,18 @@ def ledger_mda():
     return FL.ledger_at(FL.BASE_MDA)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_recovery_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in MDA_MOVED:
         return at_mda(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -256,7 +265,7 @@ def test_F05R_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_r
     assert [ast.unparse(t) for n in region for t in (n.targets if isinstance(n, ast.Assign) else [n.target])] == [
         "BASE_REC", "NEW_REC", "EDITED_REC", "SEMANTIC_REC", "INSTRUMENTATION_REC", "NEW_LEDGER_REC", "UNDO_REC", "SEMANTIC_TESTS_REC", "VERSION_PINS_W2A['execution_v5']"]
     v4, v5 = FL.VERSION_PINS_W2A["execution_v4"], FL.VERSION_PINS_W2A["execution_v5"]
-    assert set(v5) == set(v4) == set(FL.VERSION_BLOCKS_W2A) and {k for k in v4 if v4[k] != v5[k]} == {"execution/service.py::ExecutionService.enable_auto"}   # run_cycle is not a listed block
+    assert set(v5) == set(v4) == set(FL.VERSION_BLOCKS_W2A) - {"execution/data_gate.py::evaluate"} and {k for k in v4 if v4[k] != v5[k]} == {"execution/service.py::ExecutionService.enable_auto"}   # run_cycle is not a listed block
     assert FL.INSTRUMENTATION_REC == {}
     assert set(ledger) - set(main_ledger) == FL.NEW_LEDGER_REC and set(main_ledger) <= set(ledger)
     for rel in sorted(FL.NEW_LEDGER_REC):

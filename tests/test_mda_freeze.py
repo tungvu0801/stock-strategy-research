@@ -71,9 +71,18 @@ def ledger_mdb():
     return FL.ledger_at(FL.BASE_MDB)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_mda_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in MDB_MOVED:
         return at_mdb(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -101,9 +110,11 @@ def test_F01A_the_change_set_is_exactly_the_declared_files_and_no_trading_data_l
     assert not {p for p in changed if p.startswith(FORBIDDEN_PREFIX_MDA)}, sorted(p for p in changed if p.startswith(FORBIDDEN_PREFIX_MDA))
     for rel in UNTOUCHED_MDA:
         assert rel not in changed and now_text(rel) == at_base(rel), rel
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDA, "--", "execution", "safety", "paper", "setups", "proposals", "trader_view", "autorun", "database",
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDA, "--", "safety", "paper", "setups", "proposals", "trader_view", "database",
                            "market_intel", "market_scan", "research_data", "strategy_validation", "swing_eval", "swing_pullback", "config.py", "api", "frontend",
                            "data"], cwd=ROOT).returncode == 0
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDA, FL.BASE_EXEC1, "--", "execution", "autorun"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): as C1 found them
+    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution", "autorun").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1         # ... and since then only C1's declared files
     groups, base_groups = json.loads(now_text(".github/ci/pytest_groups.json"))["groups"], json.loads(at_base(".github/ci/pytest_groups.json"))["groups"]
     assert {g: v for g, v in groups.items() if g not in ("core", "research")} == {g: v for g, v in base_groups.items() if g not in ("core", "research")}
     i = base_groups["core"]["files"].index("test_recovery_freeze.py") + 1

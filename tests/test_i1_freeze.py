@@ -103,13 +103,27 @@ def at_base(rel):
     return at(FL.BASE_I1, rel)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_i1_freeze.py"}))   # EXEC-P1 C1 (design 7a, the MD-B precedent): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
+def ledger_exec1():
+    """EXEC-P1 C1 (design 7a): the ledger at BASE_EXEC1, the hashes I-1B-1's bookkeeping is checked against."""
+    return FL.ledger_at(FL.BASE_EXEC1)
+
+
 def now_text(rel):
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def changed_files(base):
-    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())
-    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}
+    # EXEC-P1 C1 (design 7a): I-1B-1's side is the fixed diff from `base` to BASE_EXEC1; the working tree's change set belongs to C1's ledger block
+    return set(_git("diff", "--name-only", base, FL.BASE_EXEC1).split())
 
 
 def hidden_files(dirs):
@@ -171,9 +185,9 @@ def test_F01I_the_change_set_is_exactly_the_declared_files_and_nothing_is_hidden
         assert groups[g] == {**base_groups[g], "files": base_groups[g]["files"][:i] + new + base_groups[g]["files"][i:]}, g
     listed = {f for v in groups.values() for f in v["files"]}
     assert {p.split("/")[-1] for p in FL.NEW_I1 if p.startswith("tests/test_")} <= listed and "i1_builders.py" not in listed
-    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))
+    assert ledger_exec1()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # EXEC-P1 C1: the manifest and its hash, both at BASE_EXEC1
     h = _ci_helper()
-    assert h.problems(h.load()) == [] and sum(len(v["files"]) for v in h.load().values()) == 127 + 6 == len(h.discovered())
+    assert h.problems(h.load()) == [] and sum(len(v["files"]) for v in h.load().values()) == 127 + 6 + len({p for p in FL.NEW_EXEC1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1's nine
 
 
 # ============================================================================================================ F02I
@@ -255,7 +269,7 @@ def test_F04I_the_ledger_changes_only_its_sentence_paragraph_declarations_helper
     rehashed = {k for k in main_ledger if main_ledger[k] != ledger[k]}
     assert rehashed == want, sorted(rehashed ^ want)
     for rel in rehashed:
-        assert ledger[rel] == FL.sha(now_text(rel)) == FL.LEDGER[rel], rel
+        assert ledger[rel] == FL.sha(now_text(rel)) == ledger_exec1()[rel], rel                  # EXEC-P1 C1: I-1B-1's hashes against its texts, both at BASE_EXEC1
     mb, i = main_fl.index("\nMD-B (the portfolio evaluation engine"), fl.index
     assert fl[i("\nMD-B (the portfolio evaluation engine"):i("\nI-1B-1 (S4: the research admission gate")] == main_fl[mb:main_fl.index('"""', mb)]
     assert fl[i("BASE_MDB = "):i("BASE_I1 = ")] == main_fl[main_fl.index("BASE_MDB = "):main_fl.index("\nLEDGER = {\n") + 1]
@@ -274,7 +288,9 @@ def test_F04I_the_ledger_changes_only_its_sentence_paragraph_declarations_helper
 
 # ============================================================================================================ F05I
 def test_F05I_the_frozen_trees_the_contract_the_v1_hash_mdbs_unedited_files_and_the_reviewed_blobs_hold_now():
-    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, "--", *FROZEN_LIVE_I1], cwd=ROOT).returncode == 0
+    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, "--", *(d for d in FROZEN_LIVE_I1 if d != "execution")], cwd=ROOT).returncode == 0
+    assert "execution" in FROZEN_LIVE_I1 and subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, FL.BASE_EXEC1, "--", "execution"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): execution/ as C1 found it
+    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1                                            # ... and since then only C1's declared files
     assert not [p for p in _git("ls-files", "--others", "--exclude-standard", "--", *REQUIRED_FROZEN_I1).split() if not p.startswith(SCRATCH)]
     assert hidden_files(REQUIRED_FROZEN_I1) == set()
     for tree, oid in TREE_PINS_I1.items():
@@ -322,7 +338,7 @@ def test_F06I_design_7a_mdbs_freeze_test_reads_i1s_files_at_a_fixed_commit_and_t
         assert TMB.now_text(rel) == at_base(rel) != now_text(rel), rel
     for rel in OLDER_FREEZE_TESTS_I1:
         assert now_text(rel) == at_base(rel), rel
-    assert _git("hash-object", "tests/test_mda_freeze.py").strip() == MDA_FREEZE_BLOB
+    assert (_git("rev-parse", f"{FL.BASE_EXEC1}:tests/test_mda_freeze.py") if "tests/test_mda_freeze.py" in EXEC1_MOVED else _git("hash-object", "tests/test_mda_freeze.py")).strip() == MDA_FREEZE_BLOB
     assert set(TMA.MDB_MOVED) == FL.EDITED_MDB - {"tests/test_mda_freeze.py"}
     whole, i1 = changed_files(FL.BASE_MDB), changed_files(FL.BASE_I1)
     in_mdb_base = set(_git("ls-tree", "-r", "--name-only", FL.BASE_MDB).split())

@@ -493,6 +493,137 @@ class ExecutionStore:
             r["detail"] = _loads(r.pop("detail_json"), {})
         return rows
 
+    # ---------------------------------------------------------------- HDR-2 r14 3.13.3: the safety-finding lifecycle rows (additive) ---
+    def safety_states(self, position_ids: Optional[Iterable[str]] = None, *, conn: Optional[sqlite3.Connection] = None) -> Dict[tuple, dict]:
+        """r14 3.13.3: per key (family, position_id), the state of the LATEST row by rowid among the family's alert kind and its resolution
+        kind (rowid is insertion order: the table never deletes or replaces; `at` is never used for ordering). No row: NONE. The alert kind with
+        detail lifecycle ACTIVE or RECURRENT: that state; with an unreadable or unexpected detail: ACTIVE (fail closed), and then no exit_cycle
+        or evaluation is reported (derived evidence never applies to it). The resolution kind: RESOLVED. STRICT: a missing database file or
+        table, or any SQLite error, raises to the caller (never an empty result). `position_ids` given: every family of every id is reported,
+        NONE included. `conn`: read inside the caller's transaction (add_safety_transition's compare-and-set). Reads only."""
+        families = {"STOP_CHECK_BLIND": "STOP_CHECK_BLIND_RESOLVED", "PROTECTIVE_EXIT_UNVERIFIED": "PROTECTIVE_EXIT_UNVERIFIED_RESOLVED",
+                    "STRATEGY_EXIT_HELD": "STRATEGY_EXIT_HELD_RESOLVED"}
+        ids = None if position_ids is None else [str(p) for p in position_ids]
+        out: Dict[tuple, dict] = {}
+
+        def blank(fam: str, pid: str) -> dict:
+            return {"family": fam, "position_id": pid, "state": "NONE", "symbol": None, "rowid": None, "kind": None, "alerts": 0, "detail_readable": None,
+                    "exit_cycle": None, "evaluation": None}
+        for pid in ids or ():
+            for fam in families:
+                out[(fam, pid)] = blank(fam, pid)
+        if ids is not None and not ids:
+            return out
+        kinds = list(families) + list(families.values())
+        sql = f"SELECT rowid AS rid, kind, position_id, symbol, detail_json FROM execution_reconciliations WHERE kind IN ({', '.join('?' * len(kinds))})"
+        args: list = list(kinds)
+        if ids is not None:
+            sql += f" AND position_id IN ({', '.join('?' * len(ids))})"
+            args += ids
+        sql += " ORDER BY rowid"
+        own = conn is None
+        if own:
+            if not self.path.exists():
+                raise ExecutionStoreError("safety state unreadable: no database file")
+            conn = sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)
+        try:
+            rows = conn.execute(sql, args).fetchall()
+        finally:
+            if own:
+                conn.close()
+        resolution_of = {v: k for k, v in families.items()}
+        for r in rows:
+            pid, kind = r[2], r[1]
+            if not isinstance(pid, str) or not pid:
+                continue                                                         # never a lifecycle row: position_id is always set (3.13.2)
+            fam = kind if kind in families else resolution_of[kind]
+            e = out.setdefault((fam, pid), blank(fam, pid))
+            e.update(rowid=r[0], kind=kind, symbol=r[3])
+            if kind == fam:
+                e["alerts"] += 1
+                det = _loads(r[4], None)
+                life = det.get("lifecycle") if isinstance(det, dict) else None
+                ok = isinstance(life, str) and life in ("ACTIVE", "RECURRENT")
+                ec = det.get("exit_cycle") if ok else None
+                ev = det.get("evaluation") if ok else None
+                e.update(state=life if ok else "ACTIVE", detail_readable=ok, exit_cycle=ec if type(ec) is int else None, evaluation=ev if isinstance(ev, str) else None)
+            else:
+                e.update(state="RESOLVED", detail_readable=None, exit_cycle=None, evaluation=None)
+        return out
+
+    def add_safety_transition(self, family: str, position_id: str, symbol: str, expected_state: str, now: datetime, trigger: str, run_id: Optional[str], *,
+                              alert: Optional[dict] = None, resolution: Optional[dict] = None) -> bool:
+        """r14 3.13.3, 3.13.8 and 7: inside ONE BEGIN IMMEDIATE, re-derive the key's state and insert only if it is still `expected_state`, the
+        state the caller decided from (compare-and-set). Returns whether it wrote. Forms: an alert row from NONE (lifecycle ACTIVE) or RESOLVED
+        (RECURRENT), episode = 1 + the key's earlier alert rows counted in this transaction; a resolution row from ACTIVE or RECURRENT; or the
+        two-row form (a deferred alert row and its resolution row) from NONE or RESOLVED, both or neither. Columns: kind, symbol, position_id,
+        blocking (the two blocking families' alert rows only), trigger, run_id; execution_id and broker_order_id stay empty. Detail: stable
+        values only. Evidence is checked per family (families are independent, 3.13.2). An invalid call raises; a database error raises."""
+        evidence_codes = {"STOP_CHECK_BLIND": ("STOP_VERIFIED_NOT_HIT", "STOP_VERIFIED_HIT", "POSITION_CLOSED"),
+                          "PROTECTIVE_EXIT_UNVERIFIED": ("POSITION_CLOSED", "PROTECTIVE_EXIT_ACCEPTED", "PROTECTIVE_FACTS_VERIFIED"),
+                          "STRATEGY_EXIT_HELD": ("STRATEGY_EXIT_ACCEPTED", "POSITION_CLOSED", "HELD_REASONS_CLEARED")}
+        if family not in evidence_codes:
+            raise ExecutionStoreError(f"not a safety family: {family!r}")
+        if not isinstance(position_id, str) or not position_id or not isinstance(symbol, str) or not symbol:
+            raise ExecutionStoreError("a safety row needs position_id and symbol")
+        if alert is None and resolution is None:
+            raise ExecutionStoreError("nothing to write")
+        if alert is not None:
+            if expected_state not in ("NONE", "RESOLVED"):
+                raise ExecutionStoreError(f"an alert row is written only from NONE or RESOLVED, not {expected_state!r}")
+            allowed = {"reason_codes", "deferred"} | ({"exit_cycle"} if family != "STOP_CHECK_BLIND" else set()) | ({"evaluation"} if family == "STRATEGY_EXIT_HELD" else set())
+            if set(alert) - allowed:
+                raise ExecutionStoreError(f"alert detail fields not allowed: {sorted(set(alert) - allowed)}")
+            codes = alert.get("reason_codes")
+            if not isinstance(codes, (list, tuple)) or not all(isinstance(c, str) and c for c in codes):
+                raise ExecutionStoreError("reason_codes must be a list of codes")
+            if "exit_cycle" in alert and type(alert["exit_cycle"]) is not int:
+                raise ExecutionStoreError("exit_cycle must be an integer")
+            if "evaluation" in alert and (not isinstance(alert["evaluation"], str) or not alert["evaluation"]):
+                raise ExecutionStoreError("evaluation must be the setup evaluation's identity")
+            if "deferred" in alert and alert["deferred"] is not True:
+                raise ExecutionStoreError("deferred is only ever true")
+            if resolution is not None and alert.get("deferred") is not True:
+                raise ExecutionStoreError("the two-row form is the deferred episode")
+        elif expected_state not in ("ACTIVE", "RECURRENT"):
+            raise ExecutionStoreError(f"a resolution row is written only from ACTIVE or RECURRENT, not {expected_state!r}")
+        if resolution is not None:
+            if set(resolution) - {"evidence", "execution_id", "derived"}:
+                raise ExecutionStoreError(f"resolution detail fields not allowed: {sorted(set(resolution) - {'evidence', 'execution_id', 'derived'})}")
+            if resolution.get("evidence") not in evidence_codes[family]:
+                raise ExecutionStoreError(f"{resolution.get('evidence')!r} is not evidence for {family}")
+            if "execution_id" in resolution and (not isinstance(resolution["execution_id"], str) or not resolution["execution_id"]):
+                raise ExecutionStoreError("execution_id must name the evidencing intent")
+            if "derived" in resolution and resolution["derived"] is not True:
+                raise ExecutionStoreError("derived is only ever true")
+        stamp = _iso(now)
+        conn = self._rw()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = self.safety_states([position_id], conn=conn)[(family, position_id)]
+            if cur["state"] != expected_state:
+                conn.execute("ROLLBACK")
+                return False
+            episode = int(cur["alerts"])
+            rows = []
+            if alert is not None:
+                episode += 1
+                det = dict(alert, reason_codes=list(alert["reason_codes"]), lifecycle="ACTIVE" if expected_state == "NONE" else "RECURRENT", episode=episode)
+                rows.append((family, 0 if family == "STRATEGY_EXIT_HELD" else 1, det))
+            if resolution is not None:
+                rows.append((family + "_RESOLVED", 0, dict(resolution, episode=episode)))
+            for kind, blk, det in rows:
+                conn.execute("INSERT INTO execution_reconciliations (reconciliation_id, run_id, at, trigger, kind, symbol, blocking, execution_id, position_id, broker_order_id, "
+                             "detail_json) VALUES (?,?,?,?,?,?,?,NULL,?,NULL,?)", (new_id(), run_id, stamp, trigger, kind, symbol, blk, position_id, _json(det)))
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return True
+
     def add_run(self, run_id: str, started_at: datetime, finished_at: datetime, trigger: str, mode: str, result: str, summary: dict, error: Optional[str], owner: str) -> None:
         conn = self._rw()
         try:

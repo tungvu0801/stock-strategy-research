@@ -12,7 +12,7 @@ Boundaries (tests/test_execution_60.py pins them):
   - the safety gate blocks NEW ENTRIES only; deterministic risk-reducing exits continue; an Emergency Stop never liquidates;
   - the user controls the mode (MONITOR_ONLY by default; PAPER_AUTO is an explicit, persisted choice).
 """
-VERSION = "execution_v5"                                     # bot-position recovery (design 3.5, section 6): enable_auto and run_cycle reconcile while unhealthy with nothing open; a new 6.10A cohort
+VERSION = "execution_v6"                                     # HDR-2 execution data gate (EXEC-P1 C1, brief 8): the gate decides entries, exits, the stop check and the safety-finding lifecycle; a new 6.10A cohort
 STAGE = "6.0"
 
 MODES = ("MONITOR_ONLY", "PAPER_AUTO")
@@ -45,13 +45,17 @@ EXIT_TEXT = {"HARD_INVALIDATION": "Price reached the invalidation level", "EVIDE
 
 # liveness controls (database rows: last evaluated, last fired, counts, last result, last error)
 CONTROLS = ("PAPER_ENVIRONMENT", "EXECUTION_MODE", "SAFETY_GATE", "PROPOSAL_VALIDITY", "SESSION_POLICY", "DUPLICATE_ENTRY", "MAX_OPEN_POSITIONS", "BROKER_ACCOUNT",
-            "BROKER_TRADABILITY", "BROKER_POSITION", "BROKER_RECONCILIATION", "ENTRY_SUBMISSION", "POSITION_RECONCILIATION", "EXIT_TRIGGER", "EXIT_SUBMISSION")
+            "BROKER_TRADABILITY", "BROKER_POSITION", "BROKER_RECONCILIATION", "ENTRY_SUBMISSION", "POSITION_RECONCILIATION", "EXIT_TRIGGER", "EXIT_SUBMISSION",
+            "DATA_GATE", "PROTECTIVE_EXIT")                    # HDR-2 r14 3.11: the gate's verdict rows and the protective-refusal row (real broker only)
 RESULTS = ("PASS", "BLOCK", "WARN", "UNKNOWN", "RUN")
 
 # reconciliation finding kinds (blocking ones set RECONCILIATION_REQUIRED for new entries; nothing is ever silently fixed)
 FINDINGS = ("ORDER_MISSING_AT_BROKER", "UNKNOWN_INTERNAL_ORDER", "QTY_MISMATCH", "BROKER_FLAT_INTERNAL_OPEN", "INTERNAL_FLAT_BROKER_POSITION", "EXTERNAL_POSITION",
-            "MULTIPLE_ORDERS", "UNKNOWN_STATUS", "BROKER_UNAVAILABLE", "ORDER_ADOPTED", "ORDER_NOT_FOUND_FINAL")
-INFORMATIONAL_FINDINGS = frozenset({"EXTERNAL_POSITION", "ORDER_ADOPTED", "ORDER_NOT_FOUND_FINAL"})
+            "MULTIPLE_ORDERS", "UNKNOWN_STATUS", "BROKER_UNAVAILABLE", "ORDER_ADOPTED", "ORDER_NOT_FOUND_FINAL",
+            "STOP_CHECK_BLIND", "PROTECTIVE_EXIT_UNVERIFIED", "STRATEGY_EXIT_HELD",                       # HDR-2 r14 3.7 / 3.13.1: the lifecycle kinds,
+            "STOP_CHECK_BLIND_RESOLVED", "PROTECTIVE_EXIT_UNVERIFIED_RESOLVED", "STRATEGY_EXIT_HELD_RESOLVED")   # written only by _safety_transition
+INFORMATIONAL_FINDINGS = frozenset({"EXTERNAL_POSITION", "ORDER_ADOPTED", "ORDER_NOT_FOUND_FINAL",
+                                    "STRATEGY_EXIT_HELD", "STOP_CHECK_BLIND_RESOLVED", "PROTECTIVE_EXIT_UNVERIFIED_RESOLVED", "STRATEGY_EXIT_HELD_RESOLVED"})
 
 COID_PREFIX = "stockagent-"
 ENTRY_PREFIX = COID_PREFIX + "entry-"

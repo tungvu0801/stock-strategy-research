@@ -193,7 +193,7 @@ def derive(conn: sqlite3.Connection, position_id: str, now: datetime) -> Dict[st
     else:
         res(6, age <= limit, f"snapshot {int(age)} s old (limit {int(limit)} s for {basis})")
     # precondition 7 and 10: the latest finding of the position
-    fd = _rows(conn, "SELECT at, kind, detail_json FROM execution_reconciliations WHERE position_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", (position_id,))
+    fd = _rows(conn, f"SELECT at, kind, detail_json FROM execution_reconciliations WHERE position_id = ? AND kind IN ({', '.join('?' * len(QTY_FINDINGS))}) ORDER BY at DESC, rowid DESC LIMIT 1", (position_id, *QTY_FINDINGS))   # HDR-2 OD-R4-4(a): the QTY findings only
     finding = fd[0] if fd else None
     updated = _parse(p["updated_at"])
     f_at = _parse(finding["at"]) if finding else None

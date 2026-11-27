@@ -458,7 +458,8 @@ VERSION_BLOCKS_W2A = ('execution/service.py::ExecutionService._apply_order',
                      'forward_validation/attention_signature.py::_persistent_mismatch',
                      'forward_validation/attention_signature.py::=HUMAN_ACTORS',
                      'forward_validation/attention_signature.py::=LIVE_HOST_TABLES',
-                     'forward_validation/attention_signature.py::=READERS')
+                     'forward_validation/attention_signature.py::=READERS',
+                     'execution/data_gate.py::evaluate')
 VERSION_PINS_W2A = {
     "execution_v1": {
         "execution/service.py::ExecutionService._apply_order": "0f759a824f1f9d0486e33f8e656f5e93fdb17a58bec6066e0ea34f545ab0fdd5",
@@ -3881,9 +3882,301 @@ SEMANTIC_TESTS_I1 = {                                                           
     'tests/test_md_eval_ledger.py::_recon': "I1B-D01 O-7 (frozen text, D-9): the reconciliation's total-return series reads an admitted dataset; the ledger run itself is unchanged",
     'tests/test_md_eval_benchmarks_stats.py::test_B05_the_random_entry_control_is_reproducible_records_its_seeds_and_never_touches_v1': "I1B-D02 O-7 (frozen text, D-9): the random control runs on one admitted dataset, twice; admission is deterministic, so the two runs are equal",
 }
+BASE_EXEC1 = 'fac76bbc99344db24fa88ff059f3b6168a59d21b'                                  # main: the EXEC-P1 base (the origin of the C1 chain C1a-C1c2)
+NEW_EXEC1 = {'execution/data_gate.py', 'tests/test_data_gate_core_matrix.py', 'tests/test_data_gate_core_price_selection.py', 'tests/test_data_gate_core_sources.py',
+             'tests/test_data_gate_entries_c1c2.py', 'tests/test_data_gate_exits_service.py', 'tests/test_data_gate_exits_structure.py',
+             'tests/test_data_gate_lifecycle_recovery_fv.py', 'tests/test_data_gate_lifecycle_store.py', 'tests/test_data_gate_lifecycle_writer.py'}   # EXEC-P1 C1: the gate and its tests
+EDITED_EXEC1 = {'.github/ci/pytest_groups.json', 'autorun/calendar.py', 'execution/__init__.py', 'execution/recovery.py', 'execution/service.py', 'execution/store.py',
+                'forward_validation/service.py', 'tests/freeze_ledger.py', 'tests/test_execution_60.py', 'tests/test_bot_activity_68.py', 'tests/test_bot_position_recovery.py',
+                'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+                'tests/test_evidence_refresh_542.py', 'tests/test_ex06_freeze.py', 'tests/test_forward_paper_610a.py', 'tests/test_gate_freeze.py', 'tests/test_i1_freeze.py',
+                'tests/test_j04_freeze.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py',
+                'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py',
+                'tests/test_mda_freeze.py', 'tests/test_mdb_freeze.py', 'tests/test_panel_freeze.py', 'tests/test_recovery_freeze.py', 'tests/test_robinhood_portfolio_69.py',
+                'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py',
+                'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py',
+                'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py'}   # the gate's production edits, the CI entry, the earlier freeze tests' unions / chains / fixed-commit readers, bookkeeping
+SEMANTIC_EXEC1 = {                                                                          # EXEC-P1 C1 (HDR-2 r14, brief 4 errata): the INTENTIONAL change, file by file
+    'execution/service.py': "the execution data gate decides every entry, protective exit, strategy exit and stop check (r14 3.2-3.10): the stop-check integrity rule, the protective path, the per-reason table, the collision check, the safety-finding lifecycle writer and sweeps, the unsaved-alert latch, the startup gate and the alert surfaces; E7 refuses every real-broker entry in Phase 1",
+    'execution/store.py': "two additive lifecycle methods (r14 3.13.3): safety_states (a strict, rowid-ordered read of the lifecycle rows) and add_safety_transition (a compare-and-set insert inside one BEGIN IMMEDIATE); no existing method changes",
+    'execution/__init__.py': "VERSION execution_v6 (brief 8: the gate moves _evaluate_positions, _maybe_submit_exit, _scan_entries, _recheck_entry and _submit; a new 6.10A cohort); CONTROLS gains DATA_GATE and PROTECTIVE_EXIT; FINDINGS gains the six lifecycle kinds, four of them informational",
+    'execution/recovery.py': "OD-R4-4(a): preconditions 7 and 10 read the latest QTY finding of the position only, so a safety-lifecycle row never stands in for the reconciliation finding",
+    'forward_validation/service.py': "OD-R3-1(a) and OD-R5-7(b): BLOCKING_FINDINGS gains STOP_CHECK_BLIND and PROTECTIVE_EXIT_UNVERIFIED, resolved by their later _RESOLVED row (rowid) or a CLOSED event, and the run window carries in an open alert dated before it",
+    'autorun/calendar.py': "OD-DG-4: one docstring sentence names the data gate as a reader of covered / is_market_day (the gate decides, never the table); no code change",
+}
+INSTRUMENTATION_EXEC1: dict = {}                                                         # EXEC-P1 C1: no executor instrumentation
+NEW_LEDGER_EXEC1: set = set()                                                            # no new registration
+UNDO_EXEC1 = {                                                                              # EXEC-P1 C1's in-place edits of older test files: (main BASE_EXEC1, C1)
+    'tests/test_execution_60.py': [
+        (' and j["known_controls"] == list(X.CONTROLS)\n',
+         ' and j["known_controls"] == list(X.CONTROLS) and j["known_controls"][-2:] == ["DATA_GATE", "PROTECTIVE_EXIT"]   # HDR-2 r14 3.11 (r14:954)\n'),
+        ('.json()["known_controls"] == list(X.CONTROLS)\n',
+         '.json()["known_controls"] == list(X.CONTROLS) and len(X.CONTROLS) == 17 and {"DATA_GATE", "PROTECTIVE_EXIT"} <= set(X.CONTROLS)   # r14:954\n'),
+    ],
+    'tests/test_bot_activity_68.py': [
+        ('FL.NEW_MDB | FL.NEW_I1, {"unexpected_new"', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, {"unexpected_new"'),
+        ('FL.NEW_MDB | FL.NEW_I1) - new)}', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1) - new)}'),
+    ],
+    'tests/test_bot_position_recovery.py': [
+        ('X.VERSION == "execution_v5" and "Closed outside the app" not in json.dumps(frozen_controls())\n',
+         'X.VERSION == "execution_v6" and "Closed outside the app" not in json.dumps(frozen_controls())   # EXEC-P1 C1: the gate\'s execution_v6 (brief 8)\n'),
+    ],
+    'tests/test_chart_empty_state_611fix.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_decision_flow_610c.py': [
+        ('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1'),
+        ('            if rel in FL.NEW_REC:\n', '            if rel in FL.NEW_REC or rel in FL.NEW_EXEC1:\n'),
+        (' or rel in FL.SEMANTIC_REC, rel   # since then: only', ' or rel in FL.SEMANTIC_REC or rel in FL.SEMANTIC_EXEC1, rel   # since then: only'),
+    ],
+    'tests/test_engine_health_610d.py': [
+        ('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1'),
+        (' or rel in FL.SEMANTIC_REC or p.read_text(', ' or rel in FL.SEMANTIC_REC or rel in FL.NEW_EXEC1 or rel in FL.SEMANTIC_EXEC1 or p.read_text('),
+    ],
+    'tests/test_evidence_gate_541.py': [
+        ('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1'),
+        ('            if rel in FL.NEW_REC:\n', '            if rel in FL.NEW_REC or rel in FL.NEW_EXEC1:\n'),
+        (' or rel in FL.SEMANTIC_REC, rel   # since then: Stage 6.10D', ' or rel in FL.SEMANTIC_REC or rel in FL.SEMANTIC_EXEC1, rel   # since then: Stage 6.10D'),
+    ],
+    'tests/test_evidence_refresh_542.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_ex06_freeze.py': [
+        ('def now_text(rel):\n    return (ROOT / rel)',
+         'EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_ex06_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+         'def at_exec1(rel):\n    run = subprocess.run(["git", "show", f"{FL.BASE_EXEC1}:{rel}"], cwd=ROOT, capture_output=True)\n'
+         '    assert run.returncode == 0, f"{rel} is not in {FL.BASE_EXEC1} (fetch-depth 0 is required)"\n'
+         '    return run.stdout.decode("utf-8").replace("\\r\\n", "\\n")\n\n\n'
+         'def now_text(rel):\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT / rel)'),
+    ],
+    'tests/test_forward_paper_610a.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_gate_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_gate_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_mda(rel)\n    return (ROOT', '        return at_mda(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+        ('set(FL.VERSION_BLOCKS_W2A) and {k for k in v3', 'set(FL.VERSION_BLOCKS_W2A) - {"execution/data_gate.py::evaluate"} and {k for k in v3'),
+    ],
+    'tests/test_i1_freeze.py': [
+        ('def now_text(rel):\n    return (ROOT / rel)',
+         'EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_i1_freeze.py"}))   # EXEC-P1 C1 (design 7a, the MD-B precedent): its edited files, read at BASE_EXEC1\n\n\n'
+         'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\n'
+         'def ledger_exec1():\n    """EXEC-P1 C1 (design 7a): the ledger at BASE_EXEC1, the hashes I-1B-1\'s bookkeeping is checked against."""\n    return FL.ledger_at(FL.BASE_EXEC1)\n\n\n'
+         'def now_text(rel):\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT / rel)'),
+        ('    c = set(_git("diff", "--name-only", base).split()) | set(_git("ls-files", "--others", "--exclude-standard").split())\n'
+         '    return {p for p in c if not p.startswith(SCRATCH) and (ROOT / p).exists()}',
+         '    # EXEC-P1 C1 (design 7a): I-1B-1\'s side is the fixed diff from `base` to BASE_EXEC1; the working tree\'s change set belongs to C1\'s ledger block\n'
+         '    return set(_git("diff", "--name-only", base, FL.BASE_EXEC1).split())'),
+        ('    assert FL.LEDGER[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))\n',
+         '    assert ledger_exec1()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # EXEC-P1 C1: the manifest and its hash, both at BASE_EXEC1\n'),
+        ('== 127 + 6 == len(h.discovered())', '== 127 + 6 + len({p for p in FL.NEW_EXEC1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1\'s nine'),
+        ('== FL.sha(now_text(rel)) == FL.LEDGER[rel], rel', '== FL.sha(now_text(rel)) == ledger_exec1()[rel], rel                  # EXEC-P1 C1: I-1B-1\'s hashes against its texts, both at BASE_EXEC1'),
+        ('    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, "--", *FROZEN_LIVE_I1], cwd=ROOT).returncode == 0\n',
+         '    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, "--", *(d for d in FROZEN_LIVE_I1 if d != "execution")], cwd=ROOT).returncode == 0\n'
+         '    assert "execution" in FROZEN_LIVE_I1 and subprocess.run(["git", "diff", "--quiet", FL.BASE_I1, FL.BASE_EXEC1, "--", "execution"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): execution/ as C1 found it\n'
+         '    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1                                            # ... and since then only C1\'s declared files\n'),
+        ('    assert _git("hash-object", "tests/test_mda_freeze.py").strip() == MDA_FREEZE_BLOB',
+         '    assert (_git("rev-parse", f"{FL.BASE_EXEC1}:tests/test_mda_freeze.py") if "tests/test_mda_freeze.py" in EXEC1_MOVED else _git("hash-object", "tests/test_mda_freeze.py")).strip() == MDA_FREEZE_BLOB'),
+    ],
+    'tests/test_j04_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_j04_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_mda(rel)\n    return (ROOT', '        return at_mda(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+    ],
+    'tests/test_market_intel_70.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_intel_collector_73.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_intel_quality_74.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_intel_schema_v2_731.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_intel_sources_72.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_intel_store_71.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_market_scan_75.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_mda_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_mda_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_mdb(rel)\n    return (ROOT', '        return at_mdb(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+        ('FL.BASE_MDA, "--", "execution", "safety", "paper", "setups", "proposals", "trader_view", "autorun", "database",',
+         'FL.BASE_MDA, "--", "safety", "paper", "setups", "proposals", "trader_view", "database",'),
+        ('                           "data"], cwd=ROOT).returncode == 0\n',
+         '                           "data"], cwd=ROOT).returncode == 0\n'
+         '    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDA, FL.BASE_EXEC1, "--", "execution", "autorun"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): as C1 found them\n'
+         '    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution", "autorun").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1         # ... and since then only C1\'s declared files\n'),
+    ],
+    'tests/test_mdb_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_mdb_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_i1(rel)\n    return (ROOT', '        return at_i1(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+        ('    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, "--", *REUSED_UNCHANGED, "config.py", "api", "execution", "safety", "data"], cwd=ROOT).returncode == 0\n',
+         '    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, "--", *REUSED_UNCHANGED, "config.py", "api", "safety", "data"], cwd=ROOT).returncode == 0\n'
+         '    assert subprocess.run(["git", "diff", "--quiet", FL.BASE_MDB, FL.BASE_EXEC1, "--", "execution"], cwd=ROOT).returncode == 0   # EXEC-P1 C1 (design 7a): execution/ as C1 found it\n'
+         '    assert set(_git("diff", "--name-only", FL.BASE_EXEC1, "--", "execution").split()) <= FL.NEW_EXEC1 | FL.EDITED_EXEC1          # ... and since then only C1\'s declared files\n'),
+    ],
+    'tests/test_panel_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_panel_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_mda(rel)\n    return (ROOT', '        return at_mda(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+        (' and rel not in MDA_MOVED:\n            assert FL.LEDGER', ' and rel not in MDA_MOVED and rel not in EXEC1_MOVED:\n            assert FL.LEDGER'),
+    ],
+    'tests/test_recovery_freeze.py': [
+        ('\n\n\ndef now_text(rel):\n', '\n\n\nEXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_recovery_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1\n\n\n'
+                                       'def at_exec1(rel):\n    return at(FL.BASE_EXEC1, rel)\n\n\ndef now_text(rel):\n'),
+        ('        return at_mda(rel)\n    return (ROOT', '        return at_mda(rel)\n    if rel in EXEC1_MOVED:\n        return at_exec1(rel)\n    return (ROOT'),
+        ('set(FL.VERSION_BLOCKS_W2A) and {k for k in v4', 'set(FL.VERSION_BLOCKS_W2A) - {"execution/data_gate.py::evaluate"} and {k for k in v4'),
+    ],
+    'tests/test_robinhood_portfolio_69.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_runtime_reliability_ops.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_sip_eval_78b1.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_strategy_validation_62.py': [
+        ('NEW_MDA, NEW_MDB, NEW_I1, unchanged as ledger_unchanged', 'NEW_MDA, NEW_MDB, NEW_I1, NEW_EXEC1, unchanged as ledger_unchanged'),
+        ('NEW_MDB | NEW_I1   # Stage 6.8 / 6.9', 'NEW_MDB | NEW_I1 | NEW_EXEC1   # Stage 6.8 / 6.9'),
+        (' - NEW_GATE - NEW_REC) | changed)', ' - NEW_GATE - NEW_REC - NEW_EXEC1) | changed)'),
+    ],
+    'tests/test_swing_pullback_78.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_unified_exposure_gate_691.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_wave1_safety_remediation.py': [('FL.NEW_I1 | FL.EDITED_I1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1')],
+    'tests/test_wave2_pra.py': [
+        ('    assert FL.VERSION_PINS_W2A["execution_v1"] == base\n',
+         '    assert base.pop("execution/data_gate.py::evaluate") == "ABSENT" and "execution/data_gate.py::evaluate" not in FL.VERSION_PINS_W2A["execution_v5"]   # EXEC-P1 C1: the gate is new, pinned from execution_v6\n'
+         '    assert FL.VERSION_PINS_W2A["execution_v1"] == base\n'),
+        ('FL.NEW_MDB | FL.NEW_I1, FL.EDITED_W2A', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, FL.EDITED_W2A'),
+        ('FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1)   # Wave 2 PR B',
+         'FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1) | (FL.EDITED_EXEC1 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1)   # Wave 2 PR B'),
+        ('FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel))))))))))))                               # Wave 2 PR B / PR C',
+         'FL.undo_mdb(rel, FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))))                               # Wave 2 PR B / PR C'),
+    ],
+    'tests/test_wave2_pra_accounting.py': [
+        ('FL.undo_i1("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))',
+         'FL.undo_i1("tests/test_forward_paper_610a.py", FL.undo_exec1("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")))'),
+    ],
+    'tests/test_wave2_prb.py': [
+        ('FL.NEW_MDB | FL.NEW_I1, FL.EDITED_W2B', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, FL.EDITED_W2B'),
+        ('FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1)   # Wave 2 PR C',
+         'FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1) | (FL.EDITED_EXEC1 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1)   # Wave 2 PR C'),
+        ('FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel))))))))))))                          # Wave 2 PR C: its own',
+         'FL.undo_mdb(rel, FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))))                          # Wave 2 PR C: its own'),
+        ('FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))))))))))) == at_base(rel), rel           # now -> (F03C)',
+         'FL.undo_mdb(rel, FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel))))))))))))) == at_base(rel), rel           # now -> (F03C)'),
+    ],
+    'tests/test_wave2_prc.py': [
+        ('named_nodes(FL.pre_panel(rel, FL.pre_j04(rel, FL.pre_gate(rel, FL.pre_rec(rel, now_text(rel))))))',
+         'named_nodes(FL.pre_panel(rel, FL.pre_j04(rel, FL.pre_gate(rel, FL.pre_rec(rel, FL.pre_exec1(rel, now_text(rel)))))))'),
+        ('sorted(unnamed(now_text(rel))) == sorted(expected), rel ', 'sorted(unnamed(FL.pre_exec1(rel, now_text(rel)))) == sorted(expected), rel'),
+        ('    assert set(v3) == set(v2) == set(FL.VERSION_BLOCKS_W2A)\n    assert block_hashes(at_base) == v2 and block_hashes(lambda rel: FL.pre_gate(rel, FL.pre_rec(rel, now_text(rel)))) == v3  ',
+         '    assert set(v3) == set(v2) == set(FL.VERSION_BLOCKS_W2A) - {"execution/data_gate.py::evaluate"}   # EXEC-P1 C1: the gate\'s block is listed from execution_v6 on\n'
+         '    bh2, bh3 = block_hashes(lambda rel: None if rel in FL.NEW_EXEC1 else at_base(rel)), block_hashes(lambda rel: FL.pre_gate(rel, FL.pre_rec(rel, now_text(rel))))\n'
+         '    assert bh2.pop("execution/data_gate.py::evaluate") == "ABSENT" and bh3.pop("execution/data_gate.py::evaluate") == FL.VERSION_PINS_W2A["execution_v6"]["execution/data_gate.py::evaluate"]\n'
+         '    assert bh2 == v2 and bh3 == v3 '),
+        ('FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel)))))))))))                        # EX-06: its own',
+         'FL.undo_mdb(rel, FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel))))))))))))                        # EX-06: its own'),
+        ('FL.undo_mdb(rel, FL.undo_i1(rel, now_text(rel))))))))))) == at_base(rel), rel                             # now -> 875bc06d',
+         'FL.undo_mdb(rel, FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))) == at_base(rel), rel                             # now -> 875bc06d'),
+    ],
+}
+SEMANTIC_TESTS_EXEC1 = {                                                                    # EXEC-P1 C1: every changed test function -> its reason
+    'tests/test_execution_60.py::test_A01_read_routes_shapes': "EXEC1-C01 r14 3.11 (r14:954): the known controls are CONTROLS, now 17 with DATA_GATE and PROTECTIVE_EXIT last; the route shapes are otherwise unchanged",
+    'tests/test_bot_position_recovery.py::test_S03_manual_external_has_its_text_and_is_not_a_strategy_exit_and_the_frozen_controls_are_unchanged': "EXEC1-V01 brief 8 (:1351): execution.VERSION is execution_v6, the gate's bump; MANUAL_EXTERNAL and the frozen controls are checked as before",
+    'tests/test_wave2_pra.py::test_TW03_pr_a_bumps_the_execution_version_and_the_v1_pins_are_the_baseline': "EXEC1-V02 brief 8: the new listed block execution/data_gate.py::evaluate is ABSENT at BASE_W2A and in no table before execution_v6; the v1 baseline and PR A's moves are compared as before",
+    'tests/test_wave2_prc.py::test_TW01C_execution_v3_moves_exactly_the_two_changed_version_blocks': "EXEC1-V03 brief 8: execution_v2 / v3 hold every block listed before C1; the gate's evaluate is ABSENT at 875bc06d and today hashes its execution_v6 pin; the two moves are checked as before",
+    'tests/test_gate_freeze.py::test_F05G_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_rehashed_entries': "EXEC1-V04 brief 8: execution_v3 / v4 hold every block listed before C1 (the gate's evaluate is listed from execution_v6); _submit is still the only move",
+    'tests/test_recovery_freeze.py::test_F05R_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_rehashed_entries': "EXEC1-V05 brief 8: execution_v4 / v5 hold every block listed before C1 (the gate's evaluate is listed from execution_v6); enable_auto is still the only move",
+    'tests/test_strategy_validation_62.py::=NEW_62': "EXEC1-F01 NEW_62, the set of every file added after main 9fae08b that the earlier freeze tests import, gains NEW_EXEC1 (the gate and its nine test files) and its import",
+    'tests/test_strategy_validation_62.py::test_F01_main_plus_only_the_stage_62_files_and_exact_edits': "EXEC1-F09 C1's new execution/data_gate.py is excluded from the no-new-execution-file check like the recovery command; the gate is pinned by its own tests (tests/test_data_gate_*.py) and the version pin",
+    'tests/test_bot_activity_68.py::test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry': "EXEC1-F02 the new-file union admits NEW_EXEC1 (execution/data_gate.py and its tests); the registered-file rule is unchanged",
+    'tests/test_wave2_pra.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "EXEC1-F03 PR A's new / edited unions gain NEW_EXEC1 and C1's edits of files that existed at BASE_W2A (later stages' new files excluded); nothing else changes",
+    'tests/test_wave2_prb.py::test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "EXEC1-F04 PR B's new / edited unions gain NEW_EXEC1 and C1's edits of files that existed at BASE_W2B (later stages' new files excluded); nothing else changes",
+    'tests/test_decision_flow_610c.py::test_F02_execution_setups_auto_run_and_the_live_coverage_are_byte_identical_and_only_the_router_and_three_inert_flags_were_added': "EXEC1-F05 the new execution/data_gate.py is skipped like the recovery command (C1's own tests pin it) and C1's declared production files (SEMANTIC_EXEC1) may differ since BASE_541",
+    'tests/test_engine_health_610d.py::test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file': "EXEC1-F06 the change-set union admits NEW_EXEC1 | EDITED_EXEC1, and the execution / autorun scan admits C1's new gate and its declared production files (SEMANTIC_EXEC1)",
+    'tests/test_evidence_gate_541.py::test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution': "EXEC1-F07 the change-set union admits NEW_EXEC1 | EDITED_EXEC1, and the execution / autorun scan skips C1's new gate and admits its declared production files (SEMANTIC_EXEC1)",
+    'tests/test_chart_empty_state_611fix.py::test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_decision_flow_610c.py::test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_evidence_refresh_542.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_forward_paper_610a.py::test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_70.py::test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_store_71.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_sources_72.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_collector_73.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_schema_v2_731.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_intel_quality_74.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_market_scan_75.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_robinhood_portfolio_69.py::test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_risk_file': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_runtime_reliability_ops.py::test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_trading_code': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_sip_eval_78b1.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_swing_pullback_78.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_unified_exposure_gate_691.py::test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_wave1_safety_remediation.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed': "EXEC1-F08 the working-tree change set of this older freeze test also admits C1's declared files (NEW_EXEC1 | EDITED_EXEC1, since BASE_EXEC1); nothing else changes",
+    'tests/test_wave2_pra.py::test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "EXEC1-U01 the undo chain also undoes C1's own in-place edits first (undo_exec1, innermost, before undo_i1), so PR A's replay still reads main's text byte for byte",
+    'tests/test_wave2_pra_accounting.py::test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_consumers_are_unchanged': "EXEC1-U06 test_forward_paper_610a.py is read with C1's in-place edit undone too (undo_exec1, innermost); its non-freeze tests are still compared unchanged",
+    'tests/test_wave2_prb.py::test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "EXEC1-U02 the undo chain also undoes C1's own in-place edits first (undo_exec1, innermost, before undo_i1) before PR B's declared functions are compared",
+    'tests/test_wave2_prb.py::test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "EXEC1-U03 the undo chain also undoes C1's own in-place edits first (undo_exec1, innermost, before undo_i1), so PR B's undo still reads main's text byte for byte",
+    'tests/test_wave2_prc.py::test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "EXEC1-U04 the undo chain also undoes C1's own in-place edits first (undo_exec1, innermost, before undo_i1) before PR C's declared functions are compared",
+    'tests/test_wave2_prc.py::test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "EXEC1-U05 the undo chain also undoes C1's own in-place edits first (undo_exec1, innermost, before undo_i1), so PR C's undo still reads main's text byte for byte",
+    'tests/test_ex06_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by EX-06's freeze test",
+    'tests/test_ex06_freeze.py::at_exec1': "EXEC1-B02 design 7a: EX-06's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_ex06_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 (main before C1); every other file still reads the working tree",
+    'tests/test_wave2_prc.py::test_TW05C_only_the_listed_functions_changed_and_only_the_listed_names_are_new': "EXEC1-P01 the closed function list reads C1's declared production files as main left them (FL.pre_exec1, BASE_EXEC1), so PR C's list is checked against its own text; C1's delta is its own pin",
+    'tests/test_panel_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by the panel's freeze test",
+    'tests/test_panel_freeze.py::at_exec1': "EXEC1-B02 design 7a: the panel's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_panel_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after the older stages' fixed commits; every other file still reads the working tree",
+    'tests/test_j04_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by J-04's freeze test",
+    'tests/test_j04_freeze.py::at_exec1': "EXEC1-B02 design 7a: J-04's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_j04_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after the older stages' fixed commits; every other file still reads the working tree",
+    'tests/test_gate_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by the order gate's freeze test",
+    'tests/test_gate_freeze.py::at_exec1': "EXEC1-B02 design 7a: the gate's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_gate_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after the older stages' fixed commits; every other file still reads the working tree",
+    'tests/test_recovery_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by the recovery's freeze test",
+    'tests/test_recovery_freeze.py::at_exec1': "EXEC1-B02 design 7a: the recovery's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_recovery_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after MD-A's fixed commit; every other file still reads the working tree",
+    'tests/test_mda_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by MD-A's freeze test",
+    'tests/test_mda_freeze.py::at_exec1': "EXEC1-B02 design 7a: MD-A's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_mda_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after MD-B's fixed commit; every other file still reads the working tree",
+    'tests/test_mda_freeze.py::test_F01A_the_change_set_is_exactly_the_declared_files_and_no_trading_data_layer_or_security_file_changed': "EXEC1-B04 design 7a: execution/ and autorun/ are compared at BASE_EXEC1 (main before C1), and since then only C1's declared files differ; every other path stays live",
+    'tests/test_panel_freeze.py::test_F05P_the_ledger_changes_only_its_declarations_its_two_helpers_and_the_rehashed_entries': "EXEC1-B05 design 7a: a panel-hashed file C1 edits (read at BASE_EXEC1) carries C1's re-hash today, like the files the older stages moved; its panel hash is still checked against its text",
+    'tests/test_mdb_freeze.py::=EXEC1_MOVED': "EXEC1-B01 design 7a: the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by MD-B's freeze test",
+    'tests/test_mdb_freeze.py::at_exec1': "EXEC1-B02 design 7a: MD-B's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_mdb_freeze.py::now_text': "EXEC1-B03 design 7a: a file C1 edits is read at BASE_EXEC1 after I-1B-1's fixed commit; every other file still reads the working tree",
+    'tests/test_mdb_freeze.py::test_F02B_the_reused_packages_and_the_reviewed_md_eval_blobs_are_byte_identical_and_nothing_semantic_is_declared': "EXEC1-B04 design 7a: execution/ is compared at BASE_EXEC1 (main before C1), and since then only C1's declared files differ; every other reused path stays live",
+    'tests/test_i1_freeze.py::=EXEC1_MOVED': "EXEC1-I01 option A (the MD-B precedent): the files C1 edits (EDITED_EXEC1 minus this file) are read at BASE_EXEC1 (main before C1) by I-1B-1's freeze test",
+    'tests/test_i1_freeze.py::at_exec1': "EXEC1-I02 option A: I-1B-1's reader of a file at the fixed commit BASE_EXEC1 (main before C1), for the files C1 edits",
+    'tests/test_i1_freeze.py::ledger_exec1': "EXEC1-I03 option A: the ledger as C1 found it (BASE_EXEC1), the hashes I-1B-1's bookkeeping is checked against",
+    'tests/test_i1_freeze.py::now_text': "EXEC1-I04 option A: a file C1 edits is read at BASE_EXEC1 (main before C1); every other file still reads the working tree",
+    'tests/test_i1_freeze.py::changed_files': "EXEC1-I05 option A: I-1B-1's change set is the fixed diff from its base to BASE_EXEC1 (main before C1); the working tree's belongs to C1's ledger block",
+    'tests/test_i1_freeze.py::test_F01I_the_change_set_is_exactly_the_declared_files_and_nothing_is_hidden': "EXEC1-I06 the CI manifest's hash is read at BASE_EXEC1 (ledger_exec1) with the manifest itself, and the live helper count also counts C1's nine grouped test files",
+    'tests/test_i1_freeze.py::test_F04I_the_ledger_changes_only_its_sentence_paragraph_declarations_helper_and_rehashed_entries': "EXEC1-I07 I-1B-1's re-hashed entries are checked against the ledger at BASE_EXEC1 (ledger_exec1), not the live ledger C1 re-hashes; the live view loop stays",
+    'tests/test_i1_freeze.py::test_F05I_the_frozen_trees_the_contract_the_v1_hash_mdbs_unedited_files_and_the_reviewed_blobs_hold_now': "EXEC1-I08 option A: execution/ (in FROZEN_LIVE_I1, unchanged) is compared at BASE_EXEC1, and since then only C1's declared files differ; every other frozen path stays live",
+    'tests/test_i1_freeze.py::test_F06I_design_7a_mdbs_freeze_test_reads_i1s_files_at_a_fixed_commit_and_the_chain_is_unbroken': "EXEC1-I09 option A: MD-A's freeze test, which C1 edits, has its pinned blob read at BASE_EXEC1 (git rev-parse); the pin MDA_FREEZE_BLOB is unchanged",
+}
+VERSION_PINS_W2A["execution_v6"] = {                                                    # EXEC-P1 C1 (brief 8): the gate moves five executor blocks; data_gate.py::evaluate is pinned from here on
+    'execution/service.py::ExecutionService._apply_order': '9b2760f71dd2bccf46e0d2c46b59ab512ae54111bc5f62a79bf60cabd9ebb884',
+    'execution/service.py::ExecutionService._apply_fill': '6fb9726d464aa34bdb52c6147b681977dabe2053b54afd05b4b3beae04041c7d',
+    'execution/service.py::recompute_pnl': '544ec665f8dfcf1138482409b842dc8421833c48163cde6db719aac11ac56dd2',
+    'execution/service.py::ExecutionService._after_terminal': 'ae38d36dcb3fda94898b0390b9ace836d5b2a28e6b9555a97b5f40accc153fe9',
+    'execution/service.py::ExecutionService._monitor_intent': '3bfbe67b488b2f8b62b6d6690e05152d61957a7477b3a5dac0c1706e5bd86c85',
+    'execution/service.py::ExecutionService._monitor_intents': '1a7d5d91c873d764a896476da1b7287a3a8843e198133aea004377d0dbb7d935',
+    'execution/service.py::ExecutionService._reconcile': 'c543025d2b1bfe2ba3007e0c0675b547dbefdcc0d02b0b11175b2ce001f646d9',
+    'execution/service.py::ExecutionService._set_recon': '83af97fc5c3d3120568b562ebd1fc4247302acc099955e7f87dd301eb5c42923',
+    'execution/service.py::ExecutionService._exit_context': '27d26403bf1541bbd1f04f14f5d32df3bfd3d0b1428149af4fd640bc5f30bd3a',
+    'execution/service.py::ExecutionService._evaluate_positions': 'c249ee404a5b5a361499338201cea8daa3957cd55a54dc7ed86c0ad3f24ba003',
+    'execution/service.py::ExecutionService._maybe_submit_exit': '0c7ed85cf8fd2c40f39bc191bc05960a285acda9c00f76d3f3c2283ce3f57f7d',
+    'execution/service.py::ExecutionService._scan_entries': '58770b94ccc5f1e081e6c57bada7c406343caba47028eb080f176f9880bffd9b',
+    'execution/service.py::ExecutionService._recheck_entry': '9d9f21f2d3504b7ec627a2b2ca3d44e5f2f61bd05d0bd761978fc0bbfe01259f',
+    'execution/service.py::ExecutionService._submit': '2dd6e6580c0fa2b7fee212a274146999c21c5175117b789e56a6501f81ed0006',
+    'execution/service.py::ExecutionService.enable_auto': 'aeddaee7763a67665b961b0b2dd54a6cc982b71dc1a1ac82d18b1825c8784cfb',
+    'execution/service.py::ExecutionService.disable_auto': '50c1df4eaa55b2557290818ba1e12b2f2cc3c2f9dca7f6bcb80122a76b6205fe',
+    'execution/service.py::stop_price_problem': '6ed950816c7bd4d6c6592c9331bb71542c181a362a8f40ea9bacedd02494f646',
+    'execution/engine.py::exit_decision': '61a27b7aa0a57809fefe1ed183387384b5b7c05a6b212bb7679b77d302201a8f',
+    'execution/engine.py::entry_controls': 'daea54f6a9f86189834993eabfcac58ebe96edbf865ffd8ba88eee2f0929e7ce',
+    'execution/engine.py::blocking': '7fae3bd49b0ec2bca4d62ac164b9279ab05ec05729ce0a6fd8c4f69fb828e415',
+    'execution/engine.py::session_policy': '1092f637ad4a883196701ce094357653353acc5070ea009e3def5a8c964fd2db',
+    'execution/engine.py::entry_quantity': 'f0e2a0f4e8d2b98fcd6371e30aff71143ece2b15e3671070eaa77a3a11fab103',
+    'execution/engine.py::sessions_held': '19941530e1d9d804fb14ea9040dd24621613810af18a4c296ba4e9c3dcaecfe1',
+    'forward_validation/service.py::ForwardValidationService._early_stop': '24a40966b76e4a5d9073aa26f805247030fec3e2e055dcceeb4224230b61e515',
+    'forward_validation/attention_signature.py::signature': 'ef5c28f1c9f626928e64024a7f797179ccf12967c911f4a4e581e06ad6e09ffd',
+    'forward_validation/attention_signature.py::_duplicates': '3a4c822584ae000900fb3d51227488223485fc4d5b5f167e76581f063f3e6414',
+    'forward_validation/attention_signature.py::_live_host': '1bfb59ae254faeff7b55ea60a17cdb0d918df9d2f708386a764b38e775d90a36',
+    'forward_validation/attention_signature.py::_gate': 'c1093f95e7bba8997a76a0cd21756f4388da742d1f10bdbaa211b21e63f6e2d8',
+    'forward_validation/attention_signature.py::_persistent_mismatch': 'f61ec3c94c5eb94fb5782e1767cdee064d74fac2e79bceb0816065f536efa6ab',
+    'forward_validation/attention_signature.py::=HUMAN_ACTORS': '9017f60d64731465a2a894360ad90d61f642b89f31390272980ec1dd9e17e763',
+    'forward_validation/attention_signature.py::=LIVE_HOST_TABLES': '77cbccb6e35b39e9adec3823e3ce7a378e192b9ac12952bebfc6bf8249cf86af',
+    'forward_validation/attention_signature.py::=READERS': 'd913c004b042826f9c6cc20b79ba45756d878cfa8d6ad306c3b5c39a92099ee4',
+    'execution/data_gate.py::evaluate': '2e26e6572577634f7079d53ba28b3ff4f75e40670e1ceb061153c8ccd9babedf',
+}
 
 LEDGER = {
-    ".github/ci/pytest_groups.json": "d55c3692c5e67c9e7b14f38a97350baab7fc4fe6c32d72bd2b161647874f60b6",
+    ".github/ci/pytest_groups.json": "d78781fecac633f59e34629eea69c396b2dd58952f9d71c68026f0be8ca7d55a",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "DESIGN_591_EXECUTION_SAFETY.md": "b17c5ce1348305cb6a72fff29c4960aa0b864ec94523d655a1592acc3ac8fcf6",
     "README.md": "9e5c442c1871f41010dfdb379e3eb90c9a34be1470316fc7d9a2f3d95101a562",
@@ -3897,15 +4190,15 @@ LEDGER = {
     "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
     "database/forward_validation_migrations.py": "73248fe825d0516168dfeccb8301481376e7ce7bf1b456dc535f8e0b7fafb8fb",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
-    "execution/__init__.py": "afa310769e0f10108a6f6288778eea32020704498a965589f1a42c7293fc2612",
+    "execution/__init__.py": "2ff1764246c95648d90f8243274e01c6b6c1677e3174f52c6cf9dbdb5db1d399",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "92241314e2f8043ec028cdb997e17a696bdc95b7234d983525ad4244f094d1f2",
-    "execution/store.py": "94b62db2bcd008511b878fd038e4fd03fadddad4dfcd18924738f11552f73e1b",
+    "execution/service.py": "2f7c943fc881ee6e337db70abf55d07faddc606a2ac3c86d89995a449c02369a",
+    "execution/store.py": "c578ca6e549afe8677fd694f84f91661d2d7c3c2f31e8a74b02d12484391e489",
     "forward_validation/metrics.py": "0bb11472b9cfd3263c82a5eb239ef478dfc0f39f60c082966b019ff31a164d0e",
     "forward_validation/reports.py": "081fac7fb217613b495fb0852c5b8cb08bd33cb535d801d00862c256164f5b0a",
-    "forward_validation/service.py": "b1514b9bbc027ff72e662fe81dda0a85f04a249defa4818c2ba310aad379f62a",
+    "forward_validation/service.py": "898738990a9095a739f01bade58327c9da3af77ea57dc85103d39c09e296048d",
     "forward_validation/store.py": "a037f765f6e0ce3e4123dd8a4791ffdce9817cee301dfb9066a299d7a33fb920",
     "frontend/app.js": "ab59a29ad88ceeacece6a760bef2eb807d6547a82c534d0b682de80071a0638a",
     "frontend/command_center.js": "b5b5c4800392041a20e46b669a6708cd4fa484e57cab98ed88505329e093cf2c",
@@ -3955,7 +4248,7 @@ LEDGER = {
     "tests/test_db_bootstrap_busy.py": "0253939a872b26f83dd479c31432adc75c5ba7000d3842a84dcc8d3717b38d86",
     "tests/test_demand_57.py": "a374b927d2a593f48a369393a89f610a846f0279b2df408c7271fbb143650f79",
     "tests/test_evidence_54.py": "a0186c48bd012a766422ae9229561310e5d106fa7310e91163eb317bb054b451",
-    "tests/test_execution_60.py": "e9ce44f3b5522100904603db5f3773bbc66cc584dfe1106943ce52ea0325bd92",
+    "tests/test_execution_60.py": "b43a354284cf2a62547cc3f3616cb35505cc3d3fc9afacd7e7d6e64819209d38",
     "tests/test_execution_safety_591.py": "6a624fea3b2eb8358030a9a01046a6a67dcc196a7699c997532d52cf98934e10",
     "tests/test_forward_validation_61.py": "679a7115b87aa217bbbfc58371a07967b9dc8d4ca8381f17bbf5610d60621d1a",
     "tests/test_history_budget_39.py": "97fb1fc1432b815a1a8b1c73ceff00d8728d5acde4aff9a16c75a6cd55babdd9",
@@ -3966,7 +4259,7 @@ LEDGER = {
     "tests/test_research_flow_47.py": "5cf98db72e303989d88e77963638844ee6ccbdd24026d34549e4551d6509e39d",
     "tests/test_rotation_handoff_47.py": "cf4647f735b103e95634c514a13e7c8c7840e5a14b598fe4688a2b5124c7fe20",
     "tests/test_setups_58.py": "6a5dc561a301f7550ca2f75d88d013f5e5aad056ef05e112769f1233a5569c2e",
-    "tests/test_strategy_validation_62.py": "b0a80d28a4350e7b772ebff1dd77dee82e5987aa16a3b5cf7f1048d95ef0d904",
+    "tests/test_strategy_validation_62.py": "464a9a8bbe5b099643b784eeff037a5a4a1032031ccd2dfa6e4dbcb42776f881",
     "tests/test_trader_view_55.py": "8f1a1f85ea60a188d677478b85e97df523c1a013c40d650a2724ca22bd5fd19a",
     "tests/test_trader_view_561.py": "57a7d0f8c97c73e1299af0c4f812d409de0015fec43be3d2b9d1ad3a190c87a0",
     "tests/test_windows_runner_60.py": "04d3935349aabb343def9c3fc415088d0db058c939a97fb9ee4ed9060ce56b99",
@@ -4232,6 +4525,25 @@ def undo_i1(rel: str, text: str) -> str:
     tests/test_i1_freeze.py proves the result is main, byte for byte."""
     text = _norm(text)
     for old, new in reversed(UNDO_I1.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
+
+
+def pre_exec1(rel: str, text: str) -> str:
+    """`text` (a current file) as main left it at BASE_EXEC1 when EXEC-P1 C1 (the execution data gate) changed it on purpose (SEMANTIC_EXEC1): an older
+    freeze test reads main's text, where it passed. The C1 tests (tests/test_data_gate_*.py) and the version pins hold the delta. Any other file passes through."""
+    if rel not in SEMANTIC_EXEC1:
+        return text
+    out = subprocess.run(["git", "show", f"{BASE_EXEC1}:{rel}"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"{rel} is not in {BASE_EXEC1} (fetch-depth 0 is required)"
+    return _norm(out.stdout.decode("utf-8"))
+
+
+def undo_exec1(rel: str, text: str) -> str:
+    """`text` (a current test file) with EXEC-P1 C1's exact in-place edits undone (last first): as on main BASE_EXEC1. Any other file passes through."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_EXEC1.get(rel, [])):
         assert text.count(new) == 1, (rel, new[:80])
         text = text.replace(new, old)
     return text

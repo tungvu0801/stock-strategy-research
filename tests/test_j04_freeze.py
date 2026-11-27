@@ -169,6 +169,13 @@ def at_mda(rel):
     return at(FL.BASE_MDA, rel)
 
 
+EXEC1_MOVED = tuple(sorted(FL.EDITED_EXEC1 - {"tests/test_j04_freeze.py"}))   # EXEC-P1 C1 (design 7a): its edited files, read at BASE_EXEC1
+
+
+def at_exec1(rel):
+    return at(FL.BASE_EXEC1, rel)
+
+
 def now_text(rel):
     if rel in GATE_MOVED:
         return at_gate(rel)
@@ -176,6 +183,8 @@ def now_text(rel):
         return at_rec(rel)
     if rel in MDA_MOVED:
         return at_mda(rel)
+    if rel in EXEC1_MOVED:
+        return at_exec1(rel)
     return (ROOT / rel).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
