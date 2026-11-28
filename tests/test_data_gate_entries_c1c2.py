@@ -570,16 +570,23 @@ def _exhausted(rig, sym="AAA"):
 
 
 def test_r14_39_i_w2_exhaustion_is_refused_by_e10_v_alone_then_recon_reasons_next_cycle(tmp_path, rec, engine_pass):
+    from test_data_gate_exits_service import LIFE, codes_of
     rig = ERig(tmp_path, ready=("NEWA", "NEWB"))
     rig.x.max_entries_per_cycle = 2
     a = _exhausted(rig)
+    at_entries, real_scan = {}, rig.x._scan_entries
+    rig.x._scan_entries = lambda *a_: (at_entries.update(pep=dict(rig.x.protective_exit_problems), rows=len(rig.recs(LIFE))), real_scan(*a_))[1]
     rig.cycle()
     assert rig.pos(a).state == "ATTENTION" and rig.posts() == 0
     vs = entry_verdicts(rec, DG.DG_EARLY)
     assert len(vs) == 2 and rig.ctl("DATA_GATE")["evaluation_count"] == 2
     for v in vs:
         assert "DG_ATTENTION_ENTERED_THIS_CYCLE" in v.codes and "E10(v)" in v.failed_facts
-        assert not {"E10(i)", "E10(ii)", "E10(iii)", "E10(iv)"} & set(v.failed_facts)
+        assert not {"E10(iii)", "E10(iv)"} & set(v.failed_facts) and {"E10(i)", "E10(ii)"} <= set(v.failed_facts) and "DG_SAFETY_CHECK_FAILED" in v.codes   # r15 9-C A2 (E-7), under (b1)
+    assert rig.x.protective_exit_problems == at_entries["pep"] and set(at_entries["pep"]) == {"AAA"} and "EXIT_ATTEMPTS_EXHAUSTED" in at_entries["pep"]["AAA"]   # A3 (1)
+    rows = rig.recs(LIFE)
+    assert len(rows) == 1 == at_entries["rows"] and (rows[0]["kind"], rows[0]["position_id"], codes_of(rows[0])) == (PROT, a.position_id, ["EXIT_ATTEMPTS_EXHAUSTED"])   # A3 (2)
+    assert rig.x._unsaved_blocking_alerts == {} and rig.x._verified_positions == {a.position_id}   # A3 (3)
     assert entry_intents(rig) == []
     rig.cycle()
     v = entry_verdicts(rec, DG.DG_EARLY)[-1]
@@ -1225,8 +1232,8 @@ def _c1d_cycle_c_and_c_plus_1(monkeypatch, rig, rec, a):
     vs = entry_verdicts(rec[n:], DG.DG_EARLY)
     assert len(vs) == 2
     for v in vs:
-        assert {"DG_SAFETY_UNVERIFIED_SINCE_START", "DG_ATTENTION_ENTERED_THIS_CYCLE"} <= set(v.codes) and {"E10(iv)", "E10(v)"} <= set(v.failed_facts)
-    assert entry_intents(rig) == [] and rig.entry_posts == [] and rig.life(PROT, a.position_id) == []
+        assert {"DG_SAFETY_CHECK_FAILED", "DG_ATTENTION_ENTERED_THIS_CYCLE"} <= set(v.codes) and "DG_SAFETY_UNVERIFIED_SINCE_START" not in v.codes and {f for f in v.failed_facts if f.startswith("E10")} == {"E10(i)", "E10(ii)", "E10(v)"}   # (b1): A's unresolved key leaves it out of E10(iv)
+    assert entry_intents(rig) == [] and rig.entry_posts == [] and [(r["kind"], r["detail"].get("lifecycle"), r["detail"].get("reason_codes")) for r in rig.life(PROT, a.position_id)] == [(PROT, "ACTIVE", ["EXIT_ATTEMPTS_EXHAUSTED"])]   # r15 9-C A4: exactly step 4's alert row
     n = len(rec)
     rig.cycle()                                                                   # cycle c+1: R names A, A is in S_R and still in ATTENTION
     assert any(a.symbol in r for r in rig.x.recon_reasons) and not rig.x.recon_healthy and rig.x._attention_baseline.states[a.position_id] == "ATTENTION"
@@ -1476,3 +1483,31 @@ def test_c1d_r14_39_q_recovery_after_i_gives_today_s_preconditions_and_entries_r
     rig.t = now
     rig.cycle()
     assert len(rig.entry_posts) == 1
+
+
+def test_b1_39_i2_strategy_exhaustion_is_refused_by_e10_v_alone_then_recon_reasons_next_cycle(tmp_path, rec, engine_pass):
+    """r15 39(I2) (CF-4; 9-C rows A2, A3): (I)'s setup, but in cycle c A's stop is a verified NOT_HIT and a TIME_EXIT candidate reaches the exit
+    gate, so step 4 runs off the protective path. (I)'s r14 assertions, word for word, hold under (a) and (b1); and directly: no
+    protective_exit_problems entry, no lifecycle row, an empty latch map, V unchanged. Restores the M14(a)-(d) kills and M17's."""
+    from test_data_gate_exits_service import LIFE
+    rig = ERig(tmp_path, ready=("NEWA", "NEWB"))
+    rig.x.max_entries_per_cycle = 2
+    a = rig.open("AAA", at=rig.t - timedelta(days=8))
+    rig.live("AAA", "12.00")                                                      # a verified NOT_HIT; TIME_EXIT is reached
+    rig.store.update_position(a.position_id, rig.t, None, state="EXIT_REQUIRED", exit_reason="HARD_INVALIDATION", exit_cycle=rig.x.max_exit_cycles)
+    rig.x._verified_positions.add(a.position_id)                                  # A in V (39 "isolate (v)")
+    probed, real_probe = [], rig.x._protective_probe
+    rig.x._protective_probe = lambda pos, *a_: (probed.append(pos.symbol), real_probe(pos, *a_))[1]
+    rig.cycle()
+    assert rig.pos(a).state == "ATTENTION" and rig.pos(a).attention_reason == "EXIT_ATTEMPTS_EXHAUSTED" and rig.posts() == 0 and probed == []
+    vs = entry_verdicts(rec, DG.DG_EARLY)
+    assert len(vs) == 2 and rig.ctl("DATA_GATE")["evaluation_count"] == 2
+    for v in vs:
+        assert "DG_ATTENTION_ENTERED_THIS_CYCLE" in v.codes and "E10(v)" in v.failed_facts
+        assert not {"E10(i)", "E10(ii)", "E10(iii)", "E10(iv)"} & set(v.failed_facts)
+    assert entry_intents(rig) == []
+    assert rig.x.protective_exit_problems == {} and rig.recs(LIFE) == [] and rig.ctl("PROTECTIVE_EXIT") is None
+    assert rig.x._unsaved_blocking_alerts == {} and rig.x._verified_positions == {a.position_id}
+    rig.cycle()
+    v = entry_verdicts(rec, DG.DG_EARLY)[-1]
+    assert "DG_ATTENTION_ENTERED_THIS_CYCLE" not in v.codes and any("AAA" in r for r in rig.x.recon_reasons)

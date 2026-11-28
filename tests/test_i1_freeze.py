@@ -187,7 +187,7 @@ def test_F01I_the_change_set_is_exactly_the_declared_files_and_nothing_is_hidden
     assert {p.split("/")[-1] for p in FL.NEW_I1 if p.startswith("tests/test_")} <= listed and "i1_builders.py" not in listed
     assert ledger_exec1()[".github/ci/pytest_groups.json"] == FL.sha(now_text(".github/ci/pytest_groups.json"))   # EXEC-P1 C1: the manifest and its hash, both at BASE_EXEC1
     h = _ci_helper()
-    assert h.problems(h.load()) == [] and sum(len(v["files"]) for v in h.load().values()) == 127 + 6 + len({p for p in FL.NEW_EXEC1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1's nine
+    assert h.problems(h.load()) == [] and sum(len(v["files"]) for v in h.load().values()) == 127 + 6 + len({p for p in FL.NEW_EXEC1 | FL.NEW_B1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1's nine, + (b1)'s one
 
 
 # ============================================================================================================ F02I

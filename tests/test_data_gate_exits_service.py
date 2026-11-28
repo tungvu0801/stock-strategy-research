@@ -997,7 +997,8 @@ def test_pin_od_c7a_exhaustion_is_today_s_attention_with_a_block_touch_and_no_li
     rig.cycle()
     q = rig.pos(p)
     assert q.state == "ATTENTION" and q.attention_reason == "EXIT_ATTEMPTS_EXHAUSTED" and rig.posts() == 0
-    assert rig.life(PROT) == [] and rig.exits(p) == []
+    rows = rig.life(PROT)                                                            # r15 9-C A5 (OD-C-7 (b1)): exactly one ACTIVE alert row, the onset exit_cycle
+    assert len(rows) == 1 and rows[0]["position_id"] == p.position_id and rows[0]["detail"]["lifecycle"] == "ACTIVE" and codes_of(rows[0]) == ["EXIT_ATTEMPTS_EXHAUSTED"] and rows[0]["detail"]["exit_cycle"] == 3 and rig.exits(p) == []
     blk = rig.ctl("EXIT_SUBMISSION")
     assert blk["last_result"] == "BLOCK" and "exit attempts exhausted" in blk["last_reason"] and blk["last_input"] == {"position_id": p.position_id}
     assert rig.events(p, "ATTENTION")[-1]["reason"] == "EXIT_ATTEMPTS_EXHAUSTED"

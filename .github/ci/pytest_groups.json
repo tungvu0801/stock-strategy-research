@@ -90,6 +90,7 @@
         "test_wave2_prc_evidence.py",
         "test_wave2_prc_drawdown.py",
         "test_wave2_prc_pnl.py",
+        "test_data_gate_b1_exhaustion.py",
         "test_data_gate_core_matrix.py",
         "test_data_gate_core_price_selection.py",
         "test_data_gate_core_sources.py",

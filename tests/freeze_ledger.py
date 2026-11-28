@@ -4174,9 +4174,124 @@ VERSION_PINS_W2A["execution_v6"] = {                                            
     'forward_validation/attention_signature.py::=READERS': 'd913c004b042826f9c6cc20b79ba45756d878cfa8d6ad306c3b5c39a92099ee4',
     'execution/data_gate.py::evaluate': '2e26e6572577634f7079d53ba28b3ff4f75e40670e1ceb061153c8ccd9babedf',
 }
+BASE_B1 = 'd62892e8e662178eaf1b5aefb53958c5a27f35fd'                                    # the accepted EXEC-P1 C1 commit (the base of HDR-2 OD-C-7 (b1))
+NEW_B1 = {'tests/test_data_gate_b1_exhaustion.py'}                                         # HDR-2 (b1): test 40 and the 9-C A5 / A6 replacement pins
+EDITED_B1 = {'.github/ci/pytest_groups.json', 'execution/__init__.py', 'execution/service.py', 'tests/freeze_ledger.py', 'tests/test_data_gate_entries_c1c2.py',
+             'tests/test_data_gate_exits_service.py', 'tests/test_data_gate_exits_structure.py', 'tests/test_bot_activity_68.py', 'tests/test_bot_position_recovery.py',
+             'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+             'tests/test_evidence_refresh_542.py', 'tests/test_forward_paper_610a.py', 'tests/test_i1_freeze.py', 'tests/test_market_intel_70.py',
+             'tests/test_market_intel_collector_73.py', 'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py',
+             'tests/test_market_intel_store_71.py', 'tests/test_market_scan_75.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py',
+             'tests/test_sip_eval_78b1.py', 'tests/test_strategy_validation_62.py', 'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py',
+             'tests/test_wave1_safety_remediation.py', 'tests/test_wave2_pra.py', 'tests/test_wave2_pra_accounting.py', 'tests/test_wave2_prb.py', 'tests/test_wave2_prc.py'}   # the step-4 edit, its version, the CI entry, C1's three test files (9-C), the older freeze tests' unions, bookkeeping
+SEMANTIC_B1 = {                                                                             # HDR-2 OD-C-7 (b1) (r15 3.8 step 4, 3.8.3): the INTENTIONAL change, file by file
+    'execution/service.py': "OD-C-7 (b1): in _maybe_submit_exit's exhaustion block, on this cycle's protective path (the plan's order class PROTECTIVE_EXIT, a broker that is not simulated), protective_exit_problems, the PROTECTIVE_EXIT_UNVERIFIED FAILURE (EXIT_ATTEMPTS_EXHAUSTED, the onset exit_cycle) and a PROTECTIVE_EXIT BLOCK row come before today's unchanged ATTENTION write and touch",
+    'execution/__init__.py': "VERSION execution_v7: (b1) moves exactly the version block execution/service.py::ExecutionService._maybe_submit_exit; a new 6.10A cohort",
+    'tests/test_data_gate_entries_c1c2.py': "r15 9-C rows A2, A3 and A4 (E-7) and the owner's :1228 decision: 39(I) and 38(E)/(F) assert step 4's alert row and its E10(i)/(ii) refusal; the new 39(I2) keeps the r14 assertions word for word",
+    'tests/test_data_gate_exits_service.py': "r15 9-C row A5: the OD-C-7(a) pin now asserts exactly one ACTIVE alert row with the onset exit_cycle at a HIT exhaustion; its other assertions are kept",
+    'tests/test_data_gate_exits_structure.py': "r15 9-C row A6: the if line and the four existing body lines are pinned once, contiguous and last in the if body, after step 4 (i)-(iii) under the protective-path test",
+}
+INSTRUMENTATION_B1: dict = {}                                                              # HDR-2 (b1): no executor instrumentation
+NEW_LEDGER_B1: set = set()                                                                 # no new registration
+UNDO_B1 = {                                                                                # HDR-2 (b1)'s in-place edits of older test files: (C1 BASE_B1, b1)
+    'tests/test_bot_activity_68.py': [
+        ('FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, {"unexpected_new"', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1 | FL.NEW_B1, {"unexpected_new"'),
+        ('FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1) - new)}', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1 | FL.NEW_B1) - new)}'),
+    ],
+    'tests/test_bot_position_recovery.py': [
+        ('X.VERSION == "execution_v6" and "Closed outside the app" not in json.dumps(frozen_controls())   # EXEC-P1 C1: the gate\'s execution_v6 (brief 8)\n',
+         'X.VERSION == "execution_v7" and "Closed outside the app" not in json.dumps(frozen_controls())   # EXEC-P1 C1: the gate\'s execution_v6 (brief 8); HDR-2 (b1): execution_v7\n'),
+    ],
+    'tests/test_i1_freeze.py': [
+        ('len({p for p in FL.NEW_EXEC1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1\'s nine',
+         'len({p for p in FL.NEW_EXEC1 | FL.NEW_B1 if p.startswith("tests/test_")}) == len(h.discovered())   # + C1\'s nine, + (b1)\'s one'),
+    ],
+    'tests/test_strategy_validation_62.py': [
+        ('NEW_MDA, NEW_MDB, NEW_I1, NEW_EXEC1, unchanged as ledger_unchanged', 'NEW_MDA, NEW_MDB, NEW_I1, NEW_EXEC1, NEW_B1, unchanged as ledger_unchanged'),
+        ('NEW_MDB | NEW_I1 | NEW_EXEC1   # Stage 6.8 / 6.9', 'NEW_MDB | NEW_I1 | NEW_EXEC1 | NEW_B1   # Stage 6.8 / 6.9'),
+        (' - NEW_GATE - NEW_REC - NEW_EXEC1) | changed)', ' - NEW_GATE - NEW_REC - NEW_EXEC1 - NEW_B1) | changed)'),
+    ],
+    'tests/test_wave2_pra.py': [
+        ('FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, FL.EDITED_W2A', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1 | FL.NEW_B1, FL.EDITED_W2A'),
+        (' - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1)   # Wave 2 PR B',
+         ' - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1) | (FL.EDITED_B1 - FL.NEW_W2A - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1 - FL.NEW_B1)   # Wave 2 PR B'),
+        ('FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))))                               # Wave 2 PR B / PR C',
+         'FL.undo_i1(rel, FL.undo_exec1(rel, FL.undo_b1(rel, now_text(rel))))))))))))))                               # Wave 2 PR B / PR C'),
+    ],
+    'tests/test_wave2_pra_accounting.py': [
+        ('FL.undo_exec1("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8"))))))))))))), at_base',
+         'FL.undo_exec1("tests/test_forward_paper_610a.py", FL.undo_b1("tests/test_forward_paper_610a.py", (ROOT / "tests" / "test_forward_paper_610a.py").read_text(encoding="utf-8")))))))))))))), at_base'),
+    ],
+    'tests/test_wave2_prb.py': [
+        ('FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1, FL.EDITED_W2B', 'FL.NEW_MDB | FL.NEW_I1 | FL.NEW_EXEC1 | FL.NEW_B1, FL.EDITED_W2B'),
+        (' - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1)   # Wave 2 PR C',
+         ' - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1) | (FL.EDITED_B1 - FL.NEW_W2B - FL.NEW_W2C - FL.NEW_EX06 - FL.NEW_XSS01 - FL.NEW_PANEL - FL.NEW_J04 - FL.NEW_GATE - FL.NEW_REC - FL.NEW_MDA - FL.NEW_MDB - FL.NEW_I1 - FL.NEW_EXEC1 - FL.NEW_B1)   # Wave 2 PR C'),
+        ('FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))))                          # Wave 2 PR C: its own',
+         'FL.undo_i1(rel, FL.undo_exec1(rel, FL.undo_b1(rel, now_text(rel))))))))))))))                          # Wave 2 PR C: its own'),
+        ('FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel))))))))))))) == at_base(rel), rel           # now -> (F03C)',
+         'FL.undo_i1(rel, FL.undo_exec1(rel, FL.undo_b1(rel, now_text(rel)))))))))))))) == at_base(rel), rel           # now -> (F03C)'),
+    ],
+    'tests/test_wave2_prc.py': [
+        ('block_hashes(lambda rel: None if rel in FL.NEW_EXEC1 else at_base(rel))', 'block_hashes(lambda rel: None if rel in FL.NEW_EXEC1 | FL.NEW_B1 else at_base(rel))'),
+        ('FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel))))))))))))                        # EX-06: its own',
+         'FL.undo_i1(rel, FL.undo_exec1(rel, FL.undo_b1(rel, now_text(rel)))))))))))))                        # EX-06: its own'),
+        ('FL.undo_i1(rel, FL.undo_exec1(rel, now_text(rel)))))))))))) == at_base(rel), rel                             # now -> 875bc06d',
+         'FL.undo_i1(rel, FL.undo_exec1(rel, FL.undo_b1(rel, now_text(rel))))))))))))) == at_base(rel), rel                             # now -> 875bc06d'),
+    ],
+    **{rel: [('FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1', 'FL.NEW_I1 | FL.EDITED_I1 | FL.NEW_EXEC1 | FL.EDITED_EXEC1 | FL.NEW_B1 | FL.EDITED_B1')] for rel in (
+        'tests/test_chart_empty_state_611fix.py', 'tests/test_decision_flow_610c.py', 'tests/test_engine_health_610d.py', 'tests/test_evidence_gate_541.py',
+        'tests/test_evidence_refresh_542.py', 'tests/test_forward_paper_610a.py', 'tests/test_market_intel_70.py', 'tests/test_market_intel_collector_73.py',
+        'tests/test_market_intel_quality_74.py', 'tests/test_market_intel_schema_v2_731.py', 'tests/test_market_intel_sources_72.py', 'tests/test_market_intel_store_71.py',
+        'tests/test_market_scan_75.py', 'tests/test_robinhood_portfolio_69.py', 'tests/test_runtime_reliability_ops.py', 'tests/test_sip_eval_78b1.py',
+        'tests/test_swing_pullback_78.py', 'tests/test_unified_exposure_gate_691.py', 'tests/test_wave1_safety_remediation.py')},
+}
+SEMANTIC_TESTS_B1 = {                                                                       # HDR-2 (b1): every changed test function -> its reason
+    'tests/test_data_gate_entries_c1c2.py::test_r14_39_i_w2_exhaustion_is_refused_by_e10_v_alone_then_recon_reasons_next_cycle': "B1-T01 r15 9-C A2 (E-7: :582) and A3: no E10(iii)/(iv), E10(i)/(ii) present; the dictionary at ENTRIES, exactly A's one alert row, an empty latch and V unchanged (kills M14(a)-(d))",
+    'tests/test_data_gate_entries_c1c2.py::_c1d_cycle_c_and_c_plus_1': "B1-T02 r15 9-C A4 (:1229) and the owner's :1228 decision: A's lifecycle rows are exactly step 4's ACTIVE row; A's unresolved key leaves it out of E10(iv), so cycle c names E10(i), E10(ii), E10(v)",
+    'tests/test_data_gate_entries_c1c2.py::test_b1_39_i2_strategy_exhaustion_is_refused_by_e10_v_alone_then_recon_reasons_next_cycle': "B1-T03 r15 39(I2) (CF-4): a strategy exhaustion off the protective path keeps 39(I)'s r14 assertions word for word and restores the M14 and M17 kills",
+    'tests/test_data_gate_exits_service.py::test_pin_od_c7a_exhaustion_is_today_s_attention_with_a_block_touch_and_no_lifecycle_row': "B1-T04 r15 9-C A5: exactly one ACTIVE EXIT_ATTEMPTS_EXHAUSTED row with the onset exit_cycle; ATTENTION, zero POSTs, no exit intent and the touch are asserted as before",
+    'tests/test_data_gate_exits_structure.py::=EXHAUSTION': "B1-T05 r15 9-C A6: the pinned text is split into the if line and the four existing body lines, both byte-identical to C1's",
+    'tests/test_data_gate_exits_structure.py::test_od_c7a_exhaustion_block_lines_unchanged_once_and_at_step_4_of_the_exit_gate_order': "B1-T06 r15 9-C A6: the two parts appear once, the body lines contiguous and last after step 4 (i)-(iii) under the protective-path test; the step-4 position is asserted as before",
+    'tests/test_bot_position_recovery.py::test_S03_manual_external_has_its_text_and_is_not_a_strategy_exit_and_the_frozen_controls_are_unchanged': "B1-V01 inventory r2 K5 (:1351): execution.VERSION is execution_v7, (b1)'s bump; MANUAL_EXTERNAL and the frozen controls are checked as before",
+    'tests/test_wave2_prc.py::test_TW01C_execution_v3_moves_exactly_the_two_changed_version_blocks': "B1-F01 the files new since 875bc06d that hold no listed block now include (b1)'s new test file (NEW_B1); the two moves are checked as before",
+    'tests/test_strategy_validation_62.py::=NEW_62': "B1-F02 NEW_62, the set of every file added after main 9fae08b that the earlier freeze tests import, gains NEW_B1 (test 40) and its import",
+    'tests/test_strategy_validation_62.py::test_F01_main_plus_only_the_stage_62_files_and_exact_edits': "B1-F03 (b1)'s new test file is subtracted from the no-new-execution-file check like C1's; it is a tests/ file, so the check is otherwise unchanged",
+    'tests/test_bot_activity_68.py::test_F01_every_change_since_main_is_a_new_file_or_an_exact_ledger_entry': "B1-F04 the new-file union admits NEW_B1 (tests/test_data_gate_b1_exhaustion.py); the registered-file rule is unchanged",
+    'tests/test_wave2_pra.py::test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "B1-F05 PR A's new / edited unions gain NEW_B1 and (b1)'s edits of files that existed at BASE_W2A (later stages' new files excluded); nothing else changes",
+    'tests/test_wave2_prb.py::test_F01B_the_change_set_is_exactly_the_declared_files_and_no_strategy_risk_broker_or_market_data_file_changed': "B1-F06 PR B's new / edited unions gain NEW_B1 and (b1)'s edits of files that existed at BASE_W2B (later stages' new files excluded); nothing else changes",
+    'tests/test_wave2_pra.py::test_F03_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "B1-U01 the undo chain also undoes (b1)'s own in-place edits first (undo_b1, innermost, before undo_exec1), so PR A's replay still reads main's text byte for byte",
+    'tests/test_wave2_prb.py::test_F02B_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "B1-U02 the undo chain also undoes (b1)'s own in-place edits first (undo_b1, innermost, before undo_exec1) before PR B's declared functions are compared",
+    'tests/test_wave2_prb.py::test_F03B_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "B1-U03 the undo chain also undoes (b1)'s own in-place edits first (undo_b1, innermost, before undo_exec1), so PR B's undo still reads main's text byte for byte",
+    'tests/test_wave2_prc.py::test_F02C_every_changed_test_function_is_declared_and_no_order_or_mode_call_was_added': "B1-U04 the undo chain also undoes (b1)'s own in-place edits first (undo_b1, innermost, before undo_exec1) before PR C's declared functions are compared",
+    'tests/test_wave2_prc.py::test_F03C_every_bookkeeping_edit_is_pinned_exactly_and_the_ledger_changes_only_the_declared_entries': "B1-U05 the undo chain also undoes (b1)'s own in-place edits first (undo_b1, innermost, before undo_exec1), so PR C's undo still reads main's text byte for byte",
+    'tests/test_wave2_pra_accounting.py::test_TA42_downstream_compatibility_capture_keeps_raw_values_and_the_known_consumers_are_unchanged': "B1-U06 test_forward_paper_610a.py is read with (b1)'s in-place edit undone too (undo_b1, innermost); its non-freeze tests are still compared unchanged",
+    'tests/test_i1_freeze.py::test_F01I_the_change_set_is_exactly_the_declared_files_and_nothing_is_hidden': "B1-F07 the live helper count also counts (b1)'s one grouped test file (NEW_B1); the manifest hash is still read at BASE_EXEC1",
+    **{f'{rel}::{fn}': "B1-F08 the working-tree change set of this older freeze test also admits (b1)'s declared files (NEW_B1 | EDITED_B1, since BASE_B1); nothing else changes" for rel, fn in (
+        ('tests/test_chart_empty_state_611fix.py', 'test_F01_the_fix_changes_exactly_the_declared_files_and_no_backend_file'),
+        ('tests/test_decision_flow_610c.py', 'test_F01_stage_610c_changes_exactly_its_declared_files_and_no_execution_strategy_risk_or_policy_file'),
+        ('tests/test_engine_health_610d.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_touches_no_execution_strategy_or_safety_file'),
+        ('tests/test_evidence_gate_541.py', 'test_F01_the_fix_changes_one_function_and_nothing_in_the_setup_engine_ppe_evidence_or_execution'),
+        ('tests/test_evidence_refresh_542.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed'),
+        ('tests/test_forward_paper_610a.py', 'test_F01_stage_610a_changes_exactly_its_declared_files_and_no_strategy_risk_broker_or_market_data_file'),
+        ('tests/test_market_intel_70.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_only_tests_and_the_ci_manifest_are_edited'),
+        ('tests/test_market_intel_store_71.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_trading_file_changed'),
+        ('tests/test_market_intel_sources_72.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_market_intel_collector_73.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_market_intel_schema_v2_731.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_market_intel_quality_74.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_market_scan_75.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_robinhood_portfolio_69.py', 'test_F01_stage_69_changes_exactly_its_files_and_no_execution_strategy_or_risk_file'),
+        ('tests/test_runtime_reliability_ops.py', 'test_F01_the_change_set_is_exactly_the_declared_ops_files_and_touches_no_trading_code'),
+        ('tests/test_sip_eval_78b1.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_swing_pullback_78.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_existing_module_changed'),
+        ('tests/test_unified_exposure_gate_691.py', 'test_F01_stage_691_changes_exactly_its_declared_files_and_no_risk_strategy_broker_or_database_file'),
+        ('tests/test_wave1_safety_remediation.py', 'test_F01_the_change_set_is_exactly_the_declared_files_and_no_strategy_market_data_broker_or_research_file_changed'))},
+}
+VERSION_PINS_W2A["execution_v7"] = {**VERSION_PINS_W2A["execution_v6"],                 # HDR-2 OD-C-7 (b1): exactly _maybe_submit_exit moves
+                                    'execution/service.py::ExecutionService._maybe_submit_exit': '1d8466f93c8613f2f9b05ecff0f11ddff094265ae887dc3dcaf3284aa98a22f6'}
 
 LEDGER = {
-    ".github/ci/pytest_groups.json": "d78781fecac633f59e34629eea69c396b2dd58952f9d71c68026f0be8ca7d55a",
+    ".github/ci/pytest_groups.json": "ed6b92e289194b66912cd3388e504eba4d792912a14172eb6481340e57b7c787",
     ".gitignore": "d98fa877f978452439453e434c70117f472256f0da4b4f12cbe79042458ce909",
     "DESIGN_591_EXECUTION_SAFETY.md": "b17c5ce1348305cb6a72fff29c4960aa0b864ec94523d655a1592acc3ac8fcf6",
     "README.md": "9e5c442c1871f41010dfdb379e3eb90c9a34be1470316fc7d9a2f3d95101a562",
@@ -4190,11 +4305,11 @@ LEDGER = {
     "config.py": "339a99b635146bb07c182a554e5424a4953dbcdb00bab57b39fdd676bfa306ec",
     "database/forward_validation_migrations.py": "73248fe825d0516168dfeccb8301481376e7ce7bf1b456dc535f8e0b7fafb8fb",
     "evidence/sources/sec_edgar.py": "ede7c133a055785fc1c4579c823bc85dbf6e02856da7d1d9257a0e90822c08db",
-    "execution/__init__.py": "2ff1764246c95648d90f8243274e01c6b6c1677e3174f52c6cf9dbdb5db1d399",
+    "execution/__init__.py": "83f76b0ef8f8a81123515f3a192cd73a06e0d1be20f10b334faafddc292adfab",
     "execution/engine.py": "06e898d9e075ad766c247ed095806c49d994f413ecc056935e5fb9a3dbdd084c",
     "execution/models.py": "177a81a89604583cfffc9254da31227c1f35fb98e376dbfdeca9448128c1bfa8",
     "execution/scheduler.py": "6d8459eecb230fa52193c24a6fd0aade17de2959162aefb43010f3da61f57183",
-    "execution/service.py": "2f7c943fc881ee6e337db70abf55d07faddc606a2ac3c86d89995a449c02369a",
+    "execution/service.py": "24acf7f135a3595fcd63622958a0a80a71453ae509d980c4a8aae683b2bb86e5",
     "execution/store.py": "c578ca6e549afe8677fd694f84f91661d2d7c3c2f31e8a74b02d12484391e489",
     "forward_validation/metrics.py": "0bb11472b9cfd3263c82a5eb239ef478dfc0f39f60c082966b019ff31a164d0e",
     "forward_validation/reports.py": "081fac7fb217613b495fb0852c5b8cb08bd33cb535d801d00862c256164f5b0a",
@@ -4259,7 +4374,7 @@ LEDGER = {
     "tests/test_research_flow_47.py": "5cf98db72e303989d88e77963638844ee6ccbdd24026d34549e4551d6509e39d",
     "tests/test_rotation_handoff_47.py": "cf4647f735b103e95634c514a13e7c8c7840e5a14b598fe4688a2b5124c7fe20",
     "tests/test_setups_58.py": "6a5dc561a301f7550ca2f75d88d013f5e5aad056ef05e112769f1233a5569c2e",
-    "tests/test_strategy_validation_62.py": "464a9a8bbe5b099643b784eeff037a5a4a1032031ccd2dfa6e4dbcb42776f881",
+    "tests/test_strategy_validation_62.py": "7e824f5c669caa097ff1431b6433bf157251d2e42b1c66bf64d38c382c8f5f54",
     "tests/test_trader_view_55.py": "8f1a1f85ea60a188d677478b85e97df523c1a013c40d650a2724ca22bd5fd19a",
     "tests/test_trader_view_561.py": "57a7d0f8c97c73e1299af0c4f812d409de0015fec43be3d2b9d1ad3a190c87a0",
     "tests/test_windows_runner_60.py": "04d3935349aabb343def9c3fc415088d0db058c939a97fb9ee4ed9060ce56b99",
@@ -4544,6 +4659,25 @@ def undo_exec1(rel: str, text: str) -> str:
     """`text` (a current test file) with EXEC-P1 C1's exact in-place edits undone (last first): as on main BASE_EXEC1. Any other file passes through."""
     text = _norm(text)
     for old, new in reversed(UNDO_EXEC1.get(rel, [])):
+        assert text.count(new) == 1, (rel, new[:80])
+        text = text.replace(new, old)
+    return text
+
+
+def pre_b1(rel: str, text: str) -> str:
+    """`text` (a current file) as the accepted C1 commit left it at BASE_B1 when HDR-2 (b1) changed it on purpose (SEMANTIC_B1): an older freeze
+    test reads that text, where it passed. tests/test_data_gate_b1_exhaustion.py and the version pin hold the delta. Any other file passes through."""
+    if rel not in SEMANTIC_B1:
+        return text
+    out = subprocess.run(["git", "show", f"{BASE_B1}:{rel}"], cwd=ROOT, capture_output=True)
+    assert out.returncode == 0, f"{rel} is not in {BASE_B1} (fetch-depth 0 is required)"
+    return _norm(out.stdout.decode("utf-8"))
+
+
+def undo_b1(rel: str, text: str) -> str:
+    """`text` (a current test file) with HDR-2 (b1)'s exact in-place edits undone (last first): as at BASE_B1. Any other file passes through."""
+    text = _norm(text)
+    for old, new in reversed(UNDO_B1.get(rel, [])):
         assert text.count(new) == 1, (rel, new[:80])
         text = text.replace(new, old)
     return text

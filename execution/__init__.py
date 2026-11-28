@@ -12,7 +12,7 @@ Boundaries (tests/test_execution_60.py pins them):
   - the safety gate blocks NEW ENTRIES only; deterministic risk-reducing exits continue; an Emergency Stop never liquidates;
   - the user controls the mode (MONITOR_ONLY by default; PAPER_AUTO is an explicit, persisted choice).
 """
-VERSION = "execution_v6"                                     # HDR-2 execution data gate (EXEC-P1 C1, brief 8): the gate decides entries, exits, the stop check and the safety-finding lifecycle; a new 6.10A cohort
+VERSION = "execution_v7"                                     # HDR-2 OD-C-7 (b1): the exhausted HIT raises the critical alert before the ATTENTION write; a new 6.10A cohort
 STAGE = "6.0"
 
 MODES = ("MONITOR_ONLY", "PAPER_AUTO")
