@@ -1041,6 +1041,12 @@ class ExecutionService:
             if gate is None:
                 return False
         if pos.exit_cycle >= self.max_exit_cycles:
+            if gate is not None and gate.get("order_class") == DG.PROTECTIVE_EXIT:          # r15 3.8 step 4 (i)-(iii), OD-C-7 (b1): this cycle's HIT on a path that is not simulated
+                b1_text = f"{pos.symbol}: protective exit attempts exhausted (EXIT_ATTEMPTS_EXHAUSTED); no automatic order; critical alert"
+                self.protective_exit_problems[pos.symbol] = b1_text
+                self._safety_transition(now, gate.get("trigger") or trigger, gate.get("run_id"), "PROTECTIVE_EXIT_UNVERIFIED", pos.position_id, pos.symbol, "FAILURE",
+                                        reason_codes=["EXIT_ATTEMPTS_EXHAUSTED"], exit_cycle=pos.exit_cycle)
+                self._touch(now, "PROTECTIVE_EXIT", "BLOCK", b1_text, {"position_id": pos.position_id, "codes": ["EXIT_ATTEMPTS_EXHAUSTED"]})
             self.store.update_position(pos.position_id, now, {"kind": "ATTENTION", "from_state": pos.state, "to_state": "ATTENTION", "reason": "EXIT_ATTEMPTS_EXHAUSTED"},
                                        state="ATTENTION", attention_reason="EXIT_ATTEMPTS_EXHAUSTED")
             self._touch(now, "EXIT_SUBMISSION", "BLOCK", f"{pos.symbol}: {pos.exit_cycle} exit attempts exhausted; needs attention", {"position_id": pos.position_id})

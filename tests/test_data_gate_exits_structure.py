@@ -21,8 +21,8 @@ FN = {n.name: n for n in CLS.body if isinstance(n, ast.FunctionDef)}
 GATE_FUNCS = ("_simulated_broker", "_broker_class", "_entry_identity", "_market_mode", "_gate_price", "_gate_calendar", "_reads_left", "_gate_facts",
               "_session_and_clock", "_gate_prov", "_exit_refused", "_exit_contained", "_exit_gate_pre", "_exit_gate_intent", "_exit_qty", "_dg_final_exit",
               "_dg_final_refused", "_dg_final_session_failure", "_exit_after_post", "_safety_sweeps", "_exit_context_gated", "_evaluate_positions_gated")
-EXHAUSTION = (
-    '        if pos.exit_cycle >= self.max_exit_cycles:\n'
+EXHAUSTION = (                                                                     # r15 9-C A6 (OD-C-7 (b1)): (the if line, the four existing body lines)
+    '        if pos.exit_cycle >= self.max_exit_cycles:\n',
     '            self.store.update_position(pos.position_id, now, {"kind": "ATTENTION", "from_state": pos.state, "to_state": "ATTENTION", "reason": "EXIT_ATTEMPTS_EXHAUSTED"},\n'
     '                                       state="ATTENTION", attention_reason="EXIT_ATTEMPTS_EXHAUSTED")\n'
     '            self._touch(now, "EXIT_SUBMISSION", "BLOCK", f"{pos.symbol}: {pos.exit_cycle} exit attempts exhausted; needs attention", {"position_id": pos.position_id})\n'
@@ -129,14 +129,20 @@ def test_a1_service_side_the_writer_s_return_value_is_never_branched_on():
 
 
 def test_od_c7a_exhaustion_block_lines_unchanged_once_and_at_step_4_of_the_exit_gate_order():
-    assert SRC.count(EXHAUSTION) == 1
+    if_line, body = EXHAUSTION
+    assert SRC.count(if_line) == 1 and SRC.count(body) == 1
     fn = FN["_maybe_submit_exit"]
     fn_src = ast.get_source_segment(SRC, fn)
-    assert EXHAUSTION in fn_src + "\n"
+    assert if_line in fn_src and body in fn_src + "\n"
     pre = calls(fn, "_exit_gate_pre")[0].lineno
     post = calls(fn, "_exit_gate_intent")[0].lineno
     ex = next(n for n in ast.walk(fn) if isinstance(n, ast.If) and ast.unparse(n.test) == "pos.exit_cycle >= self.max_exit_cycles")
     assert pre < ex.lineno < post                                                  # P8a-1, reservation, P8b, P8a-2 -> exhaustion -> collision, P1-P7, P8c
+    first = SRC[:SRC.index(body)].count("\n") + 1                                  # (b1): the four existing lines are contiguous and last in the if body,
+    assert len(ex.body) == 4 and ex.body[1].lineno == first and ex.end_lineno == first + 3 and ex.body[0].end_lineno == first - 1   # after step 4 (i)-(iii)
+    inner = ex.body[0]
+    assert isinstance(inner, ast.If) and not inner.orelse and ast.unparse(inner.test) == "gate is not None and gate.get('order_class') == DG.PROTECTIVE_EXIT"
+    assert [type(s).__name__ for s in inner.body] == ["Assign", "Assign", "Expr", "Expr"] and SRC.splitlines()[ex.lineno - 1] + "\n" == if_line
 
 
 def test_simulated_branch_keeps_today_s_session_check_and_intent_build():

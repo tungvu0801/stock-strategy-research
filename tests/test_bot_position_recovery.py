@@ -1348,7 +1348,7 @@ def test_S02_no_http_route_or_button_was_added():
 def test_S03_manual_external_has_its_text_and_is_not_a_strategy_exit_and_the_frozen_controls_are_unchanged():
     from forward_validation import frozen_controls, frozen_hash
     assert X.EXIT_TEXT["MANUAL_EXTERNAL"] == "Closed outside the app" and "MANUAL_EXTERNAL" not in X.EXIT_REASONS and R.EXIT_REASON == "MANUAL_EXTERNAL"
-    assert frozen_controls()["exit_reasons"] == list(X.EXIT_REASONS) and X.VERSION == "execution_v6" and "Closed outside the app" not in json.dumps(frozen_controls())   # EXEC-P1 C1: the gate's execution_v6 (brief 8)
+    assert frozen_controls()["exit_reasons"] == list(X.EXIT_REASONS) and X.VERSION == "execution_v7" and "Closed outside the app" not in json.dumps(frozen_controls())   # EXEC-P1 C1: the gate's execution_v6 (brief 8); HDR-2 (b1): execution_v7
     h = frozen_hash()
     saved = dict(X.EXIT_TEXT)
     try:
